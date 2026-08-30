@@ -98,6 +98,7 @@ defmodule CodingAgent.Core.Session do
     model = Keyword.get(opts, :model) || CodingAgent.model()
     system_prompt = Keyword.get(opts, :system_prompt, @framework_prompt)
     scope_root = Keyword.get(opts, :scope_root)
+    test_mode = Keyword.get(opts, :test_mode, false)
     policy = Keyword.get(opts, :policy) || load_policy(scope_root)
 
     context =
@@ -111,7 +112,8 @@ defmodule CodingAgent.Core.Session do
        model: model,
        status: :idle,
        scope_root: scope_root,
-       policy: policy
+       policy: policy,
+       test_mode: test_mode
      )}
   end
 
@@ -355,7 +357,12 @@ defmodule CodingAgent.Core.Session do
           # all denied: report rejections to the model instead of executing
           results = Enum.map(calls, fn call -> denied_result(call) end)
           state = append_tool_results(state, results)
-          continue_loop(state)
+
+          if state.test_mode do
+            {state, {:ok, state}}
+          else
+            continue_loop(state)
+          end
       end
     end
   end
@@ -374,7 +381,12 @@ defmodule CodingAgent.Core.Session do
     results = execute_tools(state, calls)
     state = append_tool_results(state, results)
     broadcast_tools(state, calls, results)
-    continue_loop(state)
+
+    if state.test_mode do
+      {state, {:ok, state}}
+    else
+      continue_loop(state)
+    end
   end
 
   defp denied_result(call) do
