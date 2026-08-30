@@ -12,3 +12,5 @@ constraints that follow from the project's trust goals.
    agent-loop
    memory
    stack
+   about-tools
+   about-req-llm

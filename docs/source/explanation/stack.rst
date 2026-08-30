@@ -1,9 +1,6 @@
 Technology Stack
 ================
 
-Technology Stack
-================
-
 The full stack is decided (ADRs 002–006):
 
 - **Runtime**: Elixir/OTP — pure-Elixir dependency tree, ``mix release``
