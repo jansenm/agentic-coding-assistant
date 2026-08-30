@@ -1,0 +1,17 @@
+# Sphinx toolchain for the Agentic Coding Harness documentation.
+#
+# Bootstrap:
+#   python3 -m venv .venv
+#   .venv/bin/pip install -r requirements.txt
+#   .venv/bin/sphinx-build -b html source build
+#
+# The ADR (0001) documents this choice; pin exact versions for
+# reproducible, auditable builds.
+
+Sphinx==9.1.0
+sphinx-autobuild==2025.8.25
+furo==2025.12.19
+sphinx-adr==0.4.0
+sphinxcontrib-mermaid==2.1.0
+sphinx-copybutton==0.5.2
+sphinxext-opengraph==0.13.0

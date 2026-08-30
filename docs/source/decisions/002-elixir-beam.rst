@@ -1,0 +1,37 @@
+:orphan:
+
+Elixir and OTP as the runtime
+=============================
+
+.. adr::
+   :id: 002
+   :status: Accepted
+   :date: 2026-08-29
+   :tags: stack
+
+Context
+-------
+
+Existing coding assistants are overwhelmingly Node/JavaScript based, often
+requiring bootstrap toolchains (e.g. Bun) or prebuilt binaries. Given
+current supply-chain attacks against open source, a coding assistant that
+handles source code and credentials must be **trustworthy, lightweight and
+trivially compilable from source** by anyone.
+
+Decision
+--------
+
+The assistant is implemented in **Elixir on the BEAM**:
+
+- the whole dependency tree is pure Elixir/Erlang (no NIFs on the core
+  path, no Node),
+- ``mix release`` builds from source with only Erlang/Elixir installed,
+- ``mix.lock`` checksums every transitive dependency, keeping the auditable
+  surface small.
+
+Consequences
+------------
+
+- Dependency count is treated as a security metric; every dependency
+  addition worth discussing gets an ADR.
+- UI choices are constrained to BEAM-native options (terminal, LiveView).

@@ -1,0 +1,37 @@
+/* ADR nav inside Furo's right toc-drawer sticky container */
+
+.hidden-adr-holder {
+  display: none;
+}
+
+/* Compact ADR log directly below the "On this page" TOC, inside the
+   sticky drawer so it stays visible without scrolling. */
+.toc-drawer .adr-sidebar-holder {
+  flex: 0 0 auto;
+  min-height: 0;
+  margin-top: 0.75rem;
+  max-height: 18rem;
+  overflow-y: auto;
+}
+
+.toc-drawer .adr-sidebar-nav {
+  padding: 0 1rem 0.5rem calc(var(--toc-spacing-horizontal) - var(--toc-item-spacing-horizontal));
+  font-size: var(--admonition-font-size);
+}
+
+.toc-drawer .adr-sidebar-logo-link {
+  display: none;
+}
+
+.toc-drawer .adr-sidebar-heading {
+  padding: 0.25rem 0;
+  margin: 0 0 0.5rem;
+}
+
+.toc-drawer .adr-sidebar-entry {
+  padding: 0.3rem 0.4rem;
+}
+
+.toc-drawer .adr-sidebar-timeline::before {
+  left: 9px;
+}

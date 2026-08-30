@@ -1,0 +1,22 @@
+{# Furo: add the sphinx-adr decision log to the right sidebar drawer #}
+{% extends "!page.html" %}
+
+{% block right_sidebar %}
+  {% if not furo_hide_toc %}
+  <div class="toc-sticky toc-scroll">
+    <div class="toc-title-container">
+      <span class="toc-title">
+        {{ _("On this page") }}
+      </span>
+    </div>
+    <div class="toc-tree-container">
+      <div class="toc-tree">
+        {{ toc }}
+      </div>
+    </div>
+    <div class="adr-sidebar-holder">
+      {% include "adr_nav.html" %}
+    </div>
+  </div>
+  {% endif %}
+{% endblock right_sidebar %}
