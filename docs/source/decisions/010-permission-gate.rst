@@ -117,6 +117,52 @@ being pinned here: the decision API is symmetric for every driver —
 the session never knows whether a human, a TUI widget, or a test made
 the call.
 
+**7. Loading fails closed.** A malformed, unparsable or schema-violating
+policy file aborts session start with a clear error — it never silently
+falls back to defaults (defaults are what an attacker achieves by
+deleting or corrupting the file). Unknown *sections/keys* are ignored
+with a warning (forward compatibility); unknown *decision values*
+(anything not ``allow | ask | deny``) fail the load.
+
+Interaction with the agent matrix (ADR 007)
+-------------------------------------------
+
+The matrix (who works where) and the permission system (what may be
+touched by whom) compose on the tuple ``(agent role, tool,
+resolved-repo)`` with one rule:
+
+**The most restrictive layer always wins.**
+
+``effective(role, tool, path)`` = most restrictive of:
+
+1. built-in class default (write → ``ask``, shell → ``ask``),
+2. user-level file (the human's own global limits),
+3. the *repo-side* file of the repository the resolved path belongs to,
+4. the agent template's entries for that role, if any —
+   which may only restrict, never grant.
+
+Properties:
+
+- **Templates restrict, never grant.** A Jenkinsfile specialist's
+  definition may narrow what it can do; its write authority comes only
+  from the repo/user layers. Same non-elevation invariant as rule 2,
+  extended to one more layer.
+- **A repository governs every agent that touches it.** Repo B's
+  ``deny ci/**`` applies to a horizontal specialist dispatched across
+  twelve repos — an orchestrator's choice never overrides a repository
+  owner. This is the matrix-specific form of the cloned-repo rule.
+
+Format impact, additive only:
+
+- Entries may live under ``[permissions.*]`` (every role) or
+  ``[agents.<role>.permissions]`` (one role); same syntax, same merge.
+  The lookup is the same function in both cases — in 2b every session
+  runs the implicit role ``default``, so the function is implemented
+  now with a single known argument and nothing is deferred.
+- Multi-repo workspaces (phase 5) turn ``scope_root`` into a list of
+  roots; path→repo resolution is the only new mechanic. In 2b,
+  single-root, "the repo file" *is* the workspace file.
+
 Consequences
 ------------
 
@@ -131,3 +177,6 @@ Consequences
 - A future ``--yolo``-style flag bypassing the gate is *not* provided
   by the core; if ever built, it is a driver-side concern that must
   still pass through the gate API (auditable, logged).
+- The role dimension exists in the lookup function from day one
+  (role ``default`` in 2b), so the matrix phase adds data and
+  resolution, not a permission redesign.

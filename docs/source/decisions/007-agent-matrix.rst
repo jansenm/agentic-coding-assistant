@@ -56,7 +56,11 @@ The permission system falls out of the matrix as an access-control
 table: ``(agent role) x repositories x tool x path-pattern``. Example:
 the Jenkinsfile specialist may write ``Jenkinsfile*`` in all 12
 repositories but may not run ``mvn``; a maven agent may write only
-inside its own repository and may run ``mvn``.
+inside its own repository and may run ``mvn``. The composition rule
+with the policy layers is decided in :doc:`010-permission-gate`:
+**the most restrictive layer wins** — agent templates restrict but
+never grant, and each repository's policy governs every agent
+(including horizontal specialists) that touches it.
 
 Open question — *atomicity for horizontal changes*: one consistent
 Jenkinsfile change across 12 repositories is 12 commits. Whether those
