@@ -29,12 +29,26 @@ Two defenses bound even the read-only tools:
 
 - **Scope**: every tool receives a scope root (the session's working
   directory); all paths are resolved against it.
-- **Escape check**: ``..`` traversal and absolute paths outside the root
-  are rejected before any filesystem call.
+- **Physical path resolution**: the scope check runs on the *resolved*
+  path, not the textual one. ``..`` segments are normalized first, then
+  every path component is walked from the filesystem root, following
+  symlinks — including symlinked **directories** inside the path. A
+  link (or link-dir) pointing outside the scope is rejected the same as
+  an explicit ``../`` escape.
 
-Read caps (256 KiB) and a global tool-round limit (12 per turn) bound
-context growth and runaway loops — both exist because tool output, not
-the user, is what fills a working context fastest.
+  Why the walk matters: ``Path.expand`` is *textual* — it normalizes
+  ``..`` but never follows links. Both escape shapes were verified
+  exploitable before the fix
+  (``scope/docs/innocent.txt → /etc/shadow`` and
+  ``scope/docs/outside-dir → /etc``, then ``outside-dir/passwd``): both
+  now return a scope error. Symlinks *inside* the scope (even chains)
+  keep working; hard links are deliberately out of scope — they cannot
+  be distinguished from a regular file by the filesystem interface and
+  a VCS-driven workspace cannot create them.
+
+- **Read caps** (256 KiB) and a global tool-round limit (12 per turn)
+  bound context growth and runaway loops — both exist because tool
+  output, not the user, is what fills a working context fastest.
 
 The gate (slice 2b)
 -------------------
