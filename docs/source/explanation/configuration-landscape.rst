@@ -49,6 +49,21 @@ Files in the project
     system prompt refs, tools, permission entries, scope. Data, not
     code, per the matrix ADR.
 
+``permission`` frontmatter in agent/skill definitions (honored)
+    The agents convention (as used by opencode et al.) carries an
+    optional ``permission`` section in the frontmatter of agent and
+    skill files — e.g. a ``maven.md`` agent declaring
+    ``permission.edit."**/pom.xml" = allow``. We honor it as **one more
+    restrictive-only layer** in the ADR 010 merge: a definition's
+    permission entries participate in the most-restrictive-wins
+    intersection like any other layer. A template may *narrow* what its
+    agent can do (the natural use: a read-only analyzer denying edit
+    and bash for itself) and may pre-*narrow-then-ask* (scoping its own
+    edit patterns), but an ``allow`` in a definition never overrides an
+    ``ask``/``deny`` from user or repo layers — authority still
+    originates only there. This keeps `.agents/…` definition files
+    portable between tools while the enforcement floor stays ours.
+
 Files in the home directory
 ---------------------------
 

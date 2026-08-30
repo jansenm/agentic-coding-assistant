@@ -138,7 +138,9 @@ resolved-repo)`` with one rule:
 1. built-in class default (write → ``ask``, shell → ``ask``),
 2. user-level file (the human's own global limits),
 3. the *repo-side* file of the repository the resolved path belongs to,
-4. the agent template's entries for that role, if any —
+4. the effective permission set of the running agent definition: its
+   own ``permission`` frontmatter (agents-standard format, see below)
+   plus its entries in ``[agents.<role>.permissions]`` —
    which may only restrict, never grant.
 
 Properties:
@@ -151,6 +153,14 @@ Properties:
   ``deny ci/**`` applies to a horizontal specialist dispatched across
   twelve repos — an orchestrator's choice never overrides a repository
   owner. This is the matrix-specific form of the cloned-repo rule.
+- **Convention frontmatter is one of these layers.** The agents
+  standard's optional ``permission`` section in agent/skill definition
+  files (used by opencode et al.) is honored as a
+  restrictive-only layer in the same merge. A definition declaring
+  ``"**/pom.xml": allow`` does not thereby write pom files in a repo
+  whose layer says ``ask`` — the intersection decides. This keeps
+  ``.agents/...`` definition files tool-portable while enforcement
+  authority stays with user and repo layers.
 
 Format impact, additive only:
 
@@ -159,6 +169,13 @@ Format impact, additive only:
   The lookup is the same function in both cases — in 2b every session
   runs the implicit role ``default``, so the function is implemented
   now with a single known argument and nothing is deferred.
+- Agent definition files in the agents-standard frontmatter format
+  (``.agents/agents/*.md`` style, opencode-compatible) are consumed
+  including their ``permission`` section, mapped onto the same
+  decision vocabulary (``allow | ask | deny``) and fed into layer 4.
+  The pattern-matching dialect to support there (opencode uses
+  last-match-wins globs) is pinned when the loader is implemented in
+  slice 2b / phase 5 — the merge rule does not depend on the dialect.
 - Multi-repo workspaces (phase 5) turn ``scope_root`` into a list of
   roots; path→repo resolution is the only new mechanic. In 2b,
   single-root, "the repo file" *is* the workspace file.
