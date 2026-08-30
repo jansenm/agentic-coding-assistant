@@ -85,33 +85,47 @@ defmodule CodingAgent.Core.Tools do
   # root, following symlinks (including symlinked *directories* inside
   # the path). Returns the fully-resolved path; dangling links are
   # followed textually as far as possible.
-  defp physical_path(path) do
-    path
-    |> Path.expand("/")
-    |> split_path()
-    |> Enum.reduce("/", fn segment, acc ->
-      next = Path.join(acc, segment)
+  defp physical_path(path, hops \\ 0) do
+    # realpath-style resolution: walk components from the root; when a
+    # component is a symlink, restart resolution with the link target
+    # followed by all remaining segments (handles chains, and links
+    # whose targets contain further links). Dangling links continue
+    # textually; the scope check still applies and execution fails
+    # naturally on the missing file.
+    if hops > 16 do
+      raise ArgumentError, "too many symlink hops resolving #{inspect(path)}"
+    end
 
-      case :file.read_link_info(String.to_charlist(next)) do
-        {:ok, info} when elem(info, 2) == :symlink ->
-          case :file.read_link(String.to_charlist(next)) do
-            {:ok, target} ->
-              target_str = List.to_string(target)
+    walk_segments(split_path(Path.expand(path, "/")), "/", hops)
+  end
 
+  defp walk_segments([], acc, _hops), do: acc
+
+  defp walk_segments([seg | rest], acc, hops) do
+    next = Path.join(acc, seg)
+
+    case :file.read_link_info(String.to_charlist(next)) do
+      {:ok, info} when elem(info, 2) == :symlink ->
+        case :file.read_link(String.to_charlist(next)) do
+          {:ok, target} ->
+            target_str = List.to_string(target)
+
+            base =
               if Path.type(target_str) == :absolute,
                 do: target_str,
                 else: Path.expand(target_str, acc)
 
-            {:error, _} ->
-              # dangling symlink: keep following textually from its target
-              Path.expand(segment, acc)
-          end
+            # target + everything not yet walked, resolved as one path
+            physical_path(Enum.join([base | rest], "/"), hops + 1)
 
-        _ ->
-          next
-      end
-    end)
-    |> Path.expand()
+          {:error, _} ->
+            # dangling link: continue textually with the remaining path
+            Enum.reduce(rest, next, &Path.join(&2, &1))
+        end
+
+      _ ->
+        walk_segments(rest, next, hops)
+    end
   end
 
   defp split_path(path) do
