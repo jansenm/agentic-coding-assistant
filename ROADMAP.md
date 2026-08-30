@@ -51,9 +51,14 @@ the readable stack overview lives in
      loaded from application config + a project-level file; HITL pause
      on `:ask` with the UI-agnostic decision API
      (`:approve | :edit(args) | :reject`). Format choices (TOML vs.
-     alternatives, load order, elevation limits) are decided in ADR 010
-     at slice start. Agent definitions ride in the same format later
-     (ADR 007); 2b ships only tool enablement + the permission table.
+     alternatives, load order, elevation limits, file naming vs.
+     AGENTS.md confusion) are decided in ADR 010 at slice start.
+     AGENTS.md stays the standard instruction layer and is consumed
+     as-is (no competing prose format); it steers behavior *within*
+     policy limits but can never change them (non-elevation applies to
+     prompts too). Agent definitions ride in the same structured
+     format later (ADR 007); 2b ships only tool enablement + the
+     permission table.
      *Runnable:* `write_file` demoed twice — auto-allowed by pattern,
      paused for approval when not matched — and the difference is
      driven by editing the permission file, not by recompiling.
