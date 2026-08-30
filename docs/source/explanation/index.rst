@@ -14,3 +14,4 @@ constraints that follow from the project's trust goals.
    stack
    about-tools
    about-req-llm
+   configuration-landscape
