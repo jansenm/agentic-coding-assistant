@@ -21,6 +21,9 @@ defmodule CodingAgent.Core.Session do
 
   @call_timeout 120_000
 
+  # providers whose requests need no api_key option
+  @keyless_providers ["ollama"]
+
   @framework_prompt """
   You are a coding assistant embedded in a terminal tool. Be concise and
   precise. When you intend to use a tool, emit the tool call; do not
@@ -70,7 +73,7 @@ defmodule CodingAgent.Core.Session do
   @impl true
   def init(opts) do
     id = Keyword.fetch!(opts, :id)
-    model = Keyword.get(opts, :model)
+    model = Keyword.get(opts, :model) || CodingAgent.model()
     system_prompt = Keyword.get(opts, :system_prompt, @framework_prompt)
 
     context =
@@ -84,7 +87,9 @@ defmodule CodingAgent.Core.Session do
   def handle_call(:state, _from, state), do: {:reply, {:ok, state}, state}
 
   def handle_call(:subscribe, {pid, _}, state) do
-    unless pid == self(), do: Registry.register(CodingAgent.EventRegistry, {:session_events, state.id}, nil)
+    unless pid == self(),
+      do: Registry.register(CodingAgent.EventRegistry, {:session_events, state.id}, nil)
+
     monitor = Process.monitor(pid)
     {:reply, :ok, %{state | subscribers: [monitor | state.subscribers]}}
   end
@@ -141,12 +146,26 @@ defmodule CodingAgent.Core.Session do
   end
 
   defp call_llm(state) do
-    with {:ok, api_key} <- fetch_api_key(),
-         {:ok, stream_response} <-
-           ReqLLM.stream_text(state.model, state.context, api_key: api_key) do
+    with {:ok, opts} <- request_opts(state),
+         {:ok, stream_response} <- ReqLLM.stream_text(state.model, state.context, opts) do
       events = ReqLLM.StreamResponse.events(stream_response)
       {text, tool_calls} = consume_stream(events, state.id)
       {:ok, %{type: classify(tool_calls), text: text, tool_calls: tool_calls}}
+    end
+  end
+
+  # Providers that need no key (e.g. local ollama) are inferred from the
+  # model spec; the api_key_env config only applies when a key is needed.
+  defp request_opts(state) do
+    provider = state.model |> String.split(":", parts: 2) |> List.first()
+
+    if provider in @keyless_providers do
+      {:ok, []}
+    else
+      case lookup_api_key() do
+        {:ok, key} -> {:ok, [api_key: key]}
+        error -> error
+      end
     end
   end
 
@@ -205,7 +224,7 @@ defmodule CodingAgent.Core.Session do
 
   # -- Infrastructure ---------------------------------------------------------
 
-  defp fetch_api_key do
+  defp lookup_api_key do
     env_var = Application.fetch_env!(:coding_agent, :api_key_env)
 
     case System.fetch_env(env_var) do

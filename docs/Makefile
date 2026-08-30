@@ -1,5 +1,11 @@
+-include Makefile.local
+
+VIRTUALENV    ?= .venv
+PYTHON        ?= python3
+
 # Minimal makefile for Sphinx documentation
 #
+
 
 # You can set these variables from the command line, and also
 # from the environment for the first two.
@@ -8,6 +14,9 @@ SPHINXBUILD   ?= sphinx-build
 SPHINXAUTOBUILD ?= sphinx-autobuild
 SOURCEDIR     = source
 BUILDDIR      = build
+
+.venv:
+	$(PYTHON) -m venv $(VIRTUALENV)
 
 # Put it first so that "make" without argument is like "make help".
 help:

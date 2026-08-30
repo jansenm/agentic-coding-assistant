@@ -12,7 +12,8 @@ defmodule CodingAgent.Application do
   def start(_type, _args) do
     children = [
       {Registry, keys: :unique, name: CodingAgent.Registry},
-      {Registry, keys: :duplicate, name: CodingAgent.EventRegistry, partitions: System.schedulers_online()},
+      {Registry,
+       keys: :duplicate, name: CodingAgent.EventRegistry, partitions: System.schedulers_online()},
       CodingAgent.Core.Session.Supervisor
     ]
 

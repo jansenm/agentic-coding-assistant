@@ -7,11 +7,6 @@ INSTALL         ?= install
 INSTALL_PROGRAM ?= $(INSTALL) -m 0755
 INSTALL_DATA    ?= $(INSTALL) -m 0644
 
-VERSION         := $(shell sed -n 's/^Version:\s*//p' packaging/rpm/ferroclass.spec)
-NAME            := $(shell sed -n 's/^Name:\s*//p' packaging/rpm/ferroclass.spec)
-SOURCE_TAG      := v$(VERSION)
-
-
 ifndef DEBUG
 .SILENT:
 endif
@@ -50,12 +45,6 @@ doc: doc-start doc-do doc-end
 doc-do:
 	@cd docs && $(MAKE) -F Makefile build
 
-## dist                » create source and vendor tarballs from SOURCE_TAG
-.PHONY: dist dist-do
-dist: dist-start dist-do dist-end
-dist-do:
-	@echo "todo"
-
 ##
 ## INSTALLATION
 ## ------------
@@ -92,7 +81,7 @@ format: format-start format-do format-end
 format-do:
 	@echo "todo"
 
-## reuse              » run reuse
+## reuse               » run reuse
 .PHONY: reuse reuse-do
 reuse: reuse-start reuse-do reuse-end
 reuse-do:
@@ -124,9 +113,9 @@ distclean-do:
 maintainer-clean: maintainer-clean-start distclean  maintainer-clean-do maintainer-clean-end
 maintainer-clean-do:
 
-##
-## START/DO/END ANNOUNCEMENTS
-## --------------------------
+#
+# START/DO/END ANNOUNCEMENTS
+# --------------------------
 
 .PHONY: %-start
 %-start:
@@ -140,29 +129,25 @@ maintainer-clean-do:
 ## MISCELLANEOUS
 ## -------------
 
-## help                 » show this help message
+## help                » show this help message
 .PHONY: help
 help:
 	@sed -n -e "s/^## \?\(.*\)/\1/p" "$(THIS_MAKEFILE)"
 	@echo ""
 	@echo "VARIABLE VALUE"
 	@echo "--------------"
-	@echo "PREFIX           = $(PREFIX)"
 	@echo "INSTALL          = $(INSTALL)"
 	@echo "INSTALL_PROGRAM  = $(INSTALL_PROGRAM)"
 	@echo "INSTALL_DATA     = $(INSTALL_DATA)"
 	@echo "VERSION          = $(VERSION)"
-	@echo "NAME             = $(NAME)"
 
 ##
 ## VARIABLES
 ## ---------
 
-## PREFIX               » installation prefix
-## INSTALL              » install command
-## INSTALL_PROGRAM      » install command for executables
-## INSTALL_DATA         » install command for data files
-## VERSION              » package version (from spec file)
-## NAME                 » package name (from spec file)
+## INSTALL             » install command
+## INSTALL_PROGRAM     » install command for executables
+## INSTALL_DATA        » install command for data files
+## VERSION             » package version (from spec file)
 ##
-## VERBOSE              » print execute commands
+## VERBOSE             » print execute commands
