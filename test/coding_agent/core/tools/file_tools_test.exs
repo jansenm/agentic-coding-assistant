@@ -41,6 +41,46 @@ defmodule CodingAgent.Core.Tools.FileToolsTest do
     end
   end
 
+  describe "path hardening (symlinks)" do
+    defp make_symlink(target, link) do
+      :ok = :file.make_symlink(String.to_charlist(target), String.to_charlist(link))
+    end
+
+    test "symlink inside scope pointing outside is rejected", %{scope: scope} do
+      external = Path.join(System.tmp_dir!(), "external-#{System.unique_integer()}")
+      File.write!(external, "SECRET")
+
+      make_symlink(external, Path.join(scope.root, "innocent.txt"))
+
+      tool = find_tool("read_file", scope)
+      assert {:error, msg} = ReqLLM.Tool.execute(tool, %{"path" => "innocent.txt"})
+      assert msg =~ "escapes"
+    end
+
+    test "symlinked directory pointing outside is rejected", %{scope: scope} do
+      File.mkdir_p!(Path.join(scope.root, "real-sub"))
+      make_symlink("/etc", Path.join(scope.root, "outside-dir"))
+
+      tool = find_tool("read_file", scope)
+      assert {:error, msg} = ReqLLM.Tool.execute(tool, %{"path" => "outside-dir/hostname"})
+      assert msg =~ "escapes"
+    end
+
+    test "symlink inside scope pointing inside scope still works", %{scope: scope} do
+      File.write!(Path.join(scope.root, "target.txt"), "target-content")
+      make_symlink(Path.join(scope.root, "target.txt"), Path.join(scope.root, "alias.txt"))
+
+      tool = find_tool("read_file", scope)
+      assert {:ok, "target-content"} = ReqLLM.Tool.execute(tool, %{"path" => "alias.txt"})
+    end
+
+    test "dot-dot traversal is rejected", %{scope: scope} do
+      tool = find_tool("read_file", scope)
+      assert {:error, _} = ReqLLM.Tool.execute(tool, %{"path" => "../../../etc/passwd"})
+      assert {:error, _} = ReqLLM.Tool.execute(tool, %{"path" => "sub/../../.."})
+    end
+  end
+
   describe "read_file" do
     test "reads file content", %{scope: scope} do
       tool = find_tool("read_file", scope)

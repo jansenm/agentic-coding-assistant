@@ -17,6 +17,7 @@ defmodule CodingAgent.Core.Tools do
   alias CodingAgent.Core.Tools.ReadFile
   alias CodingAgent.Core.Tools.WriteFile
 
+  @typedoc "A tool scope: the root directory the tool may operate in."
   @type scope :: %{
           required(:root) => String.t()
         }
@@ -59,20 +60,64 @@ defmodule CodingAgent.Core.Tools do
   Resolves a path against the scope root and rejects escapes.
 
   Read-only tools are safe only as long as the path they touch stays
-  inside the scope; `..` traversal must not leave `scope.root`.
-  Returns the absolute, normalized path (or the original relative one
-  when the calling tool wants that).
+  inside the scope; `..` traversal must not leave `scope.root`, and
+  **symlinks are resolved physically** before the check — a link inside
+  the scope pointing outside it is rejected (a symlinked root itself is
+  fine: the root is resolved first).
+
+  Returns true when access should be permitted.
   """
   @spec in_scope?(scope(), String.t()) :: boolean()
   def in_scope?(scope, path) do
-    root = Path.expand(scope.root)
+    root = physical_path(Path.expand(scope.root))
 
-    expanded =
-      path
-      |> Path.expand(root)
-      |> Path.expand()
+    candidate = Path.expand(path, root)
 
-    String.starts_with?(expanded <> "/", root <> "/") or expanded == root
+    # Resolve the candidate physically: dot-dot segments are already
+    # normalized by expand, and physical_path follows any symlinks
+    # (final or ancestor) to their real target.
+    resolved = physical_path(candidate)
+
+    String.starts_with?(resolved <> "/", root <> "/") or resolved == root
+  end
+
+  # Physical path resolution: walk every component from the filesystem
+  # root, following symlinks (including symlinked *directories* inside
+  # the path). Returns the fully-resolved path; dangling links are
+  # followed textually as far as possible.
+  defp physical_path(path) do
+    path
+    |> Path.expand("/")
+    |> split_path()
+    |> Enum.reduce("/", fn segment, acc ->
+      next = Path.join(acc, segment)
+
+      case :file.read_link_info(String.to_charlist(next)) do
+        {:ok, info} when elem(info, 2) == :symlink ->
+          case :file.read_link(String.to_charlist(next)) do
+            {:ok, target} ->
+              target_str = List.to_string(target)
+
+              if Path.type(target_str) == :absolute,
+                do: target_str,
+                else: Path.expand(target_str, acc)
+
+            {:error, _} ->
+              # dangling symlink: keep following textually from its target
+              Path.expand(segment, acc)
+          end
+
+        _ ->
+          next
+      end
+    end)
+    |> Path.expand()
+  end
+
+  defp split_path(path) do
+    path
+    |> Path.split()
+    |> Enum.reject(&(&1 in ["/", "."]))
   end
 
   @doc """
