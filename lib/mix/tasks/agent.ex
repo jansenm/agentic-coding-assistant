@@ -72,7 +72,7 @@ defmodule Mix.Tasks.Agent do
             case CodingAgent.Core.Session.run(id, trimmed) do
               {:ok, state} ->
                 flush_deltas()
-                print_result({:ok, state})
+                handle_turn(id, state)
                 loop(id)
 
               {:error, reason} ->
@@ -81,6 +81,75 @@ defmodule Mix.Tasks.Agent do
             end
         end
     end
+  end
+
+  # An interrupted turn (permission gate) runs the approval loop (ADR 010
+  # stub: stdin y/e/n); the real TUI approval flow is phase 4.
+  defp handle_turn(_id, %{status: :interrupted} = state) do
+    decisions = ask_decisions(state.pending_tool_calls)
+
+    # caller loop drives the next turn; here we only resolve approval
+    case decisions do
+      nil -> :aborted
+      decisions -> send(self(), {:__decide__, decisions})
+    end
+  end
+
+  defp handle_turn(id, state) do
+    print_result({:ok, state})
+
+    receive do
+      {:__decide__, decisions} ->
+        case CodingAgent.Core.Session.decide(id, decisions) do
+          {:ok, state2} ->
+            flush_deltas()
+            handle_turn(id, state2)
+
+          {:error, reason} ->
+            print_error(reason)
+        end
+    end
+  end
+
+  defp ask_decisions(pending) do
+    Enum.map(pending, &ask_decision/1)
+  end
+
+  defp ask_decision(call) do
+    {id, name, args} = call_info(call)
+    args_str = Jason.encode!(args)
+
+    IO.puts("\n[approval needed] #{name}(#{args_str})")
+
+    answer =
+      case IO.gets("  [y]es / [e]dit / [n]o / [a]bort > ")
+           |> String.trim()
+           |> String.downcase() do
+        "y" -> :approve
+        "e" -> :edit
+        "n" -> :reject
+        "a" -> exit({:shutdown, 130})
+        _ -> :reject
+      end
+
+    final =
+      if answer == :edit do
+        new_args = do_edit(args)
+        %{id: id, decision: {:edit, new_args}}
+      else
+        %{id: id, decision: answer}
+      end
+
+    final
+  end
+
+  defp do_edit(args) do
+    new_path = IO.gets("  path [#{args["path"]}] > ") |> String.trim()
+    new_content = IO.gets("  content (single line) > ") |> String.trim()
+
+    args
+    |> Map.put("path", if(new_path == "", do: args["path"], else: new_path))
+    |> Map.put("content", if(new_content == "", do: args["content"], else: new_content))
   end
 
   defp session_id, do: "cli-#{System.unique_integer([:positive])}"
@@ -99,15 +168,16 @@ defmodule Mix.Tasks.Agent do
   defp print_result({:ok, state}) do
     case state.status do
       :idle ->
-        last = Enum.reverse(ReqLLM.Context.to_list(state.context)) |> List.first()
-        IO.puts("\n" <> text_of(last) <> "\n")
+        last =
+          state.context
+          |> ReqLLM.Context.to_list()
+          |> Enum.reverse()
+          |> Enum.find(&(&1.role == :assistant))
+
+        if last, do: IO.puts("\n" <> text_of(last) <> "\n")
 
       :interrupted ->
-        IO.puts("\n[tool calls requested — tool subsystem arrives in phase 2]")
-
-        Enum.each(state.pending_tool_calls, fn call ->
-          IO.puts("  -> #{call.function.name}(#{call.function.arguments})")
-        end)
+        IO.puts("\n[tool calls pending]")
     end
   end
 
@@ -138,4 +208,26 @@ defmodule Mix.Tasks.Agent do
     end)
     |> Enum.join("")
   end
+
+  # Tool calls arrive in two shapes (ReqLLM.ToolCall struct with JSON
+  # arguments, or plain map from stream events) — normalize like the
+  # session's call_parts/1.
+  defp call_info(%ReqLLM.ToolCall{id: id, function: %{name: name, arguments: args}}) do
+    {id, name, decode_args(args)}
+  end
+
+  defp call_info(%{id: id, name: name, arguments: args}) when is_map(args) do
+    {id, name, args}
+  end
+
+  defp call_info(%{id: id, name: name}), do: {id, name, %{}}
+
+  defp decode_args(args) when is_binary(args) do
+    case Jason.decode(args) do
+      {:ok, decoded} -> decoded
+      {:error, _} -> %{}
+    end
+  end
+
+  defp decode_args(args) when is_map(args), do: args
 end
