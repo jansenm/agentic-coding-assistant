@@ -16,10 +16,13 @@ defmodule CodingAgent.Core.Session do
 
   require Logger
 
+  alias CodingAgent.Core.Permissions
   alias CodingAgent.Core.Session.State
   alias ReqLLM.Context
 
   @call_timeout 120_000
+
+  @max_tool_rounds 12
 
   # providers whose requests need no api_key option
   @keyless_providers ["ollama"]
@@ -66,6 +69,25 @@ defmodule CodingAgent.Core.Session do
   def submit_tool_results(id, results),
     do: GenServer.call(via(id), {:tool_results, results}, @call_timeout)
 
+  @doc """
+  Supplies decisions for pending tool calls (ADR 010: approve / edit /
+  reject, one decision per call) and resumes the interrupted turn.
+  """
+  @spec decide(String.t(), [%{id: String.t(), decision: :approve | :reject | {:edit, map()}}]) ::
+          {:ok, State.t()} | {:error, term()}
+  def decide(id, decisions), do: GenServer.call(via(id), {:decide, decisions}, @call_timeout)
+
+  @doc """
+  Feeds tool calls directly into the permission gate, bypassing the
+  LLM. Test-only hook (phase-2 test support); not part of the public
+  driver contract.
+  """
+  @doc since: "0.1.0"
+  @spec debug_gate(String.t(), [map()]) :: :ok | {:error, term()}
+  def debug_gate(id, calls) when is_list(calls) do
+    GenServer.call(via(id), {:debug_gate, calls}, @call_timeout)
+  end
+
   defp via(id), do: {:via, Registry, {CodingAgent.Registry, {:session, id}}}
 
   # -- Server -----------------------------------------------------------------
@@ -76,6 +98,7 @@ defmodule CodingAgent.Core.Session do
     model = Keyword.get(opts, :model) || CodingAgent.model()
     system_prompt = Keyword.get(opts, :system_prompt, @framework_prompt)
     scope_root = Keyword.get(opts, :scope_root)
+    policy = Keyword.get(opts, :policy) || load_policy(scope_root)
 
     context =
       Context.new()
@@ -87,8 +110,29 @@ defmodule CodingAgent.Core.Session do
        context: context,
        model: model,
        status: :idle,
-       scope_root: scope_root
+       scope_root: scope_root,
+       policy: policy
      )}
+  end
+
+  # Policy loading at session start (ADR 010: no live reload). The
+  # repo-side file lives at the scope root; the user-side path comes
+  # from config. Fail-closed is inherited from the Permissions loader.
+  defp load_policy(scope_root) do
+    user_file =
+      case Application.get_env(:coding_agent, :user_policy_file) do
+        nil -> nil
+        p when is_binary(p) -> p
+      end
+
+    repo_file =
+      if scope_root do
+        Path.join(scope_root, "agent-permissions.toml")
+      else
+        "agent-permissions.toml"
+      end
+
+    Permissions.load(user_file, repo_file)
   end
 
   @impl true
@@ -112,6 +156,116 @@ defmodule CodingAgent.Core.Session do
     {state, result} = continue_loop(state)
     {:reply, result, state}
   end
+
+  def handle_call({:debug_gate, calls}, _from, state) do
+    state = %{state | status: :running, tool_rounds: 0, test_mode: true}
+    {state, _result} = gate_tools(state, calls)
+    {:reply, :ok, state}
+  end
+
+  # ADR 010: driver decisions for interrupted (pending) tool calls.
+  # decisions: list of maps %{id: call-id, decision: :approve | {:edit, args} | :reject}
+  # The turn resumes only when every pending call has a decision.
+  def handle_call({:decide, decisions}, _from, %{status: :interrupted} = state) do
+    pending = state.pending_tool_calls
+    by_id = Map.new(decisions, fn d -> {d.id, d.decision} end)
+
+    missing =
+      Enum.reject(pending, fn call ->
+        {id, _, _} = call_parts(call)
+        Map.has_key?(by_id, id)
+      end)
+
+    if missing != [] do
+      {:reply,
+       {:error, {:missing_decisions, Enum.map(missing, fn c -> elem(call_parts(c), 0) end)}},
+       state}
+    else
+      state = resolve_decisions(state, pending, by_id)
+
+      if state.test_mode do
+        # gate-mechanics tests stop here: no LLM round-trip
+        {:reply, {:ok, %{state | status: :idle}}, state}
+      else
+        {state, result} = continue_loop(state)
+        {:reply, result, state}
+      end
+    end
+  end
+
+  def handle_call({:decide, _decisions}, _from, state) do
+    {:reply, {:error, {:not_interrupted, state.status}}, state}
+  end
+
+  # Apply approve/edit/reject to every pending call; build tool-result
+  # messages so the model sees the outcome. Approved/edited calls are
+  # executed immediately; rejected calls get a rejection message.
+  defp resolve_decisions(state, pending, by_id) do
+    {to_run, rejected} =
+      Enum.reduce(pending, {[], []}, fn call, {run, res} ->
+        {id, name, _args} = call_parts(call)
+        decision = Map.fetch!(by_id, id)
+
+        case decision do
+          :approve ->
+            {[call | run], res}
+
+          {:edit, new_args} ->
+            {[edit_call(call, new_args) | run], res}
+
+          :reject ->
+            {run, [%{id: id, name: name, content: "error: the user rejected this action"} | res]}
+        end
+      end)
+
+    to_run = Enum.reverse(to_run)
+
+    executed_results = execute_tools(state, to_run)
+
+    Enum.each(executed_results, fn r ->
+      broadcast(state, {:tool_executed, r.name, r.content})
+    end)
+
+    all_results =
+      Enum.map(rejected ++ executed_results, fn r ->
+        %ReqLLM.Message{
+          role: :tool,
+          name: r.name,
+          tool_call_id: r.id,
+          content: [ReqLLM.Message.ContentPart.text(r.content)]
+        }
+      end)
+
+    # the canonical exchange validates id matching and appends the
+    # assistant tool-call message with every result in order
+    assistant_msg = assistant_message_for(pending)
+    exchange = ReqLLM.Context.append_tool_exchange(state.context, assistant_msg, all_results)
+
+    case exchange do
+      {:ok, context} ->
+        %{state | pending_tool_calls: [], context: context}
+
+      {:error, reason} ->
+        Logger.error("tool exchange failed: #{inspect(reason)}")
+        state
+    end
+  end
+
+  defp assistant_message_for(calls) do
+    tcalls =
+      Enum.map(calls, fn call ->
+        {id, name, _args} = call_parts(call)
+        %ReqLLM.ToolCall{id: id, type: "function", function: %{name: name, arguments: "{}"}}
+      end)
+
+    %ReqLLM.Message{role: :assistant, content: [], tool_calls: tcalls}
+  end
+
+  defp edit_call(%ReqLLM.ToolCall{} = call, new_args) do
+    %{call | function: %{call.function | arguments: Jason.encode!(new_args)}}
+  end
+
+  defp edit_call(%{arguments: _} = call, new_args), do: %{call | arguments: new_args}
 
   @impl true
   def handle_info({:DOWN, monitor, :process, _pid, _reason}, state) do
@@ -142,20 +296,7 @@ defmodule CodingAgent.Core.Session do
         {state, {:ok, state}}
 
       {:ok, %{type: :tool_calls, tool_calls: calls}} ->
-        # Slice 2a: all registered tools are read-only, so the gate is
-        # allow-by-policy and execution is automatic. Slice 2b inserts
-        # the permission checkpoint here for state-changing tools.
-        case execute_tools(state, calls) do
-          {:executed, results, state} ->
-            state = append_tool_results(state, results)
-            broadcast_tools(state, calls, results)
-            continue_loop(state)
-
-          {:stop_on_error, reason} ->
-            Logger.error("tool execution failed: #{inspect(reason)}")
-            state = fail_turn(state, reason)
-            {state, {:error, reason}}
-        end
+        gate_tools(state, calls)
 
       {:error, reason} ->
         Logger.error("LLM call failed: #{inspect(reason)}")
@@ -164,33 +305,141 @@ defmodule CodingAgent.Core.Session do
     end
   end
 
-  @max_tool_rounds 12
-
-  defp execute_tools(state, calls) do
+  # The permission checkpoint (ADR 010): read-only tools pass by policy
+  # (allow class defaults); state-changing tools get the effective
+  # decision. :ask pauses the session (:interrupted) until the driver
+  # supplies decisions for every pending call via decide/3.
+  defp gate_tools(state, calls) do
     if state.tool_rounds >= @max_tool_rounds do
-      {:stop_on_error, {:tool_loop_limit, @max_tool_rounds}}
+      Logger.error("tool loop limit reached: #{@max_tool_rounds}")
+      state = fail_turn(state, {:tool_loop_limit, @max_tool_rounds})
+      {state, {:error, {:tool_loop_limit, @max_tool_rounds}}}
     else
-      tools = current_tools(state)
+      state = %{state | tool_rounds: state.tool_rounds + 1}
 
-      results =
-        Enum.map(calls, fn call ->
+      {auto, pending} =
+        Enum.split_with(calls, fn call ->
           {id, name, args} = call_parts(call)
-          executing = %{id: id, name: name}
 
-          case Enum.find(tools, &(&1.name == name)) do
-            nil ->
-              Map.put(executing, :content, "error: unknown tool #{name}")
+          decision =
+            Permissions.effective(
+              state.policy,
+              tool_name(name),
+              call_rel_path(state, args),
+              "default"
+            )
 
-            tool ->
-              case ReqLLM.Tool.execute(tool, args) do
-                {:ok, output} -> Map.put(executing, :content, to_text(output))
-                {:error, msg} -> Map.put(executing, :content, "error: #{to_text(msg)}")
-              end
-          end
+          decisions_log(state, id, decision)
+          decision == :allow
         end)
 
-      {:executed, results, %{state | tool_rounds: state.tool_rounds + 1}}
+      cond do
+        auto != [] and pending == [] ->
+          run_tools(state, calls)
+
+        auto != [] ->
+          # mixed: execute allowed ones now, park the rest
+          execute_and_continue(state, auto, pending)
+
+        pending != [] ->
+          state = %{
+            state
+            | status: :interrupted,
+              pending_tool_calls: pending
+          }
+
+          broadcast(state, {:status_changed, :interrupted, pending})
+          {state, {:ok, state}}
+
+        true ->
+          # all denied: report rejections to the model instead of executing
+          results = Enum.map(calls, fn call -> denied_result(call) end)
+          state = append_tool_results(state, results)
+          continue_loop(state)
+      end
     end
+  end
+
+  # Auto-executed calls, then continue with the pending ones parked.
+  defp execute_and_continue(state, auto, pending) do
+    auto_results = execute_tools(state, auto)
+    state = %{state | pending_tool_calls: pending, status: :interrupted}
+    state = %{state | context: append_tool_results(state, auto_results).context}
+    broadcast_tools(state, auto, auto_results)
+    broadcast(state, {:status_changed, :interrupted, pending})
+    {state, {:ok, state}}
+  end
+
+  defp run_tools(state, calls) do
+    results = execute_tools(state, calls)
+    state = append_tool_results(state, results)
+    broadcast_tools(state, calls, results)
+    continue_loop(state)
+  end
+
+  defp denied_result(call) do
+    {id, name, _} = call_parts(call)
+
+    %{
+      id: id,
+      name: name,
+      content: "error: permission denied by policy; the user did not approve this action"
+    }
+  end
+
+  defp decisions_log(_state, _id, :allow), do: :ok
+
+  defp decisions_log(state, id, decision) do
+    Logger.info("gate: tool call #{inspect(id)} in session #{state.id} -> #{decision}")
+  end
+
+  defp tool_name(name) when is_binary(name), do: name
+  defp tool_name(other), do: to_string(other)
+
+  # The policy matches against the tool's path argument, relative to the
+  # scope root. The gate consults the call's OWN arguments — this is the
+  # security boundary, so the path always comes from the call itself.
+  defp call_rel_path(state, args) when is_map(args) do
+    path = Map.get(args, "path") || Map.get(args, :path)
+
+    case path do
+      p when is_binary(p) ->
+        root = Path.expand(state.scope_root || File.cwd!())
+        expanded = Path.expand(p, root)
+
+        if String.starts_with?(expanded <> "/", root <> "/") do
+          Path.relative_to(expanded, root)
+        else
+          # absolute path outside scope: policy matches the raw path; the
+          # tool itself will reject execution anyway
+          p
+        end
+
+      _ ->
+        ""
+    end
+  end
+
+  defp call_rel_path(_state, _args), do: ""
+
+  defp execute_tools(state, calls) do
+    tools = current_tools(state)
+
+    Enum.map(calls, fn call ->
+      {id, name, args} = call_parts(call)
+      executing = %{id: id, name: name}
+
+      case Enum.find(tools, &(&1.name == name)) do
+        nil ->
+          Map.put(executing, :content, "error: unknown tool #{name}")
+
+        tool ->
+          case ReqLLM.Tool.execute(tool, args) do
+            {:ok, output} -> Map.put(executing, :content, to_text(output))
+            {:error, msg} -> Map.put(executing, :content, "error: #{to_text(msg)}")
+          end
+      end
+    end)
   end
 
   # Tool calls arrive in two shapes: as ReqLLM.ToolCall structs
@@ -225,7 +474,7 @@ defmodule CodingAgent.Core.Session do
   end
 
   defp current_tools(state) do
-    CodingAgent.Core.Tools.read_only(tool_scope(state))
+    CodingAgent.Core.Tools.all(tool_scope(state))
   end
 
   defp tool_scope(state) do

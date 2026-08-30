@@ -15,6 +15,7 @@ defmodule CodingAgent.Core.Tools do
 
   alias CodingAgent.Core.Tools.ListDir
   alias CodingAgent.Core.Tools.ReadFile
+  alias CodingAgent.Core.Tools.WriteFile
 
   @type scope :: %{
           required(:root) => String.t()
@@ -32,6 +33,19 @@ defmodule CodingAgent.Core.Tools do
     scope = scope || default_scope()
     [ListDir.tool(scope), ReadFile.tool(scope)]
   end
+
+  @doc """
+  State-changing tools; always executed behind the permission gate.
+  """
+  @spec gated(scope() | nil) :: [ReqLLM.Tool.t()]
+  def gated(scope \\ nil) do
+    scope = scope || default_scope()
+    [WriteFile.tool(scope)]
+  end
+
+  @doc "All tools a session carries (read-only + gated)."
+  @spec all(scope() | nil) :: [ReqLLM.Tool.t()]
+  def all(scope \\ nil), do: read_only(scope) ++ gated(scope)
 
   @doc """
   Default scope: the process working directory.

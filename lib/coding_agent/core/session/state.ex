@@ -12,9 +12,11 @@ defmodule CodingAgent.Core.Session.State do
     :status,
     :last_error,
     :scope_root,
+    :policy,
     pending_tool_calls: [],
     subscribers: [],
-    tool_rounds: 0
+    tool_rounds: 0,
+    test_mode: false
   ]
 
   @type status :: :idle | :running | :interrupted | :error
@@ -26,9 +28,11 @@ defmodule CodingAgent.Core.Session.State do
           status: status(),
           last_error: term() | nil,
           scope_root: String.t() | nil,
+          policy: CodingAgent.Core.Permissions.t() | nil,
           pending_tool_calls: [map()],
           subscribers: [reference()],
-          tool_rounds: non_neg_integer()
+          tool_rounds: non_neg_integer(),
+          test_mode: boolean()
         }
 
   @doc "Builds a new session state."
