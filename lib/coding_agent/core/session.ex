@@ -75,12 +75,20 @@ defmodule CodingAgent.Core.Session do
     id = Keyword.fetch!(opts, :id)
     model = Keyword.get(opts, :model) || CodingAgent.model()
     system_prompt = Keyword.get(opts, :system_prompt, @framework_prompt)
+    scope_root = Keyword.get(opts, :scope_root)
 
     context =
       Context.new()
       |> Context.append(ReqLLM.Context.system(system_prompt))
 
-    {:ok, State.new(id: id, context: context, model: model, status: :idle)}
+    {:ok,
+     State.new(
+       id: id,
+       context: context,
+       model: model,
+       status: :idle,
+       scope_root: scope_root
+     )}
   end
 
   @impl true
@@ -134,9 +142,20 @@ defmodule CodingAgent.Core.Session do
         {state, {:ok, state}}
 
       {:ok, %{type: :tool_calls, tool_calls: calls}} ->
-        state = %{state | status: :interrupted, pending_tool_calls: calls}
-        broadcast(state, {:status_changed, :interrupted, calls})
-        {state, {:ok, state}}
+        # Slice 2a: all registered tools are read-only, so the gate is
+        # allow-by-policy and execution is automatic. Slice 2b inserts
+        # the permission checkpoint here for state-changing tools.
+        case execute_tools(state, calls) do
+          {:executed, results, state} ->
+            state = append_tool_results(state, results)
+            broadcast_tools(state, calls, results)
+            continue_loop(state)
+
+          {:stop_on_error, reason} ->
+            Logger.error("tool execution failed: #{inspect(reason)}")
+            state = fail_turn(state, reason)
+            {state, {:error, reason}}
+        end
 
       {:error, reason} ->
         Logger.error("LLM call failed: #{inspect(reason)}")
@@ -144,6 +163,68 @@ defmodule CodingAgent.Core.Session do
         {state, {:error, reason}}
     end
   end
+
+  @max_tool_rounds 12
+
+  defp execute_tools(state, calls) do
+    if state.tool_rounds >= @max_tool_rounds do
+      {:stop_on_error, {:tool_loop_limit, @max_tool_rounds}}
+    else
+      tools = current_tools(state)
+
+      results =
+        Enum.map(calls, fn call ->
+          args = decode_arguments(call)
+          executing = %{id: call.id, name: call.function.name}
+
+          case Enum.find(tools, &(&1.name == executing.name)) do
+            nil ->
+              Map.put(executing, :content, "error: unknown tool #{executing.name}")
+
+            tool ->
+              case ReqLLM.Tool.execute(tool, args) do
+                {:ok, output} -> Map.put(executing, :content, to_text(output))
+                {:error, msg} -> Map.put(executing, :content, "error: #{to_text(msg)}")
+              end
+          end
+        end)
+
+      {:executed, results, %{state | tool_rounds: state.tool_rounds + 1}}
+    end
+  end
+
+  defp broadcast_tools(state, calls, results) do
+    by_id = Map.new(results, &{&1.id, &1.content})
+
+    Enum.each(calls, fn call ->
+      content = Map.get(by_id, call.id, "")
+      broadcast(state, {:tool_executed, call.function.name, content})
+    end)
+  end
+
+  defp current_tools(state) do
+    CodingAgent.Core.Tools.read_only(tool_scope(state))
+  end
+
+  defp tool_scope(state) do
+    root = state.scope_root || File.cwd!()
+    %{root: root}
+  end
+
+  defp decode_arguments(%ReqLLM.ToolCall{function: %{arguments: args}}) when is_binary(args) do
+    case Jason.decode(args) do
+      {:ok, decoded} -> decoded
+      {:error, _} -> %{}
+    end
+  end
+
+  defp decode_arguments(%ReqLLM.ToolCall{function: %{arguments: args}}) when is_map(args),
+    do: args
+
+  defp decode_arguments(_), do: %{}
+
+  defp to_text(output) when is_binary(output), do: output
+  defp to_text(output), do: inspect(output, pretty: true, limit: 100)
 
   defp call_llm(state) do
     with {:ok, opts} <- request_opts(state),
