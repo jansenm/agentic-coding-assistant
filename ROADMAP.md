@@ -33,6 +33,30 @@ the readable stack overview lives in
    tool-call *detection*. Model config, error paths.
 2. **Tool subsystem** — scope-aware file tools and shell execution with
    a permission gate (HITL: pause, approve/edit/reject, resume).
+
+   Slices, each ending in something runnable:
+
+   - **2a. Read-only tools** — tool spec as plain data (name, params,
+     scope, callback) in a registry; `list_dir` + `read_file` scoped to
+     the session working directory with path-escape checks; loop wiring
+     (model requests tool → executed → result appended → loop
+     continues). *Runnable:* the agent answers "how many .ex files are
+     in lib and how big are they?" using real tool calls. Read-only
+     tools need no gate (allow-by-policy for read-only — one recorded
+     paragraph in ADR 010).
+   - **2b. Permission gate** — *includes* designing the format(s) tools
+     and permissions are defined in; precedent: this phase introduces
+     exactly one file format and its loader (see below). Permission
+     table as data `(tool, path-pattern) → :allow | :ask | :deny`,
+     loaded from application config + a project-level file; HITL pause
+     on `:ask` with the UI-agnostic decision API
+     (`:approve | :edit(args) | :reject`). *Runnable:* `write_file`
+     demoed twice — auto-allowed by pattern, paused for approval when
+     not matched.
+   - **2c. Shell execution** — the dangerous one, last; command
+     allow-list vs. always-ask is an ADR 010 decision. Output capture,
+     timeout, working-directory scoping. *Runnable:* the agent runs the
+     test suite and summarizes failures.
 3. **Sessions & memory** — persistence, resume, compaction of the
    working context, dual view (LLM history vs. display transcript).
 4. **Terminal experience** — transcript pane, input line (ADR 006),
@@ -52,3 +76,5 @@ the readable stack overview lives in
   constraint records keep revisiting cheap.
 - Documentation lives in `docs/` (Diátaxis structure, ADR log of every
   decision); how to build them: `docs/source/howtos/build-docs.rst`.
+- Phases are broken into slices with a *runnable* acceptance demo; a
+  slice is done when it can be demonstrated, not when it is designed.
