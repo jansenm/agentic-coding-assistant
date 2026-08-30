@@ -115,6 +115,13 @@ Not planned, not forgotten — recorded so re-evaluation is cheap:
 | `skill` | ADR 007 territory | frontmatter loading documented in configuration-landscape; execution later |
 | `todowrite` | one day | session scratchpad, pure state, cheap — after dogfood |
 | `question` | **needs an ADR** | model-invoked stop-and-ask vs. harness-side gate; a loop concern, not a tool — do not hack it into the gate |
+| code-intelligence queries (`outline` / `symbols` / `source-by-symbol` / `callers` / `check`) | one day | the "structural sight" idea (cf. grove + `is-grep-enough` benchmark, CGA): returns *answers*, never raw AST (AST as implementation detail only). For Elixir via `Code.string_to_quoted` + `Code.Typespec` + compile tracer — semantic-grade where tree-sitter tools (grove) are name-based only, and Elixir is missing from grove's 27 languages. Evidence says grep wins on simple lookups; structural pays off on trace/architecture tasks (2-3x fewer tokens). **Benchmark context quality first** (tokens, grounding, completeness), CGA/is-grep-enough style, before building the tier. `check` (post-edit syntax gate) folds naturally into 2e `edit`. LSP only if rename-references are ever demanded; an MCP *server* exporting these queries is the phase-7 interoperability edition |
+
+Beyond tools — the trajectory after dogfooding, roughly:
+
+1. **Get it running for dogfooding** (milestone above).
+2. **Optimize it for dogfooding** — the loop learns this repo's workflow (compaction, the delegate-locator idea: a cheap local model hunts files in its own context and returns location lines only, grove-explore-style; audit traces like grove's `tap`).
+3. **Then the owner's actual domain**: Java / Maven / Jenkins workspace motivation — multi-repo matrix (ADR 007), Maven POM comprehension, Jenkinsfile/Groovy tooling. All future; nothing here should block slices 2c-2e.
 
 The structural difference to record when touching ADR 010 next:
 opencode-style agents fail *open* on symlink escapes (their `read`
