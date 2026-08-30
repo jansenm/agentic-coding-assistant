@@ -11,7 +11,9 @@ defmodule CodingAgent.Application do
   @impl true
   def start(_type, _args) do
     children = [
-      {Registry, keys: :unique, name: CodingAgent.Registry}
+      {Registry, keys: :unique, name: CodingAgent.Registry},
+      {Registry, keys: :duplicate, name: CodingAgent.EventRegistry, partitions: System.schedulers_online()},
+      CodingAgent.Core.Session.Supervisor
     ]
 
     Supervisor.start_link(children, strategy: :one_for_one, name: CodingAgent.Supervisor)

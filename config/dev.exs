@@ -1,6 +1,5 @@
 import Config
 
-# The API key is read from the environment at runtime (ADR 008);
-# never committed. dotenvy loads a local .env in development.
-
-config :coding_agent, api_key_env: "ANTHROPIC_API_KEY"
+# Development overrides. The API key always comes from the environment
+# (or a local .env file, which dotenvy/ReqLLM load at startup) — see
+# ADR 008. Nothing secret belongs in this file.

@@ -1,3 +1,3 @@
 import Config
 
-config :coding_agent, api_key_env: "ANTHROPIC_API_KEY"
+# Tests never call a live provider; the api_key_env name is arbitrary.
