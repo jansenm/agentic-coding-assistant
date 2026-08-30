@@ -56,5 +56,22 @@ defmodule CodingAgent.Core.SessionTest do
       assert state.id == id
       assert [%ReqLLM.Message{role: :system}] = ReqLLM.Context.to_list(state.context)
     end
+
+    test "model defaults to application config when not given" do
+      id = "test-#{System.unique_integer()}"
+      start_supervised!({Session, id: id})
+
+      assert {:ok, %State{} = state} = Session.state(id)
+      assert state.model == CodingAgent.model()
+    end
+
+    test "subscribed process receives status events (self-included)" do
+      # subscribing from the test process must not register the test in
+      # the event registry more than once, and DOWN cleanup must not crash
+      id = "test-#{System.unique_integer()}"
+      start_supervised!({Session, id: id, model: "anthropic:claude-haiku-4-5"})
+      assert :ok = Session.subscribe(id)
+      assert {:ok, %State{}} = Session.state(id)
+    end
   end
 end

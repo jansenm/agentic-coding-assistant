@@ -15,24 +15,75 @@ defmodule Mix.Tasks.Agent do
   def run(args) do
     Mix.Task.run("app.start", [])
 
-    case args do
-      [prompt] ->
-        id = "cli-#{System.unique_integer([:positive])}"
-        {:ok, _pid} = CodingAgent.Core.Session.Supervisor.start_session(id: id)
-        CodingAgent.Core.Session.subscribe(id)
+    {opts, args} =
+      OptionParser.parse!(args, strict: [chat: :boolean], aliases: [c: :chat])
 
-        # Streamed deltas already arrive in this process' mailbox while
-        # run/2 blocks; drain them after the turn completes (the deltas
-        # were printed by whoever consumed them — mixing drain and stream
-        # display is the UI's job in phase 4; here we print the final text).
-        result = CodingAgent.Core.Session.run(id, prompt)
-        flush_deltas()
-        print_result(result)
-
-      _ ->
-        Mix.raise("usage: mix agent \"prompt\"")
+    case {opts[:chat], args} do
+      {true, []} -> chat_loop()
+      {true, _} -> Mix.raise("usage: mix agent --chat (no prompt arguments)")
+      {false, [prompt]} -> one_shot(prompt)
+      {false, []} -> Mix.raise("usage: mix agent \"prompt\" | mix agent --chat")
     end
   end
+
+  defp one_shot(prompt) do
+    id = session_id()
+    {:ok, _pid} = CodingAgent.Core.Session.Supervisor.start_session(id: id)
+    CodingAgent.Core.Session.subscribe(id)
+
+    # Streamed deltas already arrive in this process' mailbox while
+    # run/2 blocks; drain them after the turn completes (the deltas
+    # were printed by whoever consumed them — mixing drain and stream
+    # display is the UI's job in phase 4; here we print the final text).
+    result = CodingAgent.Core.Session.run(id, prompt)
+    flush_deltas()
+    print_result(result)
+  end
+
+  defp chat_loop do
+    id = session_id()
+    {:ok, _pid} = CodingAgent.Core.Session.Supervisor.start_session(id: id)
+    CodingAgent.Core.Session.subscribe(id)
+
+    IO.puts("Interactive session #{id} — empty line or Ctrl-D to exit.\n")
+
+    loop(id)
+  end
+
+  defp loop(id) do
+    case IO.gets(prompt_string()) do
+      :eof ->
+        IO.puts("")
+        :ok
+
+      {:error, _} ->
+        IO.puts("")
+        :ok
+
+      line ->
+        case String.trim(line) do
+          "" ->
+            IO.puts("")
+            :ok
+
+          trimmed ->
+            case CodingAgent.Core.Session.run(id, trimmed) do
+              {:ok, state} ->
+                flush_deltas()
+                print_result({:ok, state})
+                loop(id)
+
+              {:error, reason} ->
+                print_error(reason)
+                loop(id)
+            end
+        end
+    end
+  end
+
+  defp session_id, do: "cli-#{System.unique_integer([:positive])}"
+
+  defp prompt_string, do: IO.ANSI.faint() <> "> " <> IO.ANSI.reset()
 
   defp flush_deltas do
     receive do
@@ -59,13 +110,20 @@ defmodule Mix.Tasks.Agent do
   end
 
   defp print_result({:error, {:missing_api_key, env_var}}) do
+    print_error({:missing_api_key, env_var})
+  end
+
+  defp print_result({:error, reason}) do
+    print_error(reason)
+  end
+
+  defp print_error({:missing_api_key, env_var}) do
     IO.puts("No API key configured. Set #{env_var} (env var or .env file).")
     exit({:shutdown, 1})
   end
 
-  defp print_result({:error, reason}) do
+  defp print_error(reason) do
     IO.puts("[error] #{inspect(reason)}")
-    exit({:shutdown, 1})
   end
 
   defp text_of(%ReqLLM.Message{content: content}) when is_binary(content), do: content
