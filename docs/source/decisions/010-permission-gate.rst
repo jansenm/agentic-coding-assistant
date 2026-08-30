@@ -5,9 +5,15 @@ Permission gate and policy file format
 
 .. adr::
    :id: 010
-   :status: Proposed
+   :status: Accepted
    :date: 2026-08-30
    :tags: security, permissions, tools
+
+.. note::
+   Accepted 2026-08-30 after the slice-2b acceptance demo: the same
+   ``write_file`` call took allow and ask paths driven only by editing
+   ``agent-permissions.toml`` (with a session restart — policy pins at
+   start). Demo: ``demo/acceptance_2b.exs``.
 
 Context
 -------

@@ -31,41 +31,22 @@ the readable stack overview lives in
 1. **Core single-agent loop** ✅ — session process, streaming turns,
    multi-turn chat (`mix agent` / `mix agent --chat`), ollama provider,
    tool-call *detection*. Model config, error paths.
-2. **Tool subsystem** — scope-aware file tools and shell execution with
-   a permission gate (HITL: pause, approve/edit/reject, resume).
+2. **Tool subsystem** ✅ — scope-aware file tools and shell execution
+   with a permission gate (HITL: pause, approve/edit/reject, resume).
 
-   Slices, each ending in something runnable:
+   Slices:
 
-   - **2a. Read-only tools** — tool spec as plain data (name, params,
-     scope, callback) in a registry; `list_dir` + `read_file` scoped to
-     the session working directory with path-escape checks; loop wiring
-     (model requests tool → executed → result appended → loop
-     continues). *Runnable:* the agent answers "how many .ex files are
-     in lib and how big are they?" using real tool calls. Read-only
-     tools need no gate (allow-by-policy for read-only — one recorded
-     paragraph in ADR 010).
-   - **2b. Permission gate** — *includes* designing the format(s) tools
-     and permissions are defined in; precedent: this phase introduces
-     exactly one file format and its loader (see below). Permission
-     table as data `(tool, path-pattern) → :allow | :ask | :deny`,
-     loaded from application config + a project-level file; HITL pause
-     on `:ask` with the UI-agnostic decision API
-     (`:approve | :edit(args) | :reject`). Format choices (TOML vs.
-     alternatives, load order, elevation limits, file naming vs.
-     AGENTS.md confusion) are decided in ADR 010 at slice start.
-     AGENTS.md stays the standard instruction layer and is consumed
-     as-is (no competing prose format); it steers behavior *within*
-     policy limits but can never change them (non-elevation applies to
-     prompts too). Agent definitions ride in the same structured
-     format later (ADR 007); 2b ships only tool enablement + the
-     permission table.
-     *Runnable:* `write_file` demoed twice — auto-allowed by pattern,
-     paused for approval when not matched — and the difference is
-     driven by editing the permission file, not by recompiling.
-   - **2c. Shell execution** — the dangerous one, last; command
-     allow-list vs. always-ask is an ADR 010 decision. Output capture,
-     timeout, working-directory scoping. *Runnable:* the agent runs the
-     test suite and summarizes failures.
+   - **2a. Read-only tools** ✅ — registry, `list_dir` + `read_file`
+     with path-escape checks, full ReAct loop (verified live: correct
+     recursive file count).
+   - **2b. Permission gate** ✅ — `agent-permissions.toml`
+     (restrictive-wins layered merge, fail-closed), gate checkpoint with
+     `:allow | :ask | :deny`, `decide/3` API (`:approve | :edit |
+     :reject`), `write_file` behind the gate, stdin approval stub.
+     Acceptance demo passed → ADR 010 Accepted.
+   - **2c. Shell execution** — command semantics per ADR 010 (always-
+     ask in v1). Output capture, timeout, working-directory scoping.
+     *Runnable:* the agent runs the test suite and summarizes failures.
 3. **Sessions & memory** — persistence, resume, compaction of the
    working context, dual view (LLM history vs. display transcript).
 4. **Terminal experience** — transcript pane, input line (ADR 006),
