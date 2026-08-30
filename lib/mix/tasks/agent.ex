@@ -18,7 +18,9 @@ defmodule Mix.Tasks.Agent do
     {opts, args} =
       OptionParser.parse!(args, strict: [chat: :boolean], aliases: [c: :chat])
 
-    case {opts[:chat], args} do
+    chat? = opts[:chat] == true
+
+    case {chat?, args} do
       {true, []} -> chat_loop()
       {true, _} -> Mix.raise("usage: mix agent --chat (no prompt arguments)")
       {false, [prompt]} -> one_shot(prompt)

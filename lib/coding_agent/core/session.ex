@@ -174,12 +174,12 @@ defmodule CodingAgent.Core.Session do
 
       results =
         Enum.map(calls, fn call ->
-          args = decode_arguments(call)
-          executing = %{id: call.id, name: call.function.name}
+          {id, name, args} = call_parts(call)
+          executing = %{id: id, name: name}
 
-          case Enum.find(tools, &(&1.name == executing.name)) do
+          case Enum.find(tools, &(&1.name == name)) do
             nil ->
-              Map.put(executing, :content, "error: unknown tool #{executing.name}")
+              Map.put(executing, :content, "error: unknown tool #{name}")
 
             tool ->
               case ReqLLM.Tool.execute(tool, args) do
@@ -193,12 +193,34 @@ defmodule CodingAgent.Core.Session do
     end
   end
 
+  # Tool calls arrive in two shapes: as ReqLLM.ToolCall structs
+  # (function: %{name, arguments}) or as plain maps from stream events
+  # (name/arguments at top level).
+  defp call_parts(%ReqLLM.ToolCall{id: id, function: %{name: name, arguments: args}}),
+    do: {id, name, ensure_args(args)}
+
+  defp call_parts(%{id: id, name: name, arguments: args}) when is_map(args),
+    do: {id, name, args}
+
+  defp call_parts(%{id: id, name: name}), do: {id, name, %{}}
+
+  defp ensure_args(args) when is_binary(args) do
+    case Jason.decode(args) do
+      {:ok, decoded} -> decoded
+      {:error, _} -> %{}
+    end
+  end
+
+  defp ensure_args(args) when is_map(args), do: args
+  defp ensure_args(_), do: %{}
+
   defp broadcast_tools(state, calls, results) do
     by_id = Map.new(results, &{&1.id, &1.content})
 
     Enum.each(calls, fn call ->
-      content = Map.get(by_id, call.id, "")
-      broadcast(state, {:tool_executed, call.function.name, content})
+      {id, name, _args} = call_parts(call)
+      content = Map.get(by_id, id, "")
+      broadcast(state, {:tool_executed, name, content})
     end)
   end
 
@@ -211,27 +233,18 @@ defmodule CodingAgent.Core.Session do
     %{root: root}
   end
 
-  defp decode_arguments(%ReqLLM.ToolCall{function: %{arguments: args}}) when is_binary(args) do
-    case Jason.decode(args) do
-      {:ok, decoded} -> decoded
-      {:error, _} -> %{}
-    end
-  end
-
-  defp decode_arguments(%ReqLLM.ToolCall{function: %{arguments: args}}) when is_map(args),
-    do: args
-
-  defp decode_arguments(_), do: %{}
-
   defp to_text(output) when is_binary(output), do: output
   defp to_text(output), do: inspect(output, pretty: true, limit: 100)
 
   defp call_llm(state) do
-    with {:ok, opts} <- request_opts(state),
-         {:ok, stream_response} <- ReqLLM.stream_text(state.model, state.context, opts) do
-      events = ReqLLM.StreamResponse.events(stream_response)
-      {text, tool_calls} = consume_stream(events, state.id)
-      {:ok, %{type: classify(tool_calls), text: text, tool_calls: tool_calls}}
+    with {:ok, base_opts} <- request_opts(state) do
+      opts = Keyword.put(base_opts, :tools, current_tools(state))
+
+      with {:ok, stream_response} <- ReqLLM.stream_text(state.model, state.context, opts) do
+        events = ReqLLM.StreamResponse.events(stream_response)
+        {text, tool_calls} = consume_stream(events, state.id)
+        {:ok, %{type: classify(tool_calls), text: text, tool_calls: tool_calls}}
+      end
     end
   end
 
