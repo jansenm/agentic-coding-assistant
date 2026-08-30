@@ -1,26 +1,32 @@
 -include Makefile.local
 
-VIRTUALENV    ?= .venv
-PYTHON        ?= python3
+PYTHON		    ?= python3
 
-# Minimal makefile for Sphinx documentation
-#
+SPHINXOPTS      ?=
+SPHINXPYTHON    ?= $(VIRTUALENV)/bin/python3
+SPHINXBUILD     ?= $(VIRTUALENV)/bin/sphinx-build
+SPHINXAUTOBUILD ?= $(VIRTUALENV)/bin/sphinx-autobuild
 
+VIRTUALENV      ?= .venv
 
-# You can set these variables from the command line, and also
-# from the environment for the first two.
-SPHINXOPTS    ?=
-SPHINXBUILD   ?= sphinx-build
-SPHINXAUTOBUILD ?= sphinx-autobuild
-SOURCEDIR     = source
-BUILDDIR      = build
-
-.venv:
-	$(PYTHON) -m venv $(VIRTUALENV)
+SOURCEDIR       := source
+BUILDDIR        := build
 
 # Put it first so that "make" without argument is like "make help".
 help:
 	@$(SPHINXBUILD) -M help "$(SOURCEDIR)" "$(BUILDDIR)" $(SPHINXOPTS) $(O)
+
+Makefile.local:
+	cp Makefile.local.template Makefile.local
+
+
+$(SPHINXPYTHON):
+	@echo "$(VIRTUALENV): setting up the virtual environment"
+	$(PYTHON) -m venv $(VIRTUALENV)
+
+$(SPHINXBUILD)::
+	@echo "$(VIRTUALENV): installing dependencies"
+	$(SPHINXPYTHON) -m pip install -r requirements.txt
 
 .PHONY: help Makefile livehtml
 
@@ -30,5 +36,5 @@ livehtml:
 
 # Catch-all target: route all unknown targets to Sphinx using the new
 # "make mode" option.  $(O) is meant as a shortcut for $(SPHINXOPTS).
-%: Makefile
+%: $(SPHINXBUILD) Makefile
 	@$(SPHINXBUILD) -M $@ "$(SOURCEDIR)" "$(BUILDDIR)" $(SPHINXOPTS) $(O)
