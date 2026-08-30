@@ -50,9 +50,13 @@ the readable stack overview lives in
      table as data `(tool, path-pattern) → :allow | :ask | :deny`,
      loaded from application config + a project-level file; HITL pause
      on `:ask` with the UI-agnostic decision API
-     (`:approve | :edit(args) | :reject`). *Runnable:* `write_file`
-     demoed twice — auto-allowed by pattern, paused for approval when
-     not matched.
+     (`:approve | :edit(args) | :reject`). Format choices (TOML vs.
+     alternatives, load order, elevation limits) are decided in ADR 010
+     at slice start. Agent definitions ride in the same format later
+     (ADR 007); 2b ships only tool enablement + the permission table.
+     *Runnable:* `write_file` demoed twice — auto-allowed by pattern,
+     paused for approval when not matched — and the difference is
+     driven by editing the permission file, not by recompiling.
    - **2c. Shell execution** — the dangerous one, last; command
      allow-list vs. always-ask is an ADR 010 decision. Output capture,
      timeout, working-directory scoping. *Runnable:* the agent runs the
