@@ -28,8 +28,9 @@ the readable stack overview lives in
 
 ## Phases
 
-1. **Core single-agent loop** — session process, one turn end-to-end:
-   prompt → LLM → answer in the terminal. Model config, basic errors.
+1. **Core single-agent loop** ✅ — session process, streaming turns,
+   multi-turn chat (`mix agent` / `mix agent --chat`), ollama provider,
+   tool-call *detection*. Model config, error paths.
 2. **Tool subsystem** — scope-aware file tools and shell execution with
    a permission gate (HITL: pause, approve/edit/reject, resume).
 3. **Sessions & memory** — persistence, resume, compaction of the
