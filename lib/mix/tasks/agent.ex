@@ -39,7 +39,37 @@ defmodule Mix.Tasks.Agent do
     # display is the UI's job in phase 4; here we print the final text).
     result = CodingAgent.Core.Session.run(id, prompt)
     flush_deltas()
-    print_result(result)
+
+    # an interrupted turn (permission gate) continues through the
+    # approval loop until the turn completes
+    case result do
+      {:ok, %{status: :interrupted} = state} ->
+        drive_turn(id, state)
+
+      other ->
+        print_result(other)
+    end
+  end
+
+  # Resolve approvals and keep following the turn until it reaches a
+  # final state (idle or error). After each decide/3 the answer text
+  # (or the next interruption) is handled the same way.
+  defp drive_turn(id, %{status: :interrupted} = state) do
+    decisions = ask_decisions(state.pending_tool_calls)
+
+    case CodingAgent.Core.Session.decide(id, decisions) do
+      {:ok, state2} -> continue_after_decide(id, state2)
+      {:error, reason} -> print_error(reason)
+    end
+  end
+
+  defp continue_after_decide(id, %{status: :interrupted} = state) do
+    drive_turn(id, state)
+  end
+
+  defp continue_after_decide(_id, state) do
+    flush_deltas()
+    print_result({:ok, state})
   end
 
   defp chat_loop do
