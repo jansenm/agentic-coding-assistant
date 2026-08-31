@@ -57,7 +57,7 @@ skills execution, todowrite, question — see "Later".
 1. **Core single-agent loop** ✅ — session process, streaming turns,
    multi-turn chat (`mix agent` / `mix agent --chat`), ollama provider,
    tool-call *detection*. Model config, error paths.
-2. **Tool subsystem** — scope-aware file tools and shell execution
+2. **Tool subsystem** ✅ — scope-aware file tools and shell execution
    with a permission gate (HITL: pause, approve/edit/reject, resume).
 
    Slices:
@@ -95,9 +95,14 @@ skills execution, todowrite, question — see "Later".
      segments, braces, per-segment `*`/`?` — cap 500. Live-verified:
      the agent greps `in_scope?` usage and counts 14 matches across 6
      files, exact.
-   - **2e. edit** — targeted string replacement (fail-closed on
-     non-unique match), gated like `write_file`. Ends the era of
-     whole-file rewrites for small changes.
+   - **2e. edit** ✅ — targeted string replacement (fail-closed:
+     refuses on 0 or 2+ matches with re-read/widen guidance), gated
+     like `write_file`; empty old_string creates a file. Ends the era
+     of whole-file rewrites for small changes. *Runnable:*
+     `mix run demo/acceptance_2e.exs` (ambiguous -> refused; gate
+     :edit widens the span -> applied; reject -> untouched).
+     Live-verified: the model reads + edits its own file, gate asks,
+     result confirmed.
 3. **Dogfood milestone** — develop this repository inside the tool
    (see *Goal: dogfooding* above). Exercises model reliability and
    context management on our own workflow.

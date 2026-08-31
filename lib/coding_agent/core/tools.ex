@@ -18,6 +18,7 @@ defmodule CodingAgent.Core.Tools do
   `Containment.walk/3`. Do not hand-roll walks on `in_scope?/2`.
   """
 
+  alias CodingAgent.Core.Tools.Edit
   alias CodingAgent.Core.Tools.Glob
   alias CodingAgent.Core.Tools.Grep
   alias CodingAgent.Core.Tools.ListDir
@@ -53,7 +54,7 @@ defmodule CodingAgent.Core.Tools do
   @spec gated(scope() | nil) :: [ReqLLM.Tool.t()]
   def gated(scope \\ nil) do
     scope = scope || default_scope()
-    [WriteFile.tool(scope), Shell.tool(scope)]
+    [WriteFile.tool(scope), Edit.tool(scope), Shell.tool(scope)]
   end
 
   @doc "All tools a session carries (read-only + gated)."

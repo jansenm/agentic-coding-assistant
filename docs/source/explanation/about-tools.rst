@@ -89,6 +89,18 @@ walk, 1 MiB per file, 500-char lines. Binary files are skipped by a
 NUL-byte sniff; hidden dirs, ``_build``, ``deps`` and ``.git`` are
 never walked (never useful, always wasteful).
 
+Editing: targeted replacement (slice 2e)
+-----------------------------------------
+
+``edit`` replaces an exact string: ``old_string`` must occur *exactly
+once*, else the tool refuses — a stale match ("not found") and an
+ambiguous match ("2 matches — include more surrounding text") are both
+errors the model resolves by re-reading and widening. This fail-closed
+posture is why it is safe to approve quickly: the tool cannot guess.
+
+The empty ``old_string`` create-path (write a new file) is the one
+sanctioned creation; on an existing file the same call refuses.
+
 Shell execution (slice 2c)
 --------------------------
 
