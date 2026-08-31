@@ -75,7 +75,11 @@ skills execution, todowrite, question — see "Later".
      truncation — *tail* is what matters for test output), exit code,
      timeout: model-supplied `timeout_secs` per call (default 300s,
      hard cap 1800s — must fit a 12-min Java integration suite; kill
-     on expiry and return captured output + timeout note), cwd pinned
+     on expiry and return captured output + timeout note). Soft cap at
+     the 300s default: above it the approval prompt shows the requested
+     timeout prominently so the user can edit it via the gate's
+     `:edit` decision; when shell allow-rules arrive later, soft-cap
+     excess forces `:ask` even for allow-listed commands. Cwd pinned
      to scope root, no path containment in v1 (that's *why* it is
      always-ask).
      *Runnable:* the agent runs the test suite and summarizes failures.
