@@ -73,8 +73,11 @@ skills execution, todowrite, question — see "Later".
    - **2c. Shell execution** — command semantics per ADR 010 (always-
      ask in v1). Output capture (stdout+stderr, head+tail keep on
      truncation — *tail* is what matters for test output), exit code,
-     timeout (model-supplied, hard-capped by us), cwd pinned to scope
-     root, no path containment in v1 (that's *why* it is always-ask).
+     timeout: model-supplied `timeout_secs` per call (default 300s,
+     hard cap 1800s — must fit a 12-min Java integration suite; kill
+     on expiry and return captured output + timeout note), cwd pinned
+     to scope root, no path containment in v1 (that's *why* it is
+     always-ask).
      *Runnable:* the agent runs the test suite and summarizes failures.
    - **2d. grep + glob** — read-only tools, slot into existing
      containment (`read_only/1` + `in_scope?/2`), line-numbered
@@ -114,6 +117,7 @@ Not planned, not forgotten — recorded so re-evaluation is cheap:
 | `lsp` | unlikely | language-server surface is huge; compile/test loop covers most agent needs |
 | `skill` | ADR 007 territory | frontmatter loading documented in configuration-landscape; execution later |
 | `todowrite` | one day | session scratchpad, pure state, cheap — after dogfood |
+| background shell runs | one day | the real escape hatch for very long jobs: tool returns "started, job id", agent polls / gets notified, user keeps working; needs session+TUI machinery (phases 3-4) — v1 answer is generous `timeout_secs` |
 | `question` | **needs an ADR** | model-invoked stop-and-ask vs. harness-side gate; a loop concern, not a tool — do not hack it into the gate |
 | code-intelligence queries (`outline` / `symbols` / `source-by-symbol` / `callers` / `check`) | one day | the "structural sight" idea (cf. grove + `is-grep-enough` benchmark, CGA): returns *answers*, never raw AST (AST as implementation detail only). For Elixir via `Code.string_to_quoted` + `Code.Typespec` + compile tracer — semantic-grade where tree-sitter tools (grove) are name-based only, and Elixir is missing from grove's 27 languages. Evidence says grep wins on simple lookups; structural pays off on trace/architecture tasks (2-3x fewer tokens). **Benchmark context quality first** (tokens, grounding, completeness), CGA/is-grep-enough style, before building the tier. `check` (post-edit syntax gate) folds naturally into 2e `edit`. LSP only if rename-references are ever demanded; an MCP *server* exporting these queries is the phase-7 interoperability edition |
 
