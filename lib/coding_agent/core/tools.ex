@@ -11,6 +11,11 @@ defmodule CodingAgent.Core.Tools do
   Tools are plain `ReqLLM.Tool` structs (req_llm streams, validates and
   schema-encodes them); this module only owns their construction and
   the read-only policy boundary.
+
+  Containment discipline (paths *and* directory walks) lives in
+  `CodingAgent.Core.Containment`: single paths use
+  `Containment.path_allowed?/2`, any tree walk goes through
+  `Containment.walk/3`. Do not hand-roll walks on `in_scope?/2`.
   """
 
   alias CodingAgent.Core.Tools.Glob
@@ -65,6 +70,13 @@ defmodule CodingAgent.Core.Tools do
 
   @doc """
   Resolves a path against the scope root and rejects escapes.
+
+  **This is the low-level predicate.** If you are calling it to
+  hand-roll a directory walk: don't — use
+  `CodingAgent.Core.Containment.walk/3`, which enforces the full
+  walk discipline (check *files and directories*, in that order).
+  Hand-rolled walkers that only checked files caused two escape bugs
+  in slice 2d.
 
   Read-only tools are safe only as long as the path they touch stays
   inside the scope; `..` traversal must not leave `scope.root`, and

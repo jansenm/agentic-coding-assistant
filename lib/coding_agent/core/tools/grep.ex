@@ -4,19 +4,19 @@ defmodule CodingAgent.Core.Tools.Grep do
   line-numbered matches, capped results, pure Elixir (no ripgrep
   dependency, ADR 002).
 
-  Scope and containment are enforced through `Tools.in_scope?/2` —
-  including physical symlink resolution — exactly like `read_file`.
-  Binary files are skipped; hidden dirs and `_build`/`deps`/`.git` are
+  Containment is enforced by `CodingAgent.Core.Containment` (the ONE
+  walk implementation — dir and file scope checks included). Binary
+  files are skipped; hidden dirs and `_build`/`deps`/`.git` are
   skipped (never useful to search, always wasteful to walk).
   """
 
+  alias CodingAgent.Core.Containment
   alias CodingAgent.Core.Tools
   alias CodingAgent.Core.Tools.Glob
 
   @max_results 200
   @max_line_length 500
   @max_bytes 1024 * 1024
-  @skip_dirs MapSet.new(["_build", "deps", ".git", "doc", "cover", ".elixir_ls"])
 
   @spec tool(Tools.scope()) :: ReqLLM.Tool.t()
   def tool(scope) do
@@ -84,9 +84,7 @@ defmodule CodingAgent.Core.Tools.Grep do
   end
 
   defp check_in_scope_path(scope, path) do
-    if Tools.in_scope?(scope, path),
-      do: :ok,
-      else: Tools.error("path escapes the session scope: #{inspect(path)}")
+    Containment.check_scope!(scope, path)
   end
 
   defp do_search(scope, pattern, path, glob) do
@@ -130,21 +128,26 @@ defmodule CodingAgent.Core.Tools.Grep do
     {:ok, body <> truncated}
   end
 
-  # Walk the target (a single file or a directory tree); every file's
-  # path must pass the containment check, because globs and symlinks
-  # could otherwise smuggle paths outside the scope.
+  # Files to search: a single explicit file, or a containment-respecting
+  # walk of the target directory (Containment owns the discipline).
   defp collect_files(scope, path, glob) do
-    root = Path.expand(scope.root)
     start = abs_path(scope, path)
 
     if File.regular?(start) do
       Process.put({__MODULE__, :explicit_file}, true)
-      [start]
+      Containment.walk(scope, path)
     else
       Process.put({__MODULE__, :explicit_file}, false)
 
-      walk(start, root, glob, [])
-      |> Enum.take(2000)
+      match_files =
+        if glob do
+          fn name ->
+            # name-only match, or a deeper glob like "**/*.ex"
+            Glob.glob_match?(glob, name) or Glob.glob_match?(glob, "**/" <> name)
+          end
+        end
+
+      Containment.walk(scope, path, match_files: match_files)
     end
   end
 
@@ -154,48 +157,6 @@ defmodule CodingAgent.Core.Tools.Grep do
 
   # (explicit_file flag is per-call process state; the tool callback
   # always runs in a single process, so no cross-talk in v1)
-
-  defp walk(dir, root, glob, acc) do
-    case File.ls(dir) do
-      {:ok, entries} ->
-        # deterministic order for reproducible output
-        entries
-        |> Enum.sort()
-        |> Enum.reduce(acc, fn entry, acc ->
-          full = Path.join(dir, entry)
-
-          cond do
-            # scope-check dirs too: a symlinked dir pointing outside must
-            # not be walked (glob has the same guard — this one walked
-            # out of the scope and looped until the symlink-hop cap)
-            File.dir?(full) ->
-              if skip_dir?(entry) or not Tools.in_scope?(%{root: root}, full),
-                do: acc,
-                else: walk(full, root, glob, acc)
-
-            File.regular?(full) and Tools.in_scope?(%{root: root}, full) ->
-              if matchable?(entry, glob), do: [full | acc], else: acc
-
-            true ->
-              acc
-          end
-        end)
-
-      {:error, _} ->
-        acc
-    end
-  end
-
-  defp skip_dir?(name) do
-    String.starts_with?(name, ".") or MapSet.member?(@skip_dirs, name)
-  end
-
-  defp matchable?(_name, nil), do: true
-
-  defp matchable?(name, glob) do
-    # name-only match, or a deeper glob like "**/*.ex"
-    Glob.glob_match?(glob, name) or Glob.glob_match?(glob, "**/" <> name)
-  end
 
   defp search_file(re, file) do
     case File.read(file) do

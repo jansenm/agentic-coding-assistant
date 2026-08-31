@@ -5,16 +5,16 @@ defmodule CodingAgent.Core.Tools.Glob do
   (Elixir 1.20 removed `Path.match/2`), same dialect as the permission
   layer plus `{a,b}` braces. No ripgrep/fd dependency (ADR 002).
 
-  Containment matches the other read-only tools: every returned path
-  must survive `Tools.in_scope?/2` (physical symlink resolution), so a
-  glob cannot list files outside the scope — symlinks pointing out are
+  Containment is enforced by `CodingAgent.Core.Containment` — the one
+  walk implementation, with dir and file scope checks — so a glob
+  cannot list paths outside the scope: out-of-scope symlinks are
   silently skipped rather than listed.
   """
 
+  alias CodingAgent.Core.Containment
   alias CodingAgent.Core.Tools
 
   @max_results 500
-  @skip_dirs MapSet.new(["_build", "deps", ".git", "doc", "cover", ".elixir_ls"])
 
   @spec tool(Tools.scope()) :: ReqLLM.Tool.t()
   def tool(scope) do
@@ -53,8 +53,7 @@ defmodule CodingAgent.Core.Tools.Glob do
     root = Path.expand(scope.root)
 
     matches =
-      root
-      |> walk(root, [])
+      Containment.walk(scope, ".")
       |> Enum.filter(fn file ->
         rel = Path.relative_to(file, root)
         glob_match?(pattern, rel) or glob_match?(pattern, Path.basename(file))
@@ -70,39 +69,6 @@ defmodule CodingAgent.Core.Tools.Glob do
         else: ""
 
     {:ok, if(body == "", do: "(no matches)", else: body <> suffix)}
-  end
-
-  defp walk(dir, root, acc) do
-    case File.ls(dir) do
-      {:ok, entries} ->
-        entries
-        |> Enum.sort()
-        |> Enum.reduce(acc, fn entry, acc ->
-          full = Path.join(dir, entry)
-
-          cond do
-            File.dir?(full) ->
-              if skip_dir?(entry) or not Tools.in_scope?(%{root: root}, full),
-                do: acc,
-                else: walk(full, root, acc)
-
-            # files are scope-checked too — a symlinked file pointing out
-            # must be skipped, not listed (leak via listing)
-            File.regular?(full) and Tools.in_scope?(%{root: root}, full) ->
-              [full | acc]
-
-            true ->
-              acc
-          end
-        end)
-
-      {:error, _} ->
-        acc
-    end
-  end
-
-  defp skip_dir?(name) do
-    String.starts_with?(name, ".") or MapSet.member?(@skip_dirs, name)
   end
 
   # -- Pure-string glob matching (Elixir 1.20 has no Path.match/2) -------
@@ -130,37 +96,30 @@ defmodule CodingAgent.Core.Tools.Glob do
     end
   end
 
-  # Semantics: a glob is a "/"-joined sequence where any segment may be
-  # "**". A "**" segment matches ZERO or more whole directories. So we
-  # compile to a regex where "**" becomes the marker (?:[^/]+/)* — zero
-  # or more complete segments. Trivially correct: "lib/**/*.ex" then
-  # matches both "lib/a.ex" and "lib/x/y/a.ex".
-
   # Build the regex by consuming a segment list, so that "**" can merge
   # with the following slash instead of being joined by one:
-  #   segments ["lib", "**", "*.ex"]  ->  lib/((?:[^/]+/)+)?[^/]*\\.ex
-  # i.e. "lib/", then optionally any number of full segments, then the file.
+  #   ["lib", "**", "*.ex"] -> lib/((?:[^/]+/)+)?[^/]*\.ex
+  # i.e. "lib/", then optionally any number of full segments, then the
+  # file. Semantics: a "**" segment matches ZERO or more whole
+  # directories.
   defp glob_regex(pattern) do
     segments = String.split(pattern, "/", trim: false)
     Regex.compile!("^" <> build(segments) <> "$")
   end
 
-  defp build([]), do: ""
+  defp build(["**"]), do: "(?:.*)?"
 
   defp build(["**" | rest]) do
-    case rest do
-      [] ->
-        "(?:.*)?"
-
-      _ ->
-        # "**" = zero or more complete "segment/" groups
-        "(?:(?:" <> build(rest) <> ")|(?:[^/]+/)+(?:" <> build(rest) <> "))?"
-    end
+    inner = build(rest)
+    "(?:" <> inner <> "|" <> "(?:[^/]+/)+" <> inner <> ")"
   end
 
   defp build([seg | rest]) do
-    segment_regex(seg) <> if(rest == [], do: "", else: "/" <> build(rest))
+    tail = if(rest == [], do: "", else: "/" <> build(rest))
+    segment_regex(seg) <> tail
   end
+
+  defp build([]), do: ""
 
   defp segment_regex(seg) do
     seg
