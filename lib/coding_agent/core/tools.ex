@@ -15,6 +15,7 @@ defmodule CodingAgent.Core.Tools do
 
   alias CodingAgent.Core.Tools.ListDir
   alias CodingAgent.Core.Tools.ReadFile
+  alias CodingAgent.Core.Tools.Shell
   alias CodingAgent.Core.Tools.WriteFile
 
   @typedoc "A tool scope: the root directory the tool may operate in."
@@ -37,11 +38,15 @@ defmodule CodingAgent.Core.Tools do
 
   @doc """
   State-changing tools; always executed behind the permission gate.
+
+  `shell` has no path containment by design (ADR 010): a shell
+  trivially bypasses file checks, so it is gated on *every* call —
+  there is no policy way to allow it in v1.
   """
   @spec gated(scope() | nil) :: [ReqLLM.Tool.t()]
   def gated(scope \\ nil) do
     scope = scope || default_scope()
-    [WriteFile.tool(scope)]
+    [WriteFile.tool(scope), Shell.tool(scope)]
   end
 
   @doc "All tools a session carries (read-only + gated)."

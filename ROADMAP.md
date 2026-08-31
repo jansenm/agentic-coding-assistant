@@ -70,19 +70,22 @@ skills execution, todowrite, question — see "Later".
      `:allow | :ask | :deny`, `decide/3` API (`:approve | :edit |
      :reject`), `write_file` behind the gate, stdin approval stub.
      Acceptance demo passed → ADR 010 Accepted.
-   - **2c. Shell execution** — command semantics per ADR 010 (always-
-     ask in v1). Output capture (stdout+stderr, head+tail keep on
-     truncation — *tail* is what matters for test output), exit code,
-     timeout: model-supplied `timeout_secs` per call (default 300s,
-     hard cap 1800s — must fit a 12-min Java integration suite; kill
-     on expiry and return captured output + timeout note). Soft cap at
-     the 300s default: above it the approval prompt shows the requested
-     timeout prominently so the user can edit it via the gate's
+   - **2c. Shell execution** ✅ — command semantics per ADR 010 (always-
+     ask in v1). Output capture (stdout+stderr merged through /bin/sh,
+     head+tail keep on truncation — *tail* is what matters for test
+     output), exit code, timeout: model-supplied `timeout_secs` per
+     call (default 300s = soft cap, hard cap 1800s — fits a 12-min
+     Java integration suite; kill on expiry and return captured output
+     + timeout note). Soft cap: above 300s the approval prompt shows
+     the requested timeout so the user can edit via the gate's
      `:edit` decision; when shell allow-rules arrive later, soft-cap
      excess forces `:ask` even for allow-listed commands. Cwd pinned
      to scope root, no path containment in v1 (that's *why* it is
-     always-ask).
-     *Runnable:* the agent runs the test suite and summarizes failures.
+     always-ask). Port-based exec with kill on expiry; background
+     runs parked in "Later".
+     *Runnable:* `mix run demo/acceptance_2c.exs` (ask → approve →
+     output back; soft-cap visible; edit respected). LLM round-trip
+     demo (agent summarizes real failures) still to do live.
    - **2d. grep + glob** — read-only tools, slot into existing
      containment (`read_only/1` + `in_scope?/2`), line-numbered
      matches, capped results. Pure Elixir, no ripgrep dependency.

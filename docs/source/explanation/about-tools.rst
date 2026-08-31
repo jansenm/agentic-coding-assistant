@@ -53,9 +53,41 @@ Two defenses bound even the read-only tools:
 The gate (slice 2b)
 -------------------
 
-State-changing tools (``write_file``, ``shell``) will not enter the
-registry until the permission gate exists: a data table of
+State-changing tools run behind the permission gate: a data table of
 ``(tool, path-pattern) → :allow | :ask | :deny`` checked before
-execution, with human-in-the-loop pause on ``:ask``. The design is
-tracked as ADR 010 and the roadmap's slice 2b; the gate inserts at the
-checkpoint in the loop where slice 2a currently executes unconditionally.
+execution, with human-in-the-loop pause on ``:ask`` (design: ADR 010;
+the registry's ``gated/1`` lists them, and the gate inserts at the
+loop checkpoint where slice 2a executed unconditionally).
+
+Shell execution (slice 2c)
+--------------------------
+
+``shell`` is the one tool with **no path containment** — by design.
+A shell trivially bypasses any file-tool check (``cat /etc/passwd``
+never touches ``in_scope?``), which is precisely *why* it is gated on
+*every* call: v1 has no allow-list for commands, only :ask. The safety
+argument changes shape here: file tools are fenced *structurally*
+(the check decides), the shell is fenced *socially* (the human
+decides, every time).
+
+The timeout is a three-layer contract, because suites differ — a
+``mix test`` takes seconds, a Java integration suite takes minutes:
+
+- **model-supplied** ``timeout_secs`` per call (default 300 s) — the
+  model knows the job, we don't;
+- **soft cap** at the default: higher values are shown prominently at
+  the approval prompt so the user can edit them (via the gate's
+  ``:edit`` decision) — once shell allow-rules arrive, exceeding the
+  soft cap will force :ask even for allow-listed commands;
+- **hard cap** at 1800 s: the tool refuses and tells the model to
+  split the work. Kill on expiry returns the output captured so far
+  plus a timeout note — diagnosis half done.
+
+The real long-term answer for very long jobs is asynchronous runs
+(job id, poll/notify) — deferred until session/TUI machinery exists
+(roadmap phase 3–4, "Later").
+
+Output is stdout+stderr merged through ``/bin/sh``, capped at 256 KiB
+with head+tail kept (tail matters: test summaries live at the end),
+and reported with the exit code and wall time — the format is aimed
+at the *model's* next decision, not at humans.
