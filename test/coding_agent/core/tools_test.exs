@@ -6,7 +6,7 @@ defmodule CodingAgent.Core.ToolsTest do
   describe "read_only/1" do
     test "contains only read-only tool names" do
       names = Tools.read_only() |> Enum.map(& &1.name)
-      assert names == ["list_dir", "read_file"]
+      assert names == ["list_dir", "read_file", "grep", "glob"]
     end
 
     test "tools are valid ReqLLM.Tool structs" do

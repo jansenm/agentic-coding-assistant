@@ -86,10 +86,15 @@ skills execution, todowrite, question — see "Later".
      *Runnable:* `mix run demo/acceptance_2c.exs` (ask → approve →
      output back; soft-cap visible; edit respected). LLM round-trip
      demo (agent summarizes real failures) still to do live.
-   - **2d. grep + glob** — read-only tools, slot into existing
-     containment (`read_only/1` + `in_scope?/2`), line-numbered
-     matches, capped results. Pure Elixir, no ripgrep dependency.
-     Without these, context economy on real repos is broken.
+   - **2d. grep + glob** ✅ — read-only tools, slot into existing
+     containment (`read_only/1` + `in_scope?/2`; dirs in walks are
+     scope-checked too — the symlinked-dir lesson twice). Grep:
+     line-numbered matches, cap 200, binary sniff, skip `_build`/
+     `deps`/`.git`. Glob: pure-string matcher (Elixir 1.20 has no
+     `Path.match/2`) in `Tools.Glob.glob_match?/2` — `**` spans
+     segments, braces, per-segment `*`/`?` — cap 500. Live-verified:
+     the agent greps `in_scope?` usage and counts 14 matches across 6
+     files, exact.
    - **2e. edit** — targeted string replacement (fail-closed on
      non-unique match), gated like `write_file`. Ends the era of
      whole-file rewrites for small changes.

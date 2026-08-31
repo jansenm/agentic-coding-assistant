@@ -13,6 +13,8 @@ defmodule CodingAgent.Core.Tools do
   the read-only policy boundary.
   """
 
+  alias CodingAgent.Core.Tools.Glob
+  alias CodingAgent.Core.Tools.Grep
   alias CodingAgent.Core.Tools.ListDir
   alias CodingAgent.Core.Tools.ReadFile
   alias CodingAgent.Core.Tools.Shell
@@ -33,7 +35,7 @@ defmodule CodingAgent.Core.Tools do
   @spec read_only(scope() | nil) :: [ReqLLM.Tool.t()]
   def read_only(scope \\ nil) do
     scope = scope || default_scope()
-    [ListDir.tool(scope), ReadFile.tool(scope)]
+    [ListDir.tool(scope), ReadFile.tool(scope), Grep.tool(scope), Glob.tool(scope)]
   end
 
   @doc """

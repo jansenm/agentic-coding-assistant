@@ -59,6 +59,36 @@ execution, with human-in-the-loop pause on ``:ask`` (design: ADR 010;
 the registry's ``gated/1`` lists them, and the gate inserts at the
 loop checkpoint where slice 2a executed unconditionally).
 
+Searching: grep and glob (slice 2d)
+-----------------------------------
+
+``grep`` and ``glob`` are the context-economy tools: the agent queries
+the codebase *without* reading whole files. is-grep-enough-style
+evidence says text search wins on trivial lookups and dies on deep
+traces — these tools are the cheap baseline tier; the structural tier
+(outlines, call graphs) stays on the roadmap's "Later" list.
+
+Both are read-only and inherit the full containment machinery:
+every file and directory that enters a walk must pass
+``Tools.in_scope?/2`` — *dirs included*, because a symlinked
+directory is a walkable path out of the scope (a lesson the guard
+suite enforced twice: first in glob, then again in grep's walk, which
+initially descended through an out-of-scope dir link and looped until
+the symlink-hop cap tripped).
+
+Pure-string glob matching is compiled to a regex: ``**`` = zero or
+more complete segments (``lib/**/*.ex`` reaches ``lib/a.ex`` *and*
+``lib/x/y/a.ex``), ``*``/``?`` stay per-segment, ``{a,b}`` braces
+expand. Elixir 1.20 removed ``Path.match/2``, so the matcher lives in
+:mod:`CodingAgent.Core.Tools.Glob` — plain functions, unit-tested
+against the classic glob table.
+
+Caps bound the blast radius: 200 grep matches (capped message tells
+the model to narrow the pattern), 500 glob results, 2000 files per
+walk, 1 MiB per file, 500-char lines. Binary files are skipped by a
+NUL-byte sniff; hidden dirs, ``_build``, ``deps`` and ``.git`` are
+never walked (never useful, always wasteful).
+
 Shell execution (slice 2c)
 --------------------------
 
