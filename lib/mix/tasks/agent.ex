@@ -39,37 +39,7 @@ defmodule Mix.Tasks.Agent do
     # display is the UI's job in phase 4; here we print the final text).
     result = CodingAgent.Core.Session.run(id, prompt)
     flush_deltas()
-
-    # an interrupted turn (permission gate) continues through the
-    # approval loop until the turn completes
-    case result do
-      {:ok, %{status: :interrupted} = state} ->
-        drive_turn(id, state)
-
-      other ->
-        print_result(other)
-    end
-  end
-
-  # Resolve approvals and keep following the turn until it reaches a
-  # final state (idle or error). After each decide/3 the answer text
-  # (or the next interruption) is handled the same way.
-  defp drive_turn(id, %{status: :interrupted} = state) do
-    decisions = ask_decisions(state.pending_tool_calls)
-
-    case CodingAgent.Core.Session.decide(id, decisions) do
-      {:ok, state2} -> continue_after_decide(id, state2)
-      {:error, reason} -> print_error(reason)
-    end
-  end
-
-  defp continue_after_decide(id, %{status: :interrupted} = state) do
-    drive_turn(id, state)
-  end
-
-  defp continue_after_decide(_id, state) do
-    flush_deltas()
-    print_result({:ok, state})
+    finish_turn(id, result)
   end
 
   defp chat_loop do
@@ -99,46 +69,38 @@ defmodule Mix.Tasks.Agent do
             :ok
 
           trimmed ->
-            case CodingAgent.Core.Session.run(id, trimmed) do
-              {:ok, state} ->
-                flush_deltas()
-                handle_turn(id, state)
-                loop(id)
-
-              {:error, reason} ->
-                print_error(reason)
-                loop(id)
-            end
+            result = CodingAgent.Core.Session.run(id, trimmed)
+            flush_deltas()
+            finish_turn(id, result)
+            loop(id)
         end
     end
   end
 
-  # An interrupted turn (permission gate) runs the approval loop (ADR 010
-  # stub: stdin y/e/n); the real TUI approval flow is phase 4.
-  defp handle_turn(_id, %{status: :interrupted} = state) do
+  # Follow a turn to completion: print final answers; resolve
+  # permission-gate interruptions (ADR 010 stdin y/e/n/a stub — the
+  # real TUI approval flow is phase 4) and continue until the turn
+  # reaches a final state. Plain one-driver-for-all-modes: neither the
+  # one-shot nor the chat path may ever block on internal messages.
+  defp finish_turn(_id, {:error, reason}) do
+    print_error(reason)
+  end
+
+  defp finish_turn(id, {:ok, %{status: :interrupted} = state}) do
     decisions = ask_decisions(state.pending_tool_calls)
 
-    # caller loop drives the next turn; here we only resolve approval
-    case decisions do
-      nil -> :aborted
-      decisions -> send(self(), {:__decide__, decisions})
+    case CodingAgent.Core.Session.decide(id, decisions) do
+      {:ok, state2} ->
+        flush_deltas()
+        finish_turn(id, {:ok, state2})
+
+      {:error, reason} ->
+        print_error(reason)
     end
   end
 
-  defp handle_turn(id, state) do
+  defp finish_turn(_id, {:ok, state}) do
     print_result({:ok, state})
-
-    receive do
-      {:__decide__, decisions} ->
-        case CodingAgent.Core.Session.decide(id, decisions) do
-          {:ok, state2} ->
-            flush_deltas()
-            handle_turn(id, state2)
-
-          {:error, reason} ->
-            print_error(reason)
-        end
-    end
   end
 
   defp ask_decisions(pending) do
@@ -209,14 +171,6 @@ defmodule Mix.Tasks.Agent do
       :interrupted ->
         IO.puts("\n[tool calls pending]")
     end
-  end
-
-  defp print_result({:error, {:missing_api_key, env_var}}) do
-    print_error({:missing_api_key, env_var})
-  end
-
-  defp print_result({:error, reason}) do
-    print_error(reason)
   end
 
   defp print_error({:missing_api_key, env_var}) do
