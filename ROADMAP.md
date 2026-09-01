@@ -103,11 +103,23 @@ skills execution, todowrite, question — see "Later".
      :edit widens the span -> applied; reject -> untouched).
      Live-verified: the model reads + edits its own file, gate asks,
      result confirmed.
-3. **Dogfood milestone** — develop this repository inside the tool
-   (see *Goal: dogfooding* above). Exercises model reliability and
-   context management on our own workflow.
-4. **Sessions & memory** — persistence, resume, compaction of the
-   working context, dual view (LLM history vs. display transcript).
+3. **Dogfood milestone** — **conditionally met** (first real task:
+   README rework, executed end-to-end in `mix agent --chat`, agent-
+   initiated verification via shell, fact-checked result committed).
+   Proven: the loop, all seven tools, gate round-trips, model
+   research-before-write. Not yet proven: long sessions (context
+   growth — no compaction), multi-turn work-in-progress, trust
+   scaling. Those are exactly phase 4's territory, which becomes the
+   critical path. Dogfood also surfaced 9+ interaction bugs, fixed
+   along the way (hung receive, one-shot approval loop, 2-min decide
+   timeout, write_file-shaped arg editing, silent reject-on-prose,
+   grep/glob wrongly gated, paste-queue desync, stateless transcript
+   framing) — the phase-5 TUI requirements list.
+4. **Sessions & memory** (next build target) — persistence, resume,
+   compaction of the working context, dual view (LLM history vs.
+   display transcript); likely slices: 4a persistence/resume (state
+   is already plain data per ADR 003), 4b compaction, 4c project
+   memory (AGENTS.md into the system prompt at session start).
 5. **Terminal experience** — transcript pane, input line (ADR 006),
    approval flows, session switcher.
 6. **Multi-agent** — agent definitions as data, orchestration roles
