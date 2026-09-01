@@ -111,7 +111,14 @@ defmodule Mix.Tasks.Agent do
     {id, name, args} = call_info(call)
     args_str = Jason.encode!(args)
 
-    IO.puts("\n[approval needed] #{name}(#{args_str})")
+    IO.puts("""
+
+    ┌─ APPROVAL REQUESTED ─────────────────────────────
+    │ tool:  #{name}
+    │ args:  #{args_str}
+    └─ Do you approve? (y = yes, e = edit args, n = no, a = abort)
+    """)
+
     loop_decision(id, args)
   end
 
@@ -190,6 +197,9 @@ defmodule Mix.Tasks.Agent do
     end
   end
 
+  # End-of-turn framing. A model question and a final answer look the
+  # same as bare text; without framing the user cannot tell "done"
+  # from "the agent is waiting for me" (live feedback, dogfood pass 3).
   defp print_result({:ok, state}) do
     case state.status do
       :idle ->
@@ -199,10 +209,20 @@ defmodule Mix.Tasks.Agent do
           |> Enum.reverse()
           |> Enum.find(&(&1.role == :assistant))
 
-        if last, do: IO.puts("\n" <> text_of(last) <> "\n")
+        if last do
+          IO.puts("\n" <> text_of(last) <> "\n")
+
+          IO.puts(
+            IO.ANSI.faint() <>
+              "— turn complete. Type your reply at the prompt. —" <> IO.ANSI.reset()
+          )
+        end
 
       :interrupted ->
-        IO.puts("\n[tool calls pending]")
+        IO.puts(
+          "\n" <>
+            IO.ANSI.faint() <> "[agent paused — YOUR decision is needed below]" <> IO.ANSI.reset()
+        )
     end
   end
 
