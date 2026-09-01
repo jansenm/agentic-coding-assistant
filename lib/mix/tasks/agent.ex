@@ -47,7 +47,15 @@ defmodule Mix.Tasks.Agent do
     {:ok, _pid} = CodingAgent.Core.Session.Supervisor.start_session(id: id)
     CodingAgent.Core.Session.subscribe(id)
 
-    IO.puts("Interactive session #{id} — empty line or Ctrl-D to exit.\n")
+    IO.puts("""
+    Interactive session #{id} — empty line or Ctrl-D to exit.
+
+    Note (CLI limitation): a multi-line PASTE at the prompt queues the
+    extra lines in the terminal; they surface as stray answers at the
+    next approval prompt (repeating "(answer y/e/n/a)" lines). Paste
+    tasks as a single line, or expect a couple of ignored re-prompts.
+    The phase-4 TUI reads proper multi-line input.
+    """)
 
     loop(id)
   end
