@@ -112,46 +112,67 @@ defmodule Mix.Tasks.Agent do
     args_str = Jason.encode!(args)
 
     IO.puts("\n[approval needed] #{name}(#{args_str})")
+    loop_decision(id, args)
+  end
 
-    answer =
-      case IO.gets("  [y]es / [e]dit / [n]o / [a]bort > ")
-           |> String.trim()
-           |> String.downcase() do
-        "y" -> :approve
-        "e" -> :edit
-        "n" -> :reject
-        "a" -> exit({:shutdown, 130})
-        _ -> :reject
-      end
+  # Re-prompts on unrecognized input — silently rejecting a tool call
+  # because the user typed prose ("apply as is") is the worst fallback:
+  # it looks like a harness bug from the model's side. Ctrl-D/Ctrl-C
+  # remain the abort paths.
+  defp loop_decision(id, args) do
+    case IO.gets("  [y]es / [e]dit / [n]o / [a]bort > ") do
+      :eof ->
+        IO.puts("")
+        exit({:shutdown, 130})
 
-    final =
-      if answer == :edit do
-        new_args = do_edit(args)
-        %{id: id, decision: {:edit, new_args}}
-      else
-        %{id: id, decision: answer}
-      end
+      {:error, _} ->
+        exit({:shutdown, 130})
 
-    final
+      line ->
+        case String.trim(line) |> String.downcase() do
+          "y" ->
+            %{id: id, decision: :approve}
+
+          "e" ->
+            %{id: id, decision: {:edit, do_edit(args)}}
+
+          "n" ->
+            %{id: id, decision: :reject}
+
+          "a" ->
+            exit({:shutdown, 130})
+
+          _ ->
+            IO.puts("  (answer y / e / n / a — other input is ignored)")
+            loop_decision(id, args)
+        end
+    end
   end
 
   # Edit pending args at the approval prompt, generically: for every
   # key in the call's arguments, empty input keeps the current value.
-  # (write_file's path/content, edit's old_string/new_string, shell's
-  # command/timeout_secs — all handled the same way.)
+  # Multiline values (edit's old_string/new_string, write_file's
+  # content) cannot be entered in a line-based prompt — they are shown
+  # read-only with a notice; editing those is phase-4 TUI material.
   defp do_edit(args) when args == %{}, do: args
 
   defp do_edit(args) do
     Enum.reduce(args, args, fn {key, current}, acc ->
-      case IO.gets("  #{key} [#{current}] > ") do
-        :eof ->
-          acc
+      if String.contains?(to_string(current), "\n") do
+        IO.puts("  #{key}: (multiline — editing not supported in this CLI stub; Enter keeps)")
+        IO.puts("    " <> String.replace(to_string(current), "\n", "\n    "))
+        acc
+      else
+        case IO.gets("  #{key} [#{current}] > ") do
+          :eof ->
+            acc
 
-        line ->
-          case String.trim(line) do
-            "" -> acc
-            new_value -> Map.put(args, key, new_value)
-          end
+          line ->
+            case String.trim(line) do
+              "" -> acc
+              new_value -> Map.put(args, key, new_value)
+            end
+        end
       end
     end)
   end
