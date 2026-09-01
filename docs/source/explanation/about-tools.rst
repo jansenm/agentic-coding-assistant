@@ -62,8 +62,9 @@ loop checkpoint where slice 2a executed unconditionally).
 Searching: grep and glob (slice 2d)
 -----------------------------------
 
-``grep`` and ``glob`` are the context-economy tools: the agent queries
-the codebase *without* reading whole files. is-grep-enough-style
+``grep`` and ``glob`` are read-only and **allow-by-policy** (in the
+permission layer's allow class beside ``list_dir``/``read_file``) —
+searches never pause at the gate. They are the context-economy tools: is-grep-enough-style
 evidence says text search wins on trivial lookups and dies on deep
 traces — these tools are the cheap baseline tier; the structural tier
 (outlines, call graphs) stays on the roadmap's "Later" list.

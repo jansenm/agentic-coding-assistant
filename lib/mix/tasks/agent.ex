@@ -135,13 +135,25 @@ defmodule Mix.Tasks.Agent do
     final
   end
 
-  defp do_edit(args) do
-    new_path = IO.gets("  path [#{args["path"]}] > ") |> String.trim()
-    new_content = IO.gets("  content (single line) > ") |> String.trim()
+  # Edit pending args at the approval prompt, generically: for every
+  # key in the call's arguments, empty input keeps the current value.
+  # (write_file's path/content, edit's old_string/new_string, shell's
+  # command/timeout_secs — all handled the same way.)
+  defp do_edit(args) when args == %{}, do: args
 
-    args
-    |> Map.put("path", if(new_path == "", do: args["path"], else: new_path))
-    |> Map.put("content", if(new_content == "", do: args["content"], else: new_content))
+  defp do_edit(args) do
+    Enum.reduce(args, args, fn {key, current}, acc ->
+      case IO.gets("  #{key} [#{current}] > ") do
+        :eof ->
+          acc
+
+        line ->
+          case String.trim(line) do
+            "" -> acc
+            new_value -> Map.put(args, key, new_value)
+          end
+      end
+    end)
   end
 
   defp session_id, do: "cli-#{System.unique_integer([:positive])}"

@@ -40,7 +40,10 @@ defmodule CodingAgent.Core.Permissions do
   defstruct entries: %{}, enabled: []
 
   # tools whose class defaults to allow (read-only; slice 2a policy)
-  @allow_class ["list_dir", "read_file"]
+  # Read-only tools: allow-by-policy (ADR 010 class default). Every
+  # addition must be read-only by construction and contained (see
+  # Containment); grep/glob joined in 2d.
+  @allow_class ["list_dir", "read_file", "grep", "glob"]
 
   @decisions ~w(allow ask deny)
 

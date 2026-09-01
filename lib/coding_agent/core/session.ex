@@ -20,7 +20,11 @@ defmodule CodingAgent.Core.Session do
   alias CodingAgent.Core.Session.State
   alias ReqLLM.Context
 
-  @call_timeout 120_000
+  # GenServer call timeout. Gate decisions can take arbitrarily long
+  # (the user is a human reading the approval prompt), so decide/2 and
+  # friends use :infinity. The LLM call inside a turn is bounded by the
+  # provider's own timeouts, not this one.
+  @call_timeout :infinity
 
   @max_tool_rounds 12
 
