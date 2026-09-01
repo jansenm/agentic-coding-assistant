@@ -3,15 +3,38 @@
 An agentic coding assistant for the terminal — trustworthy, lightweight,
 compilable from source.
 
-Status: phase 1 (core agent loop). See [ROADMAP.md](ROADMAP.md) for the
-plan and [docs/](docs/source/index.rst) for architecture and the ADR log.
+Status: phases 1–2 complete — core agent loop (streaming, multi-turn
+chat, ollama provider) plus the tool subsystem with a permission gate:
+read-only tools and gated `write_file`/`edit`/`shell` (slices 2a–2e).
+Next: the dogfood milestone. See [ROADMAP.md](ROADMAP.md),
+[docs/source/explanation/about-tools.rst](docs/source/explanation/about-tools.rst)
+and the ADR log under [docs/source/decisions/](docs/source/decisions/index.rst).
 
 ## Quick start
 
     # Requirements: Erlang/OTP 28, Elixir 1.20 (see ADR 008)
     mix deps.get
-    cp .env.example .env   # add your provider API key
     mix agent "Say hello"
+    mix agent --chat          # multi-turn session
+
+The configured default model (`ollama:glm-5.3-flash:cloud`, see
+config/config.exs) needs **no API key** — the ollama provider sends no
+Authorization header. Other providers do: copy `.env.example` to `.env`
+and fill in the key variable named there.
+
+## What can it do
+
+Seven tools, all scope-contained — every path is resolved physically
+(symlinks followed) and must stay inside the session scope
+(details: about-tools.rst):
+
+- Read-only, run without approval: `list_dir`, `read_file`, `grep`, `glob`
+- State-changing, paused for y/n approval in the terminal (approve, edit
+  the parameters, or reject): `write_file`, `edit`, `shell`
+
+`shell` runs through `/bin/sh` with model-supplied `timeout_secs`
+(default 300 s, hard cap 1800 s) and is asked on *every* call — no
+allow-list in v1.
 
 ## Development
 
@@ -36,4 +59,3 @@ end
 Documentation can be generated with [ExDoc](https://github.com/elixir-lang/ex_doc)
 and published on [HexDocs](https://hexdocs.pm). Once published, the docs can
 be found at <https://hexdocs.pm/coding_agent>.
-
