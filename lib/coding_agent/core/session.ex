@@ -107,6 +107,13 @@ defmodule CodingAgent.Core.Session do
     test_mode = Keyword.get(opts, :test_mode, false)
     policy = Keyword.get(opts, :policy) || load_policy(scope_root)
 
+    # Project memory (4c): AGENTS.md at the scope root is read once at
+    # session start and appended to the system prompt — the long-term
+    # memory tier that writes knowledge down as files (memory.rst).
+    # Missing file is the normal case; unreadable/corrupt content
+    # degrades to a warning, never an error.
+    system_prompt = append_project_memory(system_prompt, scope_root)
+
     # Resume support (4a): a caller may pass a persisted :context (and
     # then model/policy come from the snapshot too); otherwise a fresh
     # context with the framework system prompt is created.
@@ -130,6 +137,49 @@ defmodule CodingAgent.Core.Session do
        policy: policy,
        test_mode: test_mode
      )}
+  end
+
+  # AGENTS.md at the scope root: project conventions for the agent
+  # (the pragmatic long-term memory: knowledge written down as files,
+  # pulled back by this loader instead of exotic memory systems).
+  @agents_file "AGENTS.md"
+  @agents_max_bytes 64 * 1024
+
+  defp append_project_memory(prompt, scope_root) do
+    file = scope_root && Path.join(scope_root, @agents_file)
+
+    cond do
+      not is_binary(file) ->
+        prompt
+
+      not File.regular?(file) ->
+        prompt
+
+      true ->
+        case File.read(file) do
+          {:ok, bytes} when byte_size(bytes) <= @agents_max_bytes ->
+            prompt <> "\n\n" <> project_memory_section(bytes)
+
+          {:ok, bytes} when byte_size(bytes) > @agents_max_bytes ->
+            Logger.warning("AGENTS.md larger than 64 KiB; truncated for the system prompt")
+
+            prompt <> "\n\n" <> project_memory_section(binary_part(bytes, 0, @agents_max_bytes))
+
+          {:error, reason} ->
+            Logger.warning("AGENTS.md unreadable: #{inspect(reason)}")
+            prompt
+        end
+    end
+  end
+
+  defp project_memory_section(text) do
+    """
+    # Project memory (AGENTS.md)
+
+    Conventions and context for THIS project, written by the team:
+
+    #{String.trim_trailing(text)}
+    """
   end
 
   # Policy loading at session start (ADR 010: no live reload). The

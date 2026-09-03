@@ -56,6 +56,14 @@ lessons the agent learned. The pragmatic implementation writes Markdown
 files back into the project (an ``AGENTS.md``-style pattern); vector
 storage is an optional later addition.
 
+**First implementation in slice 4c**: an ``AGENTS.md`` at the scope
+root is read once at session start and appended to the system prompt
+(64 KiB cap, truncated with a warning; missing file is the normal
+case). The knowledge lives in *your* repository — versioned, greppable,
+editable with the same tools the agent uses — and the loader is a few
+dozen lines, because writing knowledge down as files is the whole
+point; no exotic memory system needed.
+
 Session storage principles
 --------------------------
 

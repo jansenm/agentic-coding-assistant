@@ -25,8 +25,10 @@ Files in the project
     Search order mirrors the tool ecosystem: ``AGENTS.md`` in the
     working directory, then parent directories up to the repo root,
     then ``~/.config/coding-agent/AGENTS.md`` as a user-level fallback.
-    *Ships in phase 5* (agent definitions); reading a single root-level
-    AGENTS.md may come earlier.
+    **Slice 4c** implements the first step: a single ``AGENTS.md`` at
+    the scope root is read at session start into the system prompt
+    (64 KiB cap, truncating; missing file is normal). The parent-dir
+    walk and user-level fallback remain phase-5 work.
 
 ``agent-permissions.toml`` (project root, optional)
     The policy layer: tool enablement and the permission table

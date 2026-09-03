@@ -115,8 +115,9 @@ skills execution, todowrite, question — see "Later".
    timeout, write_file-shaped arg editing, silent reject-on-prose,
    grep/glob wrongly gated, paste-queue desync, stateless transcript
    framing) — the phase-5 TUI requirements list.
-4. **Sessions & memory** — persistence, resume, compaction of the
-   working context, dual view (LLM history vs. display transcript).
+4. **Sessions & memory** ✅ — persistence, resume, compaction of the
+   working context, project memory (AGENTS.md at session start).
+   The dual display view is phase-5 TUI work.
 
    - **4a. Persistence & resume** ✅ — `Session.Store`:
      version-tagged `term_to_binary` snapshots under
@@ -138,10 +139,16 @@ skills execution, todowrite, question — see "Later".
      `--sessions` now prints file paths + sizes. Live-verified: a
      238k-char tool result compacted on the next call and the model
      still answered correctly from the summary.
-   - **4c. Project memory** — read `AGENTS.md` at session start into
-     the system prompt.
-   - **4c. Project memory** — read `AGENTS.md` at session start into
-     the system prompt.
+   - **4c. Project memory** ✅ — `AGENTS.md` at the scope root is read
+     at session start into the system prompt (64 KiB cap, truncated
+     with a warning; missing = normal). Knowledge stays in the repo —
+     versioned, greppable, editable with our own tools. Parent-dir
+     walk and user-level fallback remain phase 5.
+   - **4c. Project memory** ✅ — `AGENTS.md` at the scope root is read
+     at session start into the system prompt (64 KiB cap, truncated
+     with a warning; missing = normal). Knowledge stays in the repo —
+     versioned, greppable, editable with our own tools. Parent-dir
+     walk and user-level fallback remain phase 5.
 5. **Terminal experience** — transcript pane, input line (ADR 006),
    approval flows, session switcher.
 6. **Multi-agent** — agent definitions as data, orchestration roles
