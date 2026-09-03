@@ -56,6 +56,37 @@ lessons the agent learned. The pragmatic implementation writes Markdown
 files back into the project (an ``AGENTS.md``-style pattern); vector
 storage is an optional later addition.
 
+Session storage principles
+--------------------------
+
+Design commitments for the session store, written down after seeing
+what we did *not* want (opencode's storage measured on a dev machine:
+a 113 MB SQLite DB, sessions keyed to the directory they were opened
+in, project deletion leaving orphaned rows, cleanup = schema
+archaeology). Revisit any of these only with a new ADR:
+
+1. **Portability over project-binding.** A session belongs to itself;
+   the repo scope root is *data inside the session*, not the storage
+   key. Moving/renaming a directory orphans nothing; resuming from
+   elsewhere is possible (with the scope as recorded).
+
+2. **One session = one file = one ``rm``.** No opaque database blob.
+   Cleanup is a file operation, discoverable via ``--sessions``
+   (which must print the file paths), never schema archaeology.
+
+3. **Lifecycle commands are first-class verbs.** Listing is not
+   enough: deleting, pruning (age/size) and exporting belong in the
+   CLI surface — ``--sessions`` will grow a delete/prune action
+   before 4b lands, so cleanup never depends on undocumented files.
+
+4. **Size honesty.** The per-file format keeps ``du`` a truthful
+   answer to "how much session data do I have"; aggregate stores hide
+   growth until the number is embarrassing.
+
+5. **Retention is a decision, not an accident.** Any cap/TTL policy
+   gets an ADR and a CLI verb; silent accumulation is the failure
+   mode this list exists to prevent.
+
 The dual-view pattern
 ---------------------
 

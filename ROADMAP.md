@@ -131,7 +131,10 @@ skills execution, todowrite, question — see "Later".
      session GenServer instead of failing the turn.
    - **4b. Compaction** — summarize-and-trim the working context when
      it grows past a threshold; the dual view keeps the display
-     transcript intact.
+     transcript intact. Prerequisite: session lifecycle verbs in the
+     CLI (delete/prune, printing file paths) per the session-storage
+     principles in memory.rst — cleanup must exist before data
+     growth does.
    - **4c. Project memory** — read `AGENTS.md` at session start into
      the system prompt.
 5. **Terminal experience** — transcript pane, input line (ADR 006),
