@@ -23,14 +23,24 @@ defmodule CodingAgent.Core.Session.Store do
 
   @format_version 1
 
+  # Directory where session files live (created on demand). The
+  # :coding_agent, :store_dir app-env override exists for tests — they
+  # must NEVER wipe the user's real session dir (this exact mistake
+  # deleted a live session once; tests now isolate by default).
   @doc "Directory where session files live (created on demand)."
   @spec dir() :: String.t()
   def dir do
-    base =
-      System.get_env("XDG_STATE_HOME") ||
-        Path.join(System.user_home!(), ".local/state")
+    case Application.get_env(:coding_agent, :store_dir) do
+      dir when is_binary(dir) ->
+        dir
 
-    Path.join([base, "coding_agent", "sessions"])
+      _ ->
+        base =
+          System.get_env("XDG_STATE_HOME") ||
+            Path.join(System.user_home!(), ".local/state")
+
+        Path.join([base, "coding_agent", "sessions"])
+    end
   end
 
   @doc "File path for a session id."

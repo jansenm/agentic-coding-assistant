@@ -129,12 +129,17 @@ skills execution, todowrite, question — see "Later".
      Two live-found bugs fixed along the way: `[:safe]` atom
      rejection broke cross-process resume; stream errors crashed the
      session GenServer instead of failing the turn.
-   - **4b. Compaction** — summarize-and-trim the working context when
-     it grows past a threshold; the dual view keeps the display
-     transcript intact. Prerequisite: session lifecycle verbs in the
-     CLI (delete/prune, printing file paths) per the session-storage
-     principles in memory.rst — cleanup must exist before data
-     growth does.
+   - **4b. Compaction** ✅ — summarize-and-trim before each LLM call:
+     80k-char trigger, last 6 messages kept verbatim, model-written
+     summary replaces the old span, compacted state persists
+     immediately; summary-call failure degrades (keeps full context),
+     never errors. Lifecycle verbs shipped first per the storage
+     principles: `--session-delete <id>`, `--session-prune <days>`,
+     `--sessions` now prints file paths + sizes. Live-verified: a
+     238k-char tool result compacted on the next call and the model
+     still answered correctly from the summary.
+   - **4c. Project memory** — read `AGENTS.md` at session start into
+     the system prompt.
    - **4c. Project memory** — read `AGENTS.md` at session start into
      the system prompt.
 5. **Terminal experience** — transcript pane, input line (ADR 006),

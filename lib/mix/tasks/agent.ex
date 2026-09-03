@@ -5,8 +5,10 @@ defmodule Mix.Tasks.Agent do
 
       mix agent "explain this error: ..."
       mix agent --chat                  # multi-turn session
-      mix agent --sessions              # list persisted sessions
+      mix agent --sessions              # list persisted sessions (with paths)
       mix agent --resume <id>           # continue a persisted session
+      mix agent --session-delete <id>   # delete one session
+      mix agent --session-prune <days>  # delete sessions older than N days
   """
 
   use Mix.Task
@@ -19,17 +21,31 @@ defmodule Mix.Tasks.Agent do
 
     {opts, args} =
       OptionParser.parse!(args,
-        strict: [chat: :boolean, resume: :string, sessions: :boolean],
+        strict: [
+          chat: :boolean,
+          resume: :string,
+          sessions: :boolean,
+          session_delete: :string,
+          session_prune: :integer
+        ],
         aliases: [c: :chat, r: :resume]
       )
 
     chat? = opts[:chat] == true
     resume_id = opts[:resume]
     list? = opts[:sessions] == true
+    delete_id = opts[:session_delete]
+    prune_days = opts[:session_prune]
 
     cond do
       list? ->
         list_sessions()
+
+      is_binary(delete_id) ->
+        delete_session(delete_id)
+
+      is_integer(prune_days) ->
+        prune_sessions(prune_days)
 
       is_binary(resume_id) and args == [] ->
         chat_loop(resume_id)
@@ -49,7 +65,8 @@ defmodule Mix.Tasks.Agent do
       true ->
         Mix.raise(
           "usage: mix agent \"prompt\" | mix agent --chat | " <>
-            "mix agent --sessions | mix agent --resume <id>"
+            "mix agent --sessions | mix agent --resume <id> | " <>
+            "mix agent --session-delete <id> | mix agent --session-prune <days>"
         )
     end
   end
@@ -66,9 +83,48 @@ defmodule Mix.Tasks.Agent do
 
         Enum.each(sessions, fn s ->
           time = Calendar.strftime(s.saved_at, "%Y-%m-%d %H:%M")
-          IO.puts("  #{s.id}  #{time}  #{s.status}  #{s.model || "?"}")
+          file = CodingAgent.Core.Session.Store.path(s.id)
+
+          IO.puts(
+            "  #{s.id}  #{time}  #{s.status}  #{s.model || "?"}\n" <>
+              "      #{file} (#{file_size(file)})"
+          )
         end)
     end
+  end
+
+  defp file_size(path) do
+    case File.stat(path) do
+      {:ok, %{size: size}} -> "#{size} bytes"
+      {:error, _} -> "?"
+    end
+  end
+
+  # Lifecycle verbs (session-storage principle 3): cleanup is a CLI
+  # operation, never file archaeology.
+  defp delete_session(id) do
+    case CodingAgent.Core.Session.Store.load(id) do
+      {:ok, _} ->
+        :ok = CodingAgent.Core.Session.Store.delete(id)
+        IO.puts("Deleted session #{id} (#{CodingAgent.Core.Session.Store.path(id)}).")
+
+      {:error, reason} ->
+        print_error(reason)
+    end
+  end
+
+  defp prune_sessions(days) do
+    cutoff = DateTime.add(DateTime.utc_now(), -days * 86_400)
+
+    {deleted, kept} =
+      Enum.split_with(CodingAgent.Core.Session.Store.list(), &(&1.saved_at < cutoff))
+
+    Enum.each(deleted, fn s ->
+      :ok = CodingAgent.Core.Session.Store.delete(s.id)
+      IO.puts("Pruned #{s.id} (saved #{Calendar.strftime(s.saved_at, "%Y-%m-%d %H:%M")}).")
+    end)
+
+    IO.puts("#{length(deleted)} pruned, #{length(kept)} kept.")
   end
 
   defp one_shot(prompt) do

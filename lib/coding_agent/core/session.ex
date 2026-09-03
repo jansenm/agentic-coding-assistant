@@ -16,6 +16,7 @@ defmodule CodingAgent.Core.Session do
 
   require Logger
 
+  alias CodingAgent.Core.Compaction
   alias CodingAgent.Core.Permissions
   alias CodingAgent.Core.Session.State
   alias CodingAgent.Core.Session.Store
@@ -310,6 +311,8 @@ defmodule CodingAgent.Core.Session do
   end
 
   defp continue_loop(state) do
+    state = maybe_compact(state)
+
     case call_llm(state) do
       {:ok, %{type: :final_answer, text: text}} ->
         state = complete_turn(state, text)
@@ -608,7 +611,81 @@ defmodule CodingAgent.Core.Session do
     state
   end
 
-  # Slice 4a: every turn boundary leaves a persisted snapshot. A crash
+  # Slice 4b: compact the working context when it grows past the
+  # threshold. The summary call uses the same model without tools. On
+  # any failure, skip compaction — an oversized context degrades, it
+  # does not error out. The compacted state persists immediately (the
+  # next turn boundary would too, but a crash right after compaction
+  # should not resurrect the fat context).
+  defp maybe_compact(%State{} = state) do
+    case Compaction.plan(state.context) do
+      :none ->
+        state
+
+      {:ok, _old, _keep} ->
+        Logger.info(
+          "compacting context (#{Compaction.total_chars(state.context.messages)} chars)"
+        )
+
+        case summarize_for_compaction(state) do
+          {:ok, summary_text} ->
+            context = Compaction.apply(state.context, summary_text)
+            state = %{state | context: context}
+            persist(state)
+            broadcast(state, {:context_compacted, Compaction.keep_recent()})
+            state
+
+          {:error, reason} ->
+            Logger.warning("compaction failed, keeping full context: #{inspect(reason)}")
+            state
+        end
+    end
+  end
+
+  # The summarizer sees the OLD span only (the keep span is excluded —
+  # the model would otherwise copy it into the summary).
+  defp summarize_for_compaction(state) do
+    {:ok, old, _keep} = Compaction.plan(state.context)
+
+    context =
+      Context.new()
+      |> Context.append(
+        ReqLLM.Context.system(
+          "Summarize the following (possibly interrupted) coding-agent " <>
+            "conversation for later reuse. Preserve: the user's goals, " <>
+            "decisions made, files touched, commands run and their " <>
+            "outcomes, and anything explicitly promised. Be factual and " <>
+            "complete; omit small talk."
+        )
+      )
+      |> Context.append(ReqLLM.Context.user(render_messages(old)))
+
+    with {:ok, base_opts} <- request_opts(state),
+         {:ok, response} <- ReqLLM.generate_text(state.model, context, base_opts) do
+      {:ok, ReqLLM.Response.text(response)}
+    end
+  end
+
+  defp render_messages(msgs) do
+    Enum.map_join(msgs, "\n\n", fn
+      %ReqLLM.Message{role: role, content: parts} when is_list(parts) ->
+        text =
+          Enum.map_join(parts, "", fn
+            %ReqLLM.Message.ContentPart{text: t} when is_binary(t) -> t
+            _ -> ""
+          end)
+
+        "[#{role}] #{text}"
+
+      %ReqLLM.Message{role: role, content: c} when is_binary(c) ->
+        "[#{role}] #{c}"
+
+      _ ->
+        ""
+    end)
+  end
+
+  # Slice 4a: every turn boundary leaves a persisted snapshot.  # Slice 4a: every turn boundary leaves a persisted snapshot. A crash
   # mid-turn loses at most the current turn — the previous boundary is
   # on disk. Failures are logged, never raised: an unwritable disk
   # must not kill a working session.

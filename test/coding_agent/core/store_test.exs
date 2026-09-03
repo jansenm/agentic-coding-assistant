@@ -9,13 +9,19 @@ defmodule CodingAgent.Core.Session.StoreTest do
   alias CodingAgent.Core.Session.Store
   alias ReqLLM.Context
 
-  @dir Store.dir()
+  @test_dir System.tmp_dir!() |> Path.join("agent-store-test-#{System.unique_integer()}")
 
   setup do
-    # never touch real user sessions in tests
-    Application.put_env(:coding_agent, :store_dir, nil)
-    File.rm_rf!(@dir)
-    on_exit(fn -> File.rm_rf!(@dir) end)
+    # isolate: tests run against their own dir, never the user's real
+    # session storage (an earlier version wiped real sessions once)
+    Application.put_env(:coding_agent, :store_dir, @test_dir)
+    File.rm_rf!(@test_dir)
+
+    on_exit(fn ->
+      Application.put_env(:coding_agent, :store_dir, nil)
+      File.rm_rf!(@test_dir)
+    end)
+
     :ok
   end
 
@@ -109,7 +115,7 @@ defmodule CodingAgent.Core.Session.StoreTest do
 
     test "corrupt bytes error instead of crashing" do
       id = "corrupt-#{System.unique_integer()}"
-      File.mkdir_p!(@dir)
+      File.mkdir_p!(@test_dir)
       File.write!(Store.path(id), <<1, 2, 3, "garbage">>)
       assert {:error, _} = Store.load(id)
     end
@@ -118,7 +124,7 @@ defmodule CodingAgent.Core.Session.StoreTest do
       id = "wrongver-#{System.unique_integer()}"
       state = build_state(id)
       payload = :erlang.term_to_binary({99, state})
-      File.mkdir_p!(@dir)
+      File.mkdir_p!(@test_dir)
       File.write!(Store.path(id), payload)
       assert {:error, {:not_a_session_file, 99}} = Store.load(id)
     end
@@ -126,7 +132,7 @@ defmodule CodingAgent.Core.Session.StoreTest do
     test "foreign payload (not a state tuple) errors" do
       id = "foreign-#{System.unique_integer()}"
       payload = :erlang.term_to_binary({1, :hello})
-      File.mkdir_p!(@dir)
+      File.mkdir_p!(@test_dir)
       File.write!(Store.path(id), payload)
       assert {:error, _} = Store.load(id)
     end

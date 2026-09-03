@@ -87,6 +87,33 @@ archaeology). Revisit any of these only with a new ADR:
    gets an ADR and a CLI verb; silent accumulation is the failure
    mode this list exists to prevent.
 
+Compaction (short-term tier)
+----------------------------
+
+**Implemented in slice 4b** (:mod:`CodingAgent.Core.Compaction`):
+before every LLM call the session checks the context volume (chars
+across message text — a cheap proxy, no tokenizer). Past the 80k
+threshold, the *old* span (everything except the last 6 messages) is
+summarized by the model itself — one dedicated call, no tools — and
+replaced by a synthetic summary message; the recent tail stays
+verbatim. The compacted state persists immediately.
+
+Design notes:
+
+- **Never compact the recent tail** — it is what the model reasons
+  over next; losing it to summary would blind it mid-task.
+- **Failure degrades, never errors**: if the summary call fails, the
+  full (oversized) context is kept and the turn proceeds; compaction
+  retries on the next call.
+- **v1 rewrites the agent view only**: the CLI transcript is
+  ephemeral today. When the dual-view transcript lands (phase 5), the
+  display view is the immutable record compaction must never touch —
+  the principles above and the mermaid diagram in this page already
+  fix that boundary.
+- Verified live: a 238k-char tool result triggered compaction on the
+  next call, and the model still answered a question about the
+  compacted-away content correctly from the summary.
+
 The dual-view pattern
 ---------------------
 
