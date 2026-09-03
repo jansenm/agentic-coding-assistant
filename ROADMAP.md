@@ -115,11 +115,25 @@ skills execution, todowrite, question — see "Later".
    timeout, write_file-shaped arg editing, silent reject-on-prose,
    grep/glob wrongly gated, paste-queue desync, stateless transcript
    framing) — the phase-5 TUI requirements list.
-4. **Sessions & memory** (next build target) — persistence, resume,
-   compaction of the working context, dual view (LLM history vs.
-   display transcript); likely slices: 4a persistence/resume (state
-   is already plain data per ADR 003), 4b compaction, 4c project
-   memory (AGENTS.md into the system prompt at session start).
+4. **Sessions & memory** — persistence, resume, compaction of the
+   working context, dual view (LLM history vs. display transcript).
+
+   - **4a. Persistence & resume** ✅ — `Session.Store`:
+     version-tagged `term_to_binary` snapshots under
+     `~/.local/state/coding_agent/sessions/`, atomic write at every
+     turn boundary; fail-closed load (corrupt/wrong-version errors,
+     never half-states); running/error resume as idle, interrupted
+     resumes with pending gate decisions intact. CLI: `mix agent
+     --sessions`, `mix agent --resume <id>`. Live-verified: codeword
+     given in one process answered correctly after `--resume`.
+     Two live-found bugs fixed along the way: `[:safe]` atom
+     rejection broke cross-process resume; stream errors crashed the
+     session GenServer instead of failing the turn.
+   - **4b. Compaction** — summarize-and-trim the working context when
+     it grows past a threshold; the dual view keeps the display
+     transcript intact.
+   - **4c. Project memory** — read `AGENTS.md` at session start into
+     the system prompt.
 5. **Terminal experience** — transcript pane, input line (ADR 006),
    approval flows, session switcher.
 6. **Multi-agent** — agent definitions as data, orchestration roles

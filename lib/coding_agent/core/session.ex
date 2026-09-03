@@ -18,6 +18,7 @@ defmodule CodingAgent.Core.Session do
 
   alias CodingAgent.Core.Permissions
   alias CodingAgent.Core.Session.State
+  alias CodingAgent.Core.Session.Store
   alias ReqLLM.Context
 
   # GenServer call timeout. Gate decisions can take arbitrarily long
@@ -105,9 +106,18 @@ defmodule CodingAgent.Core.Session do
     test_mode = Keyword.get(opts, :test_mode, false)
     policy = Keyword.get(opts, :policy) || load_policy(scope_root)
 
+    # Resume support (4a): a caller may pass a persisted :context (and
+    # then model/policy come from the snapshot too); otherwise a fresh
+    # context with the framework system prompt is created.
     context =
-      Context.new()
-      |> Context.append(ReqLLM.Context.system(system_prompt))
+      case Keyword.get(opts, :context) do
+        nil ->
+          Context.new()
+          |> Context.append(ReqLLM.Context.system(system_prompt))
+
+        %Context{} = restored ->
+          restored
+      end
 
     {:ok,
      State.new(
@@ -191,7 +201,9 @@ defmodule CodingAgent.Core.Session do
 
       if state.test_mode do
         # gate-mechanics tests stop here: no LLM round-trip
-        {:reply, {:ok, %{state | status: :idle}}, state}
+        state = %{state | status: :idle}
+        persist(state)
+        {:reply, {:ok, state}, state}
       else
         {state, result} = continue_loop(state)
         {:reply, result, state}
@@ -249,7 +261,9 @@ defmodule CodingAgent.Core.Session do
 
     case exchange do
       {:ok, context} ->
-        %{state | pending_tool_calls: [], context: context}
+        state = %{state | pending_tool_calls: [], context: context}
+        persist(state)
+        state
 
       {:error, reason} ->
         Logger.error("tool exchange failed: #{inspect(reason)}")
@@ -355,6 +369,7 @@ defmodule CodingAgent.Core.Session do
           }
 
           broadcast(state, {:status_changed, :interrupted, pending})
+          persist(state)
           {state, {:ok, state}}
 
         true ->
@@ -378,6 +393,7 @@ defmodule CodingAgent.Core.Session do
     state = %{state | context: append_tool_results(state, auto_results).context}
     broadcast_tools(state, auto, auto_results)
     broadcast(state, {:status_changed, :interrupted, pending})
+    persist(state)
     {state, {:ok, state}}
   end
 
@@ -507,8 +523,17 @@ defmodule CodingAgent.Core.Session do
 
       with {:ok, stream_response} <- ReqLLM.stream_text(state.model, state.context, opts) do
         events = ReqLLM.StreamResponse.events(stream_response)
-        {text, tool_calls} = consume_stream(events, state.id)
-        {:ok, %{type: classify(tool_calls), text: text, tool_calls: tool_calls}}
+
+        # consume_stream throws {:stream_error, ...} on stream failures
+        # (e.g. provider down). Catch it HERE: a transport error is a
+        # failed turn, never a session crash (the GenServer used to
+        # terminate on this path — found in the 4a live smoke test).
+        try do
+          {text, tool_calls} = consume_stream(events, state.id)
+          {:ok, %{type: classify(tool_calls), text: text, tool_calls: tool_calls}}
+        catch
+          {:stream_error, error} -> {:error, {:stream_error, error}}
+        end
       end
     end
   end
@@ -572,12 +597,27 @@ defmodule CodingAgent.Core.Session do
     state = %{state | context: context, status: :idle}
     broadcast(state, {:llm_message, text})
     broadcast(state, {:status_changed, :idle})
+    persist(state)
     state
   end
 
   defp fail_turn(state, reason) do
     state = %{state | status: :error, last_error: reason}
     broadcast(state, {:status_changed, :error, reason})
+    persist(state)
+    state
+  end
+
+  # Slice 4a: every turn boundary leaves a persisted snapshot. A crash
+  # mid-turn loses at most the current turn — the previous boundary is
+  # on disk. Failures are logged, never raised: an unwritable disk
+  # must not kill a working session.
+  defp persist(state) do
+    case Store.save(state) do
+      :ok -> :ok
+      {:error, reason} -> Logger.warning("session persist failed: #{inspect(reason)}")
+    end
+
     state
   end
 

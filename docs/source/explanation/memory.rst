@@ -22,6 +22,32 @@ snapshot that is written at lifecycle boundaries (after each turn, before
 and after interruptions). A session that outlives a process restart is a
 hard requirement for a coding assistant.
 
+**Implemented in slice 4a** (:mod:`CodingAgent.Core.Session.Store`):
+the full state is one ``term_to_binary`` blob under
+``~/.local/state/coding_agent/sessions/<id>.session``, written
+atomically at every turn boundary (turn complete, turn error, gate
+interruption, decision applied). ``mix agent --sessions`` lists them,
+``mix agent --resume <id>`` continues one — the model retains the full
+previous context, verified live (a codeword given in one process was
+answered from the resumed one).
+
+Design points worth knowing:
+
+- **Fail-closed loading**: corrupt bytes, wrong format version or a
+  foreign payload error out — never a half-restored session.
+- **Runtime-only fields do not resurrect**: subscribers are dropped,
+  a saved ``:running``/``:error`` session resumes as ``:idle``
+  (paused work, not a fake stream). ``:interrupted`` resumes as
+  ``:interrupted`` — pending gate decisions survive a crash.
+- **Atoms are restored without ``:safe``**: a saved session
+  legitimately contains atoms the model's turn created (provider
+  option keys, error tags) that a fresh VM has not; ``[:safe]``
+  rejected those and broke resume. Session files are user-local
+  (same trust domain as ``.env``), so atom-creation hardening is not
+  this file's threat model; corruption resistance is.
+- **Persistence failure never kills the session**: an unwritable disk
+  logs a warning; the in-memory session keeps working.
+
 3. Long-term memory (cross-session)
 -----------------------------------
 

@@ -1,10 +1,12 @@
 defmodule Mix.Tasks.Agent do
   @moduledoc """
-  Minimal phase-1 harness: one-shot prompt from argv, streamed answer
-  to stdout.
+  Minimal phase-1 harness, extended in 4a with session persistence:
+  one-shot prompt from argv, streamed answer to stdout.
 
       mix agent "explain this error: ..."
-      ANTHROPIC_API_KEY=sk-... mix agent "hello"
+      mix agent --chat                  # multi-turn session
+      mix agent --sessions              # list persisted sessions
+      mix agent --resume <id>           # continue a persisted session
   """
 
   use Mix.Task
@@ -16,15 +18,56 @@ defmodule Mix.Tasks.Agent do
     Mix.Task.run("app.start", [])
 
     {opts, args} =
-      OptionParser.parse!(args, strict: [chat: :boolean], aliases: [c: :chat])
+      OptionParser.parse!(args,
+        strict: [chat: :boolean, resume: :string, sessions: :boolean],
+        aliases: [c: :chat, r: :resume]
+      )
 
     chat? = opts[:chat] == true
+    resume_id = opts[:resume]
+    list? = opts[:sessions] == true
 
-    case {chat?, args} do
-      {true, []} -> chat_loop()
-      {true, _} -> Mix.raise("usage: mix agent --chat (no prompt arguments)")
-      {false, [prompt]} -> one_shot(prompt)
-      {false, []} -> Mix.raise("usage: mix agent \"prompt\" | mix agent --chat")
+    cond do
+      list? ->
+        list_sessions()
+
+      is_binary(resume_id) and args == [] ->
+        chat_loop(resume_id)
+
+      is_binary(resume_id) ->
+        Mix.raise("usage: mix agent --resume <id> (no prompt arguments)")
+
+      chat? and args == [] ->
+        chat_loop(nil)
+
+      chat? ->
+        Mix.raise("usage: mix agent --chat (no prompt arguments)")
+
+      is_list(args) and length(args) == 1 ->
+        one_shot(hd(args))
+
+      true ->
+        Mix.raise(
+          "usage: mix agent \"prompt\" | mix agent --chat | " <>
+            "mix agent --sessions | mix agent --resume <id>"
+        )
+    end
+  end
+
+  # -- Sessions (slice 4a) ----------------------------------------------------
+
+  defp list_sessions do
+    case CodingAgent.Core.Session.Store.list() do
+      [] ->
+        IO.puts("No persisted sessions.")
+
+      sessions ->
+        IO.puts("Persisted sessions (newest first):\n")
+
+        Enum.each(sessions, fn s ->
+          time = Calendar.strftime(s.saved_at, "%Y-%m-%d %H:%M")
+          IO.puts("  #{s.id}  #{time}  #{s.status}  #{s.model || "?"}")
+        end)
     end
   end
 
@@ -42,7 +85,7 @@ defmodule Mix.Tasks.Agent do
     finish_turn(id, result)
   end
 
-  defp chat_loop do
+  defp chat_loop(nil) do
     id = session_id()
     {:ok, _pid} = CodingAgent.Core.Session.Supervisor.start_session(id: id)
     CodingAgent.Core.Session.subscribe(id)
@@ -58,6 +101,33 @@ defmodule Mix.Tasks.Agent do
     """)
 
     loop(id)
+  end
+
+  # Resume: load the persisted state and continue the conversation.
+  defp chat_loop(resume_id) when is_binary(resume_id) do
+    case CodingAgent.Core.Session.Store.load(resume_id) do
+      {:ok, persisted} ->
+        opts = [
+          id: persisted.id,
+          context: persisted.context,
+          model: persisted.model,
+          scope_root: persisted.scope_root,
+          policy: persisted.policy
+        ]
+
+        {:ok, _pid} = CodingAgent.Core.Session.Supervisor.start_session(opts)
+        CodingAgent.Core.Session.subscribe(resume_id)
+
+        IO.puts("""
+        Resumed session #{resume_id} (#{length(ReqLLM.Context.to_list(persisted.context))} messages in context).
+        """)
+
+        loop(resume_id)
+
+      {:error, reason} ->
+        print_error(reason)
+        IO.puts("\nUse `mix agent --sessions` to list persisted sessions.")
+    end
   end
 
   defp loop(id) do
