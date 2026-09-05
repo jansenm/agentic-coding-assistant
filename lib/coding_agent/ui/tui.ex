@@ -34,7 +34,7 @@ defmodule CodingAgent.UI.Tui do
     id = Keyword.get(opts, :session_id) || "tui-#{System.unique_integer([:positive])}"
     prompt = Keyword.get(opts, :initial_prompt)
 
-    with {:ok, pid, restored} <- start_session(id, opts) do
+    with {:ok, _pid, restored} <- start_session(id, opts) do
       # the ACTUAL session id (a resumed session keeps its persisted id)
       effective_id = (restored && restored.id) || id
 
