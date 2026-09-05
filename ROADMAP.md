@@ -149,8 +149,21 @@ skills execution, todowrite, question — see "Later".
      with a warning; missing = normal). Knowledge stays in the repo —
      versioned, greppable, editable with our own tools. Parent-dir
      walk and user-level fallback remain phase 5.
-5. **Terminal experience** — transcript pane, input line (ADR 006),
-   approval flows, session switcher.
+5. **Terminal experience** — transcript pane, input line (ADR 006
+   semantics on ADR 012 backend), approval flows, session switcher.
+   The dogfood ledger is the requirements list (state line, approval
+   widget with multiline editing, multi-line paste, streaming render,
+   session switcher, resize/scrollback).
+
+   - **5a. Foundation + state line** ✅ — ADR 012 (ex_ratatui
+     backend, superseding the termbox amendment: the C build was
+     broken (waf/python2-era) and the rust core is the battle-tested
+     part: ratatui 48M downloads on crossterm 185M). UI.Tui driver
+     app: alt-screen transcript + status line rendering live session
+     events (deltas, status, tool executions, compaction notices),
+     session resume support, `mix tui` entry. 4 headless-runtime
+     tests (test_mode + event injection) — the discipline from
+     ADR 011/012 holds: no terminal needed in CI.
 6. **Multi-agent** — agent definitions as data, orchestration roles
    (plan/execute/analyze), the specialist/repository matrix (ADR 007).
    Cross-repo change atomicity gets its own ADR first.

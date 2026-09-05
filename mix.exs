@@ -23,7 +23,8 @@ defmodule CodingAgent.MixProject do
   defp deps do
     [
       {:req_llm, "~> 1.21"},
-      {:dotenvy, "~> 1.1"}
+      {:dotenvy, "~> 1.1"},
+      {:ex_ratatui, "~> 0.13"}
     ]
   end
 end
