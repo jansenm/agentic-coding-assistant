@@ -98,8 +98,9 @@ defmodule CodingAgent.UI.Tui5bTest do
 
       type(pid, "n")
 
-      wait_until(fn -> state(pid).pending == [] end)
-      assert state(pid).status == :idle
+      # decide runs in a task; status settles via the {:__decided__} reply
+      wait_until(fn -> state(pid).status == :idle end)
+      assert state(pid).pending == []
       refute File.exists?(Path.join(root, "x.txt"))
     end
 
@@ -127,8 +128,9 @@ defmodule CodingAgent.UI.Tui5bTest do
 
       type(pid, "y")
 
-      wait_until(fn -> state(pid).pending == [] end)
+      wait_until(fn -> File.exists?(Path.join(root, "y.txt")) end)
       assert File.read!(Path.join(root, "y.txt")) == "yes"
+      assert state(pid).status == :idle
     end
   end
 

@@ -204,18 +204,30 @@ defmodule CodingAgent.UI.Tui do
     end
   end
 
-  # decisions update the TUI from the session's reply (the decide call
-  # returns the new state with its real status)
+  # decide/2 is a GenServer.call that runs the ENTIRE rest of the turn
+  # (LLM round-trips included) — calling it inline would freeze the TUI
+  # exactly when the dialog must stay responsive. Run it in a Task; the
+  # reply arrives via handle_info({:__decided__, ...}).
   defp decide(state, decision) when decision in [:approve, :reject] do
-    decisions = Enum.map(state.pending, fn %{id: id} -> %{id: id, decision: decision} end)
+    sid = state.session_id
 
-    case Session.decide(state.session_id, decisions) do
-      {:ok, session_state} ->
-        %{state | pending: [], pending_edit: nil, status: session_state.status}
+    decisions =
+      Enum.map(state.pending, fn %{id: id} -> %{id: id, decision: decision} end)
 
-      {:error, reason} ->
-        %{state | last_error: reason, pending: [], pending_edit: nil}
-    end
+    parent = self()
+
+    Task.start(fn ->
+      result =
+        case Session.decide(sid, decisions) do
+          {:ok, session_state} -> {:ok, session_state.status}
+          {:error, reason} -> {:error, reason}
+        end
+
+      send(parent, {:__decided__, result})
+    end)
+
+    # optimistic UI: dialog closes now, real status arrives with the reply
+    %{state | pending: [], pending_edit: nil, status: :running}
   end
 
   defp forward_to_textarea(state, ev) do
@@ -245,12 +257,27 @@ defmodule CodingAgent.UI.Tui do
   # -- Session events --------------------------------------------------------
 
   @impl true
+  def handle_info({:__decided__, {:ok, status}}, state) do
+    {:noreply, %{state | status: status}}
+  end
+
+  def handle_info({:__decided__, {:error, reason}}, state) do
+    {:noreply, %{state | last_error: reason, status: :error}}
+  end
+
   def handle_info({:agent, {:llm_deltas, delta}}, state) do
     {:noreply, %{state | deltas: state.deltas <> delta}}
   end
 
   def handle_info({:agent, {:status_changed, status}}, state) do
     {:noreply, %{state | status: status}}
+  end
+
+  # :interrupted carries the pending calls as detail — this is how the
+  # TUI learns WHAT to render in the approval dialog (a live interrupt
+  # during a run; attaching mid-session pulls state on mount instead).
+  def handle_info({:agent, {:status_changed, :interrupted, pending}}, state) do
+    {:noreply, %{state | status: :interrupted, pending: pending}}
   end
 
   def handle_info({:agent, {:status_changed, status, _detail}}, state) do
