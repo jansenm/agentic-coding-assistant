@@ -43,7 +43,9 @@ defmodule CodingAgent.Core.Session.ProjectMemoryTest do
     refute text_of(system) =~ "Project memory"
   end
 
+  @tag capture_log: true
   test "oversized AGENTS.md truncates instead of failing", %{root: root} do
+    # the truncation path logs a warning by design — capture it here
     File.write!(Path.join(root, "AGENTS.md"), String.duplicate("x", 100_000))
 
     id = "pm-big-#{System.unique_integer()}"

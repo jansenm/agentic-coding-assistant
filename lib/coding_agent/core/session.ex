@@ -483,7 +483,7 @@ defmodule CodingAgent.Core.Session do
   defp decisions_log(_state, _id, :allow), do: :ok
 
   defp decisions_log(state, id, decision) do
-    Logger.info("gate: tool call #{inspect(id)} in session #{state.id} -> #{decision}")
+    Logger.debug("gate: tool call #{inspect(id)} in session #{state.id} -> #{decision}")
   end
 
   defp tool_name(name) when is_binary(name), do: name
@@ -681,7 +681,7 @@ defmodule CodingAgent.Core.Session do
         state
 
       {:ok, _old, _keep} ->
-        Logger.info(
+        Logger.debug(
           "compacting context (#{Compaction.total_chars(state.context.messages)} chars)"
         )
 
