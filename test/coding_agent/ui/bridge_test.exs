@@ -37,7 +37,7 @@ defmodule CodingAgent.UI.BridgeTest do
       assert Bridge.translate(key("n"), @bound) == {:key, %{key: :n, mod: :none}}
     end
 
-    test "bound letters with alt stay keys" do
+    test "alt chords on any letter are key candidates (unbound ones resolve :unbound)" do
       assert Bridge.translate(key("q", ["alt"]), @bound) == {:key, %{key: :q, mod: :alt}}
     end
 
@@ -78,13 +78,10 @@ defmodule CodingAgent.UI.BridgeTest do
   describe "bound_letters/1" do
     test "reads single-letter bindings from the keymap, ignores others" do
       letters = Bridge.bound_letters(CodingAgent.UI.Keymap.defaults())
-      # q (quit), y/n/e? — defaults bind q via... check: defaults has abort: ctrl_c,
-      # approve/edit/reject letter keys NOT in defaults (decision keymap separate).
-      # scroll/send/insert patterns contain :enter etc. So letters should be exactly:
-      assert "q" in Enum.map(letters, &Atom.to_string/1)
-      refute "o" in Enum.map(letters, &Atom.to_string/1)
-      # ctrl chords are not letters
-      refute "ctrl_c" in Enum.map(letters, &Atom.to_string/1)
+      # 5b->5c rebalance: NO single letters are bound in the default
+      # keymap anymore (letters are for typing; approval keys live in
+      # the decision keymap, quit/abort are ctrl-chords)
+      assert letters == []
     end
   end
 end

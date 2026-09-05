@@ -59,9 +59,15 @@ defmodule CodingAgent.UI.TuiTest do
       assert content =~ "stuff"
     end
 
-    test "q event stops the app" do
+    test "abort (ctrl-c) stops the app" do
       pid = start_supervised!({Tui, name: nil, test_mode: {80, 10}})
-      :ok = Runtime.inject_event(pid, %ExRatatui.Event.Key{code: "q", kind: "press"})
+
+      :ok =
+        Runtime.inject_event(pid, %ExRatatui.Event.Key{
+          code: "c",
+          kind: "press",
+          modifiers: ["ctrl"]
+        })
 
       wait_until(fn ->
         not Process.alive?(pid)

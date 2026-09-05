@@ -63,15 +63,11 @@ defmodule CodingAgent.UI.Keymap do
       history_next: [key(:ctrl_n), key(:arrow_down, :ctrl)],
       scroll_up: [key(:page_up)],
       scroll_down: [key(:page_down)],
-      # 't' toggles tool-output blocks (collapsed by default, 5c)
-      toggle_tool_output: [key(:t)],
-      approve: [key(:y)],
-      edit: [key(:e)],
-      reject: [key(:n)],
-      abort: [key(:ctrl_c)],
-      # quit: TUI treats it as quit only when the input buffer is empty
-      # (otherwise q is text); CLI approval uses 'a'
-      quit: [key(:q)]
+      # tool-output toggle: ctrl-t ('t' must stay free for text input;
+      # found live — the owner types t in messages). The bridge emits
+      # termbox names for ctrl chords: :ctrl_t, mod :none.
+      toggle_tool_output: [key(:ctrl_t)],
+      abort: [key(:ctrl_c)]
     }
   end
 

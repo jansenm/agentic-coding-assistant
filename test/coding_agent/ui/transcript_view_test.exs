@@ -83,7 +83,7 @@ defmodule CodingAgent.UI.TranscriptViewTest do
   describe "bound_letters + toggle (5c wiring)" do
     test "toggle_tool_output is a keymap binding" do
       km = CodingAgent.UI.Keymap.defaults()
-      assert CodingAgent.UI.Keymap.resolve(km, %{key: :t, mod: :none}) == :toggle_tool_output
+      assert CodingAgent.UI.Keymap.resolve(km, %{key: :ctrl_t, mod: :none}) == :toggle_tool_output
     end
   end
 end

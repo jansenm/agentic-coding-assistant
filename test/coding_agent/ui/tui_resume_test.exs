@@ -154,7 +154,7 @@ defmodule CodingAgent.UI.TuiResumeTest do
         ExRatatui.Runtime.inject_event(pid, %ExRatatui.Event.Key{
           code: "t",
           kind: "press",
-          modifiers: []
+          modifiers: ["ctrl"]
         })
 
       assert :sys.get_state(pid).user_state.tools_expanded == true
@@ -163,7 +163,7 @@ defmodule CodingAgent.UI.TuiResumeTest do
         ExRatatui.Runtime.inject_event(pid, %ExRatatui.Event.Key{
           code: "t",
           kind: "press",
-          modifiers: []
+          modifiers: ["ctrl"]
         })
 
       assert :sys.get_state(pid).user_state.tools_expanded == false

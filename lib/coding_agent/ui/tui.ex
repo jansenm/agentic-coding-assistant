@@ -245,16 +245,7 @@ defmodule CodingAgent.UI.Tui do
 
   # Input area keys: intercept actions BEFORE the textarea consumes them.
   defp handle_input_key(km_event, ev, state) do
-    # empty-buffer q quits (kept from 5a); with text, q is just text
-    if km_event == %{key: :q, mod: :none} and buffer_empty?(state) do
-      {:stop, state}
-    else
-      dispatch_input_key(km_event, ev, state)
-    end
-  end
-
-  defp buffer_empty?(state) do
-    ExRatatui.textarea_get_value(state.textarea) == ""
+    dispatch_input_key(km_event, ev, state)
   end
 
   defp dispatch_input_key(km_event, ev, state) do
