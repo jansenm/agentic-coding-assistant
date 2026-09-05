@@ -17,6 +17,21 @@ defmodule Mix.Tasks.Agent do
 
   @impl Mix.Task
   def run(args) do
+    # Unix pipe hygiene: `mix agent --sessions | less` gets :epipe when
+    # the reader (less) exits before us. Catch the io error and exit
+    # cleanly instead of dumping an ErlangError stack trace.
+    try do
+      run_uncatched(args)
+    rescue
+      e in ErlangError ->
+        case e.reason do
+          :terminated -> exit({:shutdown, 0})
+          _ -> reraise e, __STACKTRACE__
+        end
+    end
+  end
+
+  defp run_uncatched(args) do
     Mix.Task.run("app.start", [])
 
     {opts, args} =

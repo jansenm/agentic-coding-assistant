@@ -11,6 +11,11 @@ defmodule CodingAgent.Core.Session.StoreTest do
 
   @test_dir System.tmp_dir!() |> Path.join("agent-store-test-#{System.unique_integer()}")
 
+  # the dir active at test-compile time: the global test_helper sets an
+  # isolated dir; restore it on exit instead of nil (nil would expose
+  # the user's real storage to later tests)
+  @prev_store_dir Application.compile_env(:coding_agent, :store_dir)
+
   setup do
     # isolate: tests run against their own dir, never the user's real
     # session storage (an earlier version wiped real sessions once)
@@ -18,7 +23,7 @@ defmodule CodingAgent.Core.Session.StoreTest do
     File.rm_rf!(@test_dir)
 
     on_exit(fn ->
-      Application.put_env(:coding_agent, :store_dir, nil)
+      Application.put_env(:coding_agent, :store_dir, @prev_store_dir)
       File.rm_rf!(@test_dir)
     end)
 
