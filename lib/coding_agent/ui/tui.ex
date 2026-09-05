@@ -69,6 +69,7 @@ defmodule CodingAgent.UI.Tui do
         # tool output blocks collapsed by default ('t' toggles) — same
         # for live execution and resumed history (user request #1)
         tools_expanded: false,
+        last_pane_height: nil,
         test_pid: Keyword.get(opts, :test_pid)
       }
 
@@ -259,7 +260,9 @@ defmodule CodingAgent.UI.Tui do
   defp dispatch_input_key(km_event, ev, state) do
     case Keymap.resolve(Keymap.defaults(), km_event) do
       :toggle_tool_output ->
-        {:noreply, %{state | tools_expanded: not state.tools_expanded}}
+        state = %{state | tools_expanded: not state.tools_expanded}
+        state = clamp_scroll_now(state)
+        {:noreply, state}
 
       :scroll_up ->
         {:noreply, %{state | scroll_offset: state.scroll_offset + 5}}
@@ -436,6 +439,19 @@ defmodule CodingAgent.UI.Tui do
       (state.transcript ++ streaming_entries(state))
       |> Enum.map(&normalize_entry/1)
 
+    # clamp the scroll offset to the content extent: toggling collapses
+    # shrinks the transcript, and a stale offset beyond the new max pins
+    # the view at the top AND makes pgdown unresponsive (found live).
+    # The clamp is persistent (state), so the next pgdown is immediate.
+    max_offset =
+      max(TranscriptView.total_height(entries, w, state.tools_expanded) - pane.height, 0)
+
+    state = %{
+      state
+      | scroll_offset: min(state.scroll_offset, max_offset),
+        last_pane_height: pane.height
+    }
+
     {top, selected} =
       TranscriptView.viewport(entries, pane.height, state.scroll_offset, w, state.tools_expanded)
 
@@ -453,6 +469,26 @@ defmodule CodingAgent.UI.Tui do
       widget = apply_scroll(widget, max(top - cursor, 0))
       {widget, %Rect{x: pane.x + 1, y: y, width: w, height: h}}
     end)
+  end
+
+  # Immediate scroll clamp on toggle: collapsing can shrink the content
+  # extent below the current scroll offset; without this, pgdown has to
+  # burn through the stale offset before the view moves (found live).
+  defp clamp_scroll_now(state) do
+    entries =
+      (state.transcript ++ streaming_entries(state))
+      |> Enum.map(&normalize_entry/1)
+
+    pane_height =
+      if is_integer(state.last_pane_height), do: state.last_pane_height, else: 24
+
+    max_offset =
+      max(
+        TranscriptView.total_height(entries, 78, state.tools_expanded) - pane_height,
+        0
+      )
+
+    %{state | scroll_offset: min(state.scroll_offset, max_offset)}
   end
 
   # viewport scrolling happens inside the widget when the entry starts
