@@ -27,8 +27,6 @@ defmodule CodingAgent.Core.PathHardeningTest do
     File.mkdir_p!(secret)
     File.write!(Path.join(secret, "shadow"), "SECRET")
 
-    secret_dir = Path.join(secret, "etc")
-
     on_exit(fn ->
       File.rm_rf!(root)
       File.rm_rf!(secret)
@@ -107,19 +105,13 @@ defmodule CodingAgent.Core.PathHardeningTest do
       assert Tools.in_scope?(scope, "alias.txt")
       refute File.read!(secret) == nil
 
-      # scope root itself being a symlink is fine (resolved first)
-      root_link = Path.join(root, "self-root-link")
-      symlink(root, root <> "-elsewhere")
-      _ = root <> "-elsewhere-check"
-
-      linked_root_scope = %{root: root <> "-resolved-below"}
-      # the practical case: the workspace root given as a symlink
+      # the practical case: the workspace root itself given as a
+      # symlink is fine (the root is resolved first)
       pristine = Path.join(System.tmp_dir!(), "hardening-resolved-#{System.unique_integer()}")
       File.mkdir_p!(Path.join(pristine, "sub"))
       symlink(pristine, root <> "-viacwd")
 
       assert Tools.in_scope?(%{root: root <> "-viacwd"}, "sub/anything")
-      assert linked_root_scope && true
     end
 
     test "rejects candidate through symlinked ancestor with dot-dot", %{
@@ -150,7 +142,7 @@ defmodule CodingAgent.Core.PathHardeningTest do
         # containment may reject with a scope error (string) or fail the
         # callback (exception struct) — both mean "did not read".
         {:error, msg} = ReqLLM.Tool.execute(tool, %{"path" => path})
-        text = if is_binary(msg), do: msg, else: Exception.message(msg) || inspect(msg)
+        text = if is_binary(msg), do: msg, else: Exception.message(msg)
         assert text != "", "path #{path}"
         # the secret content must not appear in any error
         refute text =~ "SECRET", "path #{path}"

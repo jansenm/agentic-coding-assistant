@@ -43,6 +43,11 @@ defmodule CodingAgent.Core.Tools.FileToolsTest do
 
   describe "path hardening (symlinks)" do
     defp make_symlink(target, link) do
+      # tolerate leftovers from a previous run (tmp dirs with colliding
+      # unique_integer seeds across VM restarts) — this is not a
+      # security-relevant race, just test hygiene
+      _ = :file.del_dir_r(link)
+      _ = File.rm(link)
       :ok = :file.make_symlink(String.to_charlist(target), String.to_charlist(link))
     end
 

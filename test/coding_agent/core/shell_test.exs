@@ -75,7 +75,7 @@ defmodule CodingAgent.Core.Tools.ShellTest do
       assert {:error, _} = ReqLLM.Tool.execute(tool, %{})
     end
 
-    test "effective_timeout clamps and defaults", %{tool: tool} do
+    test "effective_timeout clamps and defaults" do
       assert {:ok, 300} = Shell.effective_timeout(%{})
       assert {:ok, 900} = Shell.effective_timeout(%{"timeout_secs" => 900})
       assert {:ok, 1} = Shell.effective_timeout(%{"timeout_secs" => 0})

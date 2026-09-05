@@ -3,8 +3,6 @@ defmodule CodingAgent.Core.Session.DecisionsTest do
 
   alias CodingAgent.Core.Permissions
   alias CodingAgent.Core.Session
-  alias CodingAgent.Core.Session.State
-  alias ReqLLM.Context
 
   @tmp_root System.tmp_dir!() |> Path.join("agent-decisions-#{System.unique_integer()}")
 
@@ -35,19 +33,6 @@ defmodule CodingAgent.Core.Session.DecisionsTest do
     Permissions.load(nil, toml_path)
   end
 
-  defp session_state(policy) do
-    id = "dec-#{System.unique_integer()}"
-
-    State.new(
-      id: id,
-      context: Context.new(),
-      model: "ollama:test-model",
-      status: :idle,
-      scope_root: @tmp_root,
-      policy: policy
-    )
-  end
-
   defp tool_call(id, name, args) do
     %{id: id, name: name, arguments: args}
   end
@@ -68,7 +53,7 @@ defmodule CodingAgent.Core.Session.DecisionsTest do
       assert Permissions.effective(policy, "write_file", "a.txt") == :ask
     end
 
-    test "denied patterns are denied", %{policy: policy} do
+    test "denied patterns are denied", %{policy: _policy} do
       toml = """
       [permissions.write_file]
       "secret/**" = "deny"

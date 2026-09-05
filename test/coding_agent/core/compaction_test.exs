@@ -2,7 +2,6 @@ defmodule CodingAgent.Core.CompactionTest do
   use ExUnit.Case, async: true
 
   alias CodingAgent.Core.Compaction
-  alias ReqLLM.Context
 
   defp msg(text, role \\ :user) do
     %ReqLLM.Message{role: role, content: [ReqLLM.Message.ContentPart.text(text)]}
@@ -10,7 +9,7 @@ defmodule CodingAgent.Core.CompactionTest do
 
   defp ctx(n, chars_per \\ 1000) do
     msgs =
-      for i <- 1..n do
+      for _i <- 1..n do
         msg(String.pad_leading("m", chars_per, "x"), :assistant)
       end
 
