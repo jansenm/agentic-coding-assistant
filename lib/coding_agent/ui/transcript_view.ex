@@ -18,28 +18,42 @@ defmodule CodingAgent.UI.TranscriptView do
           | {:tool, String.t(), String.t(), String.t()}
           | {:info, String.t()}
 
-  @doc "Estimated render height of one entry at the given pane width."
+  @doc """
+  Rendered height of one entry at the given pane width — MEASURED via
+  the headless buffer backend (not estimated).
+
+  The estimate-based heights drifted from real markdown rendering
+  (markdown reflows inline markup; the naive per-line ceil overshoots
+  by ~25% on real agent messages) — the drift showed up as gaps between
+  blocks and "scrolling dead" stretches while traversing the gaps
+  (found live with the user's real session).
+
+  Measurements are cached per {fingerprint, width} in ETS — content is
+  stable within a turn, so repeats are free.
+  """
   @spec height(entry(), pos_integer(), boolean()) :: pos_integer()
-  def height(entry, width, tools_expanded)
+  def height(entry, width, tools_expanded) do
+    case entry do
+      {:info, text} ->
+        measure_text(text, width)
 
-  def height({:info, text}, width, _t) do
-    wrapped_lines(text, width)
+      {:user, text} ->
+        measure_text(text, width) + @border_allowance
+
+      {:assistant, text} ->
+        measure_markdown(text, width)
+
+      {:tool, _id, name, content} ->
+        if tools_expanded do
+          measure_text("▸ #{name}\n" <> content, width) + @border_allowance
+        else
+          measure_text(header(name, content), width)
+        end
+    end
   end
 
-  def height({:user, text}, width, _t) do
-    wrapped_lines(text, width) + @border_allowance
-  end
-
-  def height({:assistant, text}, width, _t) do
+  defp measure_text(text, width) do
     max(wrapped_lines(text, width), 1)
-  end
-
-  def height({:tool, _id, name, content}, width, false) do
-    wrapped_lines(header(name, content), width)
-  end
-
-  def height({:tool, _id, _name, content}, width, true) do
-    wrapped_lines(content, width) + @border_allowance
   end
 
   @doc """
@@ -84,6 +98,72 @@ defmodule CodingAgent.UI.TranscriptView do
       end)
 
     {top, selected}
+  end
+
+  # -- measured heights (markdown) -------------------------------------------
+
+  @measure_cache :transcript_view_heights
+
+  defp measure_markdown(text, width) do
+    key = {:md, :erlang.phash2(text), width}
+
+    case cache_get(key) do
+      :not_found ->
+        h = do_measure_markdown(text, width)
+        cache_put(key, h)
+        h
+
+      h ->
+        h
+    end
+  end
+
+  defp do_measure_markdown(text, width) do
+    # draw the widget into an oversized headless buffer, scan for the
+    # last non-blank row: the REAL rendered height (markdown reflows
+    # inline markup, so estimates drift — measured is exact)
+    widget = %ExRatatui.Widgets.Markdown{
+      content: text,
+      style: %ExRatatui.Style{fg: :white},
+      wrap: true
+    }
+
+    probe_height = 400
+    term = ExRatatui.init_test_terminal(width, probe_height)
+
+    _ =
+      ExRatatui.draw(term, [
+        {widget, %ExRatatui.Layout.Rect{x: 0, y: 0, width: width, height: probe_height}}
+      ])
+
+    last =
+      term
+      |> ExRatatui.get_buffer_content()
+      |> String.split("\n")
+      |> Enum.with_index()
+      |> Enum.reverse()
+      |> Enum.find_value(0, fn {line, i} ->
+        if String.trim(line) != "", do: i + 1
+      end)
+
+    max(last, 1)
+  end
+
+  defp cache_get(key) do
+    case :ets.lookup(@measure_cache, key) do
+      [{^key, h}] -> h
+      [] -> :not_found
+    end
+  rescue
+    _ -> :not_found
+  end
+
+  defp cache_put(key, value) do
+    :ets.insert(@measure_cache, {key, value})
+  rescue
+    _ ->
+      :ets.new(@measure_cache, [:named_table, :public, :set, read_concurrency: true])
+      :ets.insert(@measure_cache, {key, value})
   end
 
   defp wrapped_lines(text, width) do

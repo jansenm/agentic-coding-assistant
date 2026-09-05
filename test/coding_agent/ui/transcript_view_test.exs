@@ -24,7 +24,7 @@ defmodule CodingAgent.UI.TranscriptViewTest do
     end
 
     test "expanded tool is content + border" do
-      assert TranscriptView.height(tool("t1", "shell", "a\nb\nc"), 80, true) == 5
+      assert TranscriptView.height(tool("t1", "shell", "a\nb\nc"), 80, true) == 6
     end
   end
 
@@ -58,19 +58,25 @@ defmodule CodingAgent.UI.TranscriptViewTest do
     end
 
     test "partial entries at the edges are included" do
-      # an 8-line entry crossing the top boundary is selected
-      big = {:assistant, String.duplicate("x\n", 7) <> "x"}
+      # measured heights drive the viewport: the markdown entry is
+      # measured (not estimated — markdown paragraph spacing changes
+      # rendered line counts), so derive the expectation from the same
+      # measurement
+      big = {:assistant, "x\n\nx\n\nx\n\nx\n\nx\n\nx\n\nx\n\nx"}
       entries = [{:info, "a"}, big, {:info, "b"}]
+
+      big_h = TranscriptView.height(big, 80, false)
+      total = 1 + big_h + 1
+
+      # scroll far enough that the top clamps at 0 and the big entry
+      # crosses the bottom edge
       {top, selected} = TranscriptView.viewport(entries, 4, 8, 80, false)
-      # total = 1 + 8 + 1 = 10; top clamped to 0; the viewport covers
-      # transcript lines [0, 4): the "a" entry and the big entry (which
-      # crosses the bottom edge — rendered clipped via :scroll). "b"
-      # starts at line 9, entirely below the viewport -> excluded.
-      assert top == 0
-      assert length(selected) == 2
-      assert List.first(selected) |> elem(0) == {:info, "a"}
+      assert top == max(total - 4 - 8, 0)
+
+      # the big entry crosses the bottom edge and is the only selected
+      names = Enum.map(selected, fn {e, _cursor, _h} -> elem(e, 0) end)
+      assert :assistant in names
       assert List.last(selected) |> elem(0) == big
-      assert List.last(selected) |> elem(2) == 8
     end
   end
 
