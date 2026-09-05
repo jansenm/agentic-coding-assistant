@@ -38,7 +38,11 @@ defmodule Mix.Tasks.Tui do
       end
 
     receive do
-      {:DOWN, ^ref, _, _, _} -> :ok
+      {:DOWN, ^ref, _, _, _} ->
+        # the TUI stopped (q / ctrl-c): shut the BEAM down. Without this
+        # the Mix VM lingers at an iex-like prompt — supervised trees and
+        # the logger keep the scheduler alive after the task returns.
+        System.halt(0)
     end
   end
 
