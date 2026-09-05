@@ -28,36 +28,49 @@ defmodule CodingAgent.UI.TranscriptViewTest do
     end
   end
 
-  describe "visible/4" do
+  describe "viewport/5" do
     defp entries(n), do: Enum.map(1..n, &{:info, "line #{&1}"})
 
     test "empty" do
-      assert TranscriptView.visible([], 5, 0, false) == []
+      assert TranscriptView.viewport([], 5, 0, 80, false) == {0, []}
     end
 
-    test "fewer entries than the pane: all visible" do
-      assert TranscriptView.visible(entries(3), 10, 0, false) == entries(3)
+    test "follow mode: top line pinned so the tail is visible" do
+      {top, selected} = TranscriptView.viewport(entries(10), 3, 0, 80, false)
+      assert top == 7
+
+      assert selected == [
+               {{:info, "line 8"}, 7, 1},
+               {{:info, "line 9"}, 8, 1},
+               {{:info, "line 10"}, 9, 1}
+             ]
     end
 
-    test "more entries than the pane: tail follows (auto-scroll)" do
-      vis = TranscriptView.visible(entries(50), 3, 0, false)
-      # the LAST entries that fit the budget
-      assert vis == [{:info, "line 48"}, {:info, "line 49"}, {:info, "line 50"}]
+    test "offset scrolls up: viewport top decreases" do
+      {top, selected} = TranscriptView.viewport(entries(10), 3, 5, 80, false)
+      assert top == 2
+      assert List.first(selected) |> elem(1) == 2
     end
 
-    test "offset pins the window above the bottom" do
-      vis = TranscriptView.visible(entries(50), 3, 10, false)
-      # offset EXTENDS the budget upward: the tail (newest) stays in
-      # view, older entries revealed above it — height + offset worth
-      assert length(vis) == 13
-      assert List.last(vis) == {:info, "line 50"}
-      assert hd(vis) == {:info, "line 38"}
+    test "clamped at the top: cannot scroll above line 0" do
+      {top, _} = TranscriptView.viewport(entries(10), 3, 999, 80, false)
+      assert top == 0
     end
 
-    test "offset clamps at the top" do
-      vis = TranscriptView.visible(entries(5), 2, 999, false)
-      assert Enum.count(vis) >= 1
-      assert hd(vis) == {:info, "line 1"}
+    test "partial entries at the edges are included" do
+      # an 8-line entry crossing the top boundary is selected
+      big = {:assistant, String.duplicate("x\n", 7) <> "x"}
+      entries = [{:info, "a"}, big, {:info, "b"}]
+      {top, selected} = TranscriptView.viewport(entries, 4, 8, 80, false)
+      # total = 1 + 8 + 1 = 10; top clamped to 0; the viewport covers
+      # transcript lines [0, 4): the "a" entry and the big entry (which
+      # crosses the bottom edge — rendered clipped via :scroll). "b"
+      # starts at line 9, entirely below the viewport -> excluded.
+      assert top == 0
+      assert length(selected) == 2
+      assert List.first(selected) |> elem(0) == {:info, "a"}
+      assert List.last(selected) |> elem(0) == big
+      assert List.last(selected) |> elem(2) == 8
     end
   end
 

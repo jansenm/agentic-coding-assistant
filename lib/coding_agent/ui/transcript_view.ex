@@ -43,30 +43,47 @@ defmodule CodingAgent.UI.TranscriptView do
   end
 
   @doc """
-  Selects the entries visible in a pane of the given height: the last
-  entries that fit (auto-follow at offset 0); offset pins the window N
-  estimated lines above the bottom, clamped. The FIRST visible entry
-  may be cut by the pane top (partial render is fine).
+  Total estimated height of the transcript at the given width — the
+  scrollable extent.
   """
-  @spec visible([entry()], pos_integer(), non_neg_integer(), boolean()) :: [entry()]
-  def visible([], _height, _offset, _t), do: []
+  @spec total_height([entry()], pos_integer(), boolean()) :: non_neg_integer()
+  def total_height(entries, width, tools_expanded) do
+    Enum.reduce(entries, 0, &(&2 + height(&1, width, tools_expanded)))
+  end
 
-  def visible(entries, height, offset, tools_expanded) do
-    # walk from the tail, accumulating heights until the budget is used
-    {taken, _acc} =
+  @doc """
+  Viewport model (classic scroll): `offset` counts lines ABOVE the
+  bottom edge (0 = follow the tail). Returns
+  `{top_line, visible_entries}` where `top_line` may be negative
+  relative to the pane top (partial entries render clipped). Clamped
+  so the viewport never scrolls past the top.
+  """
+  @spec viewport([entry()], pos_integer(), non_neg_integer(), pos_integer(), boolean()) ::
+          {non_neg_integer(), [entry()]}
+  def viewport([], _height, _offset, _width, _t), do: {0, []}
+
+  def viewport(entries, height, offset, width, tools_expanded) do
+    total = total_height(entries, width, tools_expanded)
+    # top line of the viewport in transcript coordinates
+    top = max(total - height - offset, 0)
+
+    # entries intersecting [top, top + height), with their absolute
+    # top line (for pane-relative placement)
+    pairs =
       entries
-      |> Enum.reverse()
-      |> Enum.reduce_while({[], 0}, fn entry, {acc, used} ->
-        h = height(entry, 80, tools_expanded)
+      |> Enum.map_reduce(0, fn entry, cursor ->
+        h = height(entry, width, tools_expanded)
+        {{entry, cursor, h}, cursor + h}
+      end)
+      |> elem(0)
 
-        if used >= height + offset do
-          {:halt, {acc, used}}
-        else
-          {:cont, {[entry | acc], used + h}}
-        end
+    selected =
+      pairs
+      |> Enum.filter(fn {_entry, cursor, h} ->
+        cursor + h > top and cursor < top + height
       end)
 
-    taken
+    {top, selected}
   end
 
   defp wrapped_lines(text, width) do

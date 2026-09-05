@@ -186,6 +186,15 @@ defmodule CodingAgent.UI.Tui do
     end
   end
 
+  # mouse wheel scrolls the transcript (2 lines per notch, clamped)
+  def handle_event(%Event.Mouse{kind: "scroll_up"}, state) do
+    {:noreply, %{state | scroll_offset: state.scroll_offset + 2}}
+  end
+
+  def handle_event(%Event.Mouse{kind: "scroll_down"}, state) do
+    {:noreply, %{state | scroll_offset: max(state.scroll_offset - 2, 0)}}
+  end
+
   def handle_event(%Event.Paste{content: text}, state) do
     state = put_in_textarea(state, text)
     {:noreply, state}
@@ -246,10 +255,10 @@ defmodule CodingAgent.UI.Tui do
         {:noreply, %{state | tools_expanded: not state.tools_expanded}}
 
       :scroll_up ->
-        {:noreply, %{state | scroll_offset: state.scroll_offset + 3}}
+        {:noreply, %{state | scroll_offset: state.scroll_offset + 5}}
 
       :scroll_down ->
-        {:noreply, %{state | scroll_offset: max(state.scroll_offset - 3, 0)}}
+        {:noreply, %{state | scroll_offset: max(state.scroll_offset - 5, 0)}}
 
       :send_input ->
         {:noreply, send_input(state)}
@@ -410,52 +419,47 @@ defmodule CodingAgent.UI.Tui do
     widgets ++ dialog_widgets(state, area)
   end
 
-  # Block stack: each visible transcript entry becomes widget(s) with an
-  # estimated height, stacked top-down from the pane top. The window
-  # selection (TranscriptView.visible) guarantees the stack fits.
+  # Viewport rendering: entries intersecting the pane get placed at
+  # pane-relative positions; entries starting above the pane top scroll
+  # via the widget's own :scroll (Paragraph/Markdown support it).
   defp transcript_widgets(state, pane) do
     w = max(pane.width - 2, 10)
 
     entries =
       (state.transcript ++ streaming_entries(state))
       |> Enum.map(&normalize_entry/1)
-      |> TranscriptView.visible(pane.height, state.scroll_offset, state.tools_expanded)
 
-    entries
-    |> Enum.flat_map(fn entry -> entry_widgets(entry, w, state.tools_expanded) end)
-    |> Enum.with_index()
-    |> Enum.map(fn {{widget, h}, i} ->
-      # place sequentially from the pane top; later entries may spill
-      # past the bottom if estimates undershoot — the window budget
-      # keeps that rare
-      {widget,
-       %Rect{
-         x: pane.x + 1,
-         y: pane.y + sum_heights(entries, i, w, state.tools_expanded),
-         width: w,
-         height: h
-       }}
+    {top, selected} =
+      TranscriptView.viewport(entries, pane.height, state.scroll_offset, w, state.tools_expanded)
+
+    selected
+    |> Enum.flat_map(fn {entry, cursor, _h} ->
+      entry_widgets(entry, w, state.tools_expanded)
+      |> Enum.map(fn {widget, wh} -> {widget, wh, cursor} end)
+    end)
+    |> Enum.map(fn {widget, h, cursor} ->
+      rel = cursor - top
+      y = max(pane.y + rel, pane.y)
+      # clip the bottom at the pane edge
+      avail = pane.height - (y - pane.y)
+      h = max(min(h, avail), 1)
+      widget = apply_scroll(widget, max(top - cursor, 0))
+      {widget, %Rect{x: pane.x + 1, y: y, width: w, height: h}}
     end)
   end
 
-  defp sum_heights(entries, upto, w, te) do
-    entries
-    |> Enum.take(up_to_index(entries, upto))
-    |> Enum.reduce(0, fn e, acc -> acc + TranscriptView.height(e, w, te) end)
-  end
-
-  defp up_to_index(entries, widget_index) do
-    # widget_index maps to the entry that produced it; since flat_map
-    # can emit multiple widgets per entry, track via zip — simpler:
-    # compute heights cumulatively in entry_widgets instead. (Kept
-    # single-widget-per-entry in v1: markdown and frames are one widget.)
-    min(widget_index, length(entries) - 1)
-  end
+  # viewport scrolling happens inside the widget when the entry starts
+  # above the pane top (Paragraph/Markdown both support :scroll)
+  defp apply_scroll(%Paragraph{} = p, 0), do: p
+  defp apply_scroll(%Paragraph{} = p, n), do: %{p | scroll: {n, 0}}
+  defp apply_scroll(%Markdown{} = m, 0), do: m
+  defp apply_scroll(%Markdown{} = m, n), do: %{m | scroll: {n, 0}}
+  defp apply_scroll(w, _n), do: w
 
   # One widget per entry (v1): heights are single-widget, computed via
   # TranscriptView.height.
-  defp entry_widgets({:user, text}, w, _te) do
-    h = TranscriptView.height({:user, text}, w, false)
+  defp entry_widgets({:user, text}, _w, _te) do
+    h = TranscriptView.height({:user, text}, 80, false)
 
     widget = %Paragraph{
       text: text,
@@ -471,8 +475,8 @@ defmodule CodingAgent.UI.Tui do
     [{widget, h}]
   end
 
-  defp entry_widgets({:assistant, text}, w, _te) do
-    h = TranscriptView.height({:assistant, text}, w, false)
+  defp entry_widgets({:assistant, text}, _w, _te) do
+    h = TranscriptView.height({:assistant, text}, 80, false)
 
     [%Markdown{content: text, style: %Style{fg: :white}, wrap: true}]
     |> List.update_at(0, &{&1, h})
@@ -484,8 +488,8 @@ defmodule CodingAgent.UI.Tui do
     [{%Paragraph{text: line, style: %Style{fg: :dark_gray}}, 1}]
   end
 
-  defp entry_widgets({:tool, _id, name, content}, w, true) do
-    h = TranscriptView.height({:tool, "x", name, content}, w, true)
+  defp entry_widgets({:tool, _id, name, content}, _w, true) do
+    h = TranscriptView.height({:tool, "x", name, content}, 80, true)
 
     widget = %Paragraph{
       text: "▸ #{name}\n" <> content,
