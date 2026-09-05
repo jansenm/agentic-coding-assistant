@@ -72,17 +72,21 @@ defmodule CodingAgent.UI.Bridge do
       if(printable?(code), do: to_safe_atom(code), else: :unknown)
   end
 
-  # Only known-safe atoms: lowercase letters, digits, space. Anything
-  # else (uppercase from shifted keys, unicode) stays unmapped — the
-  # textarea still receives the raw ev.code for text input; the keymap
-  # just won't bind an action to it. binary_to_existing_atom on unknown
-  # input crashes the runtime otherwise (found live: shift+C produced
-  # code "C", and :C does not exist).
+  # Only known-safe shapes become atoms: lowercase letters, digits,
+  # space — via String.to_atom (ALWAYS creates; to_existing_atom cannot
+  # be used on dynamic terminal input at all: :o, :p ... any letter the
+  # VM has never interned crashes the runtime — found live twice, first
+  # with "C", then with "o"). Anything else (uppercase from shifted
+  # keys, unicode, named specials outside the map) stays unmapped —
+  # the textarea still receives the raw ev.code for text input; the
+  # keymap just won't bind an action to it. Atom creation is bounded:
+  # one atom per distinct printable key, created by the user's own
+  # keyboard — not an untrusted atom-table growth vector.
   defp to_safe_atom(code) do
     cond do
-      Regex.match?(~r/^[a-z]$/, code) -> String.to_existing_atom(code)
+      Regex.match?(~r/^[a-z]$/, code) -> String.to_atom(code)
       code == " " -> :space
-      Regex.match?(~r/^[0-9]$/, code) -> String.to_existing_atom(code)
+      Regex.match?(~r/^[0-9]$/, code) -> String.to_atom(code)
       true -> :unknown
     end
   end
@@ -98,7 +102,7 @@ defmodule CodingAgent.UI.Bridge do
 
       other ->
         if Regex.match?(~r/^[a-z]$/, other) do
-          String.to_existing_atom("ctrl_" <> other)
+          String.to_atom("ctrl_" <> other)
         else
           :unknown
         end
