@@ -67,6 +67,34 @@ defmodule CodingAgent.Core.Session.Store do
   end
 
   @doc """
+  Resolves a session id that may be a PREFIX (unique): "1730" matches
+  "tui-1730..." when exactly one session does. Ambiguous and missing
+  ids are errors — never guesses (fail-closed, like load/1).
+  """
+  @spec resolve_id(String.t()) :: {:ok, String.t()} | {:error, term()}
+  def resolve_id(id) do
+    case File.ls(dir()) do
+      {:ok, files} ->
+        # id matches exactly, or uniquely as a prefix or a suffix
+        # ("1730" -> "tui-1730"): uniqueness required either way
+        matching =
+          files
+          |> Enum.filter(fn f -> String.ends_with?(f, ".session") end)
+          |> Enum.map(&Path.basename(&1, ".session"))
+          |> Enum.filter(&(&1 == id or String.starts_with?(&1, id) or String.ends_with?(&1, id)))
+
+        case matching do
+          [found] -> {:ok, found}
+          [] -> {:error, :enoent}
+          many -> {:error, {:ambiguous_id, many}}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc """
   Loads a persisted session. Fail-closed: anything unexpected —
   missing file, corrupt bytes, wrong version, wrong module — is an
   error tuple, never a half-restored state.

@@ -130,7 +130,9 @@ defmodule CodingAgent.UI.Tui5bTest do
 
       wait_until(fn -> File.exists?(Path.join(root, "y.txt")) end)
       assert File.read!(Path.join(root, "y.txt")) == "yes"
-      assert state(pid).status == :idle
+
+      # status settles via the {:__decided__} reply (races the file write)
+      wait_until(fn -> state(pid).status == :idle end)
     end
   end
 

@@ -176,7 +176,17 @@ defmodule Mix.Tasks.Agent do
 
   # Resume: load the persisted state and continue the conversation.
   defp chat_loop(resume_id) when is_binary(resume_id) do
-    case CodingAgent.Core.Session.Store.load(resume_id) do
+    resolved =
+      case CodingAgent.Core.Session.Store.resolve_id(resume_id) do
+        {:ok, full_id} -> {:ok, full_id}
+        {:error, :enoent} = e -> e
+        {:error, {:ambiguous_id, many}} = e ->
+          IO.puts("Ambiguous session id \"#{resume_id}\" — candidates:")
+          Enum.each(many, &IO.puts("  #{&1}"))
+          e
+      end
+
+    case resolved do
       {:ok, persisted} ->
         opts = [
           id: persisted.id,
@@ -187,13 +197,13 @@ defmodule Mix.Tasks.Agent do
         ]
 
         {:ok, _pid} = CodingAgent.Core.Session.Supervisor.start_session(opts)
-        CodingAgent.Core.Session.subscribe(resume_id)
+        CodingAgent.Core.Session.subscribe(persisted.id)
 
         IO.puts("""
-        Resumed session #{resume_id} (#{length(ReqLLM.Context.to_list(persisted.context))} messages in context).
+        Resumed session #{persisted.id} (#{length(ReqLLM.Context.to_list(persisted.context))} messages in context).
         """)
 
-        loop(resume_id)
+        loop(persisted.id)
 
       {:error, reason} ->
         print_error(reason)

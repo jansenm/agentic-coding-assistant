@@ -78,7 +78,19 @@ defmodule CodingAgent.UI.Tui do
   # Returns {:ok, pid, restored_state | nil} — the restored state (when
   # resuming) is what seeds the transcript so old messages are visible.
   defp start_session(id, opts) do
-    persisted = Keyword.get(opts, :resume_id) && Store.load(Keyword.fetch!(opts, :resume_id))
+    persisted =
+      case Keyword.get(opts, :resume_id) do
+        nil ->
+          nil
+
+        resume_id ->
+          # prefix resolution ("1730" -> "tui-1730..."); a failed resume
+          # must ABORT, not silently start a fresh session
+          case Store.resolve_id(resume_id) do
+            {:ok, full_id} -> Store.load(full_id)
+            {:error, reason} -> {:error, reason}
+          end
+      end
 
     case persisted do
       {:ok, state} ->

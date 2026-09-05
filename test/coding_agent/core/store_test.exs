@@ -210,4 +210,32 @@ defmodule CodingAgent.Core.Session.StoreTest do
       status: :idle
     )
   end
+
+  describe "resolve_id/1 (prefix/suffix matching, unique)" do
+    test "exact id resolves" do
+      :ok = Store.save(build_state("abc-123"))
+      assert {:ok, "abc-123"} = Store.resolve_id("abc-123")
+    end
+
+    test "unique suffix resolves (the '1730' -> tui-1730 case)" do
+      :ok = Store.save(build_state("tui-1730"))
+      assert {:ok, "tui-1730"} = Store.resolve_id("1730")
+    end
+
+    test "unique prefix resolves" do
+      :ok = Store.save(build_state("tui-42abc"))
+      assert {:ok, "tui-42abc"} = Store.resolve_id("tui-42")
+    end
+
+    test "ambiguous matches error with candidates" do
+      :ok = Store.save(build_state("dup-aa-1"))
+      :ok = Store.save(build_state("dup-ab-2"))
+      assert {:error, {:ambiguous_id, ids}} = Store.resolve_id("dup")
+      assert length(ids) == 2
+    end
+
+    test "missing id errors" do
+      assert {:error, :enoent} = Store.resolve_id("never-999")
+    end
+  end
 end
