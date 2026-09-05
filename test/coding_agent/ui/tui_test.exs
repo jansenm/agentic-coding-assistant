@@ -76,4 +76,35 @@ defmodule CodingAgent.UI.TuiTest do
       wait_until(fun, tries - 1)
     end
   end
+
+  describe "event delivery (5a regression: subscribe bug)" do
+    # Found live: Session.subscribe registered the SESSION process on the
+    # EventRegistry instead of the caller — the TUI (first real consumer)
+    # received no events and the app hung on :running forever. The CLI
+    # never noticed because run/2 returns the final state.
+
+    test "the TUI process is actually registered on the event registry" do
+      {:ok, pid} = Tui.start_link(name: nil, test_mode: {80, 10}, scope_root: File.cwd!())
+
+      sid = :sys.get_state(pid).user_state.session_id
+      subscribers = Registry.lookup(CodingAgent.EventRegistry, {:session_events, sid})
+      assert pid in Enum.map(subscribers, fn {p, _} -> p end)
+    end
+
+    test "broadcast events reach the TUI and update state" do
+      {:ok, pid} = Tui.start_link(name: nil, test_mode: {80, 10}, scope_root: File.cwd!())
+
+      sid = :sys.get_state(pid).user_state.session_id
+
+      Registry.dispatch(CodingAgent.EventRegistry, {:session_events, sid}, fn entries ->
+        for {p, _} <- entries, do: send(p, {:agent, {:llm_message, "broadcast"}})
+      end)
+
+      wait_until(fn ->
+        :sys.get_state(pid).user_state.transcript != []
+      end)
+
+      assert [{:assistant, "broadcast"}] = :sys.get_state(pid).user_state.transcript
+    end
+  end
 end

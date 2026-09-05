@@ -53,11 +53,20 @@ defmodule CodingAgent.Core.Session do
   def state(id), do: GenServer.call(via(id), :state)
 
   @doc """
-  Subscribes the caller to session events (streaming deltas, status
-  changes). Events arrive as `{:agent_event, event}` messages.
+  Subscribes the CALLER to session events (streaming deltas, status
+  changes). Events arrive as `{:agent, event}` messages.
+
+  Registry registration is process-local, so it must happen in the
+  caller — the historical :subscribe call registered the *session*
+  process instead (bug found by the TUI in 5a: the first real event
+  consumer; the CLI never noticed because run/2 returns the final
+  state and the deltas path was silently empty).
   """
   @spec subscribe(String.t()) :: :ok
-  def subscribe(id), do: GenServer.call(via(id), :subscribe)
+  def subscribe(id) do
+    _ = Registry.register(CodingAgent.EventRegistry, {:session_events, id}, nil)
+    GenServer.call(via(id), :subscribe)
+  end
 
   @doc """
   Runs one turn: sends the user prompt to the model and streams the
@@ -206,9 +215,8 @@ defmodule CodingAgent.Core.Session do
   def handle_call(:state, _from, state), do: {:reply, {:ok, state}, state}
 
   def handle_call(:subscribe, {pid, _}, state) do
-    unless pid == self(),
-      do: Registry.register(CodingAgent.EventRegistry, {:session_events, state.id}, nil)
-
+    # registry registration happened in the caller (see subscribe/1);
+    # the monitor lets the session drop dead subscribers
     monitor = Process.monitor(pid)
     {:reply, :ok, %{state | subscribers: [monitor | state.subscribers]}}
   end
