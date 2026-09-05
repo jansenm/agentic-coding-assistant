@@ -156,20 +156,27 @@ skills execution, todowrite, question — see "Later".
    session switcher, resize/scrollback).
 
    - **5b. Input + approval flow** ✅ — input area (ex_ratatui
-     Textarea) driven by the ADR 011 keymap via UI.Bridge (terminal
-     events -> keymap events; ctrl chords map to termbox names, alt/
-     ctrl modifiers stay): enter = newline, alt-enter = send,
-     ctrl-enter = send (kitty hook), bracketed paste lands in the
-     buffer natively (the CLI paste-queue desync has no TUI
-     counterpart). Approval dialog: pending gate calls render
+     Textarea) driven by the ADR 011 keymap via UI.Bridge: enter =
+     newline, alt-enter = send, ctrl-enter = send (kitty hook),
+     bracketed paste lands natively (the CLI paste-queue desync has no
+     TUI counterpart). Approval dialog: pending gate calls render
      pretty-printed; y approves, n rejects (both updating the TUI from
-     the session's decide reply); 'q' quits on an empty buffer only.
-     7 headless interaction tests (typing, newline, send, empty-send,
-     paste, approve/reject round-trips). Found live during 5b: the
-     textarea NIF state is mutated in place (handle_key returns :ok,
-     not a new ref) and the TUI now attaches to the session's CURRENT
-     status/pending on mount (a resumed/attached TUI shows the real
-     gate state, not stale idle).
+     the session's decide reply); quit is a keymap binding (:q, honored
+     on an empty buffer only — with text, q is a character).
+     **Design correction after two live crashes**: the bridge started
+     out atomizing EVERY keypress (to_existing_atom crashed on any
+     letter the VM had not interned — "C", then "o"; tests passed by
+     accident because test files intern their own atoms). Final shape
+     is two-tier: special keys + letters the KEYMAP binds (read from
+     the bindings, not hardcoded) become keymap events; everything
+     else — the full UTF-8 range — is TEXT, forwarded raw to the
+     textarea, never atomized. The atom vocabulary is bounded by the
+     keymap, not by typing. 13 bridge tests incl. the whole UTF-8
+     text tier (umlauts, emoji, CJK, uppercase).
+     Also found live during 5b: the textarea NIF state is mutated in
+     place (handle_key returns :ok, not a new ref) and the TUI attaches
+     to the session's CURRENT status/pending on mount (a resumed/
+     attached TUI shows the real gate state, not stale idle).
    - **5a. Foundation + state line** ✅ — ADR 012 (ex_ratatui
      backend, superseding the termbox amendment: the C build was
      broken (waf/python2-era) and the rust core is the battle-tested

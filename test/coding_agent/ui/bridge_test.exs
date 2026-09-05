@@ -5,37 +5,86 @@ defmodule CodingAgent.UI.BridgeTest do
 
   defp key(code, mods \\ []), do: %ExRatatui.Event.Key{code: code, kind: "press", modifiers: mods}
 
-  test "plain enter maps to :enter / mod :none" do
-    assert Bridge.to_keymap_event(key("enter")) == %{key: :enter, mod: :none}
+  # the letters the TUI keymap actually binds (defaults + decision keys)
+  @bound Bridge.bound_letters(CodingAgent.UI.Keymap.defaults()) ++
+           Bridge.bound_letters(%{
+             approve: [%{key: :y, mod: :none}],
+             reject: [%{key: :n, mod: :none}],
+             edit: [%{key: :e, mod: :none}]
+           })
+
+  describe "control tier" do
+    test "enter is a keymap event" do
+      assert Bridge.translate(key("enter"), @bound) == {:key, %{key: :enter, mod: :none}}
+    end
+
+    test "alt-enter is the ADR 011 send key" do
+      assert Bridge.translate(key("enter", ["alt"]), @bound) == {:key, %{key: :enter, mod: :alt}}
+    end
+
+    test "ctrl chords get termbox names" do
+      assert Bridge.translate(key("a", ["ctrl"]), @bound) == {:key, %{key: :ctrl_a, mod: :none}}
+      assert Bridge.translate(key("j", ["ctrl"]), @bound) == {:key, %{key: :ctrl_j, mod: :none}}
+    end
+
+    test "ctrl-enter keeps mod :ctrl (kitty hook)" do
+      assert Bridge.translate(key("enter", ["ctrl"]), @bound) ==
+               {:key, %{key: :enter, mod: :ctrl}}
+    end
+
+    test "bound letters are keymap events" do
+      assert Bridge.translate(key("y"), @bound) == {:key, %{key: :y, mod: :none}}
+      assert Bridge.translate(key("n"), @bound) == {:key, %{key: :n, mod: :none}}
+    end
+
+    test "bound letters with alt stay keys" do
+      assert Bridge.translate(key("q", ["alt"]), @bound) == {:key, %{key: :q, mod: :alt}}
+    end
+
+    test "arrows and specials map" do
+      assert Bridge.translate(key("up"), @bound) == {:key, %{key: :arrow_up, mod: :none}}
+      assert Bridge.translate(key("page_up"), @bound) == {:key, %{key: :page_up, mod: :none}}
+      assert Bridge.translate(key("home"), @bound) == {:key, %{key: :home, mod: :none}}
+    end
   end
 
-  test "alt-enter maps to :enter / mod :alt (ADR 011 send key)" do
-    assert Bridge.to_keymap_event(key("enter", ["alt"])) == %{key: :enter, mod: :alt}
+  describe "text tier (full UTF-8, never atomized)" do
+    test "unbound lowercase letters are text" do
+      assert Bridge.translate(key("o"), @bound) == {:text, "o"}
+      assert Bridge.translate(key("a"), @bound) == {:text, "a"}
+    end
+
+    test "uppercase is text (shift)" do
+      assert Bridge.translate(key("C", ["shift"]), @bound) == {:text, "C"}
+      assert Bridge.translate(key("Q"), @bound) == {:text, "Q"}
+    end
+
+    test "UTF-8 is text: umlauts, accents, emoji" do
+      assert Bridge.translate(key("ä"), @bound) == {:text, "ä"}
+      assert Bridge.translate(key("é"), @bound) == {:text, "é"}
+      assert Bridge.translate(key("😀"), @bound) == {:text, "😀"}
+      assert Bridge.translate(key("文"), @bound) == {:text, "文"}
+    end
+
+    test "space is text (it types a space)" do
+      assert Bridge.translate(key(" "), @bound) == {:text, " "}
+    end
+
+    test "digits are text" do
+      assert Bridge.translate(key("1"), @bound) == {:text, "1"}
+    end
   end
 
-  test "ctrl chords get termbox names with mod :none (ctrl-a -> :ctrl_a)" do
-    assert Bridge.to_keymap_event(key("a", ["ctrl"])) == %{key: :ctrl_a, mod: :none}
-    assert Bridge.to_keymap_event(key("j", ["ctrl"])) == %{key: :ctrl_j, mod: :none}
-    assert Bridge.to_keymap_event(key("k", ["ctrl"])) == %{key: :ctrl_k, mod: :none}
-  end
-
-  test "ctrl-enter keeps :enter with mod :ctrl (kitty-protocol hook)" do
-    assert Bridge.to_keymap_event(key("enter", ["ctrl"])) == %{key: :enter, mod: :ctrl}
-  end
-
-  test "arrows and specials map" do
-    assert Bridge.to_keymap_event(key("up")) == %{key: :arrow_up, mod: :none}
-    assert Bridge.to_keymap_event(key("page_up")) == %{key: :page_up, mod: :none}
-    assert Bridge.to_keymap_event(key("home")) == %{key: :home, mod: :none}
-  end
-
-  test "plain letters map to their atoms" do
-    assert Bridge.to_keymap_event(key("y")) == %{key: :y, mod: :none}
-    assert Bridge.to_keymap_event(key("n")) == %{key: :n, mod: :none}
-    assert Bridge.to_keymap_event(key("q")) == %{key: :q, mod: :none}
-  end
-
-  test "alt-chord letters: alt-q" do
-    assert Bridge.to_keymap_event(key("q", ["alt"])) == %{key: :q, mod: :alt}
+  describe "bound_letters/1" do
+    test "reads single-letter bindings from the keymap, ignores others" do
+      letters = Bridge.bound_letters(CodingAgent.UI.Keymap.defaults())
+      # q (quit), y/n/e? — defaults bind q via... check: defaults has abort: ctrl_c,
+      # approve/edit/reject letter keys NOT in defaults (decision keymap separate).
+      # scroll/send/insert patterns contain :enter etc. So letters should be exactly:
+      assert "q" in Enum.map(letters, &Atom.to_string/1)
+      refute "o" in Enum.map(letters, &Atom.to_string/1)
+      # ctrl chords are not letters
+      refute "ctrl_c" in Enum.map(letters, &Atom.to_string/1)
+    end
   end
 end

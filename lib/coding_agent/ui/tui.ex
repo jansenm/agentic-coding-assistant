@@ -91,13 +91,21 @@ defmodule CodingAgent.UI.Tui do
 
   @impl true
   def handle_event(%Event.Key{kind: "press"} = ev, state) do
-    km_event = Bridge.to_keymap_event(ev)
+    # two-tier bridge (ADR 011 + the UTF-8 lesson): only special keys
+    # and letters the keymap binds become keymap events; everything
+    # else is text, forwarded raw to the textarea
+    bound = Bridge.bound_letters(Keymap.defaults()) ++ Bridge.bound_letters(decision_keymap())
 
-    # approval dialog has key priority
-    if state.pending != [] do
-      handle_decision_key(km_event, ev, state)
-    else
-      handle_input_key(km_event, ev, state)
+    case Bridge.translate(ev, bound) do
+      {:text, code} ->
+        {:noreply, put_in_textarea(state, code)}
+
+      {:key, km_event} ->
+        if state.pending != [] do
+          handle_decision_key(km_event, state)
+        else
+          handle_input_key(km_event, ev, state)
+        end
     end
   end
 
@@ -109,7 +117,7 @@ defmodule CodingAgent.UI.Tui do
   def handle_event(_event, state), do: {:noreply, state}
 
   # In the dialog: y/n/e decide; everything else ignored.
-  defp handle_decision_key(km_event, _ev, state) do
+  defp handle_decision_key(km_event, state) do
     case Keymap.resolve(decision_keymap(), km_event) do
       :approve ->
         {:noreply, decide(state, :approve)}
@@ -223,7 +231,8 @@ defmodule CodingAgent.UI.Tui do
   end
 
   defp put_in_textarea(state, text) when is_binary(text) do
-    # bracketed paste: insert at the cursor (native API, in-place)
+    # raw text (UTF-8) or bracketed paste: insert at the cursor
+    # (native API, in-place)
     _ = ExRatatui.textarea_insert_str(state.textarea, text)
     state
   end

@@ -3,19 +3,23 @@ defmodule CodingAgent.UI.Bridge do
   Pure translation layer between ExRatatui terminal events and the
   ADR 011 keymap/event model.
 
-  The keymap (CodingAgent.UI.Keymap) maps *actions* against
-  `%{key: atom, mod: mod}`; the terminal delivers
-  `%ExRatatui.Event.Key{code: string, modifiers: [strings]}`. This
-  module is the seam: event → keymap event, so the TUI stays thin and
-  both halves stay independently testable.
+  Two-tier design (the UTF-8 lesson from live use — do not conflate
+  text with control keys):
 
-  Key-name mapping (ADR 011 dialect):
-  - "a".."z", digits, " " → :a, :z, :space
-  - "enter" → :enter, "esc" → :esc, "tab" → :tab
-  - arrows/home/end/page_up/page_down/backspace/delete → same atoms
-  - ctrl-chords arrive as code + "ctrl" modifier (e.g. code "a" +
-    modifiers ["ctrl"]) → mapped to :ctrl_a (termbox naming), mod :none
-    — the ADR 011 default keymap is written in termbox names.
+  - **Control candidates**: special keys (enter, arrows, ctrl chords…)
+    — translated into keymap events `%{key: atom, mod: mod}` and
+    resolved against the keymap. Atoms come from a fixed name set
+    (specials map + bound letters), so atom growth is bounded by the
+    keymap, not by typing.
+  - **Everything else is TEXT** — full UTF-8 (letters, uppercase,
+    accents, emoji, CJK) is forwarded raw to the Textarea and never
+    atomized. The keymap never sees it, so there is no crash class to
+    guard against: an `ä` is not `:unknown`, it is simply not a
+    control key.
+
+  The letters that count as control candidates come FROM the keymap
+  itself (`bound_letters/1`): the keymap is data, so binding `:å` as
+  an action key would just work.
   """
 
   @modmap %{
@@ -36,85 +40,115 @@ defmodule CodingAgent.UI.Bridge do
     "page_down" => :page_down
   }
 
-  @doc "Terminal key event → keymap event (%{key: atom, mod: mod})."
-  @spec to_keymap_event(%ExRatatui.Event.Key{}) :: %{key: atom(), mod: :none | :alt | :ctrl}
-  def to_keymap_event(%ExRatatui.Event.Key{code: code, modifiers: modifiers}) do
+  @typedoc "What the bridge decided an event is."
+  @type translated ::
+          {:key, %{key: atom(), mod: :none | :alt | :ctrl}}
+          | {:text, String.t()}
+
+  @doc """
+  Translates a terminal key event: `{:key, event}` when it is a keymap
+  candidate (special keys or a letter the keymap binds), `{:text, code}`
+  otherwise. Text is never atomized.
+  """
+  @spec translate(%ExRatatui.Event.Key{}, [atom()]) :: translated()
+  def translate(%ExRatatui.Event.Key{code: code, modifiers: modifiers}, bound_letters) do
     mods = MapSet.new(modifiers || [])
     ctrl? = MapSet.member?(mods, "ctrl")
     alt? = MapSet.member?(mods, "alt")
 
     cond do
-      ctrl? and code == "enter" ->
-        # the ADR 011 kitty-protocol hook: keep ctrl in mod (the keymap
-        # binds :enter + :ctrl as a send alias)
-        %{key: :enter, mod: :ctrl}
+      special?(code) ->
+        {:key, key_event(code, ctrl?, alt?)}
 
-      ctrl? and modifier_key_name?(code) ->
-        # ctrl+arrow etc: keep the name, mark the modifier
-        %{key: key_name(code), mod: :ctrl}
+      # a chord (ctrl/alt) on a letter is ALWAYS a control candidate —
+      # the keymap may or may not bind it, but it must get the chance
+      ctrl? and single_lowercase?(code) ->
+        {:key, key_event(code, ctrl?, alt?)}
 
-      ctrl? ->
-        # ctrl chord on a letter: termbox names it distinctly, mod :none
-        %{key: ctrl_name(code), mod: :none}
+      alt? and single_lowercase?(code) ->
+        {:key, key_event(code, ctrl?, alt?)}
 
-      alt? ->
-        %{key: key_name(code), mod: :alt}
+      single_lowercase?(code) and String.to_atom(code) in bound_letters ->
+        {:key, key_event(code, ctrl?, alt?)}
 
       true ->
-        %{key: key_name(code), mod: :none}
+        # text: any single printable char in full UTF-8; the textarea
+        # inserts it verbatim
+        {:text, code}
     end
   end
 
-  # -- names ----------------------------------------------------------------
+  # -- keymap events (control tier) -----------------------------------------
 
-  defp key_name(code) do
-    Map.get(@modmap, code) ||
-      if(printable?(code), do: to_safe_atom(code), else: :unknown)
+  defp key_event(code, ctrl?, alt?) do
+    cond do
+      ctrl? and code == "enter" ->
+        # ADR 011 kitty-protocol hook: keep ctrl in mod
+        %{key: :enter, mod: :ctrl}
+
+      ctrl? and Map.has_key?(@modmap, code) ->
+        # ctrl+arrow etc: keep the name, mark the modifier
+        %{key: Map.fetch!(@modmap, code), mod: :ctrl}
+
+      ctrl? ->
+        %{key: ctrl_name(code), mod: :none}
+
+      alt? ->
+        %{key: name(code), mod: :alt}
+
+      true ->
+        %{key: name(code), mod: :none}
+    end
   end
 
-  # Only known-safe shapes become atoms: lowercase letters, digits,
-  # space — via String.to_atom (ALWAYS creates; to_existing_atom cannot
-  # be used on dynamic terminal input at all: :o, :p ... any letter the
-  # VM has never interned crashes the runtime — found live twice, first
-  # with "C", then with "o"). Anything else (uppercase from shifted
-  # keys, unicode, named specials outside the map) stays unmapped —
-  # the textarea still receives the raw ev.code for text input; the
-  # keymap just won't bind an action to it. Atom creation is bounded:
-  # one atom per distinct printable key, created by the user's own
-  # keyboard — not an untrusted atom-table growth vector.
-  defp to_safe_atom(code) do
+  defp name(code) do
     cond do
-      Regex.match?(~r/^[a-z]$/, code) -> String.to_atom(code)
-      code == " " -> :space
-      Regex.match?(~r/^[0-9]$/, code) -> String.to_atom(code)
-      true -> :unknown
+      Map.has_key?(@modmap, code) -> Map.fetch!(@modmap, code)
+      single_lowercase?(code) -> String.to_atom(code)
+      true -> ctrl_name(code)
     end
   end
 
   defp ctrl_name(code) do
-    # termbox spells chords distinctly: ctrl_a, ctrl_j, ctrl_enter? —
-    # ctrl-enter is 0x0D == enter in classic terms; crossterm CAN send
-    # enter+ctrl via kitty protocol, so map to :enter with :ctrl kept in
-    # mod (ADR 011 future hook). Everything else gets the ctrl_ name.
     case code do
-      "enter" ->
-        :enter
-
-      other ->
-        if Regex.match?(~r/^[a-z]$/, other) do
-          String.to_atom("ctrl_" <> other)
-        else
-          :unknown
-        end
+      "enter" -> :enter
+      other -> String.to_atom("ctrl_" <> other)
     end
   end
 
-  # ctrl modifier on special keys (e.g. ctrl+arrow): keep the arrow
-  # name, mod :ctrl (keymap has explicit ctrl-modified arrow patterns).
-  defp modifier_key_name?(code), do: Map.has_key?(@modmap, code)
+  @doc """
+  The letters the keymap actually binds as single-character keys
+  (e.g. y/n/e for the approval dialog, q for quit). Reads the bindings
+  rather than hardcoding — the keymap is data.
+  """
+  @spec bound_letters(Enumerable.t()) :: [atom()]
+  def bound_letters(keymap) do
+    keymap
+    |> Enum.flat_map(fn {_action, patterns} ->
+      Enum.flat_map(patterns, fn
+        %{key: k, mod: mod} when mod in [nil, :none] ->
+          if letter_atom?(k), do: [k], else: []
 
-  defp printable?(code) do
-    is_binary(code) and code != "" and String.length(code) == 1 and
-      String.printable?(code)
+        _ ->
+          []
+      end)
+    end)
+    |> Enum.uniq()
+  end
+
+  defp letter_atom?(k) when is_atom(k) do
+    Regex.match?(~r/^[a-z]$/, Atom.to_string(k))
+  end
+
+  defp letter_atom?(_), do: false
+
+  # -- classification helpers ------------------------------------------------
+
+  defp special?(code), do: Map.has_key?(@modmap, code)
+
+  # Only single lowercase letters can be control candidates; interned
+  # once via to_atom (bounded by the keymap, not by typing).
+  defp single_lowercase?(code) do
+    is_binary(code) and Regex.match?(~r/^[a-z]$/, code)
   end
 end

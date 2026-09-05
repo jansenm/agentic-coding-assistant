@@ -65,7 +65,10 @@ defmodule CodingAgent.UI.Keymap do
       approve: [key(:y)],
       edit: [key(:e)],
       reject: [key(:n)],
-      abort: [key(:ctrl_c)]
+      abort: [key(:ctrl_c)],
+      # quit: TUI treats it as quit only when the input buffer is empty
+      # (otherwise q is text); CLI approval uses 'a'
+      quit: [key(:q)]
     }
   end
 
