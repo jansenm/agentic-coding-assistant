@@ -69,7 +69,22 @@ defmodule CodingAgent.UI.Bridge do
 
   defp key_name(code) do
     Map.get(@modmap, code) ||
-      if(printable?(code), do: String.to_existing_atom(code), else: :unknown)
+      if(printable?(code), do: to_safe_atom(code), else: :unknown)
+  end
+
+  # Only known-safe atoms: lowercase letters, digits, space. Anything
+  # else (uppercase from shifted keys, unicode) stays unmapped — the
+  # textarea still receives the raw ev.code for text input; the keymap
+  # just won't bind an action to it. binary_to_existing_atom on unknown
+  # input crashes the runtime otherwise (found live: shift+C produced
+  # code "C", and :C does not exist).
+  defp to_safe_atom(code) do
+    cond do
+      Regex.match?(~r/^[a-z]$/, code) -> String.to_existing_atom(code)
+      code == " " -> :space
+      Regex.match?(~r/^[0-9]$/, code) -> String.to_existing_atom(code)
+      true -> :unknown
+    end
   end
 
   defp ctrl_name(code) do
@@ -78,8 +93,15 @@ defmodule CodingAgent.UI.Bridge do
     # enter+ctrl via kitty protocol, so map to :enter with :ctrl kept in
     # mod (ADR 011 future hook). Everything else gets the ctrl_ name.
     case code do
-      "enter" -> :enter
-      other -> String.to_existing_atom("ctrl_" <> other)
+      "enter" ->
+        :enter
+
+      other ->
+        if Regex.match?(~r/^[a-z]$/, other) do
+          String.to_existing_atom("ctrl_" <> other)
+        else
+          :unknown
+        end
     end
   end
 
