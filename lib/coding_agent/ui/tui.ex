@@ -141,7 +141,11 @@ defmodule CodingAgent.UI.Tui do
         [{:assistant, text_of(parts)}]
 
       %ReqLLM.Message{role: :tool, name: name, content: parts} ->
-        [{:tool, "▸ #{name}: #{text_of(parts)}"}]
+        # proper 4-tuple: id-ed, collapsible like live tool entries
+        # (the old 2-tuple fell through normalize_entry to :info — full
+        # content, un-toggleable; that was the vertical-space bug on
+        # resume)
+        [{:tool, "tool-r#{System.unique_integer([:positive])}", name, text_of(parts)}]
 
       %ReqLLM.Message{role: :system, content: parts} ->
         if String.contains?(text_of(parts), "Conversation summary"),
@@ -151,7 +155,7 @@ defmodule CodingAgent.UI.Tui do
       _ ->
         []
     end)
-    |> Enum.reject(fn {_role, text} -> text == "" end)
+    |> Enum.reject(fn entry -> entry_text(entry) == "" end)
   end
 
   defp text_of(parts) when is_list(parts) do
@@ -163,6 +167,9 @@ defmodule CodingAgent.UI.Tui do
 
   defp text_of(c) when is_binary(c), do: c
   defp text_of(_), do: ""
+
+  defp entry_text({:tool, _id, _name, content}), do: content
+  defp entry_text({_role, text}), do: text
 
   # -- Terminal events -------------------------------------------------------
 

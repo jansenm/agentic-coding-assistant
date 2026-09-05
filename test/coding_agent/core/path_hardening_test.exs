@@ -35,7 +35,10 @@ defmodule CodingAgent.Core.PathHardeningTest do
     %{root: root, secret_file: Path.join(secret, "shadow"), secret_dir: secret}
   end
 
+  # idempotent: remove a colliding leftover from a previous run first
   defp symlink(target, link) do
+    _ = :file.del_dir_r(link)
+    _ = File.rm(link)
     :ok = :file.make_symlink(String.to_charlist(target), String.to_charlist(link))
   end
 

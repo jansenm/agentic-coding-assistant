@@ -47,11 +47,11 @@ defmodule CodingAgent.UI.TuiResumeTest do
     assert {:user, "remember the codeword BANANA"} in transcript
     assert {:assistant, "Codeword noted."} in transcript
 
-    tool_line = Enum.find(transcript, fn {role, _} -> role == :tool end)
-    assert tool_line != nil and elem(tool_line, 1) =~ "shell"
+    tool_line = Enum.find(transcript, fn e -> elem(e, 0) == :tool end)
+    assert tool_line != nil and elem(tool_line, 2) =~ "shell"
 
     # the framework system prompt stays hidden
-    refute Enum.any?(transcript, fn {_r, t} -> t =~ "framework prompt" end)
+    refute Enum.any?(transcript, fn e -> text_of_entry(e) =~ "framework prompt" end)
   end
 
   test "a compacted session surfaces the summary as an info line" do
@@ -94,12 +94,79 @@ defmodule CodingAgent.UI.TuiResumeTest do
     assert {:assistant, "after compaction"} in transcript
   end
 
+  defp text_of_entry(e) when is_tuple(e) do
+    case elem(e, 0) do
+      :tool -> elem(e, 3)
+      _ -> elem(e, 1)
+    end
+  end
+
   defp wait_until(fun, tries \\ 150) do
     if fun.() do
       :ok
     else
       Process.sleep(50)
       wait_until(fun, tries - 1)
+    end
+  end
+
+  describe "tool entries on resume (5c regression)" do
+    # Found live: resumed tool messages became {:tool, "▸ name: text"}
+    # 2-tuples, which normalize_entry downgraded to :info — full content,
+    # always visible, un-toggleable (the 'vertical space as if visible'
+    # report). Fixed: proper 4-tuple tool entries.
+
+    test "resumed tool messages are id-ed, collapsible tool entries" do
+      sid = "resume-tool-#{System.unique_integer()}"
+
+      context =
+        ReqLLM.Context.new()
+        |> ReqLLM.Context.append(ReqLLM.Context.system("framework"))
+        |> ReqLLM.Context.append(ReqLLM.Context.user("run something"))
+        |> ReqLLM.Context.append(
+          ReqLLM.Context.tool_result_message(
+            "shell",
+            "c1",
+            "exit 0\n--- output ---\nlineA\nlineB"
+          )
+        )
+
+      :ok =
+        Store.save(
+          CodingAgent.Core.Session.State.new(id: sid, context: context, model: "m", status: :idle)
+        )
+
+      pid =
+        start_supervised!(
+          {Tui, [name: nil, test_mode: {80, 24}, resume_id: sid, scope_root: File.cwd!()]}
+        )
+
+      wait_until(fn -> :sys.get_state(pid).user_state.transcript != [] end)
+
+      st = :sys.get_state(pid).user_state
+      tool = Enum.find(st.transcript, fn e -> elem(e, 0) == :tool end)
+      assert tool != nil
+      assert elem(tool, 2) == "shell"
+      # collapsed by default, toggleable via 't'
+      assert st.tools_expanded == false
+
+      :ok =
+        ExRatatui.Runtime.inject_event(pid, %ExRatatui.Event.Key{
+          code: "t",
+          kind: "press",
+          modifiers: []
+        })
+
+      assert :sys.get_state(pid).user_state.tools_expanded == true
+
+      :ok =
+        ExRatatui.Runtime.inject_event(pid, %ExRatatui.Event.Key{
+          code: "t",
+          kind: "press",
+          modifiers: []
+        })
+
+      assert :sys.get_state(pid).user_state.tools_expanded == false
     end
   end
 end
