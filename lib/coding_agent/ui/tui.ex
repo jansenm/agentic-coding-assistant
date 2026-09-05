@@ -34,22 +34,29 @@ defmodule CodingAgent.UI.Tui do
     id = Keyword.get(opts, :session_id) || "tui-#{System.unique_integer([:positive])}"
     prompt = Keyword.get(opts, :initial_prompt)
 
-    with {:ok, _pid} <- start_session(id, opts) do
-      Session.subscribe(id)
+    with {:ok, pid, restored} <- start_session(id, opts) do
+      # the ACTUAL session id (a resumed session keeps its persisted id)
+      effective_id = (restored && restored.id) || id
+
+      Session.subscribe(effective_id)
 
       # attach to the CURRENT state, not a stale idle assumption: the
       # session may already be running/interrupted (e.g. attached after
       # the gate paused, or resumed from disk)
       {status, pending} =
-        case Session.state(id) do
+        case Session.state(effective_id) do
           {:ok, st} -> {st.status, st.pending_tool_calls}
           _ -> {:idle, []}
         end
 
+      # resumed sessions render their history: the persisted context
+      # becomes transcript lines (system prompts stay hidden)
+      history = (restored && restored_history(restored)) || []
+
       initial = %{
-        session_id: id,
+        session_id: effective_id,
         status: status,
-        transcript: [],
+        transcript: history,
         deltas: "",
         textarea: ExRatatui.textarea_new(),
         history: [],
@@ -68,26 +75,79 @@ defmodule CodingAgent.UI.Tui do
     end
   end
 
+  # Returns {:ok, pid, restored_state | nil} — the restored state (when
+  # resuming) is what seeds the transcript so old messages are visible.
   defp start_session(id, opts) do
     persisted = Keyword.get(opts, :resume_id) && Store.load(Keyword.fetch!(opts, :resume_id))
 
     case persisted do
       {:ok, state} ->
-        Supervisor.start_session(
-          id: state.id,
-          context: state.context,
-          model: state.model,
-          scope_root: state.scope_root,
-          policy: state.policy
-        )
+        with {:ok, pid} <-
+               Supervisor.start_session(
+                 id: state.id,
+                 context: state.context,
+                 model: state.model,
+                 scope_root: state.scope_root,
+                 policy: state.policy
+               ) do
+          {:ok, pid, state}
+        end
 
       _ ->
-        Supervisor.start_session(
-          id: id,
-          scope_root: Keyword.get(opts, :scope_root) || File.cwd!()
-        )
+        with {:ok, pid} <-
+               Supervisor.start_session(
+                 id: id,
+                 scope_root: Keyword.get(opts, :scope_root) || File.cwd!()
+               ) do
+          {:ok, pid, nil}
+        end
     end
   end
+
+  # Context messages -> transcript lines. System messages (the framework
+  # prompt, AGENTS.md memory) stay hidden; compaction summaries surface
+  # as an info line so the user knows the visible history is partial.
+  defp restored_history(state) do
+    state.context
+    |> ReqLLM.Context.to_list()
+    |> Enum.flat_map(fn
+      # the compaction summary is a synthetic user message; surface it
+      # as an info line so the visible history reads as partial
+      %ReqLLM.Message{role: :user, content: parts} = msg ->
+        text = text_of(parts)
+
+        if String.contains?(text, "Conversation summary") do
+          [{:info, "· (earlier messages were compacted — summary present)"}]
+        else
+          [{msg.role, text}]
+        end
+
+      %ReqLLM.Message{role: :assistant, content: parts} ->
+        [{:assistant, text_of(parts)}]
+
+      %ReqLLM.Message{role: :tool, name: name, content: parts} ->
+        [{:tool, "▸ #{name}: #{text_of(parts)}"}]
+
+      %ReqLLM.Message{role: :system, content: parts} ->
+        if String.contains?(text_of(parts), "Conversation summary"),
+          do: [{:info, "· (earlier messages were compacted — summary present)"}],
+          else: []
+
+      _ ->
+        []
+    end)
+    |> Enum.reject(fn {_role, text} -> text == "" end)
+  end
+
+  defp text_of(parts) when is_list(parts) do
+    Enum.map_join(parts, "", fn
+      %ReqLLM.Message.ContentPart{text: t} when is_binary(t) -> t
+      _ -> ""
+    end)
+  end
+
+  defp text_of(c) when is_binary(c), do: c
+  defp text_of(_), do: ""
 
   # -- Terminal events -------------------------------------------------------
 
