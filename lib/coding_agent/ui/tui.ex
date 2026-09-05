@@ -20,7 +20,7 @@ defmodule CodingAgent.UI.Tui do
   alias CodingAgent.Core.Session
   alias CodingAgent.Core.Session.Supervisor
   alias CodingAgent.Core.Session.Store
-  alias CodingAgent.UI.{Bridge, Keymap}
+  alias CodingAgent.UI.{Bridge, Keymap, TranscriptView}
   alias ExRatatui.Event
   alias ExRatatui.Layout
   alias ExRatatui.Layout.Rect
@@ -57,6 +57,8 @@ defmodule CodingAgent.UI.Tui do
         pending: pending,
         pending_edit: nil,
         last_error: nil,
+        # 0 = follow the tail (auto-scroll); >0 = pinned N lines up
+        scroll_offset: 0,
         test_pid: Keyword.get(opts, :test_pid)
       }
 
@@ -165,6 +167,12 @@ defmodule CodingAgent.UI.Tui do
 
   defp dispatch_input_key(km_event, ev, state) do
     case Keymap.resolve(Keymap.defaults(), km_event) do
+      :scroll_up ->
+        {:noreply, %{state | scroll_offset: state.scroll_offset + 3}}
+
+      :scroll_down ->
+        {:noreply, %{state | scroll_offset: max(state.scroll_offset - 3, 0)}}
+
       :send_input ->
         {:noreply, send_input(state)}
 
@@ -199,7 +207,8 @@ defmodule CodingAgent.UI.Tui do
           history: [value | state.history],
           history_index: nil,
           transcript: state.transcript ++ [{:user, value}],
-          status: :running
+          status: :running,
+          scroll_offset: 0
       }
     end
   end
@@ -314,7 +323,7 @@ defmodule CodingAgent.UI.Tui do
       Layout.split(area, :vertical, [{:min, 0}, {:length, @input_height}, {:length, 1}])
 
     widgets = [
-      {transcript_widget(state), transcript_area},
+      {transcript_widget(state, transcript_area.height), transcript_area},
       {input_widget(state), input_area},
       {status_widget(state), status_area}
     ]
@@ -322,20 +331,28 @@ defmodule CodingAgent.UI.Tui do
     widgets ++ dialog_widgets(state, area)
   end
 
-  defp transcript_widget(state) do
-    lines = Enum.map(state.transcript, &transcript_line/1)
+  # The transcript pane shows a WINDOW of the lines: the last
+  # `pane_height` lines when scroll_offset is 0 (auto-follow), else a
+  # window ending scroll_offset lines above the bottom (scrolled back).
+  # Overflow beyond the pane is what produced the "writes below the
+  # screen" report — Paragraphs clip at their area, so we pre-window.
+  defp transcript_widget(state, pane_height) do
+    lines =
+      Enum.map(state.transcript, &transcript_line/1)
+      |> then(fn ls ->
+        if state.deltas == "", do: ls, else: ls ++ [streaming_line(state)]
+      end)
 
-    body =
-      if state.deltas == "" do
-        Enum.join(lines, "\n")
+    lines =
+      if lines == [] do
+        ["(type below — enter=newline, alt-enter=send)"]
       else
-        Enum.join(lines ++ [streaming_line(state)], "\n")
+        TranscriptView.window(lines, pane_height, state.scroll_offset)
       end
 
-    %Paragraph{
-      text: if(body == "", do: "(type below — enter=newline, alt-enter=send)", else: body),
-      style: %Style{fg: :white}
-    }
+    body = Enum.join(lines, "\n")
+
+    %Paragraph{text: body, style: %Style{fg: :white}}
   end
 
   defp transcript_line({:user, text}), do: "▶ you: " <> text
