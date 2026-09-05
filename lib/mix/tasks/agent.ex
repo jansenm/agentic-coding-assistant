@@ -178,8 +178,12 @@ defmodule Mix.Tasks.Agent do
   defp chat_loop(resume_id) when is_binary(resume_id) do
     resolved =
       case CodingAgent.Core.Session.Store.resolve_id(resume_id) do
-        {:ok, full_id} -> {:ok, full_id}
-        {:error, :enoent} = e -> e
+        {:ok, full_id} ->
+          {:ok, full_id}
+
+        {:error, :enoent} = e ->
+          e
+
         {:error, {:ambiguous_id, many}} = e ->
           IO.puts("Ambiguous session id \"#{resume_id}\" — candidates:")
           Enum.each(many, &IO.puts("  #{&1}"))

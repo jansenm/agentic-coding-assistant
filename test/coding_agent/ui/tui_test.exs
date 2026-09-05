@@ -50,10 +50,13 @@ defmodule CodingAgent.UI.TuiTest do
 
       state = :sys.get_state(pid).user_state
       assert state.deltas == ""
-      assert [{:assistant, "answer text"}, {:tool, tool_line}] = state.transcript
-      assert tool_line =~ "shell"
-      # summary: first line only
-      refute tool_line =~ "stuff"
+
+      assert [
+               {:assistant, "answer text"},
+               {:tool, _id, "shell", content}
+             ] = state.transcript
+
+      assert content =~ "stuff"
     end
 
     test "q event stops the app" do

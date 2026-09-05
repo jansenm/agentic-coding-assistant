@@ -25,7 +25,7 @@ defmodule CodingAgent.UI.Tui do
   alias ExRatatui.Layout
   alias ExRatatui.Layout.Rect
   alias ExRatatui.Style
-  alias ExRatatui.Widgets.{Block, Paragraph, Textarea}
+  alias ExRatatui.Widgets.{Block, Markdown, Paragraph, Textarea}
 
   @input_height 4
 
@@ -66,6 +66,9 @@ defmodule CodingAgent.UI.Tui do
         last_error: nil,
         # 0 = follow the tail (auto-scroll); >0 = pinned N lines up
         scroll_offset: 0,
+        # tool output blocks collapsed by default ('t' toggles) — same
+        # for live execution and resumed history (user request #1)
+        tools_expanded: false,
         test_pid: Keyword.get(opts, :test_pid)
       }
 
@@ -239,6 +242,9 @@ defmodule CodingAgent.UI.Tui do
 
   defp dispatch_input_key(km_event, ev, state) do
     case Keymap.resolve(Keymap.defaults(), km_event) do
+      :toggle_tool_output ->
+        {:noreply, %{state | tools_expanded: not state.tools_expanded}}
+
       :scroll_up ->
         {:noreply, %{state | scroll_offset: state.scroll_offset + 3}}
 
@@ -370,8 +376,8 @@ defmodule CodingAgent.UI.Tui do
   end
 
   def handle_info({:agent, {:tool_executed, name, content}}, state) do
-    {:noreply,
-     %{state | transcript: state.transcript ++ [{:tool, "▸ #{name}: #{summary(content)}"}]}}
+    id = "tool-#{System.unique_integer([:positive])}"
+    {:noreply, %{state | transcript: state.transcript ++ [{:tool, id, name, content}]}}
   end
 
   def handle_info({:agent, {:context_compacted, _keep}}, state) do
@@ -394,45 +400,128 @@ defmodule CodingAgent.UI.Tui do
     [transcript_area, input_area, status_area] =
       Layout.split(area, :vertical, [{:min, 0}, {:length, @input_height}, {:length, 1}])
 
-    widgets = [
-      {transcript_widget(state, transcript_area.height), transcript_area},
-      {input_widget(state), input_area},
-      {status_widget(state), status_area}
-    ]
+    widgets =
+      transcript_widgets(state, transcript_area) ++
+        [
+          {input_widget(state), input_area},
+          {status_widget(state), status_area}
+        ]
 
     widgets ++ dialog_widgets(state, area)
   end
+
+  # Block stack: each visible transcript entry becomes widget(s) with an
+  # estimated height, stacked top-down from the pane top. The window
+  # selection (TranscriptView.visible) guarantees the stack fits.
+  defp transcript_widgets(state, pane) do
+    w = max(pane.width - 2, 10)
+
+    entries =
+      (state.transcript ++ streaming_entries(state))
+      |> Enum.map(&normalize_entry/1)
+      |> TranscriptView.visible(pane.height, state.scroll_offset, state.tools_expanded)
+
+    entries
+    |> Enum.flat_map(fn entry -> entry_widgets(entry, w, state.tools_expanded) end)
+    |> Enum.with_index()
+    |> Enum.map(fn {{widget, h}, i} ->
+      # place sequentially from the pane top; later entries may spill
+      # past the bottom if estimates undershoot — the window budget
+      # keeps that rare
+      {widget,
+       %Rect{
+         x: pane.x + 1,
+         y: pane.y + sum_heights(entries, i, w, state.tools_expanded),
+         width: w,
+         height: h
+       }}
+    end)
+  end
+
+  defp sum_heights(entries, upto, w, te) do
+    entries
+    |> Enum.take(up_to_index(entries, upto))
+    |> Enum.reduce(0, fn e, acc -> acc + TranscriptView.height(e, w, te) end)
+  end
+
+  defp up_to_index(entries, widget_index) do
+    # widget_index maps to the entry that produced it; since flat_map
+    # can emit multiple widgets per entry, track via zip — simpler:
+    # compute heights cumulatively in entry_widgets instead. (Kept
+    # single-widget-per-entry in v1: markdown and frames are one widget.)
+    min(widget_index, length(entries) - 1)
+  end
+
+  # One widget per entry (v1): heights are single-widget, computed via
+  # TranscriptView.height.
+  defp entry_widgets({:user, text}, w, _te) do
+    h = TranscriptView.height({:user, text}, w, false)
+
+    widget = %Paragraph{
+      text: text,
+      style: %Style{fg: :white},
+      block: %Block{
+        title: " you ",
+        borders: [:all],
+        border_type: :rounded,
+        border_style: %Style{fg: :blue}
+      }
+    }
+
+    [{widget, h}]
+  end
+
+  defp entry_widgets({:assistant, text}, w, _te) do
+    h = TranscriptView.height({:assistant, text}, w, false)
+
+    [%Markdown{content: text, style: %Style{fg: :white}, wrap: true}]
+    |> List.update_at(0, &{&1, h})
+  end
+
+  defp entry_widgets({:tool, _id, name, content}, _w, false = _te) do
+    line = "▸ #{name}: #{first_line(content)}"
+
+    [{%Paragraph{text: line, style: %Style{fg: :dark_gray}}, 1}]
+  end
+
+  defp entry_widgets({:tool, _id, name, content}, w, true) do
+    h = TranscriptView.height({:tool, "x", name, content}, w, true)
+
+    widget = %Paragraph{
+      text: "▸ #{name}\n" <> content,
+      style: %Style{fg: :dark_gray},
+      block: %Block{
+        title: " tool output ",
+        borders: [:all],
+        border_type: :rounded,
+        border_style: %Style{fg: :dark_gray}
+      }
+    }
+
+    [{widget, h}]
+  end
+
+  defp entry_widgets({:info, text}, _w, _te) do
+    [{%Paragraph{text: "  " <> text, style: %Style{fg: :dark_gray}}, 1}]
+  end
+
+  defp first_line(text), do: text |> String.split("\n") |> List.first() |> String.slice(0, 80)
+
+  defp streaming_entries(%{deltas: ""}), do: []
+
+  defp streaming_entries(%{deltas: d}), do: [{:assistant, d <> "▌"}]
+
+  defp normalize_entry({:tool, id, name, content}), do: {:tool, id, name, content}
+  defp normalize_entry({:user, t}), do: {:user, t}
+  defp normalize_entry({:assistant, t}), do: {:assistant, t}
+  defp normalize_entry({:info, t}), do: {:info, t}
+  defp normalize_entry({:tool, line}) when is_binary(line), do: {:info, line}
 
   # The transcript pane shows a WINDOW of the lines: the last
   # `pane_height` lines when scroll_offset is 0 (auto-follow), else a
   # window ending scroll_offset lines above the bottom (scrolled back).
   # Overflow beyond the pane is what produced the "writes below the
   # screen" report — Paragraphs clip at their area, so we pre-window.
-  defp transcript_widget(state, pane_height) do
-    lines =
-      Enum.map(state.transcript, &transcript_line/1)
-      |> then(fn ls ->
-        if state.deltas == "", do: ls, else: ls ++ [streaming_line(state)]
-      end)
-
-    lines =
-      if lines == [] do
-        ["(type below — enter=newline, alt-enter=send)"]
-      else
-        TranscriptView.window(lines, pane_height, state.scroll_offset)
-      end
-
-    body = Enum.join(lines, "\n")
-
-    %Paragraph{text: body, style: %Style{fg: :white}}
-  end
-
-  defp transcript_line({:user, text}), do: "▶ you: " <> text
-  defp transcript_line({:assistant, text}), do: "● agent: " <> text
-  defp transcript_line({:tool, text}), do: "  " <> text
-  defp transcript_line({:info, text}), do: "  " <> text
-
-  defp streaming_line(state), do: "● agent: " <> state.deltas <> "▌"
 
   defp input_widget(state) do
     %Textarea{
@@ -508,9 +597,5 @@ defmodule CodingAgent.UI.Tui do
       "#{k}: #{String.slice(v_str, 0, 160)}"
     end)
     |> Enum.join("\n")
-  end
-
-  defp summary(content) do
-    content |> String.split("\n") |> List.first() |> String.slice(0, 80)
   end
 end

@@ -33,6 +33,7 @@ defmodule CodingAgent.UI.Keymap do
           | :history_next
           | :scroll_up
           | :scroll_down
+          | :toggle_tool_output
           | :approve
           | :edit
           | :reject
@@ -62,6 +63,8 @@ defmodule CodingAgent.UI.Keymap do
       history_next: [key(:ctrl_n), key(:arrow_down, :ctrl)],
       scroll_up: [key(:page_up)],
       scroll_down: [key(:page_down)],
+      # 't' toggles tool-output blocks (collapsed by default, 5c)
+      toggle_tool_output: [key(:t)],
       approve: [key(:y)],
       edit: [key(:e)],
       reject: [key(:n)],
