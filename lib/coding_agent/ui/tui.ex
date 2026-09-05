@@ -1,12 +1,18 @@
 defmodule CodingAgent.UI.Tui do
   @moduledoc """
-  The phase-5 terminal UI driver (5a slice): alt-screen transcript +
-  status line over one Core session.
+  The phase-5 terminal UI driver (5a render foundation + 5b interaction).
 
-  ADR 012 boundary: this module owns nothing about the agent loop —
-  it starts a `CodingAgent.Core.Session`, subscribes to the event
-  registry (exactly like the CLI does), and renders what arrives.
-  Input editing arrives in 5b; for now `q` quits.
+  Layout: transcript pane (scrollable) / input area / status line.
+  Input is an ExRatatui Textarea — enter inserts a newline (ADR 011
+  composition-first default); alt-enter sends the buffer to the agent.
+  The ADR 011 keymap is the action table; UI.Bridge translates
+  terminal events; UI.Keymap resolves actions.
+
+  Approval flow (ADR 010): when the gate interrupts, the pending calls
+  render as a dialog; y approves, n rejects, e edits — per-key editing
+  of single-line values in the dialog (multiline values shown
+  read-only; the CLI limitation does not recur: paste is a terminal
+  event here, and args render pretty-printed).
   """
 
   use ExRatatui.App
@@ -14,12 +20,14 @@ defmodule CodingAgent.UI.Tui do
   alias CodingAgent.Core.Session
   alias CodingAgent.Core.Session.Supervisor
   alias CodingAgent.Core.Session.Store
+  alias CodingAgent.UI.{Bridge, Keymap}
   alias ExRatatui.Event
+  alias ExRatatui.Layout
   alias ExRatatui.Layout.Rect
   alias ExRatatui.Style
-  alias ExRatatui.Widgets.Paragraph
+  alias ExRatatui.Widgets.{Block, Paragraph, Textarea}
 
-  @status_height 1
+  @input_height 4
 
   @impl true
   def mount(opts) do
@@ -29,12 +37,27 @@ defmodule CodingAgent.UI.Tui do
     with {:ok, _pid} <- start_session(id, opts) do
       Session.subscribe(id)
 
+      # attach to the CURRENT state, not a stale idle assumption: the
+      # session may already be running/interrupted (e.g. attached after
+      # the gate paused, or resumed from disk)
+      {status, pending} =
+        case Session.state(id) do
+          {:ok, st} -> {st.status, st.pending_tool_calls}
+          _ -> {:idle, []}
+        end
+
       initial = %{
         session_id: id,
-        status: :idle,
+        status: status,
         transcript: [],
         deltas: "",
-        last_error: nil
+        textarea: ExRatatui.textarea_new(),
+        history: [],
+        history_index: nil,
+        pending: pending,
+        pending_edit: nil,
+        last_error: nil,
+        test_pid: Keyword.get(opts, :test_pid)
       }
 
       if prompt, do: send(self(), {:__run__, prompt})
@@ -64,19 +87,154 @@ defmodule CodingAgent.UI.Tui do
     end
   end
 
-  # -- Events ----------------------------------------------------------------
+  # -- Terminal events -------------------------------------------------------
 
   @impl true
-  def handle_event(%Event.Key{code: "q", kind: "press"}, state) do
-    {:stop, state}
+  def handle_event(%Event.Key{kind: "press"} = ev, state) do
+    km_event = Bridge.to_keymap_event(ev)
+
+    # approval dialog has key priority
+    if state.pending != [] do
+      handle_decision_key(km_event, ev, state)
+    else
+      handle_input_key(km_event, ev, state)
+    end
   end
 
-  def handle_event(_event, state) do
+  def handle_event(%Event.Paste{content: text}, state) do
+    state = put_in_textarea(state, text)
     {:noreply, state}
   end
 
-  # Session events (from Core's EventRegistry): identical shapes the
-  # CLI consumes — this module is a pure consumer.
+  def handle_event(_event, state), do: {:noreply, state}
+
+  # In the dialog: y/n/e decide; everything else ignored.
+  defp handle_decision_key(km_event, _ev, state) do
+    case Keymap.resolve(decision_keymap(), km_event) do
+      :approve ->
+        {:noreply, decide(state, :approve)}
+
+      :reject ->
+        {:noreply, decide(state, :reject)}
+
+      :edit ->
+        state =
+          %{
+            state
+            | transcript:
+                state.transcript ++
+                  [{:info, "· arg editing arrives in 5c — use n (reject) for now"}]
+          }
+
+        {:noreply, state}
+
+      _ ->
+        {:noreply, state}
+    end
+  end
+
+  defp decision_keymap do
+    %{
+      approve: [%{key: :y, mod: :none}],
+      reject: [%{key: :n, mod: :none}],
+      edit: [%{key: :e, mod: :none}]
+    }
+  end
+
+  # Input area keys: intercept actions BEFORE the textarea consumes them.
+  defp handle_input_key(km_event, ev, state) do
+    # empty-buffer q quits (kept from 5a); with text, q is just text
+    if km_event == %{key: :q, mod: :none} and buffer_empty?(state) do
+      {:stop, state}
+    else
+      dispatch_input_key(km_event, ev, state)
+    end
+  end
+
+  defp buffer_empty?(state) do
+    ExRatatui.textarea_get_value(state.textarea) == ""
+  end
+
+  defp dispatch_input_key(km_event, ev, state) do
+    case Keymap.resolve(Keymap.defaults(), km_event) do
+      :send_input ->
+        {:noreply, send_input(state)}
+
+      :insert_newline ->
+        forward_to_textarea(state, ev)
+
+      :history_prev ->
+        {:noreply, history_step(state, +1)}
+
+      :history_next ->
+        {:noreply, history_step(state, -1)}
+
+      :abort ->
+        {:stop, state}
+
+      _ ->
+        forward_to_textarea(state, ev)
+    end
+  end
+
+  defp send_input(state) do
+    value = String.trim(ExRatatui.textarea_get_value(state.textarea))
+
+    if value == "" do
+      state
+    else
+      Task.start(fn -> Session.run(state.session_id, value) end)
+
+      %{
+        state
+        | textarea: ExRatatui.textarea_new(),
+          history: [value | state.history],
+          history_index: nil,
+          transcript: state.transcript ++ [{:user, value}],
+          status: :running
+      }
+    end
+  end
+
+  # decisions update the TUI from the session's reply (the decide call
+  # returns the new state with its real status)
+  defp decide(state, decision) when decision in [:approve, :reject] do
+    decisions = Enum.map(state.pending, fn %{id: id} -> %{id: id, decision: decision} end)
+
+    case Session.decide(state.session_id, decisions) do
+      {:ok, session_state} ->
+        %{state | pending: [], pending_edit: nil, status: session_state.status}
+
+      {:error, reason} ->
+        %{state | last_error: reason, pending: [], pending_edit: nil}
+    end
+  end
+
+  defp forward_to_textarea(state, ev) do
+    state = put_in_textarea(state, ev)
+    {:noreply, state}
+  end
+
+  # The textarea state is a mutable NIF resource: textarea_handle_key
+  # returns :ok and mutates in place, so we keep the same reference.
+  defp put_in_textarea(state, %Event.Key{} = ev) do
+    _ = ExRatatui.textarea_handle_key(state.textarea, ev.code, ev.modifiers || [])
+    state
+  end
+
+  defp put_in_textarea(state, text) when is_binary(text) do
+    # bracketed paste: insert at the cursor (native API, in-place)
+    _ = ExRatatui.textarea_insert_str(state.textarea, text)
+    state
+  end
+
+  defp history_step(_state, _dir) do
+    # 5c: history navigation through the textarea value setter
+    # (needs a value+cursor setter pair; deferred)
+  end
+
+  # -- Session events --------------------------------------------------------
+
   @impl true
   def handle_info({:agent, {:llm_deltas, delta}}, state) do
     {:noreply, %{state | deltas: state.deltas <> delta}}
@@ -100,10 +258,7 @@ defmodule CodingAgent.UI.Tui do
   end
 
   def handle_info({:agent, {:context_compacted, _keep}}, state) do
-    {:noreply,
-     state
-     |> Map.put(:deltas, "")
-     |> Map.put(:transcript, state.transcript ++ [{:info, "· context compacted"}])}
+    {:noreply, %{state | transcript: state.transcript ++ [{:info, "· context compacted"}]}}
   end
 
   def handle_info({:__run__, prompt}, state) do
@@ -119,13 +274,16 @@ defmodule CodingAgent.UI.Tui do
   def render(state, frame) do
     area = %Rect{x: 0, y: 0, width: frame.width, height: frame.height}
 
-    [transcript_area, status_area] =
-      ExRatatui.Layout.split(area, :vertical, [{:min, 0}, {:length, @status_height}])
+    [transcript_area, input_area, status_area] =
+      Layout.split(area, :vertical, [{:min, 0}, {:length, @input_height}, {:length, 1}])
 
-    [
+    widgets = [
       {transcript_widget(state), transcript_area},
+      {input_widget(state), input_area},
       {status_widget(state), status_area}
     ]
+
+    widgets ++ dialog_widgets(state, area)
   end
 
   defp transcript_widget(state) do
@@ -139,7 +297,7 @@ defmodule CodingAgent.UI.Tui do
       end
 
     %Paragraph{
-      text: if(body == "", do: "(empty — type q to quit)", else: body),
+      text: if(body == "", do: "(type below — enter=newline, alt-enter=send)", else: body),
       style: %Style{fg: :white}
     }
   end
@@ -151,30 +309,83 @@ defmodule CodingAgent.UI.Tui do
 
   defp streaming_line(state), do: "● agent: " <> state.deltas <> "▌"
 
+  defp input_widget(state) do
+    %Textarea{
+      state: state.textarea,
+      placeholder: "Message the agent… (enter=newline, alt-enter=send)",
+      line_number_style: nil,
+      block: %Block{borders: [:all], border_type: :rounded}
+    }
+  end
+
   defp status_widget(state) do
     status_text =
       case state.status do
         :running -> "● running…"
         :idle -> "○ idle"
-        :interrupted -> "⏸ waiting for YOUR decision"
+        :interrupted -> "⏸ approval needed (y/n/e)"
         :error -> "✖ error"
         other -> inspect(other)
       end
 
-    line =
-      "#{state.session_id}  │  #{status_text}  │  q: quit"
+    line = "#{state.session_id}  │  #{status_text}"
 
-    %Paragraph{
-      text: line,
-      style: %Style{bg: :dark_gray, fg: :white},
-      block: nil
-    }
+    %Paragraph{text: line, style: %Style{bg: :dark_gray, fg: :white}, block: nil}
+  end
+
+  # Approval dialog: one bordered box per pending call, args pretty-printed.
+  defp dialog_widgets(%{pending: []}, _area), do: []
+
+  defp dialog_widgets(%{pending: pending}, area) do
+    pending
+    |> Enum.with_index()
+    |> Enum.map(fn {call, i} ->
+      {_id, name, args} = call_info(call)
+
+      body =
+        "#{name}(#{pretty_args(args)})\n\n" <>
+          "y = approve   n = reject   e = edit (soon)"
+
+      widget = %Paragraph{
+        text: body,
+        style: %Style{fg: :white},
+        block: %Block{
+          title: " APPROVAL #{i + 1}/#{length(pending)} ",
+          borders: [:all],
+          border_type: :double,
+          border_style: %Style{fg: :yellow}
+        }
+      }
+
+      h = min(6 + length(String.split(pretty_args(args), "\n")), div(area.height, 2))
+      rect = %Rect{x: 2, y: area.height - h - 3, width: area.width - 4, height: h}
+      {widget, rect}
+    end)
+  end
+
+  defp call_info(%{id: id, name: name, arguments: args}) when is_map(args),
+    do: {id, name, args}
+
+  defp call_info(%ReqLLM.ToolCall{id: id, function: %{name: name, arguments: args_json}}) do
+    decoded =
+      case Jason.decode(args_json) do
+        {:ok, m} -> m
+        _ -> %{}
+      end
+
+    {id, name, decoded}
+  end
+
+  defp pretty_args(args) do
+    args
+    |> Enum.map(fn {k, v} ->
+      v_str = if is_binary(v) and String.contains?(v, "\n"), do: inspect(v), else: to_string(v)
+      "#{k}: #{String.slice(v_str, 0, 160)}"
+    end)
+    |> Enum.join("\n")
   end
 
   defp summary(content) do
-    content
-    |> String.split("\n")
-    |> List.first()
-    |> String.slice(0, 80)
+    content |> String.split("\n") |> List.first() |> String.slice(0, 80)
   end
 end
