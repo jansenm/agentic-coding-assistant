@@ -28,14 +28,31 @@ defmodule CodingAgent.UI.Tui do
   alias ExRatatui.Text
   alias ExRatatui.Widgets.{Block, Markdown, Paragraph, Textarea}
 
+  # input grows while typing (opencode-style): floor 4 (2 visible
+  # lines + border), grows per textarea line, caps at 12
   @input_height 4
+  @input_max_height 12
   @tool_cap 30
 
   # rows the transcript pane loses to chrome: app margin top+bottom (2)
   # + spacing above/below it (2) + input area + status line. Kept in
   # one place so the manual dimension math (mount/poller/resize/clamp)
-  # stays honest against the real Layout.split in render/2.
+  # floor variant for state-side math before any render / without a
+  # textarea; render-side and live handlers use layout_overhead(state)
   @layout_overhead 2 + 2 + @input_height + 1
+
+  # lines typed -> input height (border included); render and the
+  # state-side clamp math MUST agree (the measure/render lesson)
+  defp input_height(state) do
+    lines =
+      if state.textarea,
+        do: max(ExRatatui.textarea_line_count(state.textarea), 1),
+        else: 2
+
+    min(@input_height - 2 + lines, @input_max_height - 2) + 2
+  end
+
+  defp layout_overhead(state), do: 2 + 2 + input_height(state) + 1
 
   # columns the transcript loses: app margin left+right (2) + the
   # 1-cell inner inset the renderer uses (pane.x + 1 and width - 2)
@@ -408,7 +425,7 @@ defmodule CodingAgent.UI.Tui do
     state =
       state
       |> Map.put(:last_pane_width, max(width - @width_overhead, 10))
-      |> Map.put(:last_pane_height, max(height - @layout_overhead, 1))
+      |> Map.put(:last_pane_height, max(height - layout_overhead(state), 1))
 
     {:noreply, clamp_scroll_now(state)}
   end
@@ -546,7 +563,30 @@ defmodule CodingAgent.UI.Tui do
 
   defp forward_to_textarea(state, ev) do
     state = put_in_textarea(state, ev)
-    {:noreply, state}
+    # typing can grow the input box (opencode-style) — the transcript
+    # pane height changes with it, so re-derive pane dims like the
+    # resize handler does (measure/render agreement)
+    {:noreply, rederive_pane(state)}
+  end
+
+  defp rederive_pane(state) do
+    case ExRatatui.terminal_size() do
+      {w, h} when is_integer(w) and is_integer(h) ->
+        pane_w = max(w - @width_overhead, 10)
+        pane_h = max(h - layout_overhead(state), 1)
+
+        if state.last_pane_width == pane_w and state.last_pane_height == pane_h do
+          state
+        else
+          state
+          |> Map.put(:last_pane_width, pane_w)
+          |> Map.put(:last_pane_height, pane_h)
+          |> clamp_scroll_now()
+        end
+
+      _ ->
+        state
+    end
   end
 
   # The textarea state is a mutable NIF resource: textarea_handle_key
@@ -686,7 +726,7 @@ defmodule CodingAgent.UI.Tui do
     case ExRatatui.terminal_size() do
       {w, h} when is_integer(w) and is_integer(h) ->
         pane_w = max(w - @width_overhead, 10)
-        pane_h = max(h - @layout_overhead, 1)
+        pane_h = max(h - layout_overhead(state), 1)
 
         if state.last_pane_width == pane_w and state.last_pane_height == pane_h do
           {:noreply, state}
@@ -715,17 +755,31 @@ defmodule CodingAgent.UI.Tui do
     # breathing: 1 cell of background visible on every side of the app
     # and between the three regions (opencode-comparison lesson: crammed
     # vs airy is margins + spacing, not line height)
-    [transcript_area, input_area, status_area] =
-      Layout.split(area, :vertical, [{:min, 0}, {:length, @input_height}, {:length, 1}],
+    # status row on the very bottom; sidebar + input span the full
+    # height (sidebar: whole window per user feedback), the input pane
+    # is only as wide as the input (not full width) and grows with the
+    # typed lines (opencode-style)
+    [main_area, status_area] =
+      Layout.split(area, :vertical, [{:min, 0}, {:length, 1}],
         margin: 1,
         spacing: 1
       )
 
-    [sidebar_area, transcript_area] =
-      Layout.split(transcript_area, :horizontal, [
+    [sidebar_area, mid_area] =
+      Layout.split(main_area, :horizontal, [
         {:length, @sidebar_width},
         {:min, 0}
       ])
+
+    in_h = input_height(state)
+
+    # input pane width: capped at the reading measure so a wide
+    # terminal doesn't stretch the input full width (user feedback)
+    [mid_area, _air_area] =
+      Layout.split(mid_area, :horizontal, [{:length, min(@measure, mid_area.width)}, {:min, 0}])
+
+    [transcript_area, input_area] =
+      Layout.split(mid_area, :vertical, [{:min, 0}, {:length, in_h}], spacing: 1)
 
     widgets =
       transcript_widgets(state, transcript_area) ++

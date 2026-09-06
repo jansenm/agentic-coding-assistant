@@ -216,4 +216,41 @@ defmodule CodingAgent.UI.TuiVisualTest do
     assert st.provider_down? == true
     assert sid != nil
   end
+
+  defp start_tui do
+    start_supervised!(%{
+      id: String.to_atom("tui-#{System.unique_integer([:positive])}"),
+      start:
+        {CodingAgent.UI.Tui, :start_link,
+         [[name: nil, test_mode: {100, 30}, scope_root: File.cwd!()]]}
+    })
+  end
+
+  test "sidebar spans the full window height and the input grows while typing" do
+    pid = start_tui()
+    # let the resize poll fire once so pane dims are real
+    Process.sleep(700)
+    rt = :sys.get_state(pid)
+    buf = fn -> rt.terminal_ref |> ExRatatui.get_buffer_content() |> String.split("\n") end
+
+    rows = buf.()
+    # sidebar starts on the first content row; its border column still
+    # drawn at the input row (full-height span — it used to stop above)
+    assert rows |> Enum.at(1) |> String.contains?("agent")
+    assert rows |> Enum.at(26) |> String.contains?("│")
+
+    # floor: empty input = 4 rows; typing 5 lines grows the box
+    ExRatatui.textarea_insert_str(
+      rt.user_state.textarea,
+      "l1\nl2\nl3\nl4\nl5"
+    )
+
+    send(pid, :__resize_poll__)
+    Process.sleep(150)
+    rows = buf.()
+    assert rows |> Enum.any?(fn r -> String.contains?(r, "l5") end)
+    # 5 typed lines visible = the box grew past its 4-row floor
+    box_rows = Enum.count(rows, &String.contains?(&1, "l"))
+    assert box_rows >= 5
+  end
 end
