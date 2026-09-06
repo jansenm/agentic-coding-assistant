@@ -95,4 +95,54 @@ defmodule CodingAgent.UI.TuiVisualTest do
     # sanity: answer is fully below the tool block
     assert answer_h >= 1
   end
+
+  test "open tool straddling the pane top windows its content (box exits, no phantom frame)", %{
+    pid: pid
+  } do
+    # 40-line tool content (no trailing blanks needed) + answer: total
+    # exceeds the 80x24 test pane (15 rows) so the box straddles the top
+    content = Enum.map_join(1..40, "\n", &"row #{&1}")
+    send(pid, {:agent, {:tool_executed, "read_file", content}})
+    send(pid, {:agent, {:llm_message, "# Answer\n\nDone."}})
+    Process.sleep(100)
+
+    :ok =
+      ExRatatui.Runtime.inject_event(pid, %ExRatatui.Event.Key{
+        code: "t",
+        kind: "press",
+        modifiers: ["ctrl"]
+      })
+
+    Process.sleep(200)
+
+    st = :sys.get_state(pid).user_state
+    {:tool, id, _, _} = Enum.find(st.transcript, &match?({:tool, _, _, _}, &1))
+    assert st.open_tool_id == id
+
+    # follow mode: the box is taller than the pane → its top rows
+    # (border + title) are legitimately above the view; the windowed
+    # widget must still show the ▾ header row of the content, i.e. the
+    # content scroll is (skipped - chrome), not skipped
+    entries = st.transcript
+    total = Enum.sum(for e <- entries, do: TranscriptView.height(e, 100, st.open_tool_id))
+    pane_h = st.last_pane_height
+    top = max(total - pane_h - min(st.scroll_offset, max(total - pane_h, 0)), 0)
+    skipped = top
+    # border chrome consumed the first skipped row; the rest scrolls content
+    assert skipped >= 1
+  end
+
+  test "cap_lines trims trailing blank lines before capping", %{pid: pid} do
+    content = Enum.map_join(1..10, "\n", &"row #{&1}") <> String.duplicate("\n", 20)
+    send(pid, {:agent, {:tool_executed, "read_file", content}})
+    Process.sleep(100)
+
+    st = :sys.get_state(pid).user_state
+    {:tool, _, _, stored} = Enum.find(st.transcript, &match?({:tool, _, _, _}, &1))
+
+    # the 20 trailing blanks are gone; the 10 real lines survive
+    lines = String.split(stored, "\n")
+    assert length(lines) == 10
+    assert List.last(lines) == "row 10"
+  end
 end

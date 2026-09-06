@@ -54,11 +54,21 @@ defmodule CodingAgent.UI.Tui do
     with {:ok, _pid, restored} <- start_session(id, opts) do
       # real terminal dimensions: captured at mount, kept fresh by a
       # resize poller (the local transport never dispatches Resize
-      # events — nothing sends them, found live)
+      # events — nothing sends them, found live). In test_mode the
+      # terminal_size() NIF can't see the virtual terminal (it reads
+      # the HOST tty) — seed from the declared test size instead, or
+      # the clamp math diverges from the renderer (found via the
+      # straddle probes: clamp said 15 rows, renderer drew 31).
       initial_size =
-        case ExRatatui.terminal_size() do
-          {w, h} when is_integer(w) and is_integer(h) -> {w, h}
-          _ -> {80, 24}
+        case Keyword.get(opts, :test_mode) do
+          {w, h} when is_integer(w) and is_integer(h) ->
+            {w, h}
+
+          _ ->
+            case ExRatatui.terminal_size() do
+              {w, h} when is_integer(w) and is_integer(h) -> {w, h}
+              _ -> {80, 24}
+            end
         end
 
       Process.send_after(self(), :__resize_poll__, 500)
@@ -205,10 +215,21 @@ defmodule CodingAgent.UI.Tui do
   # full content is never far — collapse + reopen is the escape hatch
   # only if the source itself is huge; the session keeps the truth).
   defp cap_lines(text, cap) do
-    lines = String.split(text, "\n")
-
-    if length(lines) <= cap do
+    # trim trailing blanks first: a read_file with 20+ trailing empty
+    # lines would otherwise make the CAP keep only blanks as its tail
+    # ('large blocks end in a wall of empty lines', found live)
+    lines =
       text
+      |> String.split("\n")
+      |> Enum.reverse()
+      |> Enum.drop_while(&(&1 == ""))
+      |> Enum.reverse()
+
+    # decide AND build from the TRIMMED lines: returning the raw text
+    # here un-trimmed 20 trailing blanks right back in (found live:
+    # the trim made the content look short enough to skip the cap)
+    if length(lines) <= cap do
+      Enum.join(lines, "\n")
     else
       head = Enum.take(lines, 10)
       tail = Enum.take(lines, -10)
@@ -641,14 +662,70 @@ defmodule CodingAgent.UI.Tui do
       |> Enum.map(fn {widget, wh} -> {widget, wh, cursor} end)
     end)
     |> Enum.map(fn {widget, h, cursor} ->
+      skipped = max(top - cursor, 0)
       rel = cursor - top
       y = max(pane.y + rel, pane.y)
       # clip the bottom at the pane edge
       avail = pane.height - (y - pane.y)
       h = max(min(h, avail), 1)
-      widget = apply_scroll(widget, max(top - cursor, 0))
+
+      # Bordered widgets (open tools, user frames) must not RE-ANCHOR
+      # at the pane top when partially scrolled out: the box would
+      # repaint its top border forever while its content scrolled away
+      # ('empty lines at the end of the block', found live). When the
+      # entry's own top rows are already above the pane, drop the
+      # border chrome that has scrolled out and window the content:
+      # the box EXITS through the top instead of sticking to it.
+      # the border rows are skipped FIRST (they are the entry's top
+      # chrome), then any remaining skipped rows scroll the content —
+      # compute the border allowance BEFORE stripping it
+      chrome = border_rows(widget)
+      widget = window_border(widget, skipped)
+      widget = apply_scroll(widget, max(skipped - chrome, 0))
+
       {widget, %Rect{x: column_x(pane, w), y: y, width: w, height: h}}
     end)
+  end
+
+  # Rows of border chrome a widget carries at its top (for windowing).
+  # :all must expand — `:top in [:all]` is false, which cost the ▾ row
+  # of an open tool when the box straddled the pane top (found live).
+  defp border_rows(%Paragraph{block: %Block{borders: [:all]}}), do: 1
+
+  defp border_rows(%Paragraph{block: %Block{borders: sides}}),
+    do: if(:top in sides, do: 1, else: 0)
+
+  defp border_rows(_), do: 0
+
+  # When `skipped` rows of the entry are above the pane, the top border
+  # is one of them: paint the remaining rows as a borderless window.
+  defp window_border(widget, skipped) do
+    case widget do
+      %Paragraph{block: %Block{} = block} when skipped > 0 ->
+        # :all must expand before stripping — rejecting against [:all]
+        # strips nothing (found live: the box kept repainting while its
+        # content scrolled away)
+        sides =
+          case block.borders do
+            [:all] -> [:top, :left, :right, :bottom]
+            sides -> sides
+          end
+
+        sides = Enum.reject(sides, &(&1 in [:top, :left, :right]))
+
+        %{
+          widget
+          | block: %{
+              block
+              | borders: sides,
+                title: nil,
+                title_position: :top
+            }
+        }
+
+      _ ->
+        widget
+    end
   end
 
   # The reading column: capped at @measure, centered on wide panes.
