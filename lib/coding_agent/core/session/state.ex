@@ -19,7 +19,10 @@ defmodule CodingAgent.Core.Session.State do
     test_mode: false,
     # cumulative usage across the session (sidebar + token-based
     # compaction trigger); cost only when the provider prices it
-    usage: %{input_tokens: 0, output_tokens: 0, cost: nil}
+    usage: %{input_tokens: 0, output_tokens: 0, cost: nil},
+    # set once the 80%-of-trigger warning has been broadcast (once,
+    # not every turn)
+    compaction_warned: false
   ]
 
   @type status :: :idle | :running | :interrupted | :error

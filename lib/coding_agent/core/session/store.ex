@@ -118,7 +118,8 @@ defmodule CodingAgent.Core.Session.Store do
               |> Map.merge(%{
                 subscribers: [],
                 status: idle_or_interrupted(state),
-                usage: Map.get(state, :usage) || %{input_tokens: 0, output_tokens: 0, cost: nil}
+                usage: Map.get(state, :usage) || %{input_tokens: 0, output_tokens: 0, cost: nil},
+                compaction_warned: Map.get(state, :compaction_warned, false)
               })
               |> struct!()
 

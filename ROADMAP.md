@@ -199,6 +199,16 @@ skills execution, todowrite, question — see "Later".
      session resume support, `mix tui` entry. 4 headless-runtime
      tests (test_mode + event injection) — the discipline from
      ADR 011/012 holds: no terminal needed in CI.
+   - **5f. Compaction recalibrated (the opencode lesson)** ✅ —
+     absolute token trigger (`compaction_trigger_tokens`, 180k
+     default) replacing the 70%-of-window rule: the user's GLM
+     sessions in opencode grew past 300k before compaction (big
+     window, %-trigger) and per-turn cost scales with context size —
+     quota burned "at unheard speeds". Sidebar now shows the
+     configured model, reasoning effort, last-turn context size
+     (+ % of window) and the compacts-at line; the session warns
+     once at 80% of the trigger ("compaction at 180k will summarize
+     older messages") so compaction is never a silent surprise.
 6. **Multi-agent** — agent definitions as data, orchestration roles
    (plan/execute/analyze), the specialist/repository matrix (ADR 007).
    Cross-repo change atomicity gets its own ADR first.

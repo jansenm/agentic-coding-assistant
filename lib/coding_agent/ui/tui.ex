@@ -17,7 +17,7 @@ defmodule CodingAgent.UI.Tui do
 
   use ExRatatui.App
 
-  alias CodingAgent.Core.Session
+  alias CodingAgent.Core.{Compaction, Session}
   alias CodingAgent.Core.Session.Supervisor
   alias CodingAgent.Core.Session.Store
   alias CodingAgent.UI.{Bridge, Keymap, TranscriptView}
@@ -634,6 +634,11 @@ defmodule CodingAgent.UI.Tui do
     end
   end
 
+  # broadcast info notes (compaction warnings, notices): dim transcript line
+  def handle_info({:agent, {:info, text}}, state) do
+    {:noreply, %{state | transcript: state.transcript ++ [{:info, text}]}}
+  end
+
   def handle_info({:agent, {:llm_message, text}}, state) do
     # the UI transcript stores the DISPLAY shape (breathed markdown):
     # measure and render must never see different strings. The core
@@ -1024,10 +1029,40 @@ defmodule CodingAgent.UI.Tui do
     usage = Map.get(state, :session_usage) || %{input_tokens: 0, output_tokens: 0, cost: nil}
     window = Application.get_env(:coding_agent, :context_window_tokens, 500_000)
 
+    trigger =
+      Application.get_env(
+        :coding_agent,
+        :compaction_trigger_tokens,
+        Compaction.default_trigger_tokens()
+      )
+
+    model = Application.get_env(:coding_agent, :model)
+    effort = Application.get_env(:coding_agent, :reasoning_effort)
+
+    # last turn's context size (ground truth from the provider) drives
+    # the % line; cumulative totals are separate
+    last_in = Map.get(usage, :last_input_tokens, 0)
+    pct = trunc(last_in * 100 / max(window, 1))
+
+    # pre-compaction notice territory: 80%+ of the trigger → visible warning
+    pct_style =
+      if last_in >= trunc(trigger * 0.8), do: %Style{fg: :yellow}, else: %Style{fg: :dark_gray}
+
     lines = [
       Text.Line.new([Text.Span.new("session", style: %Style{fg: :dark_gray})]),
       Text.Line.new([
         Text.Span.new(String.slice(state.session_id, 0, 22), style: %Style{fg: :white})
+      ]),
+      Text.Line.new([Text.Span.new("", style: %Style{})]),
+      Text.Line.new([Text.Span.new("model", style: %Style{fg: :dark_gray})]),
+      Text.Line.new([
+        Text.Span.new(String.slice(model || "?", 0, 22), style: %Style{fg: :white})
+      ]),
+      Text.Line.new([
+        Text.Span.new(
+          "effort: #{effort || "default"}",
+          style: %Style{fg: :dark_gray}
+        )
       ]),
       Text.Line.new([Text.Span.new("", style: %Style{})]),
       Text.Line.new([Text.Span.new("context", style: %Style{fg: :dark_gray})]),
@@ -1045,9 +1080,12 @@ defmodule CodingAgent.UI.Tui do
       ]),
       Text.Line.new([
         Text.Span.new(
-          "#{trunc(Map.get(usage, :input_tokens, 0) * 100 / max(window, 1))}% of window",
-          style: %Style{fg: :dark_gray}
+          "#{fmt_k(last_in)} ctx (#{pct}% win)",
+          style: pct_style
         )
+      ]),
+      Text.Line.new([
+        Text.Span.new("compacts at #{fmt_k(trigger)} tok", style: pct_style)
       ])
     ]
 

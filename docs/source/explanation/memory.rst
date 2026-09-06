@@ -13,6 +13,16 @@ quickly, because tool outputs (file contents, test results) are large.
 It is managed by **compaction**: old turns get summarized, recent turns
 stay verbatim.
 
+Compaction triggers at an **absolute** token threshold
+(`compaction_trigger_tokens`, default 180k), not a percentage of the
+model's window — the opencode lesson: a big window with a
+percentage trigger compacts far too late, and per-turn cost scales
+with context size, so late compaction burns quota at unheard speeds.
+The threshold is visible in the sidebar ("compacts at 180.0k tok"),
+and the session warns once at 80% of the trigger
+("· context at 144k tokens — compaction at 180k will summarize
+older messages") so it is never a silent surprise.
+
 2. Session state (mid-term)
 ---------------------------
 

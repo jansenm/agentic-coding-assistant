@@ -57,17 +57,40 @@ defmodule CodingAgent.Core.UsageTest do
       assert Compaction.plan_tokens(ctx, 100_000, 500_000) == :none
     end
 
-    test "compacts at 70% of the window" do
+    test "compacts at the absolute threshold, not a window percentage" do
       ctx = ReqLLM.Context.new() |> ReqLLM.Context.append(ReqLLM.Context.user("hi"))
 
-      # 70% of 500k = 350k: 350_000 * 100 > 500_000 * 70 is false (equal), 351k exceeds
-      assert Compaction.plan_tokens(ctx, 350_000, 500_000) == :none
-      assert {:ok, _old, _keep} = Compaction.plan_tokens(ctx, 351_000, 500_000)
+      # the opencode lesson: an absolute trigger (default 180k) — a big
+      # window must NOT push compaction later
+      assert Compaction.plan_tokens(ctx, 179_999, 180_000) == :none
+      assert {:ok, _old, _keep} = Compaction.plan_tokens(ctx, 180_000, 180_000)
+      # 300k context with a 500k window still compacts (the %-trigger
+      # would have waited for 350k — exactly the failure mode being fixed)
+      assert {:ok, _old, _keep} = Compaction.plan_tokens(ctx, 300_000, 180_000)
     end
 
     test "no usage data (0) never triggers" do
       ctx = ReqLLM.Context.new() |> ReqLLM.Context.append(ReqLLM.Context.user("hi"))
       assert Compaction.plan_tokens(ctx, 0, 500_000) == :none
+    end
+  end
+
+  describe "warn_approaching_compaction/2" do
+    test "warns once at 80% of the trigger" do
+      s0 = state() |> Session.add_usage(%{input_tokens: 150_000, last_input_tokens: 150_000})
+      # 150k >= 144k (80% of 180k) -> warns
+      s1 = Session.warn_approaching_compaction(s0, 180_000)
+      assert s1.compaction_warned == true
+
+      # second call: no double warn
+      s2 = Session.warn_approaching_compaction(s1, 180_000)
+      assert s2 == s1
+    end
+
+    test "does not warn below 80%" do
+      s0 = state() |> Session.add_usage(%{input_tokens: 100_000, last_input_tokens: 100_000})
+      s1 = Session.warn_approaching_compaction(s0, 180_000)
+      assert s1.compaction_warned == false
     end
   end
 end

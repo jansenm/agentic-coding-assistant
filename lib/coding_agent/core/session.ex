@@ -707,6 +707,30 @@ defmodule CodingAgent.Core.Session do
     state
   end
 
+  # approaching the trigger (80%+): warn ONCE so compaction is never
+  # a silent surprise (the opencode lesson: users trained on 'it will
+  # auto compact' stop watching and then burn quota)
+  @doc "Warns once at 80% of the compaction trigger. Public: tests are LLM-free."
+  def warn_approaching_compaction(%State{} = state, trigger) do
+    last_in = Map.get(state.usage || %{}, :last_input_tokens, 0)
+    warn_at = trunc(trigger * 0.8)
+
+    if last_in >= warn_at and not state.compaction_warned do
+      state = %{state | compaction_warned: true}
+
+      broadcast(
+        state,
+        {:info,
+         "· context at #{div(last_in, 1000)}k tokens — compaction at #{div(trigger, 1000)}k will summarize older messages"}
+      )
+
+      persist(state)
+      state
+    else
+      state
+    end
+  end
+
   defp fail_turn(state, reason) do
     state = %{state | status: :error, last_error: reason}
     broadcast(state, {:status_changed, :error, reason})
@@ -721,19 +745,28 @@ defmodule CodingAgent.Core.Session do
   # next turn boundary would too, but a crash right after compaction
   # should not resurrect the fat context).
   defp maybe_compact(%State{} = state) do
-    window = Application.get_env(:coding_agent, :context_window_tokens, 500_000)
+    # absolute threshold from config — visible in the sidebar,
+    # predictable (the opencode lesson: compaction must be a known
+    # quantity, not a silent %-of-window surprise)
+    trigger =
+      Application.get_env(
+        :coding_agent,
+        :compaction_trigger_tokens,
+        Compaction.default_trigger_tokens()
+      )
+
     last_in = Map.get(state.usage || %{}, :last_input_tokens, 0)
 
     plan =
-      if last_in > 0 do
-        Compaction.plan_tokens(state.context, last_in, window)
+      if last_in >= trigger do
+        Compaction.plan_tokens(state.context, last_in, trigger)
       else
         Compaction.plan(state.context)
       end
 
     case plan do
       :none ->
-        state
+        warn_approaching_compaction(state, trigger)
 
       {:ok, _old, _keep} ->
         Logger.debug(
