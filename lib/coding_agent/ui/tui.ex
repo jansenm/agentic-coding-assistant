@@ -70,6 +70,7 @@ defmodule CodingAgent.UI.Tui do
         # for live execution and resumed history (user request #1)
         tools_expanded: false,
         last_pane_height: nil,
+        last_pane_width: nil,
         test_pid: Keyword.get(opts, :test_pid)
       }
 
@@ -452,7 +453,8 @@ defmodule CodingAgent.UI.Tui do
     state = %{
       state
       | scroll_offset: min(state.scroll_offset, max_offset),
-        last_pane_height: pane.height
+        last_pane_height: pane.height,
+        last_pane_width: w
     }
 
     {top, selected} =
@@ -485,9 +487,12 @@ defmodule CodingAgent.UI.Tui do
     pane_height =
       if is_integer(state.last_pane_height), do: state.last_pane_height, else: 24
 
+    pane_width =
+      if is_integer(state.last_pane_width), do: state.last_pane_width, else: 78
+
     max_offset =
       max(
-        TranscriptView.total_height(entries, 78, state.tools_expanded) - pane_height,
+        TranscriptView.total_height(entries, pane_width, state.tools_expanded) - pane_height,
         0
       )
 
@@ -600,12 +605,14 @@ defmodule CodingAgent.UI.Tui do
       (state.transcript ++ streaming_entries(state))
       |> Enum.map(&normalize_entry/1)
 
-    w = 78
+    w = if is_integer(state.last_pane_width), do: state.last_pane_width, else: 78
+    ph = if is_integer(state.last_pane_height), do: state.last_pane_height, else: 24
     total = TranscriptView.total_height(entries, w, state.tools_expanded)
 
     diag =
-      "scroll: #{state.scroll_offset}/#{max(total - 24, 0)} (#{length(entries)} entries, " <>
-        "tools: #{if state.tools_expanded, do: "open", else: "shut"}, h: #{state.last_pane_height || "?"})"
+      "scroll: #{state.scroll_offset}/#{max(total - ph, 0)} (#{length(entries)} entries, " <>
+        "tools: #{if state.tools_expanded, do: "open", else: "shut"}, " <>
+        "h: #{ph} w: #{w})"
 
     line = "#{state.session_id}  │  #{status_text}  │  #{diag}"
 
