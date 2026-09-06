@@ -681,8 +681,8 @@ defmodule CodingAgent.UI.Tui do
 
   # One widget per entry (v1): heights are single-widget, computed via
   # TranscriptView.height.
-  defp entry_widgets({:user, text}, _w, _te) do
-    h = TranscriptView.height({:user, text}, 80, false)
+  defp entry_widgets({:user, text}, w, _te) do
+    h = TranscriptView.height({:user, text}, w, nil)
 
     widget = %Paragraph{
       text: text,
@@ -699,8 +699,8 @@ defmodule CodingAgent.UI.Tui do
     [{widget, h}]
   end
 
-  defp entry_widgets({:reasoning, text}, _w, _te) do
-    h = TranscriptView.height({:reasoning, text}, 80, nil)
+  defp entry_widgets({:reasoning, text}, w, _te) do
+    h = TranscriptView.height({:reasoning, text}, w, nil)
 
     widget = %Paragraph{
       text: "· thinking: " <> text,
@@ -710,8 +710,11 @@ defmodule CodingAgent.UI.Tui do
     [{widget, h}]
   end
 
-  defp entry_widgets({:assistant, text}, _w, _te) do
-    h = TranscriptView.height({:assistant, text}, 80, false)
+  defp entry_widgets({:assistant, text}, w, _te) do
+    # the same measured height the viewport used for placement (incl.
+    # the air row) — the widget clips at h, leaving the trailing row
+    # blank: the gap after the answer
+    h = TranscriptView.height({:assistant, text}, w, nil)
 
     [%Markdown{content: text, style: %Style{fg: :white}, wrap: true}]
     |> List.update_at(0, &{&1, h})
@@ -723,8 +726,8 @@ defmodule CodingAgent.UI.Tui do
     [{%Paragraph{text: line, style: %Style{fg: :dark_gray}}, 1}]
   end
 
-  defp entry_widgets({:tool, id, name, content}, _w, _open_id) do
-    h = TranscriptView.height({:tool, id, name, content}, 80, id)
+  defp entry_widgets({:tool, id, name, content}, w, _open_id) do
+    h = TranscriptView.height({:tool, id, name, content}, w, id)
 
     widget = %Paragraph{
       text: "▾ #{name}\n" <> content,

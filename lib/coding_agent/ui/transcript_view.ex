@@ -11,6 +11,9 @@ defmodule CodingAgent.UI.TranscriptView do
 
   @border_allowance 2
 
+  # empty line after every answer section, before the next block
+  @air 1
+
   @typedoc "A transcript entry (shape mirrors UI.Tui state)."
   @type entry ::
           {:user, String.t()}
@@ -38,7 +41,9 @@ defmodule CodingAgent.UI.TranscriptView do
         measure_text(text, width) + @border_allowance
 
       {:assistant, text} ->
-        measure_markdown(text, width)
+        # +1 breathing row after every answer — the visual gap before
+        # the next question/tool block (user request, opencode parity)
+        measure_markdown(text, width) + @air
 
       {:tool, id, name, content} ->
         if id == open_id do

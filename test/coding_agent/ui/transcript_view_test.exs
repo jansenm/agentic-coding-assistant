@@ -16,7 +16,8 @@ defmodule CodingAgent.UI.TranscriptViewTest do
 
     test "long lines wrap by width" do
       # 200 chars at width 80 -> 3 lines
-      assert TranscriptView.height({:assistant, String.duplicate("x", 200)}, 80, false) == 3
+      # +1 is the air row after every answer
+      assert TranscriptView.height({:assistant, String.duplicate("x", 200)}, 80, nil) == 4
     end
 
     test "collapsed tool is one line" do
