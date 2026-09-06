@@ -50,9 +50,9 @@ defmodule CodingAgent.UI.TuiAccordionTest do
     send(pid, {:agent, {:tool_executed, "read_file", "one line"}})
     Process.sleep(100)
 
-    # entries are placed TOP-anchored in the pane (renderer: y = cursor - top),
-    # so a single collapsed tool header sits at pane row 0
-    y = 0
+    # entries are placed TOP-anchored in the pane; frame row 0 is the
+    # app margin, so the first pane row is frame row 1
+    y = 1
 
     :ok =
       ExRatatui.Runtime.inject_event(pid, %ExRatatui.Event.Mouse{

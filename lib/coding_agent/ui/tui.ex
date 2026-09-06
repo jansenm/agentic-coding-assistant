@@ -25,9 +25,21 @@ defmodule CodingAgent.UI.Tui do
   alias ExRatatui.Layout
   alias ExRatatui.Layout.Rect
   alias ExRatatui.Style
+  alias ExRatatui.Text
   alias ExRatatui.Widgets.{Block, Markdown, Paragraph, Textarea}
 
   @input_height 4
+  @tool_cap 30
+
+  # rows the transcript pane loses to chrome: app margin top+bottom (2)
+  # + spacing above/below it (2) + input area + status line. Kept in
+  # one place so the manual dimension math (mount/poller/resize/clamp)
+  # stays honest against the real Layout.split in render/2.
+  @layout_overhead 2 + 2 + @input_height + 1
+
+  # columns the transcript loses: app margin left+right (2) + the
+  # 1-cell inner inset the renderer uses (pane.x + 1 and width - 2)
+  @width_overhead 4
 
   @impl true
   def mount(opts) do
@@ -67,8 +79,8 @@ defmodule CodingAgent.UI.Tui do
 
       initial = %{
         session_id: effective_id,
-        last_pane_width: max(tw - 2, 10),
-        last_pane_height: max(th - @input_height - 1, 1),
+        last_pane_width: max(tw - @width_overhead, 10),
+        last_pane_height: max(th - @layout_overhead, 1),
         status: status,
         transcript: history,
         deltas: "",
@@ -83,6 +95,7 @@ defmodule CodingAgent.UI.Tui do
         # tool output blocks collapsed by default ('t' toggles) — same
         # for live execution and resumed history (user request #1)
         open_tool_id: nil,
+        reasoning: "",
         test_pid: Keyword.get(opts, :test_pid)
       }
 
@@ -182,6 +195,68 @@ defmodule CodingAgent.UI.Tui do
   defp text_of(c) when is_binary(c), do: c
   defp text_of(_), do: ""
 
+  # Brevity cap for tool output shown expanded: keep head + tail with
+  # an elision note in the middle (tails matter for test output; the
+  # full content is never far — collapse + reopen is the escape hatch
+  # only if the source itself is huge; the session keeps the truth).
+  defp cap_lines(text, cap) do
+    lines = String.split(text, "\n")
+
+    if length(lines) <= cap do
+      text
+    else
+      head = Enum.take(lines, 10)
+      tail = Enum.take(lines, -10)
+      kept = length(lines) - 20
+
+      Enum.join(head, "\n") <>
+        "\n… (#{kept} lines elided — full output lives in the core session) …\n" <>
+        Enum.join(tail, "\n")
+    end
+  end
+
+  # Visual breathing for markdown answers: ensure ONE blank line after
+  # every heading (and one before, unless the heading opens the text).
+  # The Markdown widget's own spacing is baked in and tight; this
+  # transform is applied once at entry-normalization so measure and
+  # render see the same string (heights never drift from it).
+  defp breathe(text) when is_binary(text) do
+    text
+    |> String.split("\n")
+    |> Enum.reduce({[], false}, fn line, {acc, _} ->
+      heading? = String.match?(line, ~r/^\x23{1,6}\s/)
+
+      acc =
+        acc
+        |> maybe_blank_before(heading?)
+        |> List.insert_at(-1, line)
+        |> maybe_blank_after(heading?)
+
+      {acc, heading?}
+    end)
+    |> elem(0)
+    |> Enum.join("\n")
+    |> String.replace(~r/\n{3,}/, "\n\n")
+  end
+
+  defp breathe(other), do: other
+
+  defp maybe_blank_before(acc, true = _heading?) do
+    case Enum.reverse(acc) do
+      ["" | _] -> acc
+      [] -> acc
+      _ -> acc ++ [""]
+    end
+  end
+
+  defp maybe_blank_before(acc, _), do: acc
+
+  defp maybe_blank_after(acc, true = _heading?) do
+    acc ++ [""]
+  end
+
+  defp maybe_blank_after(acc, _), do: acc
+
   defp entry_text({:tool, _id, _name, content}), do: content
   defp entry_text({_role, text}), do: text
 
@@ -226,8 +301,10 @@ defmodule CodingAgent.UI.Tui do
   # open block → close. The hit-test recomputes the viewport (a pure
   # function of state) — the same placement math the renderer uses.
   def handle_event(%Event.Mouse{kind: "down", button: "left", y: y}, state) do
-    if y < transcript_visible_height(state) do
-      case block_at_row(state, y) do
+    # frame row 0 is the app margin; the transcript occupies the next
+    # transcript_visible_height rows
+    if y >= 1 and y <= transcript_visible_height(state) do
+      case block_at_row(state, y - 1) do
         {:tool, id, _name, _content} ->
           open = if state.open_tool_id == id, do: nil, else: id
           {:noreply, %{state | open_tool_id: open} |> clamp_scroll_now()}
@@ -250,8 +327,8 @@ defmodule CodingAgent.UI.Tui do
   def handle_event(%Event.Resize{width: width, height: height}, state) do
     state =
       state
-      |> Map.put(:last_pane_width, max(width - 2, 10))
-      |> Map.put(:last_pane_height, max(height - @input_height - 1, 1))
+      |> Map.put(:last_pane_width, max(width - @width_overhead, 10))
+      |> Map.put(:last_pane_height, max(height - @layout_overhead, 1))
 
     {:noreply, clamp_scroll_now(state)}
   end
@@ -442,12 +519,33 @@ defmodule CodingAgent.UI.Tui do
   end
 
   def handle_info({:agent, {:llm_message, text}}, state) do
-    {:noreply, %{state | transcript: state.transcript ++ [{:assistant, text}], deltas: ""}}
+    # the UI transcript stores the DISPLAY shape (breathed markdown):
+    # measure and render must never see different strings. The core
+    # session keeps the full-fidelity text.
+    {:noreply,
+     %{
+       state
+       | transcript: state.transcript ++ [{:assistant, breathe(text)}],
+         deltas: "",
+         reasoning: ""
+     }}
+  end
+
+  # agent thinking: streamed BEFORE the answer arrives; shown as a dim
+  # transient block and dropped when the turn's text lands
+  def handle_info({:agent, {:reasoning_deltas, delta}}, state) do
+    {:noreply, %{state | reasoning: state.reasoning <> delta}}
   end
 
   def handle_info({:agent, {:tool_executed, name, content}}, state) do
     id = "tool-#{System.unique_integer([:positive])}"
-    {:noreply, %{state | transcript: state.transcript ++ [{:tool, id, name, content}]}}
+
+    # display shape: capped output (head+tail) — the core session
+    # keeps the full output
+    content = cap_lines(content, @tool_cap)
+
+    {:noreply,
+     %{state | transcript: state.transcript ++ [{:tool, id, name, content}], reasoning: ""}}
   end
 
   def handle_info({:agent, {:context_compacted, _keep}}, state) do
@@ -466,8 +564,8 @@ defmodule CodingAgent.UI.Tui do
 
     case ExRatatui.terminal_size() do
       {w, h} when is_integer(w) and is_integer(h) ->
-        pane_w = max(w - 2, 10)
-        pane_h = max(h - @input_height - 1, 1)
+        pane_w = max(w - @width_overhead, 10)
+        pane_h = max(h - @layout_overhead, 1)
 
         if state.last_pane_width == pane_w and state.last_pane_height == pane_h do
           {:noreply, state}
@@ -493,8 +591,14 @@ defmodule CodingAgent.UI.Tui do
   def render(state, frame) do
     area = %Rect{x: 0, y: 0, width: frame.width, height: frame.height}
 
+    # breathing: 1 cell of background visible on every side of the app
+    # and between the three regions (opencode-comparison lesson: crammed
+    # vs airy is margins + spacing, not line height)
     [transcript_area, input_area, status_area] =
-      Layout.split(area, :vertical, [{:min, 0}, {:length, @input_height}, {:length, 1}])
+      Layout.split(area, :vertical, [{:min, 0}, {:length, @input_height}, {:length, 1}],
+        margin: 1,
+        spacing: 1
+      )
 
     widgets =
       transcript_widgets(state, transcript_area) ++
@@ -587,8 +691,20 @@ defmodule CodingAgent.UI.Tui do
         title: " you ",
         borders: [:all],
         border_type: :rounded,
-        border_style: %Style{fg: :blue}
+        border_style: %Style{fg: :blue},
+        padding: {1, 1, 0, 0}
       }
+    }
+
+    [{widget, h}]
+  end
+
+  defp entry_widgets({:reasoning, text}, _w, _te) do
+    h = TranscriptView.height({:reasoning, text}, 80, nil)
+
+    widget = %Paragraph{
+      text: "· thinking: " <> text,
+      style: %Style{fg: :dark_gray, modifiers: [:italic]}
     }
 
     [{widget, h}]
@@ -630,13 +746,21 @@ defmodule CodingAgent.UI.Tui do
 
   defp first_line(text), do: text |> String.split("\n") |> List.first() |> String.slice(0, 80)
 
-  defp streaming_entries(%{deltas: ""}), do: []
+  # transient stream entries: thinking first (dim), the in-flight
+  # answer after it (with cursor); both clear when the final message
+  # lands (llm_message handler)
+  defp streaming_entries(%{deltas: "", reasoning: ""}), do: []
 
-  defp streaming_entries(%{deltas: d}), do: [{:assistant, d <> "▌"}]
+  defp streaming_entries(%{deltas: "", reasoning: r}) when r != "", do: [{:reasoning, r}]
+
+  defp streaming_entries(%{deltas: d, reasoning: r}) do
+    if(r == "", do: [], else: [{:reasoning, r}]) ++ [{:assistant, d <> "▌"}]
+  end
 
   defp normalize_entry({:tool, id, name, content}), do: {:tool, id, name, content}
   defp normalize_entry({:user, t}), do: {:user, t}
   defp normalize_entry({:assistant, t}), do: {:assistant, t}
+  defp normalize_entry({:reasoning, t}), do: {:reasoning, t}
   defp normalize_entry({:info, t}), do: {:info, t}
   defp normalize_entry({:tool, line}) when is_binary(line), do: {:info, line}
 
@@ -700,15 +824,6 @@ defmodule CodingAgent.UI.Tui do
   end
 
   defp status_widget(state) do
-    status_text =
-      case state.status do
-        :running -> "● running…"
-        :idle -> "○ idle"
-        :interrupted -> "⏸ approval needed (y/n/e)"
-        :error -> "✖ error"
-        other -> inspect(other)
-      end
-
     # scroll diagnostics (live debugging): entries / measured total /
     # offset / expand state — visible in the status line
     entries =
@@ -727,9 +842,33 @@ defmodule CodingAgent.UI.Tui do
         "#{open}, " <>
         "h: #{ph} w: #{w})"
 
-    line = "#{state.session_id}  │  #{status_text}  │  #{diag}"
+    {glyph, color} =
+      case state.status do
+        :running -> {"●", :light_green}
+        :idle -> {"○", :gray}
+        :interrupted -> {"⏸", :yellow}
+        :error -> {"✖", :red}
+        _ -> {"?", :gray}
+      end
 
-    %Paragraph{text: line, style: %Style{bg: :dark_gray, fg: :white}, block: nil}
+    status_text =
+      case state.status do
+        :running -> "running…"
+        :idle -> "idle"
+        :interrupted -> "approval needed (y/n/e)"
+        :error -> "error"
+        other -> inspect(other)
+      end
+
+    line =
+      Text.Line.new([
+        Text.Span.new("#{state.session_id}  ", style: %Style{fg: :gray}),
+        Text.Span.new(glyph, style: %Style{fg: color, modifiers: [:bold]}),
+        Text.Span.new(" #{status_text}  ", style: %Style{fg: color}),
+        Text.Span.new(diag, style: %Style{fg: :dark_gray})
+      ])
+
+    %Paragraph{text: [line], style: %Style{bg: :dark_gray}, block: nil}
   end
 
   # Approval dialog: one bordered box per pending call, args pretty-printed.

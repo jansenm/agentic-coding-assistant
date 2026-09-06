@@ -623,7 +623,7 @@ defmodule CodingAgent.Core.Session do
         {acc <> delta, calls}
 
       %{type: :reasoning_delta, data: delta}, {acc, calls} ->
-        broadcast_text(session_id, delta)
+        broadcast_reasoning(session_id, delta)
         {acc, calls}
 
       %{type: :tool_call, data: call}, {acc, calls} ->
@@ -765,6 +765,12 @@ defmodule CodingAgent.Core.Session do
       {:ok, key} -> {:ok, key}
       :error -> {:error, {:missing_api_key, env_var}}
     end
+  end
+
+  defp broadcast_reasoning(session_id, delta) do
+    Registry.dispatch(CodingAgent.EventRegistry, {:session_events, session_id}, fn entries ->
+      for {pid, _} <- entries, do: send(pid, {:agent, {:reasoning_deltas, delta}})
+    end)
   end
 
   defp broadcast_text(session_id, delta) do

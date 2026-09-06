@@ -26,6 +26,11 @@ defmodule CodingAgent.UI.TranscriptView do
   @spec height(entry(), pos_integer(), open_id()) :: pos_integer()
   def height(entry, width, open_id) do
     case entry do
+      {:reasoning, text} ->
+        # +2: the "· thinking: " marker prefix wraps too — measure the
+        # same string the renderer builds
+        measure_text("· thinking: " <> text, width)
+
       {:info, text} ->
         measure_text(text, width)
 
