@@ -145,4 +145,22 @@ defmodule CodingAgent.UI.TuiVisualTest do
     assert length(lines) == 10
     assert List.last(lines) == "row 10"
   end
+
+  test "turn failure lands in the transcript, short and human", %{pid: pid} do
+    reason = %ReqLLM.Error.API.Stream{
+      reason: "Stream failed: %Finch.TransportError{reason: :econnrefused}"
+    }
+
+    send(pid, {:agent, {:status_changed, :error, reason}})
+    Process.sleep(100)
+
+    st = :sys.get_state(pid).user_state
+    {:info, msg} = Enum.find(st.transcript, &match?({:info, _}, &1))
+
+    assert msg =~ "✖ turn failed"
+    # the inspect dump is cut, the human part kept
+    assert msg =~ "Stream failed:"
+    refute msg =~ "%Finch.TransportError"
+    assert st.status == :error
+  end
 end

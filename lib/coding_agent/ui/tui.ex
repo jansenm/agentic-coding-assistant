@@ -210,6 +210,28 @@ defmodule CodingAgent.UI.Tui do
   defp text_of(c) when is_binary(c), do: c
   defp text_of(_), do: ""
 
+  # a one-line human summary of a turn failure reason (stream error
+  # maps nest the transport cause; keep it short for the transcript)
+  defp error_text(%ReqLLM.Error.API.Stream{} = err), do: shorten(err.reason)
+
+  defp error_text(%{reason: reason}) when is_binary(reason), do: shorten(reason)
+  defp error_text(reason) when is_binary(reason), do: shorten(reason)
+  defp error_text(reason) when is_atom(reason), do: inspect(reason)
+  defp error_text(_), do: "unknown error"
+
+  # reason strings embed full inspect dumps (%Finch.TransportError{...});
+  # keep the human part
+  defp shorten(reason) do
+    reason
+    |> String.split("%")
+    |> List.first()
+    |> String.trim()
+    |> case do
+      "" -> reason
+      short -> short
+    end
+  end
+
   # Brevity cap for tool output shown expanded: keep head + tail with
   # an elision note in the middle (tails matter for test output; the
   # full content is never far — collapse + reopen is the escape hatch
@@ -538,6 +560,15 @@ defmodule CodingAgent.UI.Tui do
   # during a run; attaching mid-session pulls state on mount instead).
   def handle_info({:agent, {:status_changed, :interrupted, pending}}, state) do
     {:noreply, %{state | status: :interrupted, pending: pending}}
+  end
+
+  def handle_info({:agent, {:status_changed, :error, reason}}, state) do
+    # a failed turn (e.g. provider down) becomes a visible transcript
+    # line, not a raw logger dump over the alternate screen
+    msg =
+      "✖ turn failed: #{error_text(reason)} — the session is idle again; check the provider (ollama up? key set?) and retry"
+
+    {:noreply, %{state | status: :error, transcript: state.transcript ++ [{:info, msg}]}}
   end
 
   def handle_info({:agent, {:status_changed, status, _detail}}, state) do

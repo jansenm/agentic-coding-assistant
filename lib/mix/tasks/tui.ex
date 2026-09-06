@@ -15,6 +15,20 @@ defmodule Mix.Tasks.Tui do
   def run(args) do
     Mix.Task.run("app.start", [])
 
+    # Console logging paints OVER the alternate screen: every warning
+    # corrupts the diff-rendered frame (found live: req_llm transport
+    # retries dumped raw logs over the transcript, status line and
+    # input box). The TUI owns the screen while it runs — logs go to
+    # a file instead.
+    log_path = log_path()
+    :logger.remove_handler(:default)
+
+    :logger.add_handler(:coding_agent_tui, __MODULE__.Handler, %{
+      config: %{file: log_path, type: :raw}
+    })
+
+    Mix.shell().info("logs: #{log_path}")
+
     {opts, args} =
       OptionParser.parse!(args, strict: [resume: :string], aliases: [r: :resume])
 
@@ -48,4 +62,31 @@ defmodule Mix.Tasks.Tui do
 
   defp maybe_resume(tui_opts, nil), do: tui_opts
   defp maybe_resume(tui_opts, id), do: Keyword.put(tui_opts, :resume_id, id)
+
+  # Minimal :logger file handler (OTP logger, not the deprecated
+  # Logger backends): one line per event, no truncation games.
+  defmodule Handler do
+    @moduledoc false
+
+    def log(event, %{config: %{file: file}}) do
+      # ~p on the message: logger msg may be chardata with embedded
+      # atoms/terms — ~ts would crash on atoms, ~p prints anything
+      line =
+        case event[:msg] do
+          m when is_binary(m) -> :io_lib.format("~ts [~p] ~ts~n", [ts(), event[:level], m])
+          m -> :io_lib.format("~ts [~p] ~p~n", [ts(), event[:level], m])
+        end
+
+      File.write(file, line, [:append])
+    end
+
+    defp ts, do: Calendar.strftime(NaiveDateTime.local_now(), "%H:%M:%S")
+  end
+
+  defp log_path do
+    dir = Application.get_env(:coding_agent, :store_dir, "~/.local/state/coding_agent")
+    dir = Path.expand(dir)
+    File.mkdir_p!(dir)
+    Path.join(dir, "tui.log")
+  end
 end
