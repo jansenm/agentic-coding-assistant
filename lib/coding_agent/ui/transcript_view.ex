@@ -19,20 +19,12 @@ defmodule CodingAgent.UI.TranscriptView do
           | {:info, String.t()}
 
   @doc """
-  Rendered height of one entry at the given pane width — MEASURED via
-  the headless buffer backend (not estimated).
-
-  The estimate-based heights drifted from real markdown rendering
-  (markdown reflows inline markup; the naive per-line ceil overshoots
-  by ~25% on real agent messages) — the drift showed up as gaps between
-  blocks and "scrolling dead" stretches while traversing the gaps
-  (found live with the user's real session).
-
-  Measurements are cached per {fingerprint, width} in ETS — content is
-  stable within a turn, so repeats are free.
+  Rendered height of one entry at the given width, given which tool
+  block (if any) is open. `open_id` matches a `{:tool, id, _, _}`
+  entry; nil means every tool block is collapsed.
   """
-  @spec height(entry(), pos_integer(), boolean()) :: pos_integer()
-  def height(entry, width, tools_expanded) do
+  @spec height(entry(), pos_integer(), open_id()) :: pos_integer()
+  def height(entry, width, open_id) do
     case entry do
       {:info, text} ->
         measure_text(text, width)
@@ -43,8 +35,8 @@ defmodule CodingAgent.UI.TranscriptView do
       {:assistant, text} ->
         measure_markdown(text, width)
 
-      {:tool, _id, name, content} ->
-        if tools_expanded do
+      {:tool, id, name, content} ->
+        if id == open_id do
           measure_text("▸ #{name}\n" <> content, width) + @border_allowance
         else
           measure_text(header(name, content), width)
@@ -60,9 +52,9 @@ defmodule CodingAgent.UI.TranscriptView do
   Total estimated height of the transcript at the given width — the
   scrollable extent.
   """
-  @spec total_height([entry()], pos_integer(), boolean()) :: non_neg_integer()
-  def total_height(entries, width, tools_expanded) do
-    Enum.reduce(entries, 0, &(&2 + height(&1, width, tools_expanded)))
+  @spec total_height([entry()], pos_integer(), open_id()) :: non_neg_integer()
+  def total_height(entries, width, open_id) do
+    Enum.reduce(entries, 0, &(&2 + height(&1, width, open_id)))
   end
 
   @doc """
@@ -72,12 +64,14 @@ defmodule CodingAgent.UI.TranscriptView do
   relative to the pane top (partial entries render clipped). Clamped
   so the viewport never scrolls past the top.
   """
-  @spec viewport([entry()], pos_integer(), non_neg_integer(), pos_integer(), boolean()) ::
-          {non_neg_integer(), [entry()]}
+  @typep open_id() :: nil | binary()
+
+  @spec viewport([entry()], pos_integer(), non_neg_integer(), pos_integer(), open_id()) ::
+          {non_neg_integer(), [{entry(), non_neg_integer(), pos_integer()}]}
   def viewport([], _height, _offset, _width, _t), do: {0, []}
 
-  def viewport(entries, height, offset, width, tools_expanded) do
-    total = total_height(entries, width, tools_expanded)
+  def viewport(entries, height, offset, width, open_id) do
+    total = total_height(entries, width, open_id)
     # top line of the viewport in transcript coordinates
     top = max(total - height - offset, 0)
 
@@ -86,7 +80,7 @@ defmodule CodingAgent.UI.TranscriptView do
     pairs =
       entries
       |> Enum.map_reduce(0, fn entry, cursor ->
-        h = height(entry, width, tools_expanded)
+        h = height(entry, width, open_id)
         {{entry, cursor, h}, cursor + h}
       end)
       |> elem(0)

@@ -147,8 +147,9 @@ defmodule CodingAgent.UI.TuiResumeTest do
       tool = Enum.find(st.transcript, fn e -> elem(e, 0) == :tool end)
       assert tool != nil
       assert elem(tool, 2) == "shell"
-      # collapsed by default, toggleable via 't'
-      assert st.tools_expanded == false
+      # collapsed by default; ctrl-t opens the most recent tool block
+      # (single-open accordion)
+      assert st.open_tool_id == nil
 
       :ok =
         ExRatatui.Runtime.inject_event(pid, %ExRatatui.Event.Key{
@@ -157,7 +158,8 @@ defmodule CodingAgent.UI.TuiResumeTest do
           modifiers: ["ctrl"]
         })
 
-      assert :sys.get_state(pid).user_state.tools_expanded == true
+      st2 = :sys.get_state(pid).user_state
+      assert st2.open_tool_id == elem(tool, 1)
 
       :ok =
         ExRatatui.Runtime.inject_event(pid, %ExRatatui.Event.Key{
@@ -166,7 +168,7 @@ defmodule CodingAgent.UI.TuiResumeTest do
           modifiers: ["ctrl"]
         })
 
-      assert :sys.get_state(pid).user_state.tools_expanded == false
+      assert :sys.get_state(pid).user_state.open_tool_id == nil
     end
   end
 end

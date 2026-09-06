@@ -24,7 +24,7 @@ defmodule CodingAgent.UI.TranscriptViewTest do
     end
 
     test "expanded tool is content + border" do
-      assert TranscriptView.height(tool("t1", "shell", "a\nb\nc"), 80, true) == 6
+      assert TranscriptView.height(tool("t1", "shell", "a\nb\nc"), 80, "t1") == 6
     end
   end
 

@@ -82,7 +82,7 @@ defmodule CodingAgent.UI.Tui do
         scroll_offset: 0,
         # tool output blocks collapsed by default ('t' toggles) — same
         # for live execution and resumed history (user request #1)
-        tools_expanded: false,
+        open_tool_id: nil,
         test_pid: Keyword.get(opts, :test_pid)
       }
 
@@ -221,6 +221,25 @@ defmodule CodingAgent.UI.Tui do
     {:noreply, %{state | scroll_offset: max(state.scroll_offset - 2, 0)}}
   end
 
+  # Click a tool block header → open THAT block (single-open: any other
+  # closes automatically — only one id is ever remembered). Click an
+  # open block → close. The hit-test recomputes the viewport (a pure
+  # function of state) — the same placement math the renderer uses.
+  def handle_event(%Event.Mouse{kind: "down", button: "left", y: y}, state) do
+    if y < transcript_visible_height(state) do
+      case block_at_row(state, y) do
+        {:tool, id, _name, _content} ->
+          open = if state.open_tool_id == id, do: nil, else: id
+          {:noreply, %{state | open_tool_id: open} |> clamp_scroll_now()}
+
+        _ ->
+          {:noreply, state}
+      end
+    else
+      {:noreply, state}
+    end
+  end
+
   # Terminal dimensions arrive here (and on every actual resize).
   # render/2 sees the frame but CANNOT persist state — every state
   # update computed in render is discarded by the runtime. The
@@ -285,7 +304,7 @@ defmodule CodingAgent.UI.Tui do
   defp dispatch_input_key(km_event, ev, state) do
     case Keymap.resolve(Keymap.defaults(), km_event) do
       :toggle_tool_output ->
-        state = %{state | tools_expanded: not state.tools_expanded}
+        state = toggle_last_tool(state)
         state = clamp_scroll_now(state)
         {:noreply, state}
 
@@ -500,16 +519,16 @@ defmodule CodingAgent.UI.Tui do
     # view-side clamp for THIS frame (persistence happens in the
     # resize handler — render cannot mutate state)
     max_offset =
-      max(TranscriptView.total_height(entries, w, state.tools_expanded) - pane.height, 0)
+      max(TranscriptView.total_height(entries, w, state.open_tool_id) - pane.height, 0)
 
     scroll_offset = min(state.scroll_offset, max_offset)
 
     {top, selected} =
-      TranscriptView.viewport(entries, pane.height, scroll_offset, w, state.tools_expanded)
+      TranscriptView.viewport(entries, pane.height, scroll_offset, w, state.open_tool_id)
 
     selected
     |> Enum.flat_map(fn {entry, cursor, _h} ->
-      entry_widgets(entry, w, state.tools_expanded)
+      entry_widgets(entry, w, state.open_tool_id)
       |> Enum.map(fn {widget, wh} -> {widget, wh, cursor} end)
     end)
     |> Enum.map(fn {widget, h, cursor} ->
@@ -539,7 +558,7 @@ defmodule CodingAgent.UI.Tui do
 
     max_offset =
       max(
-        TranscriptView.total_height(entries, pane_width, state.tools_expanded) - pane_height,
+        TranscriptView.total_height(entries, pane_width, state.open_tool_id) - pane_height,
         0
       )
 
@@ -582,17 +601,17 @@ defmodule CodingAgent.UI.Tui do
     |> List.update_at(0, &{&1, h})
   end
 
-  defp entry_widgets({:tool, _id, name, content}, _w, false = _te) do
+  defp entry_widgets({:tool, id, name, content}, _w, open_id) when id != open_id do
     line = "▸ #{name}: #{first_line(content)}"
 
     [{%Paragraph{text: line, style: %Style{fg: :dark_gray}}, 1}]
   end
 
-  defp entry_widgets({:tool, _id, name, content}, _w, true) do
-    h = TranscriptView.height({:tool, "x", name, content}, 80, true)
+  defp entry_widgets({:tool, id, name, content}, _w, _open_id) do
+    h = TranscriptView.height({:tool, id, name, content}, 80, id)
 
     widget = %Paragraph{
-      text: "▸ #{name}\n" <> content,
+      text: "▾ #{name}\n" <> content,
       style: %Style{fg: :dark_gray},
       block: %Block{
         title: " tool output ",
@@ -636,6 +655,50 @@ defmodule CodingAgent.UI.Tui do
     }
   end
 
+  # Transcript rows visible above the input/status areas.
+  defp transcript_visible_height(state) do
+    if is_integer(state.last_pane_height), do: state.last_pane_height, else: 24
+  end
+
+  # Which entry covers screen row `y` (transcript-pane-relative)?
+  # Recomputes the same placement the renderer produces this frame.
+  defp block_at_row(state, y) do
+    entries =
+      (state.transcript ++ streaming_entries(state))
+      |> Enum.map(&normalize_entry/1)
+
+    w = if is_integer(state.last_pane_width), do: state.last_pane_width, else: 78
+    ph = transcript_visible_height(state)
+
+    {_top, selected} =
+      TranscriptView.viewport(entries, ph, state.scroll_offset, w, state.open_tool_id)
+
+    # selected: [{entry, cursor, h}] — cursor is absolute (from the
+    # BOTTOM). Screen row = (entry_bottom - 1) - y where entry_bottom
+    # counts from the pane top... easier: walk from the pane bottom.
+    total = TranscriptView.total_height(entries, w, state.open_tool_id)
+    top = max(total - ph - state.scroll_offset, 0)
+
+    Enum.find_value(selected, fn {entry, cursor, h} ->
+      rel_top = cursor - top
+      rel_bottom = rel_top + h - 1
+
+      if y >= rel_top and y <= rel_bottom, do: entry
+    end)
+  end
+
+  # ctrl-t: open the most recent tool block (or close it if it is open).
+  defp toggle_last_tool(state) do
+    case Enum.reverse(state.transcript) |> Enum.find(&match?({:tool, _, _, _}, &1)) do
+      {:tool, id, _, _} ->
+        open = if state.open_tool_id == id, do: nil, else: id
+        %{state | open_tool_id: open} |> clamp_scroll_now()
+
+      nil ->
+        state
+    end
+  end
+
   defp status_widget(state) do
     status_text =
       case state.status do
@@ -654,11 +717,14 @@ defmodule CodingAgent.UI.Tui do
 
     w = if is_integer(state.last_pane_width), do: state.last_pane_width, else: 78
     ph = if is_integer(state.last_pane_height), do: state.last_pane_height, else: 24
-    total = TranscriptView.total_height(entries, w, state.tools_expanded)
+    total = TranscriptView.total_height(entries, w, state.open_tool_id)
+
+    open =
+      if state.open_tool_id, do: "open:#{state.open_tool_id}", else: "tools shut"
 
     diag =
       "scroll: #{state.scroll_offset}/#{max(total - ph, 0)} (#{length(entries)} entries, " <>
-        "tools: #{if state.tools_expanded, do: "open", else: "shut"}, " <>
+        "#{open}, " <>
         "h: #{ph} w: #{w})"
 
     line = "#{state.session_id}  │  #{status_text}  │  #{diag}"
