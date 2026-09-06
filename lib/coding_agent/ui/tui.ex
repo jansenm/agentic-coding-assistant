@@ -35,6 +35,16 @@ defmodule CodingAgent.UI.Tui do
     prompt = Keyword.get(opts, :initial_prompt)
 
     with {:ok, _pid, restored} <- start_session(id, opts) do
+      # real terminal dimensions: captured at mount, kept fresh by a
+      # resize poller (the local transport never dispatches Resize
+      # events — nothing sends them, found live)
+      initial_size =
+        case ExRatatui.terminal_size() do
+          {w, h} when is_integer(w) and is_integer(h) -> {w, h}
+          _ -> {80, 24}
+        end
+
+      Process.send_after(self(), :__resize_poll__, 500)
       # the ACTUAL session id (a resumed session keeps its persisted id)
       effective_id = (restored && restored.id) || id
 
@@ -53,8 +63,12 @@ defmodule CodingAgent.UI.Tui do
       # becomes transcript lines (system prompts stay hidden)
       history = (restored && restored_history(restored)) || []
 
+      {tw, th} = initial_size
+
       initial = %{
         session_id: effective_id,
+        last_pane_width: max(tw - 2, 10),
+        last_pane_height: max(th - @input_height - 1, 1),
         status: status,
         transcript: history,
         deltas: "",
@@ -69,8 +83,6 @@ defmodule CodingAgent.UI.Tui do
         # tool output blocks collapsed by default ('t' toggles) — same
         # for live execution and resumed history (user request #1)
         tools_expanded: false,
-        last_pane_height: nil,
-        last_pane_width: nil,
         test_pid: Keyword.get(opts, :test_pid)
       }
 
@@ -207,6 +219,22 @@ defmodule CodingAgent.UI.Tui do
   def handle_event(%Event.Mouse{kind: "scroll_down"}, state) do
     state = clamp_scroll_now(state)
     {:noreply, %{state | scroll_offset: max(state.scroll_offset - 2, 0)}}
+  end
+
+  # Terminal dimensions arrive here (and on every actual resize).
+  # render/2 sees the frame but CANNOT persist state — every state
+  # update computed in render is discarded by the runtime. The
+  # last_pane_* values are authoritative only through this handler
+  # (found live: dims defaulted to 24/78 forever because render-side
+  # persistence was an illusion; the headless tests ran at exactly the
+  # default dims and never noticed).
+  def handle_event(%Event.Resize{width: width, height: height}, state) do
+    state =
+      state
+      |> Map.put(:last_pane_width, max(width - 2, 10))
+      |> Map.put(:last_pane_height, max(height - @input_height - 1, 1))
+
+    {:noreply, clamp_scroll_now(state)}
   end
 
   def handle_event(%Event.Paste{content: text}, state) do
@@ -412,6 +440,32 @@ defmodule CodingAgent.UI.Tui do
     {:noreply, %{state | status: :running, transcript: state.transcript ++ [{:user, prompt}]}}
   end
 
+  # Terminal resize: the local transport dispatches no Resize events,
+  # so poll the size (cheap ioctl) and act on changes.
+  def handle_info(:__resize_poll__, state) do
+    Process.send_after(self(), :__resize_poll__, 500)
+
+    case ExRatatui.terminal_size() do
+      {w, h} when is_integer(w) and is_integer(h) ->
+        pane_w = max(w - 2, 10)
+        pane_h = max(h - @input_height - 1, 1)
+
+        if state.last_pane_width == pane_w and state.last_pane_height == pane_h do
+          {:noreply, state}
+        else
+          state =
+            state
+            |> Map.put(:last_pane_width, pane_w)
+            |> Map.put(:last_pane_height, pane_h)
+
+          {:noreply, clamp_scroll_now(state)}
+        end
+
+      _ ->
+        {:noreply, state}
+    end
+  end
+
   def handle_info(_msg, state), do: {:noreply, state}
 
   # -- Rendering -------------------------------------------------------------
@@ -443,22 +497,15 @@ defmodule CodingAgent.UI.Tui do
       (state.transcript ++ streaming_entries(state))
       |> Enum.map(&normalize_entry/1)
 
-    # clamp the scroll offset to the content extent: toggling collapses
-    # shrinks the transcript, and a stale offset beyond the new max pins
-    # the view at the top AND makes pgdown unresponsive (found live).
-    # The clamp is persistent (state), so the next pgdown is immediate.
+    # view-side clamp for THIS frame (persistence happens in the
+    # resize handler — render cannot mutate state)
     max_offset =
       max(TranscriptView.total_height(entries, w, state.tools_expanded) - pane.height, 0)
 
-    state = %{
-      state
-      | scroll_offset: min(state.scroll_offset, max_offset),
-        last_pane_height: pane.height,
-        last_pane_width: w
-    }
+    scroll_offset = min(state.scroll_offset, max_offset)
 
     {top, selected} =
-      TranscriptView.viewport(entries, pane.height, state.scroll_offset, w, state.tools_expanded)
+      TranscriptView.viewport(entries, pane.height, scroll_offset, w, state.tools_expanded)
 
     selected
     |> Enum.flat_map(fn {entry, cursor, _h} ->
