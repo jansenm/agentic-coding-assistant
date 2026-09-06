@@ -238,4 +238,36 @@ defmodule CodingAgent.Core.Session.StoreTest do
       assert {:error, :enoent} = Store.resolve_id("never-999")
     end
   end
+
+  test "snapshots saved before a struct field existed still load (no KeyError)" do
+    # simulate an old snapshot: a State-shaped struct WITHOUT the
+    # :usage key (struct update syntax would raise against it)
+    old_shaped =
+      [
+        :id,
+        :context,
+        :model,
+        :status,
+        :last_error,
+        :scope_root,
+        :policy,
+        :pending_tool_calls,
+        :subscribers,
+        :tool_rounds,
+        :test_mode
+      ]
+      |> Map.new(&{&1, nil})
+      |> Map.put(:__struct__, CodingAgent.Core.Session.State)
+      |> Map.put(:id, "old-shaped-#{System.unique_integer([:positive])}")
+      |> Map.put(:context, ReqLLM.Context.new())
+      |> Map.put(:model, "m")
+      |> Map.put(:status, :idle)
+
+    Store.save(old_shaped)
+    {:ok, loaded} = Store.load(old_shaped.id)
+
+    assert loaded.usage == %{input_tokens: 0, output_tokens: 0, cost: nil}
+    assert loaded.status == :idle
+    Store.delete(old_shaped.id)
+  end
 end
