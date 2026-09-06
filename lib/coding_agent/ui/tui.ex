@@ -691,8 +691,11 @@ defmodule CodingAgent.UI.Tui do
         title: " you ",
         borders: [:all],
         border_type: :rounded,
-        border_style: %Style{fg: :blue},
-        padding: {1, 1, 0, 0}
+        # signaling color: blue receded into the transcript noise —
+        # magenta reads as "the user's voice" and separates from the
+        # status colors (green running / yellow approval / red error)
+        border_style: %Style{fg: :magenta, modifiers: [:bold]},
+        padding: {1, 1, 1, 1}
       }
     }
 

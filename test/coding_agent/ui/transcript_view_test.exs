@@ -11,7 +11,8 @@ defmodule CodingAgent.UI.TranscriptViewTest do
     end
 
     test "user has a border allowance" do
-      assert TranscriptView.height({:user, "hello"}, 80, false) == 3
+      # 1 text row + 2 border rows + 2 padding rows
+      assert TranscriptView.height({:user, "hello"}, 80, nil) == 5
     end
 
     test "long lines wrap by width" do
@@ -25,7 +26,8 @@ defmodule CodingAgent.UI.TranscriptViewTest do
     end
 
     test "expanded tool is content + border" do
-      assert TranscriptView.height(tool("t1", "shell", "a\nb\nc"), 80, "t1") == 6
+      # header line + 3 content lines; plain paragraph, no border rows
+      assert TranscriptView.height(tool("t1", "shell", "a\nb\nc"), 80, "t1") == 4
     end
   end
 

@@ -9,7 +9,10 @@ defmodule CodingAgent.UI.TranscriptView do
   Pure and unit-tested; UI.Tui renders the returned window.
   """
 
-  @border_allowance 2
+  # border rows (2) + inner padding rows (2) of the user frame
+  @user_frame_allowance 4
+
+  # tool blocks render as plain paragraphs (no border) — no allowance
 
   # empty line after every answer section, before the next block
   @air 1
@@ -38,7 +41,7 @@ defmodule CodingAgent.UI.TranscriptView do
         measure_text(text, width)
 
       {:user, text} ->
-        measure_text(text, width) + @border_allowance
+        measure_text(text, width) + @user_frame_allowance
 
       {:assistant, text} ->
         # +1 breathing row after every answer — the visual gap before
@@ -47,7 +50,7 @@ defmodule CodingAgent.UI.TranscriptView do
 
       {:tool, id, name, content} ->
         if id == open_id do
-          measure_text("▸ #{name}\n" <> content, width) + @border_allowance
+          measure_text("▸ #{name}\n" <> content, width)
         else
           measure_text(header(name, content), width)
         end
