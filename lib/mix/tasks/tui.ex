@@ -25,7 +25,7 @@ defmodule Mix.Tasks.Tui do
       end
 
     tui_opts =
-      [initial_prompt: prompt, scope_root: File.cwd!()]
+      [initial_prompt: prompt, scope_root: File.cwd!(), mouse_capture: true]
       |> maybe_resume(opts[:resume])
 
     {:ok, _} = CodingAgent.UI.Tui.start_link(tui_opts)

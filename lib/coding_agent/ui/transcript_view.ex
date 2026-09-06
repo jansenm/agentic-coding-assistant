@@ -52,7 +52,10 @@ defmodule CodingAgent.UI.TranscriptView do
 
       {:tool, id, name, content} ->
         if id == open_id do
-          measure_text("▸ #{name}\n" <> content, width) + @air
+          # +2: the bordered box the renderer draws around open tools
+          # (the overlap bug: borders paint rows the old measurement
+          # didn't count, so the next entry drew over the box bottom)
+          measure_text("▸ #{name}\n" <> content, width) + 2 + @air
         else
           measure_text(header(name, content), width) + @air
         end
@@ -62,6 +65,9 @@ defmodule CodingAgent.UI.TranscriptView do
   defp measure_text(text, width) do
     max(wrapped_lines(text, width), 1)
   end
+
+  @doc "Rows of air after a block (the TUI clips rects to content and leaves these blank)."
+  def air, do: @air
 
   @doc """
   Total estimated height of the transcript at the given width — the

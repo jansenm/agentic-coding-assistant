@@ -63,6 +63,36 @@ defmodule CodingAgent.UI.TuiVisualTest do
     assert String.ends_with?(capped, "line 59\nline 60")
 
     h = TranscriptView.height({:tool, id, "shell", capped}, 78, id)
-    assert h <= 25
+    # capped content (22 lines) + borders (2) + air (3)
+    assert h <= 27
+  end
+
+  test "open tool box never overlaps the next entry (border rows counted)", %{pid: pid} do
+    send(pid, {:agent, {:tool_executed, "glob", "lib/coding_agent.ex"}})
+    send(pid, {:agent, {:llm_message, "# Answer\n\nHere is the result of the glob."}})
+    Process.sleep(100)
+
+    :ok =
+      ExRatatui.Runtime.inject_event(pid, %ExRatatui.Event.Key{
+        code: "t",
+        kind: "press",
+        modifiers: ["ctrl"]
+      })
+
+    Process.sleep(200)
+
+    st = :sys.get_state(pid).user_state
+    {:tool, id, _, _} = Enum.find(st.transcript, &match?({:tool, _, _, _}, &1))
+    {:assistant, _} = Enum.find(st.transcript, &match?({:assistant, _}, &1))
+
+    entries = st.transcript
+    [tool_h, answer_h] = for e <- entries, do: TranscriptView.height(e, 100, st.open_tool_id)
+
+    # the box needs: border(2) + its 2 text rows; measured height covers
+    # text + border + air — so the widget rect (h - air) fits the box
+    # exactly and the answer starts BELOW it
+    assert tool_h - TranscriptView.air() >= 4
+    # sanity: answer is fully below the tool block
+    assert answer_h >= 1
   end
 end

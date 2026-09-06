@@ -716,7 +716,7 @@ defmodule CodingAgent.UI.Tui do
   end
 
   defp entry_widgets({:reasoning, text}, w, _te) do
-    h = TranscriptView.height({:reasoning, text}, w, nil)
+    h = TranscriptView.height({:reasoning, text}, w, nil) - TranscriptView.air()
 
     widget = %Paragraph{
       text: "· thinking: " <> text,
@@ -727,13 +727,12 @@ defmodule CodingAgent.UI.Tui do
   end
 
   defp entry_widgets({:assistant, text}, w, _te) do
-    # the same measured height the viewport used for placement (incl.
-    # the air row) — the widget clips at h, leaving the trailing row
-    # blank: the gap after the answer
-    h = TranscriptView.height({:assistant, text}, w, nil)
+    # placement height includes the air rows; the widget rect covers
+    # the content only, so the air rows below stay background
+    h = TranscriptView.height({:assistant, text}, w, nil) - TranscriptView.air()
 
     [%Markdown{content: text, style: %Style{fg: :white}, wrap: true}]
-    |> List.update_at(0, &{&1, h})
+    |> List.update_at(0, &{&1, max(h, 1)})
   end
 
   defp entry_widgets({:tool, id, name, content}, _w, open_id) when id != open_id do
@@ -743,7 +742,9 @@ defmodule CodingAgent.UI.Tui do
   end
 
   defp entry_widgets({:tool, id, name, content}, w, _open_id) do
-    h = TranscriptView.height({:tool, id, name, content}, w, id)
+    # rect covers content + border rows only (h - air); the air rows
+    # below stay background — same convention as assistant entries
+    h = TranscriptView.height({:tool, id, name, content}, w, id) - TranscriptView.air()
 
     widget = %Paragraph{
       text: "▾ #{name}\n" <> content,
@@ -762,6 +763,8 @@ defmodule CodingAgent.UI.Tui do
   defp entry_widgets({:info, text}, _w, _te) do
     [{%Paragraph{text: "  " <> text, style: %Style{fg: :dark_gray}}, 1}]
   end
+
+  # (info rects stay 1 row; the air below is background)
 
   defp first_line(text), do: text |> String.split("\n") |> List.first() |> String.slice(0, 80)
 
@@ -792,7 +795,8 @@ defmodule CodingAgent.UI.Tui do
   defp input_widget(state) do
     %Textarea{
       state: state.textarea,
-      placeholder: "Message the agent… (enter=newline, alt-enter=send)",
+      placeholder:
+        "Message the agent… (enter=newline, alt-enter=send, ctrl-t opens last tool, click to toggle)",
       line_number_style: nil,
       block: %Block{borders: [:all], border_type: :rounded}
     }

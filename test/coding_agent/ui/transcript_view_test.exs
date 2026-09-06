@@ -29,8 +29,8 @@ defmodule CodingAgent.UI.TranscriptViewTest do
 
     test "expanded tool is content + border" do
       # header line + 3 content lines; plain paragraph, no border rows
-      # "▸ shell" + 3 content lines + 3 air
-      assert TranscriptView.height(tool("t1", "shell", "a\nb\nc"), 80, "t1") == 7
+      # "▸ shell" + 3 content lines + 2 border rows + 3 air
+      assert TranscriptView.height(tool("t1", "shell", "a\nb\nc"), 80, "t1") == 9
     end
   end
 
