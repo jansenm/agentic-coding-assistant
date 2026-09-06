@@ -163,4 +163,41 @@ defmodule CodingAgent.UI.TuiVisualTest do
     refute msg =~ "%Finch.TransportError"
     assert st.status == :error
   end
+
+  test "startup provider check: down -> red status + transcript line; up -> recovery", %{
+    pid: pid
+  } do
+    send(
+      pid,
+      {:agent, {:provider_status, :down, "could not reach the provider (connection refused)"}}
+    )
+
+    Process.sleep(100)
+
+    st = :sys.get_state(pid).user_state
+    assert st.status == :error
+    assert st.provider_down? == true
+    {:info, msg} = Enum.find(st.transcript, &match?({:info, _}, &1))
+    assert msg =~ "provider unavailable"
+    assert msg =~ "connection refused"
+
+    # recovery flips back to idle (only for probe-caused error state)
+    send(pid, {:agent, {:provider_status, :up}})
+    Process.sleep(100)
+    st = :sys.get_state(pid).user_state
+    assert st.status == :idle
+    assert st.provider_down? == false
+  end
+
+  test "a real turn error (status_changed) is not cleared by a later :up", %{pid: pid} do
+    reason = %ReqLLM.Error.API.Stream{reason: "Stream failed: boom"}
+    send(pid, {:agent, {:status_changed, :error, reason}})
+    Process.sleep(100)
+    send(pid, {:agent, {:provider_status, :up}})
+    Process.sleep(100)
+
+    # no provider_down? flag set -> the error stays a turn error
+    st = :sys.get_state(pid).user_state
+    assert st.status == :error
+  end
 end

@@ -72,6 +72,7 @@ defmodule CodingAgent.UI.Tui do
         end
 
       Process.send_after(self(), :__resize_poll__, 500)
+
       # the ACTUAL session id (a resumed session keeps its persisted id)
       effective_id = (restored && restored.id) || id
 
@@ -85,6 +86,21 @@ defmodule CodingAgent.UI.Tui do
           {:ok, st} -> {st.status, st.pending_tool_calls}
           _ -> {:idle, []}
         end
+
+      # startup reachability check (design A: a minimal completion
+      # through req_llm — provider-agnostic, no endpoint ping). Once at
+      # start only: 'if it disappears while using the app i got
+      # unlucky'. Skipped in test_mode — tests are LLM-free.
+      unless Keyword.get(opts, :test_mode) do
+        # the session's model (a resumed session keeps its snapshot's model)
+        model =
+          case Session.state(effective_id) do
+            {:ok, st} -> st.model
+            _ -> CodingAgent.model()
+          end
+
+        CodingAgent.UI.ProviderHealth.check_async(model, id)
+      end
 
       # resumed sessions render their history: the persisted context
       # becomes transcript lines (system prompts stay hidden)
@@ -111,6 +127,7 @@ defmodule CodingAgent.UI.Tui do
         # for live execution and resumed history (user request #1)
         open_tool_id: nil,
         reasoning: "",
+        provider_down?: false,
         test_pid: Keyword.get(opts, :test_pid)
       }
 
@@ -211,13 +228,18 @@ defmodule CodingAgent.UI.Tui do
   defp text_of(_), do: ""
 
   # a one-line human summary of a turn failure reason (stream error
-  # maps nest the transport cause; keep it short for the transcript)
+  # maps nest the transport cause; keep it short for the transcript).
+  # The session wraps stream failures as {:stream_error, struct} —
+  # match the wrapper first (the bare-struct clause never fired and
+  # every failure read 'unknown error', found live).
+  defp error_text({:stream_error, %ReqLLM.Error.API.Stream{} = err}), do: shorten(err.reason)
+
   defp error_text(%ReqLLM.Error.API.Stream{} = err), do: shorten(err.reason)
 
   defp error_text(%{reason: reason}) when is_binary(reason), do: shorten(reason)
   defp error_text(reason) when is_binary(reason), do: shorten(reason)
   defp error_text(reason) when is_atom(reason), do: inspect(reason)
-  defp error_text(_), do: "unknown error"
+  defp error_text(_), do: "check the provider (ollama up? key set?)"
 
   # reason strings embed full inspect dumps (%Finch.TransportError{...});
   # keep the human part
@@ -573,6 +595,29 @@ defmodule CodingAgent.UI.Tui do
 
   def handle_info({:agent, {:status_changed, status, _detail}}, state) do
     {:noreply, %{state | status: status}}
+  end
+
+  # startup provider check (ProviderHealth): down -> a red status and
+  # a transcript line BEFORE the user asks anything; up while an
+  # error is showing -> the provider is back
+  def handle_info({:agent, {:provider_status, :down, reason}}, state) do
+    msg = "✖ provider unavailable: #{reason} — turns will fail until it is reachable"
+
+    {:noreply,
+     %{
+       state
+       | status: :error,
+         transcript: state.transcript ++ [{:info, msg}],
+         provider_down?: true
+     }}
+  end
+
+  def handle_info({:agent, {:provider_status, :up}}, state) do
+    if state.status == :error and Map.get(state, :provider_down?, false) do
+      {:noreply, %{state | status: :idle, provider_down?: false}}
+    else
+      {:noreply, state}
+    end
   end
 
   def handle_info({:agent, {:llm_message, text}}, state) do
@@ -973,23 +1018,18 @@ defmodule CodingAgent.UI.Tui do
         "#{open}, " <>
         "h: #{ph} w: #{w})"
 
-    {glyph, color} =
+    down? = Map.get(state, :provider_down?, false)
+
+    {glyph, color, label} =
       case state.status do
-        :running -> {"●", :light_green}
-        :idle -> {"○", :gray}
-        :interrupted -> {"⏸", :yellow}
-        :error -> {"✖", :red}
-        _ -> {"?", :gray}
+        :running -> {"●", :light_green, "running…"}
+        :idle -> {"○", :gray, "idle"}
+        :interrupted -> {"⏸", :yellow, "approval needed (y/n/e)"}
+        :error -> {"✖", :red, if(down?, do: "provider unavailable", else: "error")}
+        _ -> {"?", :gray, "unknown"}
       end
 
-    status_text =
-      case state.status do
-        :running -> "running…"
-        :idle -> "idle"
-        :interrupted -> "approval needed (y/n/e)"
-        :error -> "error"
-        other -> inspect(other)
-      end
+    status_text = label
 
     line =
       Text.Line.new([
