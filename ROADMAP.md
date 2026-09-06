@@ -177,6 +177,19 @@ skills execution, todowrite, question — see "Later".
      place (handle_key returns :ok, not a new ref) and the TUI attaches
      to the session's CURRENT status/pending on mount (a resumed/
      attached TUI shows the real gate state, not stale idle).
+   - **5c. Rich transcript + scrolling** ✅ — block-stack transcript:
+     tool calls collapsed by default ('t' -> ctrl-t after live
+     feedback: t must stay typable; ALL single letters freed for text
+     — approval keys live in the decision keymap only), dim
+     diagnostics, Markdown answers (streaming deltas included), framed
+     user messages. Viewport scrolling (measured heights! the
+     estimate-drift lesson: markdown reflows — 21 estimated vs 16
+     rendered on a real message; heights are now MEASURED via the
+     headless buffer, cached in ETS) with mouse wheel + pgup/pgdn,
+     clamped at both ends AT THE INPUT (the silent-inflation hang).
+     Real terminal dims via mount capture + 500ms resize poller (the
+     render-persistence illusion + no local Resize events — both found
+     live). Status line carries live scroll diagnostics.
    - **5a. Foundation + state line** ✅ — ADR 012 (ex_ratatui
      backend, superseding the termbox amendment: the C build was
      broken (waf/python2-era) and the rust core is the battle-tested
