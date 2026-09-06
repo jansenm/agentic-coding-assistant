@@ -327,4 +327,40 @@ defmodule CodingAgent.UI.TuiVisualTest do
     assert rows |> Enum.at(idx + 1) |> String.contains?("line two")
     assert rows |> Enum.at(idx + 2) |> String.contains?("line three")
   end
+
+  test "split newline deltas do not grow the thinking box" do
+    pid =
+      start_supervised!(%{
+        id: String.to_atom("tui-#{System.unique_integer([:positive])}"),
+        start:
+          {CodingAgent.UI.Tui, :start_link,
+           [[name: nil, test_mode: {100, 30}, scope_root: File.cwd!()]]}
+      })
+
+    Process.sleep(700)
+
+    # GLM-style split deltas: text, newline, blank line as separate events
+    Enum.each(["line one", "\n", "\n", "line two", "\n", "\n", "line three", "\n"], fn d ->
+      send(pid, {:agent, {:reasoning_deltas, d}})
+    end)
+
+    Process.sleep(1000)
+    rt = :sys.get_state(pid)
+    st = rt.user_state
+
+    # no doubled newlines; at most ONE trailing newline (line separator
+    # for the next delta) — the box must not fill with blank rows
+    assert st.reasoning == "line one\nline two\nline three\n"
+
+    rows = ExRatatui.get_buffer_content(rt.terminal_ref) |> String.split("\n")
+
+    idx =
+      rows
+      |> Enum.with_index()
+      |> Enum.find(fn {r, _} -> String.contains?(r, "line one") end)
+      |> elem(1)
+
+    assert rows |> Enum.at(idx + 1) |> String.contains?("line two")
+    assert rows |> Enum.at(idx + 2) |> String.contains?("line three")
+  end
 end

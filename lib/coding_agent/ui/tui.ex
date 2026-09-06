@@ -694,11 +694,23 @@ defmodule CodingAgent.UI.Tui do
   end
 
   # agent thinking: streamed BEFORE the answer arrives; shown as a dim
-  # transient block and dropped when the turn's text lands
+  # transient block and dropped when the turn's text lands.
+  #
+  # Live report (clarified): the LINES rendered fine, but every delta
+  # appended an empty line at the END — the box filled with blank rows
+  # as the thinking streamed. Squeezing the DELTA misses the case where
+  # GLM sends "\n" and "" deltas separately (l1\n + \n = l1\n\n ACROSS
+  # deltas). Squeeze the ACCUMULATED string instead, and strip the
+  # trailing newline(s): the @air row owns the spacing after the block,
+  # so trailing blanks only grow the box toward a screen of empty lines.
   def handle_info({:agent, {:reasoning_deltas, delta}}, state) do
-    delta = delta |> String.replace("\r", "") |> String.replace("\n\n", "\n")
+    reasoning =
+      (state.reasoning <> delta)
+      |> String.replace("\r", "")
+      |> String.replace("\n\n", "\n")
+      |> String.replace_trailing("\n\n", "\n")
 
-    {:noreply, %{state | reasoning: state.reasoning <> delta}}
+    {:noreply, %{state | reasoning: reasoning}}
   end
 
   def handle_info({:agent, {:tool_executed, name, content}}, state) do
