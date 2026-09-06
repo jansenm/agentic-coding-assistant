@@ -209,6 +209,21 @@ skills execution, todowrite, question — see "Later".
      (+ % of window) and the compacts-at line; the session warns
      once at 80% of the trigger ("compaction at 180k will summarize
      older messages") so compaction is never a silent surprise.
+   - **5g. Live-session polish pass** ✅ — from the first real
+     working session (resume of tui-1730): reasoning deltas carry
+     doubled newlines sent as SEPARATE delta events ('\n' + '\n') —
+     squeezed on the ACCUMULATED string (per-delta squeezing destroys
+     line breaks mid-stream); approval dialog capped to the reading
+     measure, centered, %Clear{} behind it (the interior used to show
+     the input through — and the debugging detour taught: a nested
+     widget list from Enum.map silently stalls the whole render cycle,
+     the bridge rejects it with 'expected {widget, Rect}, got: [..]');
+     sidebar spans the full window; the input box grows while typing
+     (opencode-style, floor 4 rows, cap 12) and re-derives pane dims
+     on every keystroke; tool loop limit 12 -> 25 (a real task burned
+     16 gate rounds and died; the agent blamed 'flaky parallel calls')
+     with an honest error message; webfetch (ADR 013) so doc work
+     doesn't burn tool rounds; compaction recalibrated (5f).
 6. **Multi-agent** — agent definitions as data, orchestration roles
    (plan/execute/analyze), the specialist/repository matrix (ADR 007).
    Cross-repo change atomicity gets its own ADR first.
@@ -219,6 +234,21 @@ skills execution, todowrite, question — see "Later".
 ## Later ("one day")
 
 Not planned, not forgotten — recorded so re-evaluation is cheap:
+
+TUI wish-list (user's own list, keyboard-first, from the live sessions):
+
+- **Navigator**: Go To Questions / Go To Blocks popup (ctrl-g style,
+  block-jump with pageup/pgdn, question -> blocks browser). Called
+  the highest-value piece for keyboard work; placement math exists
+  (block_at_row/2).
+- **Frame-scrolling artifacts** (user will fix personally when
+  learning the code — not a stopper): scrolling with the frames
+  around user input / tool call boxes still glitches.
+- **5d leftover: approval-arg editing** in the TUI dialog (currently
+  an on-screen 'arrives later' notice; e is reserved).
+- `reasoning_effort` config knob surfaced in the sidebar (currently
+  shows 'effort: default'; add `reasoning_effort: :high` to config
+  when GLM effort is wanted).
 
 | opencode tool | Ours | Note |
 |---|---|---|
