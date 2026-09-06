@@ -16,7 +16,10 @@ defmodule CodingAgent.Core.Session.State do
     pending_tool_calls: [],
     subscribers: [],
     tool_rounds: 0,
-    test_mode: false
+    test_mode: false,
+    # cumulative usage across the session (sidebar + token-based
+    # compaction trigger); cost only when the provider prices it
+    usage: %{input_tokens: 0, output_tokens: 0, cost: nil}
   ]
 
   @type status :: :idle | :running | :interrupted | :error

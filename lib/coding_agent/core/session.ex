@@ -380,11 +380,12 @@ defmodule CodingAgent.Core.Session do
     state = maybe_compact(state)
 
     case call_llm(state) do
-      {:ok, %{type: :final_answer, text: text}} ->
-        state = complete_turn(state, text)
+      {:ok, %{type: :final_answer, text: text, usage: usage}} ->
+        state = state |> add_usage(usage) |> complete_turn(text)
         {state, {:ok, state}}
 
-      {:ok, %{type: :tool_calls, tool_calls: calls}} ->
+      {:ok, %{type: :tool_calls, tool_calls: calls, usage: usage}} ->
+        state = add_usage(state, usage)
         gate_tools(state, calls)
 
       {:error, reason} ->
@@ -599,7 +600,11 @@ defmodule CodingAgent.Core.Session do
         # terminate on this path — found in the 4a live smoke test).
         try do
           {text, tool_calls} = consume_stream(events, state.id)
-          {:ok, %{type: classify(tool_calls), text: text, tool_calls: tool_calls}}
+
+          # real token accounting (sidebar, token-based compaction):
+          # the metadata task resolves after the stream is fully consumed
+          usage = ReqLLM.StreamResponse.usage(stream_response)
+          {:ok, %{type: classify(tool_calls), text: text, tool_calls: tool_calls, usage: usage}}
         catch
           {:stream_error, error} -> {:error, {:stream_error, error}}
         end
@@ -658,6 +663,38 @@ defmodule CodingAgent.Core.Session do
     %{state | context: Context.append(state.context, messages), pending_tool_calls: []}
   end
 
+  # cumulative session usage: input+output per turn; cost only when
+  # the provider prices it (ollama cloud: usage.cost may be nil)
+  @doc """
+  Accumulates one turn's provider usage into the session state
+  (cumulative input/output, last turn's input as the compaction
+  measure, cost when priced) and broadcasts {:usage_updated, usage}.
+  Public for tests: the accounting is core behavior, and the tests
+  are LLM-free so they exercise it directly.
+  """
+  def add_usage(state, usage) when is_map(usage) do
+    prev = state.usage || %{input_tokens: 0, output_tokens: 0, cost: nil}
+
+    next = %{
+      input_tokens: Map.get(prev, :input_tokens, 0) + (usage[:input_tokens] || 0),
+      output_tokens: Map.get(prev, :output_tokens, 0) + (usage[:output_tokens] || 0),
+      # the LAST turn's input = the context size the provider actually
+      # saw — the honest token-based compaction measure (a chars-based
+      # estimate drifts; the provider's own count is ground truth)
+      last_input_tokens: usage[:input_tokens] || 0,
+      cost: sum_cost(prev[:cost], usage[:total_cost])
+    }
+
+    state = %{state | usage: next}
+    broadcast(state, {:usage_updated, next})
+    state
+  end
+
+  def add_usage(state, nil), do: state
+
+  defp sum_cost(nil, nil), do: nil
+  defp sum_cost(a, b), do: (a || 0.0) + (b || 0.0)
+
   defp complete_turn(state, text) do
     context =
       state.context
@@ -684,7 +721,17 @@ defmodule CodingAgent.Core.Session do
   # next turn boundary would too, but a crash right after compaction
   # should not resurrect the fat context).
   defp maybe_compact(%State{} = state) do
-    case Compaction.plan(state.context) do
+    window = Application.get_env(:coding_agent, :context_window_tokens, 500_000)
+    last_in = Map.get(state.usage || %{}, :last_input_tokens, 0)
+
+    plan =
+      if last_in > 0 do
+        Compaction.plan_tokens(state.context, last_in, window)
+      else
+        Compaction.plan(state.context)
+      end
+
+    case plan do
       :none ->
         state
 

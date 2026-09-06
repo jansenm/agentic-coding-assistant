@@ -107,8 +107,15 @@ defmodule CodingAgent.Core.Session.Store do
       {:ok, bytes} ->
         case safe_binary_to_term(bytes) do
           {:ok, {@format_version, %State{} = state}} ->
-            # runtime-only fields must not resurrect
-            {:ok, %State{state | subscribers: [], status: idle_or_interrupted(state)}}
+            # runtime-only fields must not resurrect; snapshots from
+            # before the usage fields existed get the defaults
+            {:ok,
+             %State{
+               state
+               | subscribers: [],
+                 status: idle_or_interrupted(state),
+                 usage: Map.get(state, :usage) || %{input_tokens: 0, output_tokens: 0, cost: nil}
+             }}
 
           {:ok, other} ->
             # wrong version or foreign payload — same fail-closed verdict

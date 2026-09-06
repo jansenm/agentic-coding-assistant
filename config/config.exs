@@ -7,6 +7,9 @@ config :coding_agent,
   # req_llm model spec. Ollama (incl. cloud models via `:cloud` suffix)
   # needs no API key; see .env.example for providers that do.
   model: "ollama:glm-5.3-flash:cloud",
+  # context window of the configured model, in tokens (sidebar % +
+  # the token-based compaction trigger). GLM-5.3: ~500k.
+  context_window_tokens: 500_000,
   # environment variable holding the provider API key (ADR 008: secrets
   # come from the environment, never from config files). Cloud ollama
   # models are not in req_llm's catalog; suppress the unverified warning.

@@ -46,6 +46,9 @@ defmodule CodingAgent.UI.Tui do
   # content column is capped and centered instead of stretching.
   @measure 100
 
+  # right panel width: session name, model, context tokens, % window
+  @sidebar_width 24
+
   @impl true
   def mount(opts) do
     id = Keyword.get(opts, :session_id) || "tui-#{System.unique_integer([:positive])}"
@@ -114,6 +117,9 @@ defmodule CodingAgent.UI.Tui do
 
       initial = %{
         session_id: effective_id,
+        session_usage:
+          (restored && Map.get(restored, :usage)) ||
+            %{input_tokens: 0, output_tokens: 0, cost: nil},
         last_pane_width: max(tw - @width_overhead, 10),
         last_pane_height: max(th - @layout_overhead, 1),
         status: status,
@@ -616,6 +622,10 @@ defmodule CodingAgent.UI.Tui do
      }}
   end
 
+  def handle_info({:agent, {:usage_updated, usage}}, state) do
+    {:noreply, %{state | session_usage: usage}}
+  end
+
   def handle_info({:agent, {:provider_status, :up}}, state) do
     if state.status == :error and Map.get(state, :provider_down?, false) do
       {:noreply, %{state | status: :idle, provider_down?: false}}
@@ -706,9 +716,16 @@ defmodule CodingAgent.UI.Tui do
         spacing: 1
       )
 
+    [sidebar_area, transcript_area] =
+      Layout.split(transcript_area, :horizontal, [
+        {:length, @sidebar_width},
+        {:min, 0}
+      ])
+
     widgets =
       transcript_widgets(state, transcript_area) ++
         [
+          {sidebar_widget(state), sidebar_area},
           {input_widget(state), input_area},
           {status_widget(state), status_area}
         ]
@@ -1002,6 +1019,70 @@ defmodule CodingAgent.UI.Tui do
         state
     end
   end
+
+  defp sidebar_widget(state) do
+    usage = Map.get(state, :session_usage) || %{input_tokens: 0, output_tokens: 0, cost: nil}
+    window = Application.get_env(:coding_agent, :context_window_tokens, 500_000)
+
+    lines = [
+      Text.Line.new([Text.Span.new("session", style: %Style{fg: :dark_gray})]),
+      Text.Line.new([
+        Text.Span.new(String.slice(state.session_id, 0, 22), style: %Style{fg: :white})
+      ]),
+      Text.Line.new([Text.Span.new("", style: %Style{})]),
+      Text.Line.new([Text.Span.new("context", style: %Style{fg: :dark_gray})]),
+      Text.Line.new([
+        Text.Span.new(
+          "#{fmt_k(Map.get(usage, :input_tokens, 0))} tok in",
+          style: %Style{fg: :white}
+        )
+      ]),
+      Text.Line.new([
+        Text.Span.new(
+          "#{fmt_k(Map.get(usage, :output_tokens, 0))} tok out",
+          style: %Style{fg: :white}
+        )
+      ]),
+      Text.Line.new([
+        Text.Span.new(
+          "#{trunc(Map.get(usage, :input_tokens, 0) * 100 / max(window, 1))}% of window",
+          style: %Style{fg: :dark_gray}
+        )
+      ])
+    ]
+
+    cost_line =
+      case usage[:cost] do
+        c when is_number(c) and c > 0 ->
+          Text.Line.new([Text.Span.new("$#{Float.round(c, 4)}", style: %Style{fg: :white})])
+
+        _ ->
+          nil
+      end
+
+    lines =
+      if(cost_line, do: lines ++ [cost_line], else: lines) ++
+        [
+          Text.Line.new([Text.Span.new("", style: %Style{})]),
+          Text.Line.new([
+            Text.Span.new("ctrl-t toggles tools", style: %Style{fg: :dark_gray})
+          ])
+        ]
+
+    %Paragraph{
+      text: lines,
+      style: %Style{},
+      block: %Block{
+        title: " agent ",
+        borders: [:right],
+        border_type: :rounded,
+        border_style: %Style{fg: :dark_gray}
+      }
+    }
+  end
+
+  defp fmt_k(n) when n < 1000, do: "#{n}"
+  defp fmt_k(n), do: "#{trunc(n / 100) / 10}k"
 
   defp status_widget(state) do
     # scroll diagnostics (live debugging): entries / measured total /

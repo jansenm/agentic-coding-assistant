@@ -52,6 +52,33 @@ defmodule CodingAgent.Core.Compaction do
     end
   end
 
+  # Token-based decision (the sidebar slice): the provider's own
+  # input_tokens of the LAST turn is the ground truth of context size —
+  # chars-based estimates drift (markdown, code, different languages).
+  # Compacts at @trigger_percent of the model's context window.
+  # `last_input_tokens: 0` (probe turn / first turn / no usage data)
+  # falls back to the chars-based plan.
+  @trigger_percent 70
+
+  @doc """
+  Token-based trigger: compact when the last observed input_tokens
+  cross `trigger_percent` of the window. Falls back to nil when no
+  usage data exists yet (caller then decides by chars).
+  """
+  def plan_tokens(%Context{messages: msgs}, last_input_tokens, window) do
+    exceeded? = last_input_tokens > 0 and last_input_tokens * 100 > window * @trigger_percent
+
+    if not exceeded? do
+      :none
+    else
+      {old, keep} = split_at(msgs, @keep_recent)
+      {:ok, old, keep}
+    end
+  end
+
+  @doc "The percentage of the context window that triggers compaction."
+  def trigger_percent, do: 70
+
   @doc """
   Applies a plan: replaces the summarized span with one synthetic user
   message carrying the summary. Returns the new context (or the
