@@ -13,7 +13,10 @@ defmodule CodingAgent do
   The configured model spec (req_llm format, e.g. "anthropic:claude-haiku-4-5").
   """
   @spec model() :: String.t()
+  # Adhoc/live probes must not burn metered cloud quota: the model can
+  # be overridden per run with AGENT_MODEL (cheap local/free model),
+  # e.g. AGENT_MODEL="ollama:nemotron-3-ultra:cloud" mix tui
   def model do
-    Application.fetch_env!(:coding_agent, :model)
+    System.get_env("AGENT_MODEL") || Application.fetch_env!(:coding_agent, :model)
   end
 end
