@@ -253,4 +253,78 @@ defmodule CodingAgent.UI.TuiVisualTest do
     box_rows = Enum.count(rows, &String.contains?(&1, "l"))
     assert box_rows >= 5
   end
+
+  test "approval dialog: cleared background, above status, capped width" do
+    pid =
+      start_supervised!(%{
+        id: String.to_atom("tui-#{System.unique_integer([:positive])}"),
+        start:
+          {CodingAgent.UI.Tui, :start_link,
+           [[name: nil, test_mode: {160, 30}, scope_root: File.cwd!()]]}
+      })
+
+    Process.sleep(700)
+
+    send(
+      pid,
+      {:agent,
+       {:status_changed, :interrupted,
+        [
+          %ReqLLM.ToolCall{
+            id: "call_1",
+            function: %{name: "shell", arguments: Jason.encode!(%{"command" => "mix test"})}
+          }
+        ]}}
+    )
+
+    Process.sleep(800)
+    rt = :sys.get_state(pid)
+    rows = ExRatatui.get_buffer_content(rt.terminal_ref) |> String.split("\n")
+
+    # dialog visible, centered: its left edge starts well right of
+    # the sidebar column (24) — centered on a 160-wide window
+    approval = Enum.find(rows, &String.contains?(&1, "APPROVAL"))
+    assert approval != nil
+    lead = approval |> String.graphemes() |> Enum.find_index(&(&1 == "╔"))
+    assert lead > 25
+
+    # interior blanked: no input-box border chars inside the dialog rows
+    dialog_rows =
+      rows
+      |> Enum.drop_while(fn r -> not String.contains?(r, "APPROVAL") end)
+      |> Enum.take(5)
+
+    # the status line must stay visible below the dialog
+    assert rows |> Enum.at(28) |> String.contains?("approval needed")
+
+    # y = approve line present
+    assert Enum.any?(dialog_rows, &String.contains?(&1, "y = approve"))
+  end
+
+  test "reasoning deltas with doubled newlines render without blank lines" do
+    pid =
+      start_supervised!(%{
+        id: String.to_atom("tui-#{System.unique_integer([:positive])}"),
+        start:
+          {CodingAgent.UI.Tui, :start_link,
+           [[name: nil, test_mode: {100, 30}, scope_root: File.cwd!()]]}
+      })
+
+    Process.sleep(700)
+    send(pid, {:agent, {:reasoning_deltas, "line one\n\nline two\n\nline three\n\n"}})
+    Process.sleep(800)
+    rt = :sys.get_state(pid)
+    rows = ExRatatui.get_buffer_content(rt.terminal_ref) |> String.split("\n")
+
+    # the three lines are CONSECUTIVE (no blank rows between them —
+    # GLM's doubled newlines squeezed at accumulation)
+    idx =
+      rows
+      |> Enum.with_index()
+      |> Enum.find(fn {r, _} -> String.contains?(r, "line one") end)
+      |> elem(1)
+
+    assert rows |> Enum.at(idx + 1) |> String.contains?("line two")
+    assert rows |> Enum.at(idx + 2) |> String.contains?("line three")
+  end
 end

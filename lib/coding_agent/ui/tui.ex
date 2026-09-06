@@ -26,7 +26,8 @@ defmodule CodingAgent.UI.Tui do
   alias ExRatatui.Layout.Rect
   alias ExRatatui.Style
   alias ExRatatui.Text
-  alias ExRatatui.Widgets.{Block, Markdown, Paragraph, Textarea}
+  alias ExRatatui.Text
+  alias ExRatatui.Widgets.{Block, Clear, Markdown, Paragraph, Textarea}
 
   # input grows while typing (opencode-style): floor 4 (2 visible
   # lines + border), grows per textarea line, caps at 12
@@ -695,6 +696,8 @@ defmodule CodingAgent.UI.Tui do
   # agent thinking: streamed BEFORE the answer arrives; shown as a dim
   # transient block and dropped when the turn's text lands
   def handle_info({:agent, {:reasoning_deltas, delta}}, state) do
+    delta = delta |> String.replace("\r", "") |> String.replace("\n\n", "\n")
+
     {:noreply, %{state | reasoning: state.reasoning <> delta}}
   end
 
@@ -1228,25 +1231,41 @@ defmodule CodingAgent.UI.Tui do
     |> Enum.map(fn {call, i} ->
       {_id, name, args} = call_info(call)
 
-      body =
+      text =
         "#{name}(#{pretty_args(args)})\n\n" <>
           "y = approve   n = reject   e = edit (soon)"
 
+      h = min(6 + length(String.split(pretty_args(args), "\n")), div(area.height, 2))
+
+      # NOTE: widget-level bg + Clear variants both failed headless
+      # (bg didn't fill; Clear killed the render cycle). The joined
+      # string with per-row spaces renders — bg comes from the
+      # widget-level style.
+      body =
+        text
+        |> String.split("\n")
+        |> Enum.concat(List.duplicate(" ", max(h - 2 - length(String.split(text, "\n")), 0)))
+        |> Enum.join("\n")
+
       widget = %Paragraph{
         text: body,
-        style: %Style{fg: :white},
+        style: %Style{fg: :white, bg: :dark_gray},
         block: %Block{
           title: " APPROVAL #{i + 1}/#{length(pending)} ",
           borders: [:all],
           border_type: :double,
-          border_style: %Style{fg: :yellow}
+          border_style: %Style{fg: :yellow, bg: :dark_gray}
         }
       }
 
-      h = min(6 + length(String.split(pretty_args(args), "\n")), div(area.height, 2))
-      rect = %Rect{x: 2, y: area.height - h - 3, width: area.width - 4, height: h}
-      {widget, rect}
+      # cap at the reading measure and center: a wide terminal must
+      # not stretch the dialog edge to edge (live report)
+      w = min(@measure + 2, area.width - 4)
+      x = div(max(area.width - w, 0), 2)
+      rect = %Rect{x: x, y: area.height - h - 3, width: w, height: h}
+      [{%Clear{}, rect}, {widget, rect}]
     end)
+    |> List.flatten()
   end
 
   defp call_info(%{id: id, name: name, arguments: args}) when is_map(args),
