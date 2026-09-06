@@ -24,6 +24,7 @@ defmodule CodingAgent.Core.Tools do
   alias CodingAgent.Core.Tools.ListDir
   alias CodingAgent.Core.Tools.ReadFile
   alias CodingAgent.Core.Tools.Shell
+  alias CodingAgent.Core.Tools.WebFetch
   alias CodingAgent.Core.Tools.WriteFile
 
   @typedoc "A tool scope: the root directory the tool may operate in."
@@ -54,7 +55,7 @@ defmodule CodingAgent.Core.Tools do
   @spec gated(scope() | nil) :: [ReqLLM.Tool.t()]
   def gated(scope \\ nil) do
     scope = scope || default_scope()
-    [WriteFile.tool(scope), Edit.tool(scope), Shell.tool(scope)]
+    [WriteFile.tool(scope), Edit.tool(scope), Shell.tool(scope), WebFetch.tool(scope)]
   end
 
   @doc "All tools a session carries (read-only + gated)."

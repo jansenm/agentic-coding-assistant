@@ -228,7 +228,7 @@ Not planned, not forgotten — recorded so re-evaluation is cheap:
 | `glob` | (2d) | slot into existing read-only containment |
 | `grep` | (2d) | line-numbered, capped |
 | `edit`/`apply_patch` | (2e) | fail-closed on non-unique match |
-| `webfetch` | one day | gated-ask candidate; needs its own ADR (SSRF-ish concerns: redirects, file:// URLs) |
+| `webfetch` | `webfetch` ✅ (7a) | ADR 013: always-ask, scheme allowlist, SSRF private-net block, 128 KiB cap; de-tagged text (markdown conversion one day) |
 | `websearch` | one day | search-API dependency; low value for a coding agent |
 | `lsp` | unlikely | language-server surface is huge; compile/test loop covers most agent needs |
 | `skill` | ADR 007 territory | frontmatter loading documented in configuration-landscape; execution later |
