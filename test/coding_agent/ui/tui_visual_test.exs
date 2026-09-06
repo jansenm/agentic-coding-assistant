@@ -200,4 +200,20 @@ defmodule CodingAgent.UI.TuiVisualTest do
     st = :sys.get_state(pid).user_state
     assert st.status == :error
   end
+
+  test "resume: provider check broadcast lands on the effective session id", %{pid: _} do
+    # fresh instance whose session id we read, then a broadcast on that id
+    {:ok, pid} =
+      CodingAgent.UI.Tui.start_link(name: nil, test_mode: {120, 40}, scope_root: File.cwd!())
+
+    sid = :sys.get_state(pid).user_state.session_id
+
+    send(pid, {:agent, {:provider_status, :down, "could not reach the provider"}})
+    Process.sleep(100)
+
+    st = :sys.get_state(pid).user_state
+    assert st.status == :error
+    assert st.provider_down? == true
+    assert sid != nil
+  end
 end

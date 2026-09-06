@@ -99,7 +99,11 @@ defmodule CodingAgent.UI.Tui do
             _ -> CodingAgent.model()
           end
 
-        CodingAgent.UI.ProviderHealth.check_async(model, id)
+        # broadcast on the EFFECTIVE id — a resumed session keeps its
+        # persisted id and that is what the view subscribed to (the
+        # probe on the mount id was silently lost for --resume runs,
+        # found live: 'It still shows idle')
+        CodingAgent.UI.ProviderHealth.check_async(model, effective_id)
       end
 
       # resumed sessions render their history: the persisted context
