@@ -580,7 +580,20 @@ defmodule CodingAgent.UI.Tui do
         other -> inspect(other)
       end
 
-    line = "#{state.session_id}  │  #{status_text}"
+    # scroll diagnostics (live debugging): entries / measured total /
+    # offset / expand state — visible in the status line
+    entries =
+      (state.transcript ++ streaming_entries(state))
+      |> Enum.map(&normalize_entry/1)
+
+    w = 78
+    total = TranscriptView.total_height(entries, w, state.tools_expanded)
+
+    diag =
+      "scroll: #{state.scroll_offset}/#{max(total - 24, 0)} (#{length(entries)} entries, " <>
+        "tools: #{if state.tools_expanded, do: "open", else: "shut"}, h: #{state.last_pane_height || "?"})"
+
+    line = "#{state.session_id}  │  #{status_text}  │  #{diag}"
 
     %Paragraph{text: line, style: %Style{bg: :dark_gray, fg: :white}, block: nil}
   end
