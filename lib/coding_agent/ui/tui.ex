@@ -41,6 +41,11 @@ defmodule CodingAgent.UI.Tui do
   # 1-cell inner inset the renderer uses (pane.x + 1 and width - 2)
   @width_overhead 4
 
+  # reading measure (typography): the eye loses the return-sweep past
+  # ~100 characters (newspapers/books: 45-90). On wider panes the
+  # content column is capped and centered instead of stretching.
+  @measure 100
+
   @impl true
   def mount(opts) do
     id = Keyword.get(opts, :session_id) || "tui-#{System.unique_integer([:positive])}"
@@ -614,7 +619,7 @@ defmodule CodingAgent.UI.Tui do
   # pane-relative positions; entries starting above the pane top scroll
   # via the widget's own :scroll (Paragraph/Markdown support it).
   defp transcript_widgets(state, pane) do
-    w = max(pane.width - 2, 10)
+    w = content_width(max(pane.width - 2, 10))
 
     entries =
       (state.transcript ++ streaming_entries(state))
@@ -642,8 +647,16 @@ defmodule CodingAgent.UI.Tui do
       avail = pane.height - (y - pane.y)
       h = max(min(h, avail), 1)
       widget = apply_scroll(widget, max(top - cursor, 0))
-      {widget, %Rect{x: pane.x + 1, y: y, width: w, height: h}}
+      {widget, %Rect{x: column_x(pane, w), y: y, width: w, height: h}}
     end)
+  end
+
+  # The reading column: capped at @measure, centered on wide panes.
+  # Measurement and rendering share this width (heights must match).
+  defp content_width(w), do: min(w, @measure)
+
+  defp column_x(pane, w) do
+    pane.x + 1 + div(max(pane.width - 2 - w, 0), 2)
   end
 
   # Immediate scroll clamp on toggle: collapsing can shrink the content
@@ -658,7 +671,7 @@ defmodule CodingAgent.UI.Tui do
       if is_integer(state.last_pane_height), do: state.last_pane_height, else: 24
 
     pane_width =
-      if is_integer(state.last_pane_width), do: state.last_pane_width, else: 78
+      content_width(if is_integer(state.last_pane_width), do: state.last_pane_width, else: 78)
 
     max_offset =
       max(
@@ -797,7 +810,7 @@ defmodule CodingAgent.UI.Tui do
       (state.transcript ++ streaming_entries(state))
       |> Enum.map(&normalize_entry/1)
 
-    w = if is_integer(state.last_pane_width), do: state.last_pane_width, else: 78
+    w = content_width(if is_integer(state.last_pane_width), do: state.last_pane_width, else: 78)
     ph = transcript_visible_height(state)
 
     {_top, selected} =
@@ -836,7 +849,7 @@ defmodule CodingAgent.UI.Tui do
       (state.transcript ++ streaming_entries(state))
       |> Enum.map(&normalize_entry/1)
 
-    w = if is_integer(state.last_pane_width), do: state.last_pane_width, else: 78
+    w = content_width(if is_integer(state.last_pane_width), do: state.last_pane_width, else: 78)
     ph = if is_integer(state.last_pane_height), do: state.last_pane_height, else: 24
     total = TranscriptView.total_height(entries, w, state.open_tool_id)
 

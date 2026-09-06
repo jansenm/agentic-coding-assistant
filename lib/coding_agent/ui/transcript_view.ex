@@ -14,8 +14,10 @@ defmodule CodingAgent.UI.TranscriptView do
 
   # tool blocks render as plain paragraphs (no border) — no allowance
 
-  # empty line after every answer section, before the next block
-  @air 1
+  # empty rows after every NON-user block (answers, tools, info,
+  # reasoning): the user frame stands out BY contrast — everything
+  # around it breathes more than it does
+  @air 3
 
   @typedoc "A transcript entry (shape mirrors UI.Tui state)."
   @type entry ::
@@ -35,10 +37,10 @@ defmodule CodingAgent.UI.TranscriptView do
       {:reasoning, text} ->
         # +2: the "· thinking: " marker prefix wraps too — measure the
         # same string the renderer builds
-        measure_text("· thinking: " <> text, width)
+        measure_text("· thinking: " <> text, width) + @air
 
       {:info, text} ->
-        measure_text(text, width)
+        measure_text(text, width) + @air
 
       {:user, text} ->
         measure_text(text, width) + @user_frame_allowance
@@ -50,9 +52,9 @@ defmodule CodingAgent.UI.TranscriptView do
 
       {:tool, id, name, content} ->
         if id == open_id do
-          measure_text("▸ #{name}\n" <> content, width)
+          measure_text("▸ #{name}\n" <> content, width) + @air
         else
-          measure_text(header(name, content), width)
+          measure_text(header(name, content), width) + @air
         end
     end
   end

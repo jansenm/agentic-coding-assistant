@@ -7,7 +7,8 @@ defmodule CodingAgent.UI.TranscriptViewTest do
 
   describe "height/3" do
     test "info is its wrapped line count" do
-      assert TranscriptView.height({:info, "x"}, 80, false) == 1
+      # 1 text + 3 air
+      assert TranscriptView.height({:info, "x"}, 80, nil) == 4
     end
 
     test "user has a border allowance" do
@@ -17,17 +18,19 @@ defmodule CodingAgent.UI.TranscriptViewTest do
 
     test "long lines wrap by width" do
       # 200 chars at width 80 -> 3 lines
-      # +1 is the air row after every answer
-      assert TranscriptView.height({:assistant, String.duplicate("x", 200)}, 80, nil) == 4
+      # 3 wrap lines + 3 air rows after the answer
+      assert TranscriptView.height({:assistant, String.duplicate("x", 200)}, 80, nil) == 6
     end
 
     test "collapsed tool is one line" do
-      assert TranscriptView.height(tool("t1", "shell", "a\nb\nc"), 80, false) == 1
+      # 1 header line + 3 air
+      assert TranscriptView.height(tool("t1", "shell", "a\nb\nc"), 80, nil) == 4
     end
 
     test "expanded tool is content + border" do
       # header line + 3 content lines; plain paragraph, no border rows
-      assert TranscriptView.height(tool("t1", "shell", "a\nb\nc"), 80, "t1") == 4
+      # "▸ shell" + 3 content lines + 3 air
+      assert TranscriptView.height(tool("t1", "shell", "a\nb\nc"), 80, "t1") == 7
     end
   end
 
@@ -38,21 +41,20 @@ defmodule CodingAgent.UI.TranscriptViewTest do
       assert TranscriptView.viewport([], 5, 0, 80, false) == {0, []}
     end
 
+    # every info entry now occupies 4 rows (1 text + 3 air)
     test "follow mode: top line pinned so the tail is visible" do
       {top, selected} = TranscriptView.viewport(entries(10), 3, 0, 80, false)
-      assert top == 7
+      assert top == 37
 
       assert selected == [
-               {{:info, "line 8"}, 7, 1},
-               {{:info, "line 9"}, 8, 1},
-               {{:info, "line 10"}, 9, 1}
+               {{:info, "line 10"}, 36, 4}
              ]
     end
 
     test "offset scrolls up: viewport top decreases" do
       {top, selected} = TranscriptView.viewport(entries(10), 3, 5, 80, false)
-      assert top == 2
-      assert List.first(selected) |> elem(1) == 2
+      assert top == 32
+      assert List.first(selected) |> elem(1) == 32
     end
 
     test "clamped at the top: cannot scroll above line 0" do
@@ -68,8 +70,11 @@ defmodule CodingAgent.UI.TranscriptViewTest do
       big = {:assistant, "x\n\nx\n\nx\n\nx\n\nx\n\nx\n\nx\n\nx"}
       entries = [{:info, "a"}, big, {:info, "b"}]
 
-      big_h = TranscriptView.height(big, 80, false)
-      total = 1 + big_h + 1
+      big_h = TranscriptView.height(big, 80, nil)
+
+      total =
+        TranscriptView.height({:info, "a"}, 80, nil) + big_h +
+          TranscriptView.height({:info, "b"}, 80, nil)
 
       # scroll far enough that the top clamps at 0 and the big entry
       # crosses the bottom edge
