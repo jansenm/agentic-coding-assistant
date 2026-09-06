@@ -194,12 +194,17 @@ defmodule CodingAgent.UI.Tui do
     end
   end
 
-  # mouse wheel scrolls the transcript (2 lines per notch, clamped)
+  # mouse wheel scrolls the transcript (2 lines per notch, clamped at
+  # both ends — see dispatch_input_key scroll_up)
   def handle_event(%Event.Mouse{kind: "scroll_up"}, state) do
-    {:noreply, %{state | scroll_offset: state.scroll_offset + 2}}
+    state = clamp_scroll_now(state)
+
+    {:noreply,
+     %{state | scroll_offset: min(state.scroll_offset + 2, Map.get(state, :max_scroll, 0))}}
   end
 
   def handle_event(%Event.Mouse{kind: "scroll_down"}, state) do
+    state = clamp_scroll_now(state)
     {:noreply, %{state | scroll_offset: max(state.scroll_offset - 2, 0)}}
   end
 
@@ -256,9 +261,16 @@ defmodule CodingAgent.UI.Tui do
         {:noreply, state}
 
       :scroll_up ->
-        {:noreply, %{state | scroll_offset: state.scroll_offset + 5}}
+        # clamp at the top: an offset past the max inflates silently
+        # (the screen stops updating but the number keeps growing) and
+        # that stale value then makes scroll-down feel dead (found live)
+        state = clamp_scroll_now(state)
+
+        {:noreply,
+         %{state | scroll_offset: min(state.scroll_offset + 5, Map.get(state, :max_scroll, 0))}}
 
       :scroll_down ->
+        state = clamp_scroll_now(state)
         {:noreply, %{state | scroll_offset: max(state.scroll_offset - 5, 0)}}
 
       :send_input ->
@@ -479,7 +491,9 @@ defmodule CodingAgent.UI.Tui do
         0
       )
 
-    %{state | scroll_offset: min(state.scroll_offset, max_offset)}
+    state
+    |> Map.put(:scroll_offset, min(Map.get(state, :scroll_offset, 0), max_offset))
+    |> Map.put(:max_scroll, max_offset)
   end
 
   # viewport scrolling happens inside the widget when the entry starts
