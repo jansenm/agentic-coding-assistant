@@ -28,7 +28,11 @@ defmodule CodingAgent.Core.Session do
   # provider's own timeouts, not this one.
   @call_timeout :infinity
 
-  @max_tool_rounds 12
+  # live report: a real multi-step task burned 16 gate rounds and the
+  # turn died with "tool loop limit reached: 12" — the agent then
+  # complained about "flaky parallel calls". 12 was a phase-2 guess;
+  # real coding tasks need more. 25 with the fail-closed behavior kept.
+  @max_tool_rounds 25
 
   # providers whose requests need no api_key option
   @keyless_providers ["ollama"]

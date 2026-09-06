@@ -260,6 +260,11 @@ defmodule CodingAgent.UI.Tui do
   # The session wraps stream failures as {:stream_error, struct} —
   # match the wrapper first (the bare-struct clause never fired and
   # every failure read 'unknown error', found live).
+  # live report: the tool-loop limit killed a real task's turn and the
+  # transcript showed the generic provider hint — say what happened
+  defp error_text({:tool_loop_limit, n}),
+    do: "tool loop limit (#{n} rounds) reached — task needs more steps"
+
   defp error_text({:stream_error, %ReqLLM.Error.API.Stream{} = err}), do: shorten(err.reason)
 
   defp error_text(%ReqLLM.Error.API.Stream{} = err), do: shorten(err.reason)

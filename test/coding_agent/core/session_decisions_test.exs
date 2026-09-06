@@ -143,4 +143,37 @@ defmodule CodingAgent.Core.Session.DecisionsTest do
   end
 
   defp text_of(%ReqLLM.Message{content: c}) when is_binary(c), do: c
+
+  test "batch approve: one decision per id approves the whole parallel batch", %{policy: policy} do
+    id = "dec-batch-#{System.unique_integer()}"
+
+    {:ok, _} =
+      CodingAgent.Core.Session.Supervisor.start_session(
+        id: id,
+        scope_root: @tmp_root,
+        policy: policy
+      )
+
+    calls = [
+      tool_call("p1", "write_file", %{"path" => "b1.txt", "content" => "1"}),
+      tool_call("p2", "write_file", %{"path" => "b2.txt", "content" => "2"}),
+      tool_call("p3", "write_file", %{"path" => "b3.txt", "content" => "3"})
+    ]
+
+    :ok = Session.debug_gate(id, calls)
+    {:ok, state} = Session.state(id)
+    assert state.status == :interrupted
+    assert length(state.pending_tool_calls) == 3
+
+    # the TUI's y maps EVERY pending id to :approve — one keystroke,
+    # whole batch
+    decisions =
+      Enum.map(state.pending_tool_calls, fn %{id: pid} -> %{id: pid, decision: :approve} end)
+
+    {:ok, state2} = Session.decide(id, decisions)
+    assert state2.status == :idle
+    assert File.read!(Path.join(@tmp_root, "b1.txt")) == "1"
+    assert File.read!(Path.join(@tmp_root, "b2.txt")) == "2"
+    assert File.read!(Path.join(@tmp_root, "b3.txt")) == "3"
+  end
 end
