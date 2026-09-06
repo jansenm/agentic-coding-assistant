@@ -369,6 +369,14 @@ defmodule CodingAgent.Core.Session do
   end
 
   defp continue_loop(state) do
+    # structural backstop for the tests-are-LLM-free discipline: a
+    # test-mode session must never reach the provider, no matter what
+    # code path leads here. Loud on purpose — a silent skip would let
+    # a regression hide.
+    if state.test_mode do
+      raise "test-mode session #{state.id} reached call_llm — tests must be LLM-free"
+    end
+
     state = maybe_compact(state)
 
     case call_llm(state) do
