@@ -115,6 +115,24 @@ defmodule CodingAgent.UI.TuiMenuTest do
     assert a in ids and b in ids
   end
 
+  test "esc closes the menu popup", %{root: tmp_root} do
+    pid = start_tui(tmp_root)
+    Process.sleep(700)
+
+    key(pid, "x", ["ctrl"])
+    Process.sleep(1400)
+
+    st = :sys.get_state(pid).user_state
+    assert st.menu_popup != nil
+
+    key(pid, "esc")
+    Process.sleep(300)
+
+    st2 = :sys.get_state(pid).user_state
+    assert st2.menu_popup == nil
+    assert st2.menu_popup_id == nil
+  end
+
   test "switching attaches the chosen session (keep-alive)", %{root: tmp_root} do
     _a = seed_session("pick-a", tmp_root)
     b = seed_session("pick-b", tmp_root)

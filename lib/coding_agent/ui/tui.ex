@@ -801,8 +801,10 @@ defmodule CodingAgent.UI.Tui do
     end
   end
 
-  defp handle_menu_popup_key(%Event.Key{code: "escape"}, state) do
-    {:noreply, %{state | menu_popup: nil}}
+  # crossterm decodes Esc as "esc" (events.rs:78); accept both spellings
+  defp handle_menu_popup_key(%Event.Key{code: code}, state)
+       when code in ["esc", "escape"] do
+    {:noreply, %{state | menu_popup: nil, menu_popup_id: nil}}
   end
 
   defp handle_menu_popup_key(_ev, state), do: {:noreply, state}
