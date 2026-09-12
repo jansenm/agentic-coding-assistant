@@ -136,6 +136,7 @@ defmodule CodingAgent.UI.Tui do
       textarea: ExRatatui.textarea_new(),
       history: [],
       history_index: nil,
+      history_draft: nil,
       pending: [],
       pending_edit: nil,
       last_error: nil,
@@ -236,6 +237,7 @@ defmodule CodingAgent.UI.Tui do
         textarea: ExRatatui.textarea_new(),
         history: [],
         history_index: nil,
+        history_draft: nil,
         pending: pending,
         pending_edit: nil,
         last_error: nil,
@@ -985,9 +987,36 @@ defmodule CodingAgent.UI.Tui do
     state
   end
 
-  defp history_step(_state, _dir) do
-    # 5c: history navigation through the textarea value setter
-    # (needs a value+cursor setter pair; deferred)
+  # 5c: history navigation through the textarea value setter.
+  # idx is the current recall position (nil = at live input); saving the
+  # live draft the first time you step back makes ctrl-n land home again
+  defp history_step(%{history: []} = state, _dir), do: state
+
+  defp history_step(state, dir) do
+    n = length(state.history)
+    idx = if state.history_index == nil, do: -1, else: state.history_index
+    idx = idx + dir
+    idx = min(max(idx, -1), n - 1)
+
+    cond do
+      idx == -1 ->
+        # back to the live draft (saved when first stepping back)
+        draft = Map.get(state, :history_draft) || ""
+        ExRatatui.textarea_set_value(state.textarea, draft)
+        %{state | history_index: nil}
+
+      state.history_index == nil ->
+        # leaving the live input: remember the draft
+        draft = ExRatatui.textarea_get_value(state.textarea)
+        value = Enum.at(state.history, idx)
+        ExRatatui.textarea_set_value(state.textarea, value)
+        %{state | history_index: idx, history_draft: draft}
+
+      true ->
+        value = Enum.at(state.history, idx)
+        ExRatatui.textarea_set_value(state.textarea, value)
+        %{state | history_index: idx}
+    end
   end
 
   # -- Session events --------------------------------------------------------
