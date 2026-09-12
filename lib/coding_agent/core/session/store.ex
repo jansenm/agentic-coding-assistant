@@ -181,6 +181,26 @@ defmodule CodingAgent.Core.Session.Store do
     end
   end
 
+  @doc """
+  Sessions for one working directory, newest first (the session
+  picker: `mix tui` shows this when the cwd has previous sessions).
+  Filters on the persisted scope_root.
+  """
+  @spec list_in(String.t()) :: [
+          %{id: String.t(), saved_at: DateTime.t(), model: String.t() | nil, status: atom()}
+        ]
+  def list_in(root) do
+    root = Path.expand(root)
+
+    list()
+    |> Enum.filter(fn %{id: id} ->
+      case load(id) do
+        {:ok, state} -> state.scope_root && Path.expand(state.scope_root) == root
+        _ -> false
+      end
+    end)
+  end
+
   # Corrupt bytes must error, never crash (rescue). Note on [:safe]:
   # binary_to_term with [:safe] rejects atoms that don't already exist
   # in the running VM — a saved session legitimately contains provider

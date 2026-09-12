@@ -69,8 +69,92 @@ defmodule CodingAgent.UI.Tui do
 
   @impl true
   def mount(opts) do
-    id = Keyword.get(opts, :session_id) || "tui-#{System.unique_integer([:positive])}"
     prompt = Keyword.get(opts, :initial_prompt)
+
+    # session picker: when the cwd has previous sessions and no
+    # --resume was given, start on the picker (user request: 'on start
+    # check if there are previous sessions in the current working
+    # directory. If yes go to the session chooser. If not start with a
+    # new session.')
+    # test_mode skips the picker: tests seed sessions in a shared
+    # store dir and expect direct attachment. Opt-in :picker forces
+    # it for the picker's own tests.
+    test_mode? = Keyword.get(opts, :test_mode) != nil
+    force_picker? = Keyword.get(opts, :picker, false)
+
+    if Keyword.get(opts, :resume_id) == nil and (force_picker? or not test_mode?) do
+      case Store.list_in(Keyword.get(opts, :scope_root) || File.cwd!()) do
+        [_ | _] = sessions ->
+          mount_picker(opts, sessions, prompt)
+
+        _ ->
+          mount_session(nil, opts, prompt)
+      end
+    else
+      mount_session(nil, opts, prompt)
+    end
+  end
+
+  # deferred start: the picker deferred session creation; run it now.
+  # resume: a chosen id re-runs mount_session with that id AND
+  # resume_id (start_session loads the snapshot); fresh: no id.
+  defp picker_select(
+         %{picker: sessions, picker_index: idx, picker_opts: opts, picker_prompt: prompt},
+         action
+       ) do
+    case action do
+      :resume ->
+        %{id: chosen} = Enum.at(sessions, idx)
+        mount_session(chosen, Keyword.put(opts, :resume_id, chosen), prompt)
+
+      :new ->
+        mount_session(nil, opts, prompt)
+    end
+  end
+
+  defp mount_picker(opts, sessions, prompt) do
+    {tw, th} =
+      case Keyword.get(opts, :test_mode) do
+        {w, h} when is_integer(w) and is_integer(h) ->
+          {w, h}
+
+        _ ->
+          case ExRatatui.terminal_size() do
+            {w, h} when is_integer(w) and is_integer(h) -> {w, h}
+            _ -> {80, 24}
+          end
+      end
+
+    initial = %{
+      session_id: nil,
+      session_usage: %{input_tokens: 0, output_tokens: 0, cost: nil},
+      last_pane_width: max(tw - @width_overhead, 10),
+      last_pane_height: max(th - @layout_overhead, 1),
+      status: :idle,
+      transcript: [],
+      deltas: "",
+      textarea: ExRatatui.textarea_new(),
+      history: [],
+      history_index: nil,
+      pending: [],
+      pending_edit: nil,
+      last_error: nil,
+      scroll_offset: 0,
+      open_tool_id: nil,
+      reasoning: "",
+      provider_down?: false,
+      test_pid: Keyword.get(opts, :test_pid),
+      picker: sessions,
+      picker_index: 0,
+      picker_opts: opts,
+      picker_prompt: prompt
+    }
+
+    {:ok, initial}
+  end
+
+  defp mount_session(id, opts, prompt) do
+    id = id || Keyword.get(opts, :session_id) || "tui-#{System.unique_integer([:positive])}"
 
     with {:ok, _pid, restored} <- start_session(id, opts) do
       # real terminal dimensions: captured at mount, kept fresh by a
@@ -156,7 +240,13 @@ defmodule CodingAgent.UI.Tui do
         open_tool_id: nil,
         reasoning: "",
         provider_down?: false,
-        test_pid: Keyword.get(opts, :test_pid)
+        test_pid: Keyword.get(opts, :test_pid),
+        # picker mode fields (nil = not in picker mode; set by
+        # mount_picker only)
+        picker: nil,
+        picker_index: 0,
+        picker_opts: nil,
+        picker_prompt: nil
       }
 
       if prompt, do: send(self(), {:__run__, prompt})
@@ -367,21 +457,10 @@ defmodule CodingAgent.UI.Tui do
 
   @impl true
   def handle_event(%Event.Key{kind: "press"} = ev, state) do
-    # two-tier bridge (ADR 011 + the UTF-8 lesson): only special keys
-    # and letters the keymap binds become keymap events; everything
-    # else is text, forwarded raw to the textarea
-    bound = Bridge.bound_letters(Keymap.defaults()) ++ Bridge.bound_letters(decision_keymap())
-
-    case Bridge.translate(ev, bound) do
-      {:text, code} ->
-        {:noreply, put_in_textarea(state, code)}
-
-      {:key, km_event} ->
-        if state.pending != [] do
-          handle_decision_key(km_event, state)
-        else
-          handle_input_key(km_event, ev, state)
-        end
+    if Map.get(state, :picker) do
+      handle_picker_key(ev, state)
+    else
+      handle_normal_key(ev, state)
     end
   end
 
@@ -399,7 +478,7 @@ defmodule CodingAgent.UI.Tui do
     {:noreply, %{state | scroll_offset: max(state.scroll_offset - 2, 0)}}
   end
 
-  # Click a tool block header → open THAT block (single-open: any other
+  # Click a closed tool block header → open THAT block (single-open: any other
   # closes automatically — only one id is ever remembered). Click an
   # open block → close. The hit-test recomputes the viewport (a pure
   # function of state) — the same placement math the renderer uses.
@@ -442,6 +521,63 @@ defmodule CodingAgent.UI.Tui do
   end
 
   def handle_event(_event, state), do: {:noreply, state}
+
+  # Click a to  # -- Picker keys -----------------------------------------------------------
+  # up/down/j/k move; enter resumes the selection; n starts fresh;
+  # q quits. Everything else is ignored (the textarea does not exist
+  # yet — no typing before a session is chosen).
+  defp handle_picker_key(%Event.Key{code: "up"}, state) do
+    idx = max(state.picker_index - 1, 0)
+    {:noreply, %{state | picker_index: idx}}
+  end
+
+  defp handle_picker_key(%Event.Key{code: "down"}, state) do
+    idx = min(state.picker_index + 1, length(state.picker) - 1)
+    {:noreply, %{state | picker_index: idx}}
+  end
+
+  defp handle_picker_key(%Event.Key{code: "enter"}, state) do
+    case picker_select(state, :resume) do
+      {:ok, st} -> {:noreply, st}
+      {:error, reason} -> {:noreply, %{state | last_error: inspect(reason)}}
+    end
+  end
+
+  defp handle_picker_key(%Event.Key{code: "q"}, state) do
+    # quit from the picker: no session was created, nothing to clean
+    {:stop, :normal, state}
+  end
+
+  defp handle_picker_key(%Event.Key{code: "n"}, state) do
+    case picker_select(state, :new) do
+      {:ok, st} -> {:noreply, st}
+      {:error, reason} -> {:noreply, %{state | last_error: inspect(reason)}}
+    end
+  end
+
+  defp handle_picker_key(_ev, state) do
+    # unknown keys in picker mode: ignored (safe default)
+    {:noreply, state}
+  end
+
+  defp handle_normal_key(ev, state) do
+    # two-tier bridge (ADR 011 + the UTF-8 lesson): only special keys
+    # and letters the keymap binds become keymap events; everything
+    # else is text, forwarded raw to the textarea
+    bound = Bridge.bound_letters(Keymap.defaults()) ++ Bridge.bound_letters(decision_keymap())
+
+    case Bridge.translate(ev, bound) do
+      {:text, code} ->
+        {:noreply, put_in_textarea(state, code)}
+
+      {:key, km_event} ->
+        if state.pending != [] do
+          handle_decision_key(km_event, state)
+        else
+          handle_input_key(km_event, ev, state)
+        end
+    end
+  end
 
   # In the dialog: y/n/e decide; everything else ignored.
   defp handle_decision_key(km_event, state) do
@@ -769,7 +905,19 @@ defmodule CodingAgent.UI.Tui do
   # -- Rendering -------------------------------------------------------------
 
   @impl true
+  # picker mode: mount deferred session creation (Map.get — a struct
+  # pattern %{picker: ...} raises KeyError against snapshots/state
+  # maps that predate the field, the struct-update lesson)
   def render(state, frame) do
+    if Map.get(state, :picker) do
+      area = %Rect{x: 0, y: 0, width: frame.width, height: frame.height}
+      picker_widgets(state, area)
+    else
+      render_main(state, frame)
+    end
+  end
+
+  defp render_main(state, frame) do
     area = %Rect{x: 0, y: 0, width: frame.width, height: frame.height}
 
     # breathing: 1 cell of background visible on every side of the app
@@ -1240,6 +1388,57 @@ defmodule CodingAgent.UI.Tui do
   end
 
   # Approval dialog: one bordered box per pending call, args pretty-printed.
+  # Session picker (mount-time): list the cwd's previous sessions,
+  # newest first; enter resumes, n starts fresh, q quits. The
+  # selected row is highlighted; each row shows the id, age, status.
+  defp picker_widgets(state, area) do
+    rows =
+      state.picker
+      |> Enum.with_index()
+      |> Enum.map(fn {s, i} ->
+        marker = if i == state.picker_index, do: "❯ ", else: "  "
+
+        status = s.status |> to_string() |> String.pad_trailing(8)
+
+        "#{marker}#{String.slice(s.id, 0, 22)}  #{status}  " <>
+          "#{format_age(s.saved_at)}"
+      end)
+
+    body =
+      ([" Pick a session to continue:  (enter=resume, n=new, q=quit)"] ++ rows)
+      |> Enum.join("\n")
+
+    h = min(length(state.picker) + 3, area.height - 4)
+    w = min(60, area.width - 4)
+    x = div(max(area.width - w, 0), 2)
+    y = div(max(area.height - h, 0), 2)
+    rect = %Rect{x: x, y: y, width: w, height: h}
+
+    widget = %Paragraph{
+      text: body,
+      style: %Style{fg: :white, bg: :dark_gray},
+      block: %Block{
+        title: " sessions ",
+        borders: [:all],
+        border_type: :rounded,
+        border_style: %Style{fg: :cyan, bg: :dark_gray}
+      }
+    }
+
+    [{%Clear{}, rect}, {widget, rect}]
+  end
+
+  defp format_age(%DateTime{} = dt) do
+    mins = div(DateTime.diff(DateTime.utc_now(), dt), 60)
+
+    cond do
+      mins < 1 -> "now"
+      mins < 60 -> "#{mins}m ago"
+      mins < 1440 -> "#{div(mins, 60)}h ago"
+      true -> "#{div(mins, 1440)}d ago"
+    end
+  end
+
   defp dialog_widgets(%{pending: []}, _area), do: []
 
   defp dialog_widgets(%{pending: pending}, area) do
