@@ -20,7 +20,7 @@ defmodule CodingAgent.UI.Tui do
   alias CodingAgent.Core.{Compaction, Session}
   alias CodingAgent.Core.Session.Supervisor
   alias CodingAgent.Core.Session.Store
-  alias CodingAgent.UI.{Bridge, Keymap, TranscriptView}
+  alias CodingAgent.UI.{Bridge, Keymap, Menu, TranscriptView}
   alias ExRatatui.Event
   alias ExRatatui.Layout
   alias ExRatatui.Layout.Rect
@@ -147,7 +147,13 @@ defmodule CodingAgent.UI.Tui do
       picker: sessions,
       picker_index: 0,
       picker_opts: opts,
-      picker_prompt: prompt
+      picker_prompt: prompt,
+      menu_pending: false,
+      menu_popup: nil,
+      menu_popup_id: nil,
+      menu_index: 0,
+      menu_note: nil,
+      mount_opts: opts
     }
 
     {:ok, initial}
@@ -246,7 +252,18 @@ defmodule CodingAgent.UI.Tui do
         picker: nil,
         picker_index: 0,
         picker_opts: nil,
-        picker_prompt: nil
+        picker_prompt: nil,
+        # menu mode: :menu_pending (a prefix chord was pressed, the
+        # next letter within @menu_timeout fires the item directly) or
+        # a popup map (navigate/enter). nil = normal input.
+        menu_pending: false,
+        menu_popup: nil,
+        menu_popup_id: nil,
+        menu_index: 0,
+        menu_note: nil,
+        # the original mount opts: menu actions (switch) re-run
+        # mount_session with the same flags (test_mode etc.)
+        mount_opts: opts
       }
 
       if prompt, do: send(self(), {:__run__, prompt})
@@ -460,7 +477,7 @@ defmodule CodingAgent.UI.Tui do
     if Map.get(state, :picker) do
       handle_picker_key(ev, state)
     else
-      handle_normal_key(ev, state)
+      handle_menu_or_normal_key(ev, state)
     end
   end
 
@@ -578,6 +595,229 @@ defmodule CodingAgent.UI.Tui do
         end
     end
   end
+
+  # Menu popup overlay (pending note is on the status line, popup is
+  # a Clear-backed list box — same pattern as the picker).
+  defp menu_widgets(%{menu_popup: nil}, _area), do: []
+
+  defp menu_widgets(state, area) do
+    items = state.menu_popup.items
+
+    rows =
+      items
+      |> Enum.with_index()
+      |> Enum.map(fn {item, i} ->
+        marker = if i == state.menu_index, do: "❯ ", else: "  "
+
+        label =
+          cond do
+            # session rows (switch popup): id + status
+            Map.get(item, :status) != nil -> "#{item.id}  #{item.status}"
+            # keymap info rows carry the full text in the action
+            match?({:__info__, _}, Map.get(item, :action)) -> elem(item.action, 1)
+            true -> Map.get(item, :label) || ""
+          end
+
+        key = Map.get(item, :key) || ""
+        "#{marker}#{String.pad_trailing(key, 3)}#{label}"
+      end)
+
+    body = ([" " <> state.menu_popup.title] ++ rows) |> Enum.join("\n")
+
+    h = min(length(rows) + 3, area.height - 4)
+    w = min(60, area.width - 4)
+    x = div(max(area.width - w, 0), 2)
+    y = area.height - h - 3
+    rect = %Rect{x: x, y: y, width: w, height: h}
+
+    widget = %Paragraph{
+      text: body,
+      style: %Style{fg: :white, bg: :dark_gray},
+      block: %Block{
+        title: " menu ",
+        borders: [:all],
+        border_type: :rounded,
+        border_style: %Style{fg: :cyan, bg: :dark_gray}
+      }
+    }
+
+    [{%Clear{}, rect}, {widget, rect}]
+  end
+
+  # switch attach: delegate to mount_session (start_session returns
+  # {:ok, pid} for already-running sessions — keep-alive switching is
+  # free: the GenServer stays up, we swap the view)
+  defp attach_selected_session(%{id: id}, state) do
+    opts = state.mount_opts || []
+
+    case mount_session(id, Keyword.put(opts, :resume_id, id), nil) do
+      {:ok, new_state} -> {:noreply, new_state}
+      {:error, reason} -> {:noreply, status_note(state, "switch failed: #{inspect(reason)}")}
+    end
+  end
+
+  # -- Menu helpers -----------------------------------------------------------
+  # transient note on the status line (menu prompts); cleared on the
+  # next key event
+  defp status_note(state, text), do: %{state | menu_note: text}
+
+  # the "show all keymaps" popup: one row per binding, grouped
+  defp keymap_popup do
+    rows =
+      Enum.flat_map(Keymap.defaults(), fn {action, patterns} ->
+        patterns
+        |> Enum.map(&pattern_text/1)
+        |> Enum.join(", ")
+        |> then(fn keys -> [%{action: {:__info__, "#{keys}  #{action}"}, key: "", label: ""}] end)
+      end)
+
+    %{id: :keymaps, title: " keymaps  (esc=close)", items: rows}
+  end
+
+  defp pattern_text(%{key: k, mod: :none}), do: to_string(k)
+  defp pattern_text(%{key: k, mod: mod}), do: "#{mod}-#{k}"
+
+  # switch session: popup listing the OTHER sessions for this cwd
+  # (plus the current one, marked). Keep-alive: the current session's
+  # GenServer stays up in the supervisor; attach swaps the view.
+  defp switch_session_popup(state) do
+    # the CURRENT session's scope is the cwd (picker_opts is nil
+    # outside picker mode)
+    root =
+      case Session.state(state.session_id) do
+        {:ok, st} -> st.scope_root
+        _ -> File.cwd!()
+      end
+
+    sessions = Store.list_in(root)
+
+    others =
+      Enum.reject(sessions, fn %{id: id} -> id == state.session_id end)
+
+    if others == [] do
+      {:noreply, status_note(%{state | menu_pending: false}, "no other sessions for this cwd")}
+    else
+      {:noreply,
+       %{
+         state
+         | menu_popup: %{
+             id: :switch_session,
+             title: " switch session  (arrows, enter=attach, esc=cancel)",
+             items: others
+           },
+           menu_popup_id: :switch_session,
+           menu_pending: false,
+           menu_index: 0
+       }}
+    end
+  end
+
+  # -- Menu mode (ctrl-x prefix) ----------------------------------------------
+  # :menu_pending = the next letter fires the item directly; the timer
+  # (:__menu_timeout__) flips the popup on when the owner just waits.
+  # esc or an unbound letter cancels (letters go to the textarea).
+  @menu_timeout 1_000
+
+  # ctrl-x: enter pending mode; the timer turns it into the popup.
+  # NOT while the menu popup is open (the popup owns the keys) and not
+  # in pending already (re-press = cancel, like a toggle).
+  defp handle_menu_or_normal_key(
+         %Event.Key{code: "x", modifiers: ["ctrl"]} = _ev,
+         %{
+           menu_pending: false,
+           menu_popup: nil
+         } = state
+       ) do
+    # ctrl-x: enter pending mode; the timer turns it into the popup
+    Process.send_after(self(), :__menu_timeout__, @menu_timeout)
+
+    state =
+      %{state | menu_pending: true}
+      |> status_note("menu: press a letter… (or wait for the list)")
+
+    {:noreply, state}
+  end
+
+  defp handle_menu_or_normal_key(ev, %{menu_pending: true} = state) do
+    # any key while pending: consume the prefix. A letter with a
+    # command fires it directly; everything else falls through to
+    # normal handling (typing must not be eaten).
+    case Menu.resolve(Menu.main_menu(), ev.code) do
+      nil ->
+        {:noreply, %{state | menu_pending: false}}
+
+      item ->
+        state = %{state | menu_pending: false}
+
+        # needs_popup items whose target list is TUI-owned
+        # (switch_session opens the session list) route through
+        # run_menu_action; Menu's placeholder popup is unused for them
+        run_menu_action(item.action, state)
+    end
+  end
+
+  defp handle_menu_or_normal_key(ev, state) do
+    # any key clears the transient menu note
+    state = %{state | menu_note: nil}
+
+    if Map.get(state, :menu_popup) do
+      handle_menu_popup_key(ev, state)
+    else
+      handle_normal_key(ev, state)
+    end
+  end
+
+  # timer fired: the owner waited -> show the popup instead of the
+  # fast path (id nil: the MAIN menu, whose items carry actions)
+  defp open_menu_popup(popup, state) do
+    # the popup's own id distinguishes target-picking popups
+    # (switch_session) from plain menus (the main menu: nil)
+    id = if Map.get(popup, :id) == :main, do: nil, else: Map.get(popup, :id)
+
+    %{state | menu_popup: popup, menu_popup_id: id, menu_index: 0, menu_pending: false}
+  end
+
+  # popup navigation
+  defp handle_menu_popup_key(%Event.Key{code: "up"}, state) do
+    idx = max(state.menu_index - 1, 0)
+    {:noreply, %{state | menu_index: idx}}
+  end
+
+  defp handle_menu_popup_key(%Event.Key{code: "down"}, state) do
+    items = state.menu_popup.items
+    idx = min(state.menu_index + 1, length(items) - 1)
+    {:noreply, %{state | menu_index: idx}}
+  end
+
+  defp handle_menu_popup_key(%Event.Key{code: "enter"}, state) do
+    selected = Enum.at(state.menu_popup.items, state.menu_index)
+    state = %{state | menu_popup: nil}
+
+    case state.menu_popup_id do
+      :switch_session -> attach_selected_session(selected, state)
+      _ -> run_menu_action(selected.action, state)
+    end
+  end
+
+  defp handle_menu_popup_key(%Event.Key{code: "escape"}, state) do
+    {:noreply, %{state | menu_popup: nil}}
+  end
+
+  defp handle_menu_popup_key(_ev, state), do: {:noreply, state}
+
+  defp run_menu_action(:switch_session, state), do: switch_session_popup(state)
+
+  defp run_menu_action(:toggle_tool_output, state) do
+    {:noreply, toggle_last_tool(state)}
+  end
+
+  defp run_menu_action(:quit, state), do: {:stop, :normal, state}
+
+  defp run_menu_action(:show_keymaps, state) do
+    {:noreply, %{state | menu_popup: keymap_popup(), menu_popup_id: :keymaps, menu_index: 0}}
+  end
+
+  defp run_menu_action(_other, state), do: {:noreply, state}
 
   # In the dialog: y/n/e decide; everything else ignored.
   defp handle_decision_key(km_event, state) do
@@ -876,6 +1116,16 @@ defmodule CodingAgent.UI.Tui do
 
   # Terminal resize: the local transport dispatches no Resize events,
   # so poll the size (cheap ioctl) and act on changes.
+  def handle_info(:__menu_timeout__, %{menu_pending: true} = state) do
+    # the owner waited: show the popup instead of the fast path
+    {:noreply, open_menu_popup(Menu.main_menu(), %{state | menu_pending: false})}
+  end
+
+  def handle_info(:__menu_timeout__, state) do
+    # pending was consumed by a key that raced the timer — nothing to do
+    {:noreply, state}
+  end
+
   def handle_info(:__resize_poll__, state) do
     Process.send_after(self(), :__resize_poll__, 500)
 
@@ -957,7 +1207,7 @@ defmodule CodingAgent.UI.Tui do
           {status_widget(state), status_area}
         ]
 
-    widgets ++ dialog_widgets(state, area)
+    widgets ++ menu_widgets(state, area) ++ dialog_widgets(state, area)
   end
 
   # Viewport rendering: entries intersecting the pane get placed at
@@ -1345,6 +1595,17 @@ defmodule CodingAgent.UI.Tui do
   defp fmt_k(n), do: "#{trunc(n / 100) / 10}k"
 
   defp status_widget(state) do
+    note = Map.get(state, :menu_note)
+    if note, do: status_widget_note(state, note), else: status_widget_plain(state)
+  end
+
+  defp status_widget_note(_state, note) do
+    # menu prompt replaces the scroll diagnostics while visible
+    line = Text.Line.new([Text.Span.new(note, style: %Style{fg: :yellow})])
+    %Paragraph{text: [line], style: %Style{bg: :dark_gray}, block: nil}
+  end
+
+  defp status_widget_plain(state) do
     # scroll diagnostics (live debugging): entries / measured total /
     # offset / expand state — visible in the status line
     entries =
