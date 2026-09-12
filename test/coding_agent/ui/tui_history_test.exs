@@ -46,4 +46,53 @@ defmodule CodingAgent.UI.TuiHistoryTest do
     assert st2.history_index == nil
     assert Process.alive?(pid)
   end
+
+  test "attaching a session seeds ctrl-p recall from its past user prompts" do
+    root = System.tmp_dir!() |> Path.join("recall-#{System.unique_integer()}")
+    File.mkdir_p!(root)
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    ctx =
+      ReqLLM.Context.new([
+        ReqLLM.Context.user("first prompt"),
+        ReqLLM.Context.assistant("answer"),
+        ReqLLM.Context.user("second prompt")
+      ])
+
+    st =
+      CodingAgent.Core.Session.State.new(
+        id: "recall-seed",
+        context: ctx,
+        model: "m",
+        status: :idle,
+        scope_root: root
+      )
+
+    CodingAgent.Core.Session.Store.save(st)
+
+    {:ok, pid} =
+      CodingAgent.UI.Tui.start_link(
+        name: nil,
+        test_mode: {80, 24},
+        scope_root: root,
+        scope: root,
+        resume_id: "recall-seed"
+      )
+
+    Process.sleep(700)
+
+    st0 = :sys.get_state(pid).user_state
+    assert st0.history == ["first prompt", "second prompt"]
+
+    ExRatatui.Runtime.inject_event(pid, %ExRatatui.Event.Key{
+      kind: "press",
+      code: "p",
+      modifiers: ["ctrl"]
+    })
+
+    Process.sleep(300)
+
+    st1 = :sys.get_state(pid).user_state
+    assert st1.history_index == 0
+  end
 end

@@ -222,6 +222,11 @@ defmodule CodingAgent.UI.Tui do
       # becomes transcript lines (system prompts stay hidden)
       history = (restored && restored_history(restored)) || []
 
+      # ctrl-p recall seeds from the restored context's user prompts
+      # (compaction summaries excluded) so an attached old session can
+      # walk back through its past messages
+      recall = (restored && restored_recall(restored)) || []
+
       {tw, th} = initial_size
 
       initial = %{
@@ -235,7 +240,7 @@ defmodule CodingAgent.UI.Tui do
         transcript: history,
         deltas: "",
         textarea: ExRatatui.textarea_new(),
-        history: [],
+        history: recall,
         history_index: nil,
         history_draft: nil,
         pending: pending,
@@ -313,6 +318,27 @@ defmodule CodingAgent.UI.Tui do
           {:ok, pid, nil}
         end
     end
+  end
+
+  # user prompts from the restored context, oldest first — the recall
+  # list ctrl-p walks (newest-first recall, so oldest-first storage).
+  # compaction summaries are synthetic, not user input.
+  defp restored_recall(state) do
+    state.context
+    |> ReqLLM.Context.to_list()
+    |> Enum.flat_map(fn
+      %ReqLLM.Message{role: :user, content: parts} = msg ->
+        text = text_of(parts)
+
+        if String.contains?(text, "Conversation summary") or msg.name == "tool" do
+          []
+        else
+          [text]
+        end
+
+      _ ->
+        []
+    end)
   end
 
   # Context messages -> transcript lines. System messages (the framework
