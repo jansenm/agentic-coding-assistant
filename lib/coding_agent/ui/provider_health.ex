@@ -40,7 +40,7 @@ defmodule CodingAgent.UI.ProviderHealth do
   """
   def check_async(model, session_id) do
     Task.start(fn ->
-      case probe(model) do
+      case probe_model(model, session_id) do
         :ok ->
           broadcast(session_id, {:provider_status, :up})
 
@@ -50,13 +50,44 @@ defmodule CodingAgent.UI.ProviderHealth do
     end)
   end
 
+  @doc """
+  Probes `model` (a `provider:model` spec) through the SAME registry
+  path a real turn takes: Providers.resolve with the session's
+  provider_config snapshot. Passing the raw spec string to req_llm
+  bypasses the registry — indirected providers (provider = "openai"
+  tables) have no native req_llm module and the probe reported
+  'provider unavailable' for perfectly reachable setups (found live).
+  """
+  def probe_model(model, session_id) do
+    cfg =
+      case CodingAgent.Core.Session.state(session_id) do
+        {:ok, st} -> st.provider_config || %{}
+        _ -> %{}
+      end
+
+    [provider, model_id] = String.split(model || "", ":", parts: 2)
+
+    with {:ok, model_input} <-
+           CodingAgent.Core.Providers.model_input(provider, model_id, cfg) do
+      probe_opts =
+        case CodingAgent.Core.UserConfig.credential(provider) do
+          {:ok, %{api_key: key}} -> [api_key: key]
+          _ -> []
+        end
+
+      probe(model_input, probe_opts)
+    else
+      {:error, reason} -> {:error, "provider error: #{inspect(reason, printable_limit: 80)}"}
+    end
+  end
+
   @doc "Synchronous probe: :ok | {:error, human_reason}."
-  def probe(model) do
+  def probe(model, extra_opts \\ []) do
     context =
       Context.new()
       |> Context.append(ReqLLM.Context.user("Reply with the single word: ok"))
 
-    case ReqLLM.generate_text(model, context, @probe_opts) do
+    case ReqLLM.generate_text(model, context, @probe_opts ++ extra_opts) do
       {:ok, _response} -> :ok
       {:error, %ReqLLM.Error.API{} = err} -> {:error, classify(err)}
       {:error, %ReqLLM.Error.API.Request{} = err} -> {:error, classify(err)}

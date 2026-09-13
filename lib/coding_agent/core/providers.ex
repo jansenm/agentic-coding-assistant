@@ -43,10 +43,19 @@ defmodule CodingAgent.Core.Providers do
   @spec resolve(String.t(), %{String.t() => term()}) ::
           {:ok, t()} | {:error, :unknown_provider | {:bad_entry, term()}}
   def resolve(name, config) when is_binary(name) and is_map(config) do
-    entry =
-      config
-      |> Map.get("providers", %{})
-      |> Map.get(name)
+    # accepts BOTH config shapes: the whole merged map (with a
+    # "providers" table) or the [providers.*] subtree itself (the
+    # session's provider_config snapshot — request_parts/1 passes it
+    # directly; found live: the subtree shape fell through to the
+    # native-fallback and every indirected provider failed :bad_entry)
+    providers =
+      if Map.has_key?(config, "providers") do
+        Map.get(config, "providers", %{})
+      else
+        config
+      end
+
+    entry = Map.get(providers, name)
 
     case entry do
       nil ->
