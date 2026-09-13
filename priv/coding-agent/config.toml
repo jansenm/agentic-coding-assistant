@@ -22,6 +22,7 @@
 # from req_llm's chain (env / OAuth).
 
 [providers.ollama]
+base_url = "http://localhost:11434"
 discover = "ollama"
 
 [providers.ollama_cloud]

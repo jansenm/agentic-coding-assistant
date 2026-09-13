@@ -124,7 +124,7 @@ defmodule CodingAgent.Core.UserConfig do
   end
 
   defp deep_merge(_k, base, override) when is_map(base) and is_map(override),
-    do: Map.merge(base, override)
+    do: Map.merge(base, override, &deep_merge/3)
 
   defp deep_merge(_k, _base, override), do: override
 
