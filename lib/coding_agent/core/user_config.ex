@@ -74,6 +74,7 @@ defmodule CodingAgent.Core.UserConfig do
   Like `load/1` but a broken TOML returns `{:error, message}` instead
   of raising — for paths that must degrade (keymaps mid-session).
   """
+  @spec load_safe(String.t() | nil) :: {:ok, t()} | {:error, String.t()}
   def load_safe(scope_root) do
     {:ok, load(scope_root)}
   rescue

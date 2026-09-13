@@ -272,6 +272,11 @@ defmodule CodingAgent.UI.Tui do
         menu_popup_id: nil,
         menu_index: 0,
         menu_note: nil,
+        # keymap: loaded ONCE at mount (was: re-read the user's TOML
+        # files on every keypress — file I/O in the hot path, and a
+        # broken live config became a mid-session crash vector).
+        # Reloaded on session switch (attach_selected_session).
+        keymap: Keymap.load(),
         # the original mount opts: menu actions (switch) re-run
         # mount_session with the same flags (test_mode etc.)
         mount_opts: opts
@@ -707,7 +712,7 @@ defmodule CodingAgent.UI.Tui do
     # two-tier bridge (ADR 011 + the UTF-8 lesson): only special keys
     # and letters the keymap binds become keymap events; everything
     # else is text, forwarded raw to the textarea
-    bound = Bridge.bound_letters(Keymap.load()) ++ Bridge.bound_letters(decision_keymap())
+    bound = Bridge.bound_letters(state.keymap) ++ Bridge.bound_letters(decision_keymap())
 
     case Bridge.translate(ev, bound) do
       {:text, code} ->
@@ -788,9 +793,9 @@ defmodule CodingAgent.UI.Tui do
   defp status_note(state, text), do: %{state | menu_note: text}
 
   # the "show all keymaps" popup: one row per binding, grouped
-  defp keymap_popup do
+  defp keymap_popup(keymap) do
     rows =
-      Enum.flat_map(Keymap.load(), fn {action, patterns} ->
+      Enum.flat_map(keymap, fn {action, patterns} ->
         patterns
         |> Enum.map(&pattern_text/1)
         |> Enum.join(", ")
@@ -942,7 +947,8 @@ defmodule CodingAgent.UI.Tui do
   defp run_menu_action(:quit, state), do: {:stop, :normal, state}
 
   defp run_menu_action(:show_keymaps, state) do
-    {:noreply, %{state | menu_popup: keymap_popup(), menu_popup_id: :keymaps, menu_index: 0}}
+    {:noreply,
+     %{state | menu_popup: keymap_popup(state.keymap), menu_popup_id: :keymaps, menu_index: 0}}
   end
 
   defp run_menu_action(_other, state), do: {:noreply, state}
@@ -986,7 +992,7 @@ defmodule CodingAgent.UI.Tui do
   end
 
   defp dispatch_input_key(km_event, ev, state) do
-    case Keymap.resolve(Keymap.load(), km_event) do
+    case Keymap.resolve(state.keymap, km_event) do
       :toggle_tool_output ->
         state = toggle_last_tool(state)
         state = clamp_scroll_now(state)
