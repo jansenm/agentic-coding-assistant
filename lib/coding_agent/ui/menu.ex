@@ -59,6 +59,16 @@ defmodule CodingAgent.UI.Menu do
         needs_popup: false
       },
       %{
+        # model switch: the popup lists catalog + discovered models
+        # (Core.Providers.Discovery). TUI-owned popup like switch_session
+        # (needs a live fetch, so Menu's placeholder popup is unused).
+        action: :switch_model,
+        key: "m",
+        label: "switch model",
+        menu: :main,
+        needs_popup: true
+      },
+      %{
         action: :quit,
         key: "q",
         label: "quit",

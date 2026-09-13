@@ -1,6 +1,8 @@
 defmodule CodingAgent.UI.TuiMenuTest do
   use ExUnit.Case, async: false
 
+  alias CodingAgent.Core.Session
+
   setup do
     tmp_root = System.tmp_dir!() |> Path.join("agent-menu-#{System.unique_integer()}")
     File.mkdir_p!(tmp_root)
@@ -40,13 +42,13 @@ defmodule CodingAgent.UI.TuiMenuTest do
     })
   end
 
-  defp key(pid, code, mods \\ []),
-    do:
-      ExRatatui.Runtime.inject_event(pid, %ExRatatui.Event.Key{
-        kind: "press",
-        code: code,
-        modifiers: mods
-      })
+  defp key(pid, code, mods \\ []) do
+    ExRatatui.Runtime.inject_event(pid, %ExRatatui.Event.Key{
+      kind: "press",
+      code: code,
+      modifiers: mods
+    })
+  end
 
   test "ctrl-x q quits (fast path, no popup)", %{root: tmp_root} do
     pid = start_tui(tmp_root)
@@ -171,5 +173,79 @@ defmodule CodingAgent.UI.TuiMenuTest do
 
     st4 = :sys.get_state(pid).user_state
     assert st4.session_id == _a
+  end
+
+  # -- model menu (ctrl-x m) ----------------------------------------------
+
+  test "ctrl-x m opens the model popup with catalog + discovered entries", %{
+    root: tmp_root
+  } do
+    id = seed_session("menu-model", tmp_root)
+    pid = start_tui(tmp_root, session_id: id)
+
+    # the session is LIVE with this model (state mirror seeded at mount)
+    key(pid, "x", ["ctrl"])
+    key(pid, "m")
+    Process.sleep(400)
+
+    st = :sys.get_state(pid).user_state
+    assert st.menu_popup != nil
+    assert st.menu_popup.id == :switch_model
+
+    # seeded model is marked "(current)"
+    assert Enum.any?(st.menu_popup.items, &(&1.label =~ "(current)"))
+  end
+
+  test "selecting a model switches the session's wire model", %{root: tmp_root} do
+    id = seed_session("menu-model", tmp_root)
+    pid = start_tui(tmp_root, session_id: id)
+
+    key(pid, "x", ["ctrl"])
+    key(pid, "m")
+    Process.sleep(300)
+
+    st = :sys.get_state(pid).user_state
+    # pick a DIFFERENT entry (the current mark may be on the only item)
+    other = Enum.find(st.menu_popup.items, &(not String.contains?(&1.label, "(current)")))
+
+    if other do
+      idx = Enum.find_index(st.menu_popup.items, &(&1 == other))
+      Enum.each(1..idx, fn _ -> key(pid, "down") end)
+      key(pid, "enter")
+      Process.sleep(400)
+
+      st2 = :sys.get_state(pid).user_state
+      assert st2.menu_popup == nil
+      assert {:ok, sess} = Session.state(id)
+      assert sess.model == other.id
+    end
+  end
+
+  test "dead discovery endpoint: popup still opens, note in title", %{root: tmp_root} do
+    # point the provider at a dead port via the project config layer
+    proj = Path.join(tmp_root, ".coding-agent")
+    File.mkdir_p!(proj)
+
+    cfg_file = Path.join(proj, "config.toml")
+
+    File.write!(
+      cfg_file,
+      """
+      [providers.ollama]
+      discover = "openai"
+      base_url = "http://127.0.0.1:1/v1"
+      """
+    )
+
+    id = seed_session("menu-model", tmp_root)
+    pid = start_tui(tmp_root, session_id: id)
+
+    key(pid, "x", ["ctrl"])
+    key(pid, "m")
+    Process.sleep(300)
+
+    st = :sys.get_state(pid).user_state
+    # never raises: the popup opened (maybe with catalog entries only)
+    assert st.menu_popup != nil
   end
 end

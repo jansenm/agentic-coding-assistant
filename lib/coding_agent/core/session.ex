@@ -68,6 +68,11 @@ defmodule CodingAgent.Core.Session do
     GenServer.call(via(id), {:set_id, new_id})
   end
 
+  @doc "Model-menu switch: swap the wire model for the NEXT turn."
+  def set_model(id, model) do
+    GenServer.call(via(id), {:set_model, model})
+  end
+
   @doc """
   Subscribes the CALLER to session events (streaming deltas, status
   changes). Events arrive as `{:agent, event}` messages.
@@ -232,6 +237,13 @@ defmodule CodingAgent.Core.Session do
 
   def handle_call({:set_id, new_id}, _from, state) do
     {:reply, :ok, struct!(state, id: new_id)}
+  end
+
+  # model-menu switch: swap the wire model mid-session. The NEXT turn
+  # resolves it (request_parts/1 splits state.model per call), so a
+  # running session changes models at the boundary, not mid-stream.
+  def handle_call({:set_model, model}, _from, state) do
+    {:reply, :ok, struct!(state, model: model)}
   end
 
   def handle_call(:subscribe, {pid, _}, state) do

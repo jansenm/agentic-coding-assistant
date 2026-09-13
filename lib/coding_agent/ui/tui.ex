@@ -18,6 +18,7 @@ defmodule CodingAgent.UI.Tui do
   use ExRatatui.App
 
   alias CodingAgent.Core.{Compaction, Session}
+  alias CodingAgent.Core.Providers.Discovery
   alias CodingAgent.Core.Session.Supervisor
   alias CodingAgent.Core.Session.Store
   alias CodingAgent.UI.{Bridge, Keymap, Menu, TranscriptView}
@@ -127,6 +128,7 @@ defmodule CodingAgent.UI.Tui do
 
     initial = %{
       session_id: nil,
+      model: nil,
       session_usage: %{input_tokens: 0, output_tokens: 0, cost: nil},
       last_pane_width: max(tw - @width_overhead, 10),
       last_pane_height: max(th - @layout_overhead, 1),
@@ -231,8 +233,17 @@ defmodule CodingAgent.UI.Tui do
 
       {tw, th} = initial_size
 
+      # the session's ACTUAL model (opts may have been defaulted inside
+      # Session.init): mirrored so the model menu marks "(current)"
+      session_model =
+        case Session.state(effective_id) do
+          {:ok, st} -> st.model
+          _ -> nil
+        end
+
       initial = %{
         session_id: effective_id,
+        model: session_model,
         session_usage:
           (restored && Map.get(restored, :usage)) ||
             %{input_tokens: 0, output_tokens: 0, cost: nil},
@@ -843,6 +854,84 @@ defmodule CodingAgent.UI.Tui do
     end
   end
 
+  # model switch popup: one item per candidate model. Items are plain
+  # maps ({id, source}) — the selection handler switches the session.
+  # `current` is marked so the owner sees where they are.
+  defp model_popup(state) do
+    provider = provider_of(state)
+
+    {:ok, %{entries: entries, note: note}} =
+      Discovery.models_cached(provider, provider_config_of(state))
+
+    items =
+      Enum.map(entries, fn %{id: id, source: source} ->
+        mark = if state.model == "#{provider}:#{id}", do: " (current)", else: ""
+
+        %{
+          id: "#{provider}:#{id}",
+          label: "#{id}#{mark}" <> if(source == :discovered, do: "  (live)", else: ""),
+          status: nil,
+          action: :model_selected
+        }
+      end)
+
+    # the session's CURRENT model is always listed (and marked) — even
+    # when discovery is down it must be switchable-back-to
+    current =
+      case state.model do
+        m when is_binary(m) and m != "" ->
+          if Enum.any?(items, &(&1.id == m)) do
+            nil
+          else
+            %{
+              id: m,
+              label: String.replace(m, "#{provider}:", "") <> " (current)",
+              status: nil,
+              action: :model_selected
+            }
+          end
+
+        _ ->
+          nil
+      end
+
+    items =
+      if(current, do: [current | items], else: items)
+      |> then(fn
+        [] -> [%{id: nil, label: "(no models found)", status: nil, action: :noop}]
+        items -> items
+      end)
+
+    title =
+      case note do
+        nil -> " switch model  (arrows, enter=switch, esc=cancel)"
+        n -> " switch model  (#{String.slice(n, 0, 40)})"
+      end
+
+    {:noreply,
+     %{
+       state
+       | menu_popup: %{id: :switch_model, title: title, items: items},
+         menu_popup_id: :switch_model,
+         menu_pending: false,
+         menu_index: 0
+     }}
+  end
+
+  defp provider_of(state) do
+    case String.split(state.model || "", ":", parts: 2) do
+      [p, _] -> p
+      _ -> "ollama"
+    end
+  end
+
+  defp provider_config_of(state) do
+    case Session.state(state.session_id) do
+      {:ok, st} -> st.provider_config || %{}
+      _ -> %{}
+    end
+  end
+
   # -- Menu mode (ctrl-x prefix) ----------------------------------------------
   # :menu_pending = the next letter fires the item directly; the timer
   # (:__menu_timeout__) flips the popup on when the owner just waits.
@@ -926,6 +1015,7 @@ defmodule CodingAgent.UI.Tui do
 
     case state.menu_popup_id do
       :switch_session -> attach_selected_session(selected, state)
+      :switch_model -> model_selected(selected, state)
       _ -> run_menu_action(selected.action, state)
     end
   end
@@ -940,6 +1030,12 @@ defmodule CodingAgent.UI.Tui do
 
   defp run_menu_action(:switch_session, state), do: switch_session_popup(state)
 
+  # model switch: catalog (req_llm) + discovered (GET, dialect per
+  # provider entry) candidates, cached per mount. Never blocks the TUI
+  # longer than the discovery timeout; a dead server = a note, and the
+  # popup still opens (with whatever resolved).
+  defp run_menu_action(:switch_model, state), do: model_popup(state)
+
   defp run_menu_action(:toggle_tool_output, state) do
     {:noreply, toggle_last_tool(state)}
   end
@@ -952,6 +1048,23 @@ defmodule CodingAgent.UI.Tui do
   end
 
   defp run_menu_action(_other, state), do: {:noreply, state}
+
+  # popup selection: switch THIS session's wire model for the next
+  # turn (Session.set_model). The noop placeholder row (empty list)
+  # just closes.
+  defp model_selected(%{id: nil}, state), do: {:noreply, state}
+
+  defp model_selected(%{id: model}, state) do
+    case Session.set_model(state.session_id, model) do
+      :ok ->
+        # state.model mirrors the session (render + next switch marks
+        # "(current)" correctly)
+        {:noreply, status_note(%{state | model: model}, "model → #{model}")}
+
+      other ->
+        {:noreply, status_note(state, "model switch failed: #{inspect(other)}")}
+    end
+  end
 
   # In the dialog: y/n/e decide; everything else ignored.
   defp handle_decision_key(km_event, state) do
