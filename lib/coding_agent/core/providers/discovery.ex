@@ -76,7 +76,11 @@ defmodule CodingAgent.Core.Providers.Discovery do
     case Process.get(cache_key) do
       nil ->
         result = all_models(config)
-        Process.put(cache_key, result)
+        # cache only successes: a failed fetch (server briefly down at
+        # first menu open) must retry on the next open, not be served
+        # as gospel for the TUI's lifetime
+        if match?({:ok, %{note: nil}}, result), do: Process.put(cache_key, result)
+
         result
 
       cached ->
