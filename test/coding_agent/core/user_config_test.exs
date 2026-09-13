@@ -88,12 +88,10 @@ defmodule CodingAgent.Core.UserConfigTest do
     File.write!(Path.join(global_dir(), "config.toml"), """
     [providers.ollama]
     base_url = "https://ollama.com/v1"
-    cloud_via_openai = true
     """)
 
     cfg = UserConfig.load(nil)
     assert UserConfig.base_url("ollama", cfg.config) == "https://ollama.com/v1"
-    assert UserConfig.cloud_via_openai?("ollama", cfg.config) == true
     assert UserConfig.base_url("anthropic", cfg.config) == nil
   end
 
@@ -118,4 +116,46 @@ defmodule CodingAgent.Core.UserConfigTest do
 
   defp global_dir, do: UserConfig.global_dir()
   defp project_dir, do: UserConfig.project_dir_for_test(@tmp_root)
+
+  test "provider registry: native fallback for unlisted providers" do
+    # no [providers.ollama] table -> native :ollama provider, string spec
+    assert {:ok, "ollama:qwen3:14b"} =
+             CodingAgent.Core.Providers.model_input("ollama", "qwen3:14b", %{})
+  end
+
+  test "provider registry: indirection builds the model map" do
+    cfg = %{
+      "providers" => %{
+        "ollama_cloud" => %{"provider" => "openai", "base_url" => "https://ollama.com/v1"}
+      }
+    }
+
+    assert {:ok, %CodingAgent.Core.Providers{} = p} =
+             CodingAgent.Core.Providers.resolve("ollama_cloud", cfg)
+
+    assert p.req_provider == :openai
+    assert p.base_url == "https://ollama.com/v1"
+
+    assert {:ok, %{provider: :openai, id: "gpt-oss:120b"} = mi} =
+             CodingAgent.Core.Providers.model_input("ollama_cloud", "gpt-oss:120b", cfg)
+
+    assert mi.base_url == "https://ollama.com/v1"
+    assert mi.extra == %{openai_compatible_backend: :ollama}
+  end
+
+  test "provider registry: unknown indirection target fails closed" do
+    cfg = %{"providers" => %{"bad" => %{"provider" => "nonexistent_xyz"}}}
+
+    assert {:error, {:bad_entry, msg}} =
+             CodingAgent.Core.Providers.resolve("bad", cfg)
+
+    assert msg =~ "nonexistent_xyz"
+  end
+
+  test "provider registry: native name that req_llm does not know fails" do
+    assert {:error, {:bad_entry, msg}} =
+             CodingAgent.Core.Providers.resolve("definitely_not_a_provider", %{})
+
+    assert msg =~ "definitely_not_a_provider"
+  end
 end

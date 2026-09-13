@@ -18,6 +18,7 @@ defmodule CodingAgent.Core.Session do
 
   alias CodingAgent.Core.Compaction
   alias CodingAgent.Core.Permissions
+  alias CodingAgent.Core.Providers
   alias CodingAgent.Core.UserConfig
   alias CodingAgent.Core.Session.State
   alias CodingAgent.Core.Session.Store
@@ -597,10 +598,10 @@ defmodule CodingAgent.Core.Session do
   defp to_text(output), do: inspect(output, pretty: true, limit: 100)
 
   defp call_llm(state) do
-    with {:ok, base_opts} <- request_opts(state) do
+    with {:ok, model_input, base_opts} <- request_parts(state) do
       opts = Keyword.put(base_opts, :tools, current_tools(state))
 
-      with {:ok, stream_response} <- ReqLLM.stream_text(state.model, state.context, opts) do
+      with {:ok, stream_response} <- ReqLLM.stream_text(model_input, state.context, opts) do
         events = ReqLLM.StreamResponse.events(stream_response)
 
         # consume_stream throws {:stream_error, ...} on stream failures
@@ -621,26 +622,39 @@ defmodule CodingAgent.Core.Session do
     end
   end
 
-  # Credential resolution (ADR 014): env first, then the global
-  # auth.toml. A provider with no credential connects keyless (local
-  # ollama proxy); one with a credential sends it. base_url overrides
-  # from auth.toml ride along (cloud-direct).
-  defp request_opts(state) do
-    provider = state.model |> String.split(":", parts: 2) |> List.first()
+  # Model + credential resolution (ADR 014): the model spec's first
+  # segment names a [providers.*] entry (or a native req_llm provider
+  # when the registry has no such table). Credentials: env first, then
+  # the global auth.toml. A provider with no credential connects
+  # keyless (local ollama proxy); one with a credential sends it.
+  defp request_parts(state) do
+    [name | rest] = String.split(state.model || "", ":", parts: 2)
+    model_id = Enum.at(rest, 0) || ""
+    cfg = state.provider_config || %{}
 
-    case UserConfig.credential(provider) do
-      {:ok, %{api_key: key}} ->
-        {:ok, with_url(state, provider, api_key: key)}
-
-      {:error, :none} ->
-        {:ok, with_url(state, provider, [])}
+    with {:ok, model_input} <- Providers.model_input(name, model_id, cfg),
+         {:ok, opts} <- request_opts(name, cfg) do
+      {:ok, model_input, opts}
     end
   end
 
-  defp with_url(state, provider, opts) do
-    case UserConfig.base_url(provider, state.provider_config || %{}) do
-      nil -> opts
-      url -> Keyword.put(opts, :base_url, url)
+  defp request_opts(provider, cfg) do
+    case UserConfig.credential(provider) do
+      {:ok, %{api_key: key}} ->
+        {:ok, with_url(provider, cfg, api_key: key)}
+
+      {:error, :none} ->
+        {:ok, with_url(provider, cfg, [])}
+    end
+  end
+
+  defp with_url(provider, cfg, opts) do
+    case Providers.resolve(provider, cfg) do
+      {:ok, %Providers{base_url: url}} when is_binary(url) ->
+        Keyword.put(opts, :base_url, url)
+
+      _ ->
+        opts
     end
   end
 
@@ -823,8 +837,8 @@ defmodule CodingAgent.Core.Session do
       )
       |> Context.append(ReqLLM.Context.user(render_messages(old)))
 
-    with {:ok, base_opts} <- request_opts(state),
-         {:ok, response} <- ReqLLM.generate_text(state.model, context, base_opts) do
+    with {:ok, model_input, base_opts} <- request_parts(state),
+         {:ok, response} <- ReqLLM.generate_text(model_input, context, base_opts) do
       {:ok, ReqLLM.Response.text(response)}
     end
   end

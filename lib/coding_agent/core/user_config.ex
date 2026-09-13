@@ -182,22 +182,6 @@ defmodule CodingAgent.Core.UserConfig do
     end
   end
 
-  @doc """
-  True when `provider` models ride the :openai provider with
-  openai_compatible_backend (the ollama cloud case: req_llm's :ollama
-  provider never sends auth).
-  """
-  @spec cloud_via_openai?(String.t(), %{String.t() => term()}) :: boolean()
-  def cloud_via_openai?(provider, config) when is_binary(provider) and is_map(config) do
-    config
-    |> Map.get("providers", %{})
-    |> Map.get(provider, %{})
-    |> case do
-      %{"cloud_via_openai" => v} -> v == true
-      _ -> false
-    end
-  end
-
   defp auth_entry(provider) do
     auth = read(Path.join(data_dir(), "auth.toml"))
     Map.get(auth, provider) || %{}

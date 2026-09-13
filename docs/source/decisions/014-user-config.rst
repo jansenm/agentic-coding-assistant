@@ -59,10 +59,12 @@ Four TOML files. TOML everywhere (one format; JSON felt arbitrary).
 Connection info (endpoints, provider routing) lives in
 ``config.toml`` under ``[providers.<name>]``::
 
-     [providers.ollama]
+     # provider = "openai": ride the :openai provider module (an
+     # OpenAI-compatible backend) — req_llm's :ollama provider never
+     # sends auth, so cloud models need the indirection
+     [providers.ollama_cloud]
+     provider = "openai"
      base_url = "https://ollama.com/v1"
-     cloud_via_openai = true   # cloud models ride the :openai provider
-                               # (req_llm's :ollama provider never sends auth)
 
 **Per-project (overlays the global layers, discovered at the scope
 root):**
