@@ -256,6 +256,11 @@ defmodule CodingAgent.UI.Tui do
         reasoning: "",
         provider_down?: false,
         test_pid: Keyword.get(opts, :test_pid),
+        # loaded ONCE here, not per keypress (file I/O + TOML parse in
+        # the input hot path was the crash vector for a broken live
+        # config). Reload points: session switch, picker actions —
+        # everything that re-runs mount_session.
+        keymap: Keymap.load(),
         # picker mode fields (nil = not in picker mode; set by
         # mount_picker only)
         picker: nil,
@@ -272,13 +277,8 @@ defmodule CodingAgent.UI.Tui do
         menu_popup_id: nil,
         menu_index: 0,
         menu_note: nil,
-        # keymap: loaded ONCE at mount (was: re-read the user's TOML
-        # files on every keypress — file I/O in the hot path, and a
-        # broken live config became a mid-session crash vector).
-        # Reloaded on session switch (attach_selected_session).
-        keymap: Keymap.load(),
-        # the original mount opts: menu actions (switch) re-run
-        # mount_session with the same flags (test_mode etc.)
+        # keymap comes from mount_session's initial state (the picker
+        # hands off before any normal key reaches the keymap paths)
         mount_opts: opts
       }
 

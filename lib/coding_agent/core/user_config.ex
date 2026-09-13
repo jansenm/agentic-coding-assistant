@@ -66,21 +66,10 @@ defmodule CodingAgent.Core.UserConfig do
 
   @doc """
   Loads and merges the layered config for a scope root (nil: globals
-  only). Returns the merged struct.
+  only). Returns the merged struct. A broken TOML raises — use
+  `load_safe/1` where a bad user file must only degrade (keymaps).
   """
   @spec load(String.t() | nil) :: t()
-
-  @doc """
-  Like `load/1` but a broken TOML returns `{:error, message}` instead
-  of raising — for paths that must degrade (keymaps mid-session).
-  """
-  @spec load_safe(String.t() | nil) :: {:ok, t()} | {:error, String.t()}
-  def load_safe(scope_root) do
-    {:ok, load(scope_root)}
-  rescue
-    e -> {:error, Exception.message(e)}
-  end
-
   def load(scope_root) do
     config =
       for name <- @files, into: %{} do
@@ -97,6 +86,17 @@ defmodule CodingAgent.Core.UserConfig do
       ui: config["ui"],
       permissions: load_permissions(scope_root)
     }
+  end
+
+  @doc """
+  Like `load/1` but a broken TOML returns `{:error, message}` instead
+  of raising — for paths that must degrade (keymaps mid-session).
+  """
+  @spec load_safe(String.t() | nil) :: {:ok, t()} | {:error, String.t()}
+  def load_safe(scope_root) do
+    {:ok, load(scope_root)}
+  rescue
+    e -> {:error, Exception.message(e)}
   end
 
   @doc "Default model: config `model` (project over global) as a string."
