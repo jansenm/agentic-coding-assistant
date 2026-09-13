@@ -262,6 +262,20 @@ TUI wish-list (user's own list, keyboard-first, from the live sessions):
   Reproduce with: a big-output command (>64 KiB), a multiline command,
   and a timeout-killed command, then compare `command` echo vs.
   `format/4` output vs. what the model reports.
+- **thinking block grows stray newlines (next session)**: every
+  appended reasoning line seems to add an extra newline at the
+  paragraph's end, so the paragraph collects trailing newlines and the
+  real thinking output slowly drops out of the visible window. Not yet
+  root-caused — the delta accumulator's collapse
+  (`handle_info {:reasoning_deltas}`: `replace("\n\n", "\n")` on the
+  whole buffer) survives the obvious repros, so the pile-up is
+  probably in the RENDER/measure layer, not the buffer: suspects are
+  measure/render mismatch on the `"· thinking: "` prefix (measure
+  counts it, Paragraph renders it differently), `@air` rows
+  compounding in `entry_widgets({:reasoning, ...})`, or nested
+  paragraph padding in the Paragraph widget wrapping. Debug by
+  dumping the reasoning state string (`:sys.get_state(pid).user_state
+  .reasoning`) against the rendered block height mid-stream.
 
 | opencode tool | Ours | Note |
 |---|---|---|
