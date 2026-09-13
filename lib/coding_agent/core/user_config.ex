@@ -166,12 +166,35 @@ defmodule CodingAgent.Core.UserConfig do
     end
   end
 
-  @doc "Endpoint override for `provider` from auth.toml (`base_url`), if any."
-  @spec base_url(String.t()) :: String.t() | nil
-  def base_url(provider) when is_binary(provider) do
-    case auth_entry(provider) do
+  # Connection info lives in config.toml `[providers.<name>]`; auth.toml
+  # holds keys ONLY (ADR 014 revision: the credential file is a password
+  # file, nothing else).
+
+  @doc "Endpoint override for `provider` (config.toml [providers.<name>] base_url), if any."
+  @spec base_url(String.t(), %{String.t() => term()}) :: String.t() | nil
+  def base_url(provider, config) when is_binary(provider) and is_map(config) do
+    config
+    |> Map.get("providers", %{})
+    |> Map.get(provider, %{})
+    |> case do
       %{"base_url" => url} when is_binary(url) -> url
       _ -> nil
+    end
+  end
+
+  @doc """
+  True when `provider` models ride the :openai provider with
+  openai_compatible_backend (the ollama cloud case: req_llm's :ollama
+  provider never sends auth).
+  """
+  @spec cloud_via_openai?(String.t(), %{String.t() => term()}) :: boolean()
+  def cloud_via_openai?(provider, config) when is_binary(provider) and is_map(config) do
+    config
+    |> Map.get("providers", %{})
+    |> Map.get(provider, %{})
+    |> case do
+      %{"cloud_via_openai" => v} -> v == true
+      _ -> false
     end
   end
 

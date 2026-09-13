@@ -49,11 +49,20 @@ Four TOML files. TOML everywhere (one format; JSON felt arbitrary).
 
 ``~/.local/share/coding-agent/auth.toml``
 
-- per-provider credentials and endpoint overrides, e.g.::
+- per-provider API keys **only** — the credential file is a password
+  file, nothing else (revised 2026-09-13: connection info moved to
+  ``config.toml``)::
 
      [ollama]
      api_key = "..."
-     base_url = "https://ollama.com"
+
+Connection info (endpoints, provider routing) lives in
+``config.toml`` under ``[providers.<name>]``::
+
+     [providers.ollama]
+     base_url = "https://ollama.com/v1"
+     cloud_via_openai = true   # cloud models ride the :openai provider
+                               # (req_llm's :ollama provider never sends auth)
 
 **Per-project (overlays the global layers, discovered at the scope
 root):**

@@ -8,6 +8,8 @@ defmodule CodingAgent.Application do
 
   use Application
 
+  alias CodingAgent.Core.UserConfig
+
   @impl true
   def start(_type, _args) do
     publish_keys()
@@ -35,14 +37,12 @@ defmodule CodingAgent.Application do
           {:ok, %{api_key: key}} ->
             ReqLLM.put_key(String.to_atom("#{provider}_api_key"), key)
 
-            # cloud-direct mode (ADR 014): the ollama entry with an
-            # ollama.com base_url drives cloud models through the
-            # :openai provider (openai_compatible_backend: :ollama) —
-            # req_llm's :ollama provider never sends auth. The key
-            # must be visible to that provider too.
+            # cloud_via_openai (config.toml [providers.<name>]): models
+            # ride the :openai provider (openai_compatible_backend) —
+            # req_llm's :ollama provider never sends auth. The key must
+            # be visible to that provider too.
             if provider == "ollama" and
-                 (CodingAgent.Core.UserConfig.base_url("ollama") || "")
-                 |> String.contains?("ollama.com") do
+                 UserConfig.cloud_via_openai?("ollama", UserConfig.load(nil).config) do
               ReqLLM.put_key(:openai_api_key, key)
             end
 

@@ -66,17 +66,35 @@ defmodule CodingAgent.Core.UserConfigTest do
     File.write!(Path.join(UserConfig.data_dir(), "auth.toml"), """
     [ollama]
     api_key = "file-key"
-    base_url = "https://ollama.com"
     """)
 
     System.put_env("OLLAMA_API_KEY", "env-key")
     assert {:ok, %{api_key: "env-key"}} = UserConfig.credential("ollama")
     System.delete_env("OLLAMA_API_KEY")
     assert {:ok, %{api_key: "file-key"}} = UserConfig.credential("ollama")
-    assert UserConfig.base_url("ollama") == "https://ollama.com"
 
     assert {:error, :none} = UserConfig.credential("anthropic")
-    assert UserConfig.base_url("anthropic") == nil
+  end
+
+  test "auth.toml is keys-only: extra fields are not connection info" do
+    # connection info comes from config.toml [providers.*]; base_url in
+    # auth.toml is simply not read anywhere
+    File.write!(Path.join(UserConfig.data_dir(), "auth.toml"), """
+    [ollama]
+    api_key = "file-key"
+    base_url = "should-be-ignored"
+    """)
+
+    File.write!(Path.join(global_dir(), "config.toml"), """
+    [providers.ollama]
+    base_url = "https://ollama.com/v1"
+    cloud_via_openai = true
+    """)
+
+    cfg = UserConfig.load(nil)
+    assert UserConfig.base_url("ollama", cfg.config) == "https://ollama.com/v1"
+    assert UserConfig.cloud_via_openai?("ollama", cfg.config) == true
+    assert UserConfig.base_url("anthropic", cfg.config) == nil
   end
 
   test "auth.toml is never read from a project" do

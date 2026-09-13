@@ -630,15 +630,15 @@ defmodule CodingAgent.Core.Session do
 
     case UserConfig.credential(provider) do
       {:ok, %{api_key: key}} ->
-        {:ok, request_opts_with_url(provider, api_key: key)}
+        {:ok, with_url(state, provider, api_key: key)}
 
       {:error, :none} ->
-        {:ok, request_opts_with_url(provider, [])}
+        {:ok, with_url(state, provider, [])}
     end
   end
 
-  defp request_opts_with_url(provider, opts) do
-    case UserConfig.base_url(provider) do
+  defp with_url(state, provider, opts) do
+    case UserConfig.base_url(provider, state.provider_config || %{}) do
       nil -> opts
       url -> Keyword.put(opts, :base_url, url)
     end
