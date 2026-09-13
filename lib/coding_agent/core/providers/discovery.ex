@@ -193,7 +193,13 @@ defmodule CodingAgent.Core.Providers.Discovery do
   def fetch("ollama", base, auth), do: get(join_tags(base), auth, &ollama_ids/1)
 
   defp join_models(base), do: String.trim_trailing(base, "/") <> "/models"
-  defp join_tags(base), do: String.trim_trailing(base, "/") <> "/api/tags"
+  # native ollama serves /api/tags at the ROOT, not under /v1 — strip
+  # a trailing /v1 (the wire path req_llm's provider needs for
+  # /chat/completions; found live: base with /v1 + /api/tags = 404)
+  defp join_tags(base) do
+    base = base |> String.trim_trailing("/") |> String.replace_suffix("/v1", "")
+    base <> "/api/tags"
+  end
 
   defp get(url, auth, extract) do
     headers =
