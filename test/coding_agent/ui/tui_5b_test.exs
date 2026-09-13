@@ -138,11 +138,18 @@ defmodule CodingAgent.UI.Tui5bTest do
 
   defp state(pid), do: :sys.get_state(pid) |> Map.get(:user_state)
 
-  defp wait_until(fun, tries \\ 50) do
+  # generous ceiling: under the full suite's parallelism the alt-enter
+  # round-trip (inject → TUI → session spawn → run_turn → broadcast)
+  # can blow past 1s — the tui_5b flake (1-in-3 runs) was a timeout,
+  # not a logic break. Same cure as the live-gate flake: fewer, longer
+  # polls.
+  defp wait_until(fun, tries \\ 150) do
     if fun.() do
       :ok
     else
-      Process.sleep(20)
+      if tries <= 0, do: flunk("wait_until timed out")
+
+      Process.sleep(50)
       wait_until(fun, tries - 1)
     end
   end
