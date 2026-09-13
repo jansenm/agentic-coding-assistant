@@ -272,6 +272,11 @@ defmodule CodingAgent.UI.Tui do
         # config). Reload points: session switch, picker actions —
         # everything that re-runs mount_session.
         keymap: Keymap.load(),
+        # sidebar values (model display, reasoning effort): read ONCE
+        # per mount too — sidebar_widget ran UserConfig.load/1 on
+        # EVERY FRAME (3 TOML files x ~60fps poll cadence = the CPU
+        # storm, found live: 500M reductions/s in Toml decoding)
+        ui_config: CodingAgent.Core.UserConfig.load_safe(nil),
         # picker mode fields (nil = not in picker mode; set by
         # mount_picker only)
         picker: nil,
@@ -1782,8 +1787,17 @@ defmodule CodingAgent.UI.Tui do
         Compaction.default_trigger_tokens()
       )
 
-    cfg = CodingAgent.Core.UserConfig.load(nil)
-    model = cfg.config["model"] || Application.get_env(:coding_agent, :model)
+    # per-frame UserConfig.load removed (the CPU storm): the merged
+    # config ships in state, read once per mount
+    cfg =
+      case Map.get(state, :ui_config, {:ok, nil}) do
+        {:ok, c} when c != nil -> c
+        _ -> %{}
+      end
+
+    model =
+      state.model || cfg.config["model"] ||
+        Application.get_env(:coding_agent, :model)
 
     effort =
       cfg.config["reasoning_effort"] || Application.get_env(:coding_agent, :reasoning_effort)
