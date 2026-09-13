@@ -4,9 +4,10 @@ import Config
 # application grows; secrets come from the environment, never this file.
 
 config :coding_agent,
-  # req_llm model spec. Ollama (incl. cloud models via `:cloud` suffix)
-  # needs no API key; see .env.example for providers that do.
-  model: "ollama:glm-5.3-flash:cloud",
+  # No default model in code (user decision: models are dynamic; the
+  # default comes from ~/.config/coding-agent/config.toml `model =`
+  # or the AGENT_MODEL env override). Missing default fails with a
+  # message naming the config file.
   # context window of the configured model, in tokens (sidebar %).
   context_window_tokens: 500_000,
   # Compaction trigger in ABSOLUTE tokens (default 180k, learned from

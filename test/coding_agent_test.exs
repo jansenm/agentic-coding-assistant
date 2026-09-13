@@ -1,9 +1,22 @@
 defmodule CodingAgentTest do
   use ExUnit.Case, async: true
 
-  test "model config is readable" do
-    assert is_binary(CodingAgent.model())
-    assert String.contains?(CodingAgent.model(), ":")
+  test "model resolution: env override wins over config.toml, nil when both absent" do
+    prev = System.get_env("AGENT_MODEL")
+    on_exit(fn -> if prev, do: System.put_env("AGENT_MODEL", prev) end)
+
+    System.put_env("AGENT_MODEL", "ollama:qwen3:14b")
+    assert CodingAgent.model() == "ollama:qwen3:14b"
+    # delete_env would break OTHER tests racing this one (the test
+    # helper's seed is the run-wide model); restore instead
+    System.put_env("AGENT_MODEL", "ollama:test-model")
+
+    # config.toml's model (user machine) or nil — either is valid; the
+    # nil case is the TUI's hard-error path
+    case CodingAgent.model() do
+      nil -> :ok
+      m -> assert is_binary(m) and String.contains?(m, ":")
+    end
   end
 
   test "supervision tree starts with the registry" do

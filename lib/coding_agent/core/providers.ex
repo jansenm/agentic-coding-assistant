@@ -136,13 +136,12 @@ defmodule CodingAgent.Core.Providers do
     Enum.find(atoms, &(Atom.to_string(&1) == name)) || String.to_atom(name)
   end
 
-  # the openai indirection exists BECAUSE of ollama's OpenAI-compatible
-  # quirks — flag the backend unless the entry overrides it
+  # explicit backend flag (openai_compatible_backend); an indirection
+  # without one passes no extra — the registry stays blind to services
   defp backend(_name, entry) do
     case entry["backend"] do
-      "ollama" -> :ollama
       b when is_binary(b) -> String.to_existing_atom(b)
-      _ -> :ollama
+      _ -> nil
     end
   end
 

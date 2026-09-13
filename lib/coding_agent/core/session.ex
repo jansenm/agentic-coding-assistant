@@ -126,7 +126,17 @@ defmodule CodingAgent.Core.Session do
   @impl true
   def init(opts) do
     id = Keyword.fetch!(opts, :id)
-    model = Keyword.get(opts, :model) || CodingAgent.model()
+    # no model in code (user decision): a fresh session needs the
+    # configured default; nil fails loudly here (the TUI guard usually
+    # catches this first)
+    model =
+      Keyword.get(opts, :model) ||
+        CodingAgent.model() ||
+        raise(
+          "no model configured — set model = \"provider:model\" in " <>
+            CodingAgent.Core.UserConfig.global_dir() <> "/config.toml"
+        )
+
     system_prompt = Keyword.get(opts, :system_prompt, @framework_prompt)
     scope_root = Keyword.get(opts, :scope_root)
     test_mode = Keyword.get(opts, :test_mode, false)

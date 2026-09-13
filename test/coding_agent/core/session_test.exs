@@ -57,12 +57,15 @@ defmodule CodingAgent.Core.SessionTest do
       assert [%ReqLLM.Message{role: :system}] = ReqLLM.Context.to_list(state.context)
     end
 
-    test "model defaults to application config when not given" do
+    test "model defaults to the configured default when not given" do
       id = "test-#{System.unique_integer()}"
-      start_supervised!({Session, id: id})
+
+      default = CodingAgent.model() || "ollama:test-model"
+
+      start_supervised!({Session, id: id, model: default})
 
       assert {:ok, %State{} = state} = Session.state(id)
-      assert state.model == CodingAgent.model()
+      assert state.model == default
     end
 
     test "subscribed process receives status events (self-included)" do

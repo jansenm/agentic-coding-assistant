@@ -39,7 +39,10 @@ Four TOML files. TOML everywhere (one format; JSON felt arbitrary).
 
 ``~/.config/coding-agent/``
 
-- ``config.toml`` — default model, provider connection info (base_url,
+- ``config.toml`` — default model (``model = "provider:model"``; no
+  default model is baked into code — a missing default is a hard error
+  naming this file, until the model menu replaces it with a warning +
+  in-session pick), provider connection info (base_url,
   which env var names the key), compaction trigger, reasoning effort.
 - ``ui.toml`` — ``[keys]`` keymap overrides; future ``[menus]``.
 - ``permissions.toml`` — the user-side policy layer.

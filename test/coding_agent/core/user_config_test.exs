@@ -126,7 +126,11 @@ defmodule CodingAgent.Core.UserConfigTest do
   test "provider registry: indirection builds the model map" do
     cfg = %{
       "providers" => %{
-        "ollama_cloud" => %{"provider" => "openai", "base_url" => "https://ollama.com/v1"}
+        "ollama_cloud" => %{
+          "provider" => "openai",
+          "base_url" => "https://ollama.com/v1",
+          "backend" => "ollama"
+        }
       }
     }
 

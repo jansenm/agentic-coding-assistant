@@ -42,6 +42,19 @@ defmodule Mix.Tasks.Tui do
       [initial_prompt: prompt, scope_root: File.cwd!(), mouse_capture: true]
       |> maybe_resume(opts[:resume])
 
+    case CodingAgent.model() do
+      nil ->
+        Mix.raise(
+          "no model configured. Set model = \"provider:model\" in " <>
+            CodingAgent.Core.UserConfig.global_dir() <>
+            "/config.toml (or a project .coding-agent/config.toml), " <>
+            "or override per run with AGENT_MODEL"
+        )
+
+      _ ->
+        :ok
+    end
+
     {:ok, _} = CodingAgent.UI.Tui.start_link(tui_opts)
 
     # The app runs supervised; keep this process alive while the TUI is up

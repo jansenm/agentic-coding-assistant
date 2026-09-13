@@ -10,13 +10,18 @@ defmodule CodingAgent do
   """
 
   @doc """
-  The configured model spec (req_llm format, e.g. "anthropic:claude-haiku-4-5").
+  The configured model spec (req_llm format, e.g. "ollama:qwen3:14b").
+
+  Resolution: the AGENT_MODEL env override (adhoc/live probes must not
+  burn metered cloud quota — a cheap local model can be selected per
+  run), then config.toml `model =` (project over global, ADR 014).
+  No model name is baked into code; when neither source has one the
+  result is nil and the caller decides (TUI: hard error today, a
+  warning + in-session pick once the model menu exists).
   """
-  @spec model() :: String.t()
-  # Adhoc/live probes must not burn metered cloud quota: the model can
-  # be overridden per run with AGENT_MODEL (cheap local/free model),
-  # e.g. AGENT_MODEL="ollama:nemotron-3-ultra:cloud" mix tui
+  @spec model() :: String.t() | nil
   def model do
-    System.get_env("AGENT_MODEL") || Application.fetch_env!(:coding_agent, :model)
+    System.get_env("AGENT_MODEL") ||
+      CodingAgent.Core.UserConfig.load(nil).config["model"]
   end
 end

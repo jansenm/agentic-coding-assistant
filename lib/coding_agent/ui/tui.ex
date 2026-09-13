@@ -314,12 +314,28 @@ defmodule CodingAgent.UI.Tui do
         end
 
       _ ->
-        with {:ok, pid} <-
-               Supervisor.start_session(
-                 id: id,
-                 scope_root: Keyword.get(opts, :scope_root) || File.cwd!()
-               ) do
-          {:ok, pid, nil}
+        # fresh session: the configured default (config.toml or
+        # AGENT_MODEL). No default in code (user decision) — a missing
+        # one is a hard error naming the config file, until the model
+        # menu replaces it with warning + in-session pick
+        case CodingAgent.model() do
+          nil ->
+            {:error,
+             {:no_model,
+              "no model configured. Set model = \"provider:model\" in " <>
+                CodingAgent.Core.UserConfig.global_dir() <>
+                "/config.toml (or a project .coding-agent/config.toml), " <>
+                "or override per run with AGENT_MODEL"}}
+
+          model ->
+            with {:ok, pid} <-
+                   Supervisor.start_session(
+                     id: id,
+                     scope_root: Keyword.get(opts, :scope_root) || File.cwd!(),
+                     model: model
+                   ) do
+              {:ok, pid, nil}
+            end
         end
     end
   end
