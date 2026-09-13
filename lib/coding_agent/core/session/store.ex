@@ -145,6 +145,36 @@ defmodule CodingAgent.Core.Session.Store do
     :ok
   end
 
+  @doc """
+  Renames a persisted session: load, re-id, save under the new
+  name, drop the old file. Intended for idle sessions — a live one
+  keeps running under its old id and re-saves it on the next turn.
+  Returns {:ok, new_id} or {:error, reason}.
+  """
+  def rename(id, new_id) when is_binary(new_id) and new_id != "" do
+    new_id = String.trim(new_id)
+
+    cond do
+      new_id == "" or new_id == id ->
+        {:error, :invalid_name}
+
+      File.exists?(path(new_id)) ->
+        {:error, :exists}
+
+      true ->
+        case load(id) do
+          {:ok, state} ->
+            new_state = struct!(state, id: new_id)
+            save(new_state)
+            _ = File.rm(path(id))
+            {:ok, new_id}
+
+          err ->
+            err
+        end
+    end
+  end
+
   @doc "Lists persisted sessions, newest first: [{id, saved_at, model}]."
   @spec list() :: [
           %{id: String.t(), saved_at: DateTime.t(), model: String.t() | nil, status: atom()}

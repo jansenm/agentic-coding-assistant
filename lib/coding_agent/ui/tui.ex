@@ -85,7 +85,7 @@ defmodule CodingAgent.UI.Tui do
     if Keyword.get(opts, :resume_id) == nil and (force_picker? or not test_mode?) do
       case Store.list_in(Keyword.get(opts, :scope_root) || File.cwd!()) do
         [_ | _] = sessions ->
-          mount_picker(opts, sessions, prompt)
+          mount_picker(opts, sessions, prompt, Keyword.get(opts, :scope_root) || File.cwd!())
 
         _ ->
           mount_session(nil, opts, prompt)
@@ -112,7 +112,7 @@ defmodule CodingAgent.UI.Tui do
     end
   end
 
-  defp mount_picker(opts, sessions, prompt) do
+  defp mount_picker(opts, sessions, prompt, root) do
     {tw, th} =
       case Keyword.get(opts, :test_mode) do
         {w, h} when is_integer(w) and is_integer(h) ->
@@ -149,6 +149,8 @@ defmodule CodingAgent.UI.Tui do
       picker_index: 0,
       picker_opts: opts,
       picker_prompt: prompt,
+      picker_op: nil,
+      picker_scope: Path.expand(root),
       menu_pending: false,
       menu_popup: nil,
       menu_popup_id: nil,
@@ -260,6 +262,8 @@ defmodule CodingAgent.UI.Tui do
         picker_index: 0,
         picker_opts: nil,
         picker_prompt: nil,
+        picker_op: nil,
+        picker_scope: nil,
         # menu mode: :menu_pending (a prefix chord was pressed, the
         # next letter within @menu_timeout fires the item directly) or
         # a popup map (navigate/enter). nil = normal input.
@@ -569,35 +573,113 @@ defmodule CodingAgent.UI.Tui do
 
   # Click a to  # -- Picker keys -----------------------------------------------------------
   # up/down/j/k move; enter resumes the selection; n starts fresh;
-  # q quits. Everything else is ignored (the textarea does not exist
-  # yet — no typing before a session is chosen).
-  defp handle_picker_key(%Event.Key{code: "up"}, state) do
+  # q quits; d deletes (y confirms), r renames (type + enter). While a
+  # confirm/rename prompt is up, keys route to it, not the list.
+  defp handle_picker_key(%Event.Key{code: "up"}, %{picker_op: nil} = state) do
     idx = max(state.picker_index - 1, 0)
     {:noreply, %{state | picker_index: idx}}
   end
 
-  defp handle_picker_key(%Event.Key{code: "down"}, state) do
+  defp handle_picker_key(%Event.Key{code: "down"}, %{picker_op: nil} = state) do
     idx = min(state.picker_index + 1, length(state.picker) - 1)
     {:noreply, %{state | picker_index: idx}}
   end
 
-  defp handle_picker_key(%Event.Key{code: "enter"}, state) do
+  defp handle_picker_key(%Event.Key{code: "enter"}, %{picker_op: nil} = state) do
     case picker_select(state, :resume) do
       {:ok, st} -> {:noreply, st}
       {:error, reason} -> {:noreply, %{state | last_error: inspect(reason)}}
     end
   end
 
-  defp handle_picker_key(%Event.Key{code: "q"}, state) do
+  defp handle_picker_key(%Event.Key{code: "q"}, %{picker_op: nil} = state) do
     # quit from the picker: no session was created, nothing to clean
     {:stop, :normal, state}
   end
 
-  defp handle_picker_key(%Event.Key{code: "n"}, state) do
+  defp handle_picker_key(%Event.Key{code: "n"}, %{picker_op: nil} = state) do
     case picker_select(state, :new) do
       {:ok, st} -> {:noreply, st}
       {:error, reason} -> {:noreply, %{state | last_error: inspect(reason)}}
     end
+  end
+
+  defp handle_picker_key(%Event.Key{code: "d"}, %{picker_op: nil} = state) do
+    case Enum.at(state.picker, state.picker_index) do
+      nil ->
+        {:noreply, state}
+
+      s ->
+        # arm the destructive action; y commits, anything else cancels
+        {:noreply, %{state | picker_op: {:delete, s.id}}}
+    end
+  end
+
+  defp handle_picker_key(%Event.Key{code: "r"}, %{picker_op: nil} = state) do
+    case Enum.at(state.picker, state.picker_index) do
+      nil ->
+        {:noreply, state}
+
+      s ->
+        # rename mode: typed keys build the new name (see the text
+        # clause below), enter commits, esc cancels
+        {:noreply, %{state | picker_op: {:rename, s.id, ""}}}
+    end
+  end
+
+  defp handle_picker_key(%Event.Key{code: "y"}, %{picker_op: {:delete, id}} = state) do
+    :ok = CodingAgent.Core.Session.Store.delete(id)
+    sessions = CodingAgent.Core.Session.Store.list_in(state.picker_scope)
+
+    cond do
+      sessions == [] ->
+        # nothing left to pick: start fresh
+        case picker_select(%{state | picker: []}, :new) do
+          {:ok, st} -> {:noreply, st}
+          {:error, reason} -> {:noreply, %{state | last_error: inspect(reason)}}
+        end
+
+      true ->
+        idx = min(state.picker_index, length(sessions) - 1)
+        {:noreply, %{state | picker: sessions, picker_index: idx, picker_op: nil}}
+    end
+  end
+
+  defp handle_picker_key(%Event.Key{code: "y"}, state) do
+    {:noreply, state}
+  end
+
+  defp handle_picker_key(%Event.Key{code: "escape"}, %{picker_op: prompt} = state)
+       when prompt != nil do
+    {:noreply, %{state | picker_op: nil}}
+  end
+
+  defp handle_picker_key(%Event.Key{code: "esc"}, %{picker_op: prompt} = state)
+       when prompt != nil do
+    {:noreply, %{state | picker_op: nil}}
+  end
+
+  defp handle_picker_key(%Event.Key{code: "enter"}, %{picker_op: {:rename, id, buf}} = state) do
+    case CodingAgent.Core.Session.Store.rename(id, buf) do
+      {:ok, _new_id} ->
+        sessions = CodingAgent.Core.Session.Store.list_in(state.picker_scope)
+        idx = min(state.picker_index, max(length(sessions) - 1, 0))
+        {:noreply, %{state | picker: sessions, picker_index: idx, picker_op: nil}}
+
+      {:error, reason} ->
+        {:noreply, status_note(%{state | picker_op: nil}, "rename failed: #{inspect(reason)}")}
+    end
+  end
+
+  defp handle_picker_key(%Event.Key{code: code}, %{picker_op: {:rename, id, buf}} = state)
+       when binary_part(code, 0, 1) == code and byte_size(code) == 1 do
+    # printable single chars (incl. digits, dash, dot, underscore) build the name
+    {:noreply, %{state | picker_op: {:rename, id, buf <> code}}}
+  end
+
+  defp handle_picker_key(%Event.Key{code: "backspace"}, %{picker_op: {:rename, id, buf}} = state) do
+    {:noreply,
+     %{state | picker_op: {:rename, id, String.slice(buf, 0, max(String.length(buf) - 1, 0))}}}
   end
 
   defp handle_picker_key(_ev, state) do
@@ -1722,9 +1804,19 @@ defmodule CodingAgent.UI.Tui do
           "#{format_age(s.saved_at)}"
       end)
 
-    body =
-      ([" Pick a session to continue:  (enter=resume, n=new, q=quit)"] ++ rows)
-      |> Enum.join("\n")
+    header =
+      case state.picker_op do
+        {:delete, id} ->
+          " Delete #{id}?  (y=confirm, any other key cancels)"
+
+        {:rename, _id, buf} ->
+          " Rename to: #{buf}  (enter=commit, esc=cancel)"
+
+        nil ->
+          " Pick a session:  (enter=resume, n=new, d=delete, r=rename, q=quit)"
+      end
+
+    body = ([header] ++ rows) |> Enum.join("\n")
 
     h = min(length(state.picker) + 3, area.height - 4)
     w = min(60, area.width - 4)
