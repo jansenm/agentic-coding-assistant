@@ -249,6 +249,19 @@ TUI wish-list (user's own list, keyboard-first, from the live sessions):
 - `reasoning_effort` config knob surfaced in the sidebar (currently
   shows 'effort: default'; add `reasoning_effort: :high` to config
   when GLM effort is wanted).
+- **shell tool drops commands (next session, top)**: the model
+  complains that shell calls *sometimes seem to drop the command*.
+  Suspects in `Core.Tools.Shell` (`Port.open({:spawn_executable,
+  "/bin/sh"}, args: ["-c", command])`, collect/3): large output
+  overflowing the port's message buffer (no :use_stdio flow control /
+  busy-loop handling), the `{:closed, buf}` branch returning truncated
+  partial output as a *success* (code 1), truncation hiding the
+  command echo, and multiline command strings from the model
+  (trailing newline / heredoc mangling in the request path — this
+  session's own harness had the same bug with python3 heredocs).
+  Reproduce with: a big-output command (>64 KiB), a multiline command,
+  and a timeout-killed command, then compare `command` echo vs.
+  `format/4` output vs. what the model reports.
 
 | opencode tool | Ours | Note |
 |---|---|---|
