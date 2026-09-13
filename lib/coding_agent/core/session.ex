@@ -57,6 +57,17 @@ defmodule CodingAgent.Core.Session do
   def state(id), do: GenServer.call(via(id), :state)
 
   @doc """
+  Updates the LIVE session's in-memory id after a Store rename so its
+  next save lands under the new name (no stale-file resurrection).
+  The registry keeps the old key — the process remains addressable
+  under the id it was started with until it exits; future mounts go
+  through the renamed file.
+  """
+  def set_id(id, new_id) do
+    GenServer.call(via(id), {:set_id, new_id})
+  end
+
+  @doc """
   Subscribes the CALLER to session events (streaming deltas, status
   changes). Events arrive as `{:agent, event}` messages.
 
@@ -217,6 +228,10 @@ defmodule CodingAgent.Core.Session do
 
   @impl true
   def handle_call(:state, _from, state), do: {:reply, {:ok, state}, state}
+
+  def handle_call({:set_id, new_id}, _from, state) do
+    {:reply, :ok, struct!(state, id: new_id)}
+  end
 
   def handle_call(:subscribe, {pid, _}, state) do
     # registry registration happened in the caller (see subscribe/1);

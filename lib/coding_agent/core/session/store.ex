@@ -151,7 +151,7 @@ defmodule CodingAgent.Core.Session.Store do
   keeps running under its old id and re-saves it on the next turn.
   Returns {:ok, new_id} or {:error, reason}.
   """
-  def rename(id, new_id) when is_binary(new_id) and new_id != "" do
+  def rename(id, new_id) when is_binary(new_id) do
     new_id = String.trim(new_id)
 
     cond do
@@ -167,11 +167,22 @@ defmodule CodingAgent.Core.Session.Store do
             new_state = struct!(state, id: new_id)
             save(new_state)
             _ = File.rm(path(id))
+            notify_live(id, new_id)
             {:ok, new_id}
 
           err ->
             err
         end
+    end
+  end
+
+  # a live session under the old id re-saves with its in-memory (old)
+  # id on the next turn, resurrecting the deleted file — tell it its
+  # new id so subsequent saves land on the renamed file
+  defp notify_live(id, new_id) do
+    case Registry.lookup(CodingAgent.Registry, {:session, id}) do
+      [{_pid, _}] -> CodingAgent.Core.Session.set_id(id, new_id)
+      _ -> :ok
     end
   end
 

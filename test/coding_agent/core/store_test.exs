@@ -7,6 +7,7 @@ defmodule CodingAgent.Core.Session.StoreTest do
   alias CodingAgent.Core.Permissions
   alias CodingAgent.Core.Session
   alias CodingAgent.Core.Session.Store
+  alias CodingAgent.Core.Session.State
   alias ReqLLM.Context
 
   @test_dir System.tmp_dir!() |> Path.join("agent-store-test-#{System.unique_integer()}")
@@ -269,5 +270,77 @@ defmodule CodingAgent.Core.Session.StoreTest do
     assert loaded.usage == %{input_tokens: 0, output_tokens: 0, cost: nil}
     assert loaded.status == :idle
     Store.delete(old_shaped.id)
+  end
+
+  # the store_dir override is compile-env-sealed in some paths; these
+  # rename tests follow the same isolate pattern as above
+  test "rename/2 re-ids the file; live sessions are told so saves follow" do
+    ctx = Context.new([Context.user("hi")])
+
+    st =
+      State.new(
+        id: "ren-a",
+        context: ctx,
+        model: "m",
+        status: :idle,
+        scope_root: @test_dir
+      )
+
+    Store.save(st)
+
+    # no live process: pure file dance
+    assert {:ok, "ren-b"} = Store.rename("ren-a", "ren-b")
+    refute File.exists?(Store.path("ren-a"))
+    assert File.exists?(Store.path("ren-b"))
+    assert {:ok, %{id: "ren-b"}} = Store.load("ren-b")
+  end
+
+  test "rename/2 errors: invalid name and collision" do
+    ctx = Context.new([Context.user("hi")])
+
+    for id <- ["ren-c", "ren-d"] do
+      State.new(id: id, context: ctx, model: "m", status: :idle, scope_root: @test_dir)
+      |> Store.save()
+    end
+
+    assert {:error, :exists} = Store.rename("ren-c", "ren-d")
+    assert {:error, :invalid_name} = Store.rename("ren-c", "")
+    assert {:error, :invalid_name} = Store.rename("ren-c", "  ")
+    assert {:error, :invalid_name} = Store.rename("ren-c", "ren-c")
+  end
+
+  test "rename/2 notifies a live session: its next save lands on the new id" do
+    ctx = Context.new([Context.user("hi")])
+
+    st =
+      State.new(
+        id: "ren-live",
+        context: ctx,
+        model: "m",
+        status: :idle,
+        scope_root: @test_dir
+      )
+
+    Store.save(st)
+
+    # note: store_dir is overridden for this test, so the registry-keyed
+    # live session started by the supervisor persists into @test_dir too
+    {:ok, pid} =
+      Session.Supervisor.start_session(id: "ren-live", scope_root: @test_dir)
+
+    assert {:ok, "ren-live2"} = Store.rename("ren-live", "ren-live2")
+    assert Process.alive?(pid)
+
+    # the live process re-saves on turn boundaries; force one via a
+    # state fetch + save (persist uses the in-memory id — the notify
+    # must have landed before rename returned)
+    live = Registry.lookup(CodingAgent.Registry, {:session, "ren-live"}) |> hd() |> elem(0)
+    s = :sys.get_state(live)
+    assert s.id == "ren-live2"
+    assert :ok = Store.save(s)
+
+    # no stale resurrection: old file gone, new file present
+    refute File.exists?(Store.path("ren-live"))
+    assert File.exists?(Store.path("ren-live2"))
   end
 end
