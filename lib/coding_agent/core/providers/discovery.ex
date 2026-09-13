@@ -39,21 +39,33 @@ defmodule CodingAgent.Core.Providers.Discovery do
   end
 
   @doc """
-  Model candidates across ALL declared providers (config.toml
-  `[providers.*]` from every layer, catalog providers included) — the
-  model menu's data source. Per provider: req_llm's catalog when one
-  exists, plus a live fetch when the entry declares `discover`.
-  Errors degrade to notes, never raise: the menu must open even with
-  every server down.
+  Model candidates across ALL declared providers. `config` accepts the
+  WHOLE merged config map (with a "providers" table) OR the
+  `[providers.*]` subtree itself (the session's provider_config
+  snapshot) — both shapes name the same set.
   """
   @spec all_models(%{String.t() => term()}) ::
           {:ok, %{entries: [model_entry()], note: String.t() | nil}}
   def all_models(config) when is_map(config) do
+    providers =
+      if Map.has_key?(config, "providers"),
+        do: Providers.list(config),
+        else: Map.keys(config) |> Enum.sort()
+
     {entries, notes} =
-      Providers.list(config)
+      providers
       |> Enum.map(fn provider ->
+        entry =
+          if Map.has_key?(config, "providers"),
+            do: config["providers"][provider],
+            else: config[provider]
+
         {catalog, catalog_note} = catalog_models(provider)
-        {discovered, discover_note} = discovered_models(provider, config)
+        # discovered_models resolves via Providers.resolve/2, which
+        # expects the WHOLE-config shape ("providers" table) — rewrap
+        # the single entry
+        {discovered, discover_note} =
+          discovered_models(provider, %{"providers" => %{provider => entry}})
 
         entries =
           (catalog ++ discovered)

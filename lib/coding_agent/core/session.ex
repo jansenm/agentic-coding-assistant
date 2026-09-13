@@ -175,6 +175,14 @@ defmodule CodingAgent.Core.Session do
        status: :idle,
        scope_root: scope_root,
        policy: policy,
+       # [providers.*] snapshot (layer 0 < global < project): consulted
+       # per request (request_parts/1) and by the TUI's model menu
+       # (provider_config_of/1). Found live NEVER SEEDED — every
+       # session resolved against an empty registry, so non-native
+       # providers (ollama_cloud via provider = "openai") failed closed
+       # with :bad_entry and the model menu showed only the current
+       # model.
+       provider_config: UserConfig.load(scope_root).config["providers"] || %{},
        test_mode: test_mode
      )}
   end
