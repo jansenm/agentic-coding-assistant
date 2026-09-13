@@ -17,17 +17,21 @@ defmodule CodingAgent.Core.UserConfigTest do
     System.put_env("XDG_DATA_HOME", Path.join(@tmp_root, "home/.local/share"))
 
     on_exit(fn ->
-      System.delete_env("XDG_CONFIG_HOME")
-      System.delete_env("XDG_DATA_HOME")
+      # restore the run-wide seed, never delete: a delete here races
+      # async:true files still reading the env (VM-global state)
+      store = Application.fetch_env!(:coding_agent, :store_dir)
+      System.put_env("XDG_CONFIG_HOME", Path.join(store, "xdg/config"))
+      System.put_env("XDG_DATA_HOME", Path.join(store, "xdg/data"))
       File.rm_rf!(@tmp_root)
     end)
 
     %{cfg_dir: cfg_dir, data_dir: data_dir}
   end
 
-  test "missing files degrade to empty defaults" do
+  test "missing user files degrade to shipped defaults" do
     cfg = UserConfig.load(nil)
-    assert cfg.config == %{}
+    # layer 0 always provides provider defaults; the user contributed nothing
+    assert cfg.config["model"] == nil
     assert cfg.ui == %{}
   end
 
@@ -116,6 +120,28 @@ defmodule CodingAgent.Core.UserConfigTest do
 
   defp global_dir, do: UserConfig.global_dir()
   defp project_dir, do: UserConfig.project_dir_for_test(@tmp_root)
+
+  test "layer 0: shipped provider defaults reach the merged config" do
+    # no user files written — the shipped defaults alone provide entries
+    cfg = UserConfig.load(nil)
+    assert cfg.config["providers"]["ollama"]["discover"] == "ollama"
+
+    assert cfg.config["providers"]["ollama_cloud"]["base_url"] ==
+             "https://ollama.com/v1"
+  end
+
+  test "layer 0: user config overrides a single shipped provider without shadowing the rest" do
+    File.write!(Path.join(global_dir(), "config.toml"), """
+    [providers.ollama]
+    discover = "openai"
+    """)
+
+    cfg = UserConfig.load(nil)
+    # overridden
+    assert cfg.config["providers"]["ollama"]["discover"] == "openai"
+    # shipped sibling survives
+    assert cfg.config["providers"]["ollama_cloud"]["base_url"] == "https://ollama.com/v1"
+  end
 
   test "provider registry: native fallback for unlisted providers" do
     # no [providers.ollama] table -> native :ollama provider, string spec

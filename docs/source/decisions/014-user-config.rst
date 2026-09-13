@@ -79,10 +79,26 @@ root):**
 
 Layer order, weakest to strongest:
 
-1. built-in defaults
+1. shipped defaults (``priv/coding-agent/config.toml`` in the app —
+   provider entries we already know: ollama, ollama_cloud; deployment-
+   specific proxies like litellm ship as commented examples only,
+   because a half-defaulted base_url would silently route to the
+   wrong endpoint)
 2. global ``~/.config/coding-agent/<file>.toml``
 3. project ``<project>/.coding-agent/<file>.toml``
 4. environment / CLI flags (unchanged: env still wins)
+
+The ``[providers.*]`` table deep-merges across layers, so a project
+can override one provider without shadowing the shipped defaults for
+the rest.
+
+Provider entries carry a ``discover`` field naming the model-list
+source for the model menu: ``"openai"`` (``GET base_url + /models`` —
+the standard OpenAI-compatible endpoint every proxy speaks: litellm,
+vLLM, ollama in compat mode) or ``"ollama"``
+(``GET base_url + /api/tags``). Catalog providers need none — their
+lists come from req_llm's catalog. Two dialects, no per-provider
+code: deployment-specific discovery is a TOML declaration.
 
 ``auth.toml`` is **global only, not overridable per project**: secrets
 in a repo risk accidental commits, and there is one account. Revisit

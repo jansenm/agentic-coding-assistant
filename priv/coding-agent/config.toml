@@ -1,0 +1,40 @@
+# Provider defaults shipped with coding-agent (ADR 014).
+#
+# This file is layer 0: user config (~/.config/coding-agent/config.toml)
+# and project config (.coding-agent/config.toml) overlay it, so every
+# value here can be overridden per user or per project. It is versioned
+# with the app — do not edit; add your settings to your own config files.
+#
+# Fields per [providers.<name>] entry:
+#   provider = "openai"   ride an OpenAI-compatible req_llm provider
+#                         module (needed when the native provider of the
+#                         same name can't do the job, e.g. req_llm's
+#                         :ollama provider never sends auth)
+#   base_url  = "..."     endpoint override
+#   backend   = "ollama"  sets openai_compatible_backend (required for
+#                         ollama-hosted backends riding :openai)
+#   discover  = "openai"  model-list source for the model menu:
+#                         "openai" (GET base_url + /models) or
+#                         "ollama" (GET base_url + /api/tags)
+#
+# Catalog providers (openai, anthropic, github_copilot, ...) need no
+# entry — their model lists come from req_llm's catalog and their auth
+# from req_llm's chain (env / OAuth).
+
+[providers.ollama]
+discover = "ollama"
+
+[providers.ollama_cloud]
+provider = "openai"
+base_url = "https://ollama.com/v1"
+backend = "ollama"
+discover = "openai"
+
+# Deployment-specific proxies (base_url is per installation) ship as
+# examples only — uncomment and fill in your endpoint in YOUR
+# config.toml, not here:
+#
+# [providers.litellm]
+# provider = "openai"
+# base_url = "http://localhost:4000/v1"
+# discover = "openai"

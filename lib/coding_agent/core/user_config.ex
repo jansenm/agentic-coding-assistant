@@ -69,10 +69,26 @@ defmodule CodingAgent.Core.UserConfig do
   only). Returns the merged struct.
   """
   @spec load(String.t() | nil) :: t()
+
+  @doc """
+  Like `load/1` but a broken TOML returns `{:error, message}` instead
+  of raising — for paths that must degrade (keymaps mid-session).
+  """
+  def load_safe(scope_root) do
+    {:ok, load(scope_root)}
+  rescue
+    e -> {:error, Exception.message(e)}
+  end
+
   def load(scope_root) do
     config =
       for name <- @files, into: %{} do
-        {name, merged_map(global_path(name), project_path(scope_root, name))}
+        {name,
+         merged_map(
+           shipped_path(name),
+           global_path(name),
+           project_path(scope_root, name)
+         )}
       end
 
     %__MODULE__{
@@ -86,18 +102,30 @@ defmodule CodingAgent.Core.UserConfig do
   def model(%__MODULE__{config: c}),
     do: Map.get(c, "model") || Application.get_env(:coding_agent, :model)
 
+  # layer 0: shipped defaults, versioned with the app
+  defp shipped_path(name),
+    do: Path.join([Application.app_dir(:coding_agent), "priv", "coding-agent", "#{name}.toml"])
+
   defp global_path(name), do: Path.join(global_dir(), "#{name}.toml")
 
   defp project_path(nil, _name), do: nil
   defp project_path(root, name), do: Path.join(project_dir(root), "#{name}.toml")
 
-  # shallow merge is enough: every file is one flat table for now
-  # (config/ui); deep merge when a nested table actually appears
-  defp merged_map(global, project) do
-    base = read_toml(global)
-    override = read_toml(project)
-    Map.merge(base, override)
+  # shallow merge, weakest to strongest: shipped defaults (layer 0,
+  # versioned with the app) < global config < project config. Deep
+  # merge for the [providers.*] table so a project can override ONE
+  # provider without shadowing the shipped defaults for the rest.
+  defp merged_map(shipped, global, project) do
+    shipped
+    |> read_toml()
+    |> Map.merge(read_toml(global), &deep_merge/3)
+    |> Map.merge(read_toml(project), &deep_merge/3)
   end
+
+  defp deep_merge(_k, base, override) when is_map(base) and is_map(override),
+    do: Map.merge(base, override)
+
+  defp deep_merge(_k, _base, override), do: override
 
   defp read_toml(nil), do: %{}
   defp read_toml(path), do: read(path)

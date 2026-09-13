@@ -1,4 +1,6 @@
 defmodule CodingAgent.UI.Keymap do
+  alias CodingAgent.Core.UserConfig
+
   @moduledoc """
   Input keymap as DATA (ADR 011): action => [event patterns], defaults
   in code, overridable from ~/.config/coding-agent/ui.toml.
@@ -111,9 +113,16 @@ defmodule CodingAgent.UI.Keymap do
   (call sites hold the result).
   """
   def load do
-    {merged, _unknown} =
-      merge(defaults(), CodingAgent.Core.UserConfig.load(nil).ui["keys"] || %{})
+    # a broken user TOML must never take down a live TUI mid-keypress:
+    # degrade to the defaults (a startup check surfaces the parse error
+    # loudly enough; the TUI just keeps its built-in keys)
+    user_keys =
+      case UserConfig.load_safe(nil) do
+        {:ok, cfg} -> cfg.ui["keys"] || %{}
+        {:error, _reason} -> %{}
+      end
 
+    {merged, _unknown} = merge(defaults(), user_keys)
     merged
   end
 
