@@ -38,13 +38,44 @@ defmodule CodingAgent.Core.Providers.Discovery do
     {:ok, %{entries: entries, note: note(catalog_note, discover_note)}}
   end
 
+  @doc """
+  Model candidates across ALL declared providers (config.toml
+  `[providers.*]` from every layer, catalog providers included) — the
+  model menu's data source. Per provider: req_llm's catalog when one
+  exists, plus a live fetch when the entry declares `discover`.
+  Errors degrade to notes, never raise: the menu must open even with
+  every server down.
+  """
+  @spec all_models(%{String.t() => term()}) ::
+          {:ok, %{entries: [model_entry()], note: String.t() | nil}}
+  def all_models(config) when is_map(config) do
+    {entries, notes} =
+      Providers.list(config)
+      |> Enum.map(fn provider ->
+        {catalog, catalog_note} = catalog_models(provider)
+        {discovered, discover_note} = discovered_models(provider, config)
+
+        entries =
+          (catalog ++ discovered)
+          |> Enum.uniq_by(& &1.id)
+          |> Enum.map(&%{&1 | id: "#{provider}:#{&1.id}"})
+
+        {entries, note(catalog_note, discover_note)}
+      end)
+      |> Enum.reduce({[], []}, fn {e, n}, {acc_e, acc_n} ->
+        {acc_e ++ e, if(n, do: acc_n ++ [n], else: acc_n)}
+      end)
+
+    {:ok, %{entries: entries, note: join_notes(notes)}}
+  end
+
   @doc "Fetch once, cache in the calling process (the TUI's menu path)."
-  def models_cached(provider, config) do
-    cache_key = {:__discovery_cache__, provider}
+  def all_models_cached(config) do
+    cache_key = :__discovery_all_cache__
 
     case Process.get(cache_key) do
       nil ->
-        result = models(provider, config)
+        result = all_models(config)
         Process.put(cache_key, result)
         result
 
@@ -56,9 +87,23 @@ defmodule CodingAgent.Core.Providers.Discovery do
   @doc "Drop this process's discovery cache (config reload, manual retry)."
   def invalidate(provider \\ :all) do
     if provider == :all do
-      Process.get()
-      |> Map.keys()
-      |> Enum.each(&Process.delete/1)
+      # Process.get/0 returns the WHOLE process dictionary (label,
+      # rand_seed, ...) — delete our known keys directly instead of
+      # filtering the dump
+      Process.delete(:__discovery_all_cache__)
+
+      # Process.get/0 returns the raw dictionary (a list of tuples
+      # including the process label, rand_seed, ... — NOT a map).
+      # Delete our KNOWN keys directly instead of filtering the dump.
+      config =
+        case UserConfig.load_safe(nil) do
+          {:ok, c} -> c.config
+          _ -> %{}
+        end
+
+      Enum.each(Providers.list(config), fn p ->
+        Process.delete({:__discovery_cache__, p})
+      end)
     else
       Process.delete({:__discovery_cache__, provider})
     end
@@ -182,4 +227,7 @@ defmodule CodingAgent.Core.Providers.Discovery do
   defp note(nil, d), do: d
   defp note(c, nil), do: c
   defp note(c, d), do: c <> "; " <> d
+
+  defp join_notes([]), do: nil
+  defp join_notes(notes), do: Enum.join(notes, "; ")
 end

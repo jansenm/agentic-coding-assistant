@@ -131,7 +131,7 @@ defmodule CodingAgent.Core.Providers.DiscoveryTest do
     end
   end
 
-  describe "models_cached/2" do
+  describe "all_models_cached/1" do
     test "second call is served from the process cache" do
       stub = start_stub(~s({"models": [{"name": "one"}]}))
 
@@ -145,14 +145,16 @@ defmodule CodingAgent.Core.Providers.DiscoveryTest do
         }
       }
 
-      assert {:ok, %{entries: [%{id: "one"}]}} = Discovery.models_cached("loc", cfg)
+      assert {:ok, %{entries: entries}} = Discovery.all_models_cached(cfg)
+      assert Enum.any?(entries, &(&1.id == "loc:one"))
       # kill the server: the cached path must not refetch
       stop_stub(stub)
-      assert {:ok, %{entries: [%{id: "one"}]}} = Discovery.models_cached("loc", cfg)
+      assert {:ok, %{entries: entries2}} = Discovery.all_models_cached(cfg)
+      assert Enum.any?(entries2, &(&1.id == "loc:one"))
 
-      Discovery.invalidate("loc")
-      assert {:ok, %{entries: [], note: note}} = Discovery.models_cached("loc", cfg)
-      assert note != nil
+      Discovery.invalidate()
+      assert {:ok, %{entries: post}} = Discovery.all_models_cached(cfg)
+      refute Enum.any?(post, &(&1.id == "loc:one"))
     end
   end
 end

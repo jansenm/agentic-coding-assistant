@@ -863,18 +863,16 @@ defmodule CodingAgent.UI.Tui do
   # maps ({id, source}) — the selection handler switches the session.
   # `current` is marked so the owner sees where they are.
   defp model_popup(state) do
-    provider = provider_of(state)
-
     {:ok, %{entries: entries, note: note}} =
-      Discovery.models_cached(provider, provider_config_of(state))
+      Discovery.all_models_cached(provider_config_of(state))
 
     items =
       Enum.map(entries, fn %{id: id, source: source} ->
-        mark = if state.model == "#{provider}:#{id}", do: " (current)", else: ""
+        mark = if state.model == id, do: " (current)", else: ""
 
         %{
-          id: "#{provider}:#{id}",
-          label: "#{id}#{mark}" <> if(source == :discovered, do: "  (live)", else: ""),
+          id: id,
+          label: id <> mark <> if(source == :discovered, do: "  (live)", else: ""),
           status: nil,
           action: :model_selected
         }
@@ -888,12 +886,7 @@ defmodule CodingAgent.UI.Tui do
           if Enum.any?(items, &(&1.id == m)) do
             nil
           else
-            %{
-              id: m,
-              label: String.replace(m, "#{provider}:", "") <> " (current)",
-              status: nil,
-              action: :model_selected
-            }
+            %{id: m, label: m <> " (current)", status: nil, action: :model_selected}
           end
 
         _ ->
@@ -921,13 +914,6 @@ defmodule CodingAgent.UI.Tui do
          menu_pending: false,
          menu_index: 0
      }}
-  end
-
-  defp provider_of(state) do
-    case String.split(state.model || "", ":", parts: 2) do
-      [p, _] -> p
-      _ -> "ollama"
-    end
   end
 
   defp provider_config_of(state) do
