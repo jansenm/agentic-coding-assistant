@@ -52,9 +52,14 @@ defmodule CodingAgent.UI.TuiLiveGateTest do
         modifiers: []
       })
 
-    # optimistic close, then the reply settles the status
-    wait_until(fn -> File.exists?(Path.join(root, "x.txt")) end)
-    assert :sys.get_state(pid).user_state.status == :idle
+    # optimistic close, then the reply settles the status. The reply
+    # Task races the approved tool's file write — wait on the STATUS
+    # (the reply carries it), not the file
+    wait_until(fn ->
+      :sys.get_state(pid).user_state.status == :idle
+    end)
+
+    assert File.exists?(Path.join(root, "x.txt"))
     assert :sys.get_state(pid).user_state.last_error == nil
   end
 

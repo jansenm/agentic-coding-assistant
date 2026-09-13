@@ -18,6 +18,7 @@ defmodule CodingAgent.Core.Session do
 
   alias CodingAgent.Core.Compaction
   alias CodingAgent.Core.Permissions
+  alias CodingAgent.Core.UserConfig
   alias CodingAgent.Core.Session.State
   alias CodingAgent.Core.Session.Store
   alias ReqLLM.Context
@@ -35,7 +36,6 @@ defmodule CodingAgent.Core.Session do
   @max_tool_rounds 25
 
   # providers whose requests need no api_key option
-  @keyless_providers ["ollama"]
 
   @framework_prompt """
   You are a coding assistant embedded in a terminal tool. Be concise and
@@ -210,20 +210,10 @@ defmodule CodingAgent.Core.Session do
   # repo-side file lives at the scope root; the user-side path comes
   # from config. Fail-closed is inherited from the Permissions loader.
   defp load_policy(scope_root) do
-    user_file =
-      case Application.get_env(:coding_agent, :user_policy_file) do
-        nil -> nil
-        p when is_binary(p) -> p
-      end
-
-    repo_file =
-      if scope_root do
-        Path.join(scope_root, "agent-permissions.toml")
-      else
-        "agent-permissions.toml"
-      end
-
-    Permissions.load(user_file, repo_file)
+    # ADR 014: the user layer is ~/.config/coding-agent/permissions.toml,
+    # the project layer .coding-agent/permissions.toml (legacy
+    # agent-permissions.toml still read for the transition)
+    CodingAgent.Core.UserConfig.load(scope_root).permissions
   end
 
   @impl true
@@ -631,18 +621,26 @@ defmodule CodingAgent.Core.Session do
     end
   end
 
-  # Providers that need no key (e.g. local ollama) are inferred from the
-  # model spec; the api_key_env config only applies when a key is needed.
+  # Credential resolution (ADR 014): env first, then the global
+  # auth.toml. A provider with no credential connects keyless (local
+  # ollama proxy); one with a credential sends it. base_url overrides
+  # from auth.toml ride along (cloud-direct).
   defp request_opts(state) do
     provider = state.model |> String.split(":", parts: 2) |> List.first()
 
-    if provider in @keyless_providers do
-      {:ok, []}
-    else
-      case lookup_api_key() do
-        {:ok, key} -> {:ok, [api_key: key]}
-        error -> error
-      end
+    case UserConfig.credential(provider) do
+      {:ok, %{api_key: key}} ->
+        {:ok, request_opts_with_url(provider, api_key: key)}
+
+      {:error, :none} ->
+        {:ok, request_opts_with_url(provider, [])}
+    end
+  end
+
+  defp request_opts_with_url(provider, opts) do
+    case UserConfig.base_url(provider) do
+      nil -> opts
+      url -> Keyword.put(opts, :base_url, url)
     end
   end
 
@@ -864,15 +862,6 @@ defmodule CodingAgent.Core.Session do
   end
 
   # -- Infrastructure ---------------------------------------------------------
-
-  defp lookup_api_key do
-    env_var = Application.fetch_env!(:coding_agent, :api_key_env)
-
-    case System.fetch_env(env_var) do
-      {:ok, key} -> {:ok, key}
-      :error -> {:error, {:missing_api_key, env_var}}
-    end
-  end
 
   defp broadcast_reasoning(session_id, delta) do
     Registry.dispatch(CodingAgent.EventRegistry, {:session_events, session_id}, fn entries ->

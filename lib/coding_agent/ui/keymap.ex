@@ -104,6 +104,20 @@ defmodule CodingAgent.UI.Keymap do
   defp matches?(_, _), do: false
 
   @doc """
+  The effective keymap: defaults merged with the user's ui.toml
+  `[keys]` overrides (global ~/.config/coding-agent/ui.toml and the
+  project's .coding-agent/ui.toml — ADR 014). Unknown actions are
+  ignored. No cache: the files are tiny, sessions load once at mount
+  (call sites hold the result).
+  """
+  def load do
+    {merged, _unknown} =
+      merge(defaults(), CodingAgent.Core.UserConfig.load(nil).ui["keys"] || %{})
+
+    merged
+  end
+
+  @doc """
   Merges user overrides (from ui.toml `[keys]`) over the defaults.
   Values are action-name => key-spec strings, e.g.:
   `send_input = "alt-enter"` or `insert_newline = "ctrl-j,enter"`.
@@ -115,7 +129,9 @@ defmodule CodingAgent.UI.Keymap do
       Enum.reduce(overrides, {keymap, []}, fn {action_name, spec}, {acc, unknown} ->
         action =
           try do
-            String.to_existing_atom(String.replace(action_name, "-", "_"))
+            # user config may name an action the atom table has never
+            # seen — build the atom, then validate membership below
+            String.to_atom(String.replace(action_name, "-", "_"))
           rescue
             ArgumentError -> :unknown_action
           end
@@ -154,6 +170,10 @@ defmodule CodingAgent.UI.Keymap do
   # never actually arrive on legacy terminals — kept as the
   # kitty-protocol future hook (ADR 011).
   defp to_pattern("ctrl-enter"), do: %{key: :enter, mod: :ctrl}
-  defp to_pattern("ctrl-" <> k), do: %{key: String.to_existing_atom("ctrl_" <> k), mod: :none}
-  defp to_pattern(k), do: %{key: String.to_existing_atom(k), mod: :none}
+
+  # synthetic ctrl_/alt_ atoms match the defaults() convention
+  # (key(:ctrl_j) with mod :none); build safely — user config may
+  # name a chord the atom table has never seen
+  defp to_pattern("ctrl-" <> k), do: %{key: String.to_atom("ctrl_" <> k), mod: :none}
+  defp to_pattern(k), do: %{key: String.to_atom(k), mod: :none}
 end
