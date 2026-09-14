@@ -1795,7 +1795,12 @@ defmodule CodingAgent.UI.Tui do
   defp normalize_entry({:tool, id, name, content}), do: {:tool, id, name, content}
   defp normalize_entry({:user, t}), do: {:user, t}
   defp normalize_entry({:assistant, t}), do: {:assistant, t}
-  defp normalize_entry({:reasoning, t}), do: {:reasoning, t}
+  # persisted reasoning (restored snapshots, old session files) is
+  # trimmed too: the window math must see the same string the widget
+  # renders, or the phantom trailing-newline row re-enters through the
+  # transcript path (streaming_entries is already trimmed — this is
+  # the other route in)
+  defp normalize_entry({:reasoning, t}), do: {:reasoning, render_reasoning(t)}
   defp normalize_entry({:info, t}), do: {:info, t}
   defp normalize_entry({:tool, line}) when is_binary(line), do: {:info, line}
 
