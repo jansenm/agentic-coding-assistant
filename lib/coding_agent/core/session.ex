@@ -653,7 +653,17 @@ defmodule CodingAgent.Core.Session do
 
       case Enum.find(tools, &(&1.name == name)) do
         nil ->
-          Map.put(executing, :content, "error: unknown tool #{name}")
+          # list the valid names: the model can self-correct in one round
+          # (found live: GLM emitted tool calls named "assistant" —
+          # provider-side mislabeling; with the names in the error it
+          # retries with the right tool instead of spiraling)
+          names = tools |> Enum.map(& &1.name) |> Enum.sort()
+
+          Map.put(
+            executing,
+            :content,
+            "error: unknown tool #{inspect(name)} — available tools: #{Enum.join(names, ", ")}"
+          )
 
         tool ->
           case ReqLLM.Tool.execute(tool, args) do
