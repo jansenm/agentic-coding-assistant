@@ -97,6 +97,62 @@ defmodule CodingAgent.Core.Session do
   def run(id, prompt), do: GenServer.call(via(id), {:run, prompt}, @call_timeout)
 
   @doc """
+  Interrupts a running turn (user stop request, opencode's esc).
+
+  The streaming loop checks this flag between stream events and stops
+  early; whatever text already streamed becomes the turn's answer
+  (opencode parity: partial output is kept). Safe to call at any time:
+  when no turn is running the flag is cleared and this is a no-op that
+  reports :not_running.
+
+  A plain GenServer call would queue behind the in-flight turn — the
+  flag must live outside the session process, so it lands in the
+  interrupt ETS table (cleared by the session when the turn ends).
+  """
+  @spec interrupt(String.t()) :: :ok
+  def interrupt(id) do
+    interrupt_table()
+    |> :ets.insert({key(id), true})
+
+    :ok
+  end
+
+  @doc false
+  @spec interrupted?(String.t()) :: boolean()
+  def interrupted?(id) do
+    case :ets.lookup(interrupt_table(), key(id)) do
+      [{_k, true}] -> true
+      _ -> false
+    end
+  end
+
+  @doc false
+  @spec clear_interrupt(String.t()) :: :ok
+  def clear_interrupt(id) do
+    :ets.delete(interrupt_table(), key(id))
+    :ok
+  end
+
+  defp interrupt_table do
+    # the table is created by the Application's start (or lazily here for
+    # tests that start sessions without the whole tree)
+    case :ets.whereis(CodingAgent.SessionInterrupts) do
+      :undefined ->
+        :ets.new(CodingAgent.SessionInterrupts, [
+          :set,
+          :named_table,
+          :public,
+          read_concurrency: true
+        ])
+
+      tid ->
+        tid
+    end
+  end
+
+  defp key(id), do: {:interrupt, id}
+
+  @doc """
   Finishes a turn after phase-2 tool executions; phase 1 uses this to
   continue the loop after a human provides or performs a tool result.
   """
@@ -439,16 +495,22 @@ defmodule CodingAgent.Core.Session do
 
     case call_llm(state) do
       {:ok, %{type: :final_answer, text: text, usage: usage}} ->
-        state = state |> add_usage(usage) |> complete_turn(text)
+        state = state |> add_usage(usage) |> drop_interrupt() |> complete_turn(text)
         {state, {:ok, state}}
 
       {:ok, %{type: :tool_calls, tool_calls: calls, usage: usage}} ->
-        state = add_usage(state, usage)
+        state = state |> add_usage(usage) |> drop_interrupt()
         gate_tools(state, calls)
 
+      # user stop (Session.interrupt/1): the partial text streamed so
+      # far becomes the turn's answer (opencode esc parity — nothing
+      # lost, the model can be nudged on from there)
+      {:interrupted, partial} ->
+        state = state |> drop_interrupt() |> complete_turn(partial)
+        {state, {:ok, state}}
+
       {:error, reason} ->
-        Logger.error("LLM call failed: #{inspect(reason)}")
-        state = fail_turn(state, reason)
+        state = state |> drop_interrupt() |> fail_turn(reason)
         {state, {:error, reason}}
     end
   end
@@ -653,16 +715,24 @@ defmodule CodingAgent.Core.Session do
         events = ReqLLM.StreamResponse.events(stream_response)
 
         # consume_stream throws {:stream_error, ...} on stream failures
-        # (e.g. provider down). Catch it HERE: a transport error is a
-        # failed turn, never a session crash (the GenServer used to
-        # terminate on this path — found in the 4a live smoke test).
+        # (e.g. provider down) and {:user_interrupt, text} when the user
+        # stops the turn. Catch both HERE: a transport error is a failed
+        # turn, an interrupt is a finished (partial) turn — neither may
+        # crash the session (the GenServer used to terminate on this
+        # path — found in the 4a live smoke test).
         try do
-          {text, tool_calls} = consume_stream(events, state.id)
+          case consume_stream(events, state.id) do
+            {:interrupted, partial} ->
+              {:interrupted, partial}
 
-          # real token accounting (sidebar, token-based compaction):
-          # the metadata task resolves after the stream is fully consumed
-          usage = ReqLLM.StreamResponse.usage(stream_response)
-          {:ok, %{type: classify(tool_calls), text: text, tool_calls: tool_calls, usage: usage}}
+            {text, tool_calls} ->
+              # real token accounting (sidebar, token-based compaction):
+              # the metadata task resolves after the stream is fully consumed
+              usage = ReqLLM.StreamResponse.usage(stream_response)
+
+              {:ok,
+               %{type: classify(tool_calls), text: text, tool_calls: tool_calls, usage: usage}}
+          end
         catch
           {:stream_error, error} -> {:error, {:stream_error, error}}
         end
@@ -709,25 +779,40 @@ defmodule CodingAgent.Core.Session do
   @doc false
   def consume_stream(events, session_id) do
     events
-    |> Enum.reduce({"", []}, fn
-      %{type: :text_delta, data: delta}, {acc, calls} ->
+    |> Enum.reduce_while({:streaming, "", []}, fn
+      %{type: :text_delta, data: delta}, {:streaming, acc, calls} ->
         broadcast_text(session_id, delta)
-        {acc <> delta, calls}
+        interrupt_check({:streaming, acc <> delta, calls}, session_id)
 
-      %{type: :reasoning_delta, data: delta}, {acc, calls} ->
+      %{type: :reasoning_delta, data: delta}, {:streaming, acc, calls} ->
         broadcast_reasoning(session_id, delta)
-        {acc, calls}
+        {:cont, {:streaming, acc, calls}}
 
-      %{type: :tool_call, data: call}, {acc, calls} ->
-        {acc, [call | calls]}
+      %{type: :tool_call, data: call}, {:streaming, acc, calls} ->
+        {:cont, {:streaming, acc, [call | calls]}}
 
       %{type: :error, data: error}, _acc ->
         throw({:stream_error, error})
 
       _event, acc ->
-        acc
+        {:cont, acc}
     end)
-    |> then(fn {text, calls} -> {text, Enum.reverse(calls)} end)
+    |> then(fn
+      {:interrupted, text, _calls} -> {:interrupted, text}
+      {:streaming, text, calls} -> {text, Enum.reverse(calls)}
+    end)
+  end
+
+  # The user's stop request lands in the ETS flag (Session.interrupt/1
+  # cannot GenServer.call — the session is busy consuming this very
+  # stream). Checked after every stream event; stop early keeping the
+  # partial text as the turn's answer (opencode esc parity).
+  defp interrupt_check({:streaming, acc, calls}, session_id) do
+    if interrupted?(session_id) do
+      {:halt, {:interrupted, acc, calls}}
+    else
+      {:cont, {:streaming, acc, calls}}
+    end
   end
 
   defp classify([]), do: :final_answer
@@ -811,9 +896,18 @@ defmodule CodingAgent.Core.Session do
   end
 
   defp fail_turn(state, reason) do
+    # the turn is over in every branch from here — drop any stale
+    # user-interrupt flag so the NEXT turn starts clean
+    drop_interrupt(state)
     state = %{state | status: :error, last_error: reason}
     broadcast(state, {:status_changed, :error, reason})
     persist(state)
+    state
+  end
+
+  # turn-end cleanup: the interrupt flag is per-turn, never carries over
+  defp drop_interrupt(state) do
+    clear_interrupt(state.id)
     state
   end
 
@@ -941,5 +1035,37 @@ defmodule CodingAgent.Core.Session do
     Registry.dispatch(CodingAgent.EventRegistry, {:session_events, state.id}, fn entries ->
       for {pid, _} <- entries, do: send(pid, {:agent, event})
     end)
+  end
+end
+
+defmodule CodingAgent.Core.Session.InterruptTable do
+  @moduledoc """
+  Owner of the user-interrupt flag table (`Session.interrupt/1`).
+
+  The table MUST be owned by a long-lived supervised process: the
+  interrupt flag is written from the TUI process (a plain ETS insert —
+  a GenServer.call would queue behind the in-flight turn) and read by
+  the session mid-stream. A lazily created table is owned by whichever
+  process first touches it (found live: the interrupting process exits,
+  the table — and the pending flag — vanish with it).
+  """
+
+  use GenServer
+
+  @name CodingAgent.SessionInterrupts
+
+  def start_link(_opts), do: GenServer.start_link(__MODULE__, nil, name: __MODULE__)
+
+  @impl true
+  def init(_nil) do
+    case :ets.whereis(@name) do
+      :undefined ->
+        :ets.new(@name, [:set, :named_table, :public, read_concurrency: true])
+
+      _tid ->
+        :ok
+    end
+
+    {:ok, nil}
   end
 end

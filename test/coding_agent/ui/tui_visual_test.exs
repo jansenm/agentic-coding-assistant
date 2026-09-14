@@ -363,4 +363,45 @@ defmodule CodingAgent.UI.TuiVisualTest do
     assert rows |> Enum.at(idx + 1) |> String.contains?("line two")
     assert rows |> Enum.at(idx + 2) |> String.contains?("line three")
   end
+
+  test "esc while running raises the interrupt flag; esc while idle falls through", %{pid: pid} do
+    # not running: esc must NOT touch the flag (it falls through to the
+    # textarea — popups handle their own esc earlier in the chain)
+    :ok =
+      ExRatatui.Runtime.inject_event(pid, %ExRatatui.Event.Key{
+        code: "escape",
+        kind: "press",
+        modifiers: []
+      })
+
+    Process.sleep(150)
+
+    st = :sys.get_state(pid).user_state
+    refute st.status == :interrupting
+
+    # running: esc raises the session's interrupt flag
+    send(pid, {:agent, {:status_changed, :running}})
+    Process.sleep(50)
+
+    :ok =
+      ExRatatui.Runtime.inject_event(pid, %ExRatatui.Event.Key{
+        code: "escape",
+        kind: "press",
+        modifiers: []
+      })
+
+    Process.sleep(150)
+
+    st2 = :sys.get_state(pid).user_state
+    assert st2.status == :interrupting
+    assert CodingAgent.Core.Session.interrupted?(st2.session_id)
+    # the "interrupting…" info line shows in the transcript
+    assert Enum.any?(st2.transcript, fn
+             {:info, t} -> String.contains?(t, "interrupting")
+             _ -> false
+           end)
+
+    # cleanup: the flag is per-turn; clear so no other session sees it
+    CodingAgent.Core.Session.clear_interrupt(st2.session_id)
+  end
 end

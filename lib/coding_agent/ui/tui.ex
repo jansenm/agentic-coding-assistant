@@ -1127,6 +1127,24 @@ defmodule CodingAgent.UI.Tui do
       :history_next ->
         {:noreply, history_step(state, -1)}
 
+      :interrupt ->
+        # esc while the model streams: stop the turn, keep the partial
+        # answer (Session keeps it — opencode esc parity). When NOT
+        # running, esc falls through to the textarea (popups handle
+        # their own esc earlier in the event chain).
+        if state.status == :running do
+          Session.interrupt(state.session_id)
+
+          {:noreply,
+           %{
+             state
+             | status: :interrupting,
+               transcript: state.transcript ++ [{:info, "interrupting… (esc pressed)"}]
+           }}
+        else
+          forward_to_textarea(state, ev)
+        end
+
       :abort ->
         {:stop, state}
 
@@ -1920,6 +1938,7 @@ defmodule CodingAgent.UI.Tui do
     {glyph, color, label} =
       case state.status do
         :running -> {"●", :light_green, "running…"}
+        :interrupting -> {"◐", :yellow, "stopping…"}
         :idle -> {"○", :gray, "idle"}
         :interrupted -> {"⏸", :yellow, "approval needed (y/n/e)"}
         :error -> {"✖", :red, if(down?, do: "provider unavailable", else: "error")}

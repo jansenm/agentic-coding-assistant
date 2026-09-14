@@ -16,6 +16,7 @@ defmodule CodingAgent.Application do
       {Registry, keys: :unique, name: CodingAgent.Registry},
       {Registry,
        keys: :duplicate, name: CodingAgent.EventRegistry, partitions: System.schedulers_online()},
+      CodingAgent.Core.Session.InterruptTable,
       CodingAgent.Core.Session.Supervisor
     ]
 

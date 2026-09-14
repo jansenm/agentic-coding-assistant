@@ -25,6 +25,9 @@ defmodule CodingAgent.UI.Bridge do
   @modmap %{
     "enter" => :enter,
     "esc" => :esc,
+    # crossterm may spell Esc "escape" — both land on :esc (the keymap's
+    # interrupt binding accepts both)
+    "escape" => :esc,
     "tab" => :tab,
     "back_tab" => :back_tab,
     "backspace" => :backspace,

@@ -44,6 +44,35 @@ defmodule CodingAgent.Core.SessionTest do
       assert text == "ok"
       assert calls == []
     end
+
+    test "user interrupt stops the stream early, keeping the partial text" do
+      events = [
+        ReqLLM.StreamEvent.new(:text_delta, "partial answer"),
+        ReqLLM.StreamEvent.new(:text_delta, " more that should never arrive")
+      ]
+
+      # the flag is checked after every event: with the flag set the
+      # stream halts right after the first event, keeping its text
+      Session.interrupt("int-session")
+
+      assert Session.consume_stream(events, "int-session") ==
+               {:interrupted, "partial answer"}
+
+      # the session clears the flag at turn end (continue_loop); simulate
+      Session.clear_interrupt("int-session")
+      refute Session.interrupted?("int-session")
+    end
+
+    test "no interrupt flag: the stream runs to completion" do
+      events = [
+        ReqLLM.StreamEvent.new(:text_delta, "a"),
+        ReqLLM.StreamEvent.new(:text_delta, "b")
+      ]
+
+      {text, calls} = Session.consume_stream(events, "clean-session")
+      assert text == "ab"
+      assert calls == []
+    end
   end
 
   describe "session process" do
