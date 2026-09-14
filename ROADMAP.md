@@ -249,19 +249,16 @@ TUI wish-list (user's own list, keyboard-first, from the live sessions):
 - `reasoning_effort` config knob surfaced in the sidebar (currently
   shows 'effort: default'; add `reasoning_effort: :high` to config
   when GLM effort is wanted).
-- **shell tool drops commands (next session, top)**: the model
-  complains that shell calls *sometimes seem to drop the command*.
-  Suspects in `Core.Tools.Shell` (`Port.open({:spawn_executable,
-  "/bin/sh"}, args: ["-c", command])`, collect/3): large output
-  overflowing the port's message buffer (no :use_stdio flow control /
-  busy-loop handling), the `{:closed, buf}` branch returning truncated
-  partial output as a *success* (code 1), truncation hiding the
-  command echo, and multiline command strings from the model
-  (trailing newline / heredoc mangling in the request path — this
-  session's own harness had the same bug with python3 heredocs).
-  Reproduce with: a big-output command (>64 KiB), a multiline command,
-  and a timeout-killed command, then compare `command` echo vs.
-  `format/4` output vs. what the model reports.
+- **shell tool drops commands — FIXED (03e3d62)**: root cause was the
+  session, not Shell: the assistant tool-call message appended at the
+  decide path hardcoded `arguments: "{}"`, erasing every prior call's
+  args from the model's view → the model re-emitted empty-args calls →
+  12-round loop of "required :command option not found". All 19 calls
+  in tui-1730.session had `"{}"` persisted, even ones that executed.
+  The Shell suspects below were all cleared by live repro: 1.2 MB
+  output through the port intact (md5-verified), multiline commands
+  fine, E2BIG handled. Dogfood note: watch for GLM *narrating* tool
+  results without calling the tool (model-side; seen twice in probes).
 - **thinking block grows stray newlines (next session)**: every
   appended reasoning line seems to add an extra newline at the
   paragraph's end, so the paragraph collects trailing newlines and the
