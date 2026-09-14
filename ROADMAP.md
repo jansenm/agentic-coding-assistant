@@ -259,20 +259,16 @@ TUI wish-list (user's own list, keyboard-first, from the live sessions):
   output through the port intact (md5-verified), multiline commands
   fine, E2BIG handled. Dogfood note: watch for GLM *narrating* tool
   results without calling the tool (model-side; seen twice in probes).
-- **thinking block grows stray newlines (next session)**: every
-  appended reasoning line seems to add an extra newline at the
-  paragraph's end, so the paragraph collects trailing newlines and the
-  real thinking output slowly drops out of the visible window. Not yet
-  root-caused — the delta accumulator's collapse
-  (`handle_info {:reasoning_deltas}`: `replace("\n\n", "\n")` on the
-  whole buffer) survives the obvious repros, so the pile-up is
-  probably in the RENDER/measure layer, not the buffer: suspects are
-  measure/render mismatch on the `"· thinking: "` prefix (measure
-  counts it, Paragraph renders it differently), `@air` rows
-  compounding in `entry_widgets({:reasoning, ...})`, or nested
-  paragraph padding in the Paragraph widget wrapping. Debug by
-  dumping the reasoning state string (`:sys.get_state(pid).user_state
-  .reasoning`) against the rendered block height mid-stream.
+- **thinking block grows stray newlines — FIXED (c4669c4)**: root
+  cause was a measure/render mismatch: a trailing "\n" in the
+  reasoning buffer measures as a phantom row (split on "\n" yields a
+  trailing "" that wrapped_lines counts) while the Paragraph renders
+  no extra row — the buffer ends in "\n" for most of the stream
+  (line-by-line deltas), so the box kept growing blank rows. Fixed by
+  trimming at the single render point (render_reasoning/1 in
+  entry_widgets), never in the buffer (per-delta trim glues the next
+  delta's first word when the separator streams as its own delta —
+  test-locked).
 
 | opencode tool | Ours | Note |
 |---|---|---|
