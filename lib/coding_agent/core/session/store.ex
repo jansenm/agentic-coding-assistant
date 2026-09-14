@@ -119,7 +119,13 @@ defmodule CodingAgent.Core.Session.Store do
                 subscribers: [],
                 status: idle_or_interrupted(state),
                 usage: Map.get(state, :usage) || %{input_tokens: 0, output_tokens: 0, cost: nil},
-                compaction_warned: Map.get(state, :compaction_warned, false)
+                compaction_warned: Map.get(state, :compaction_warned, false),
+                # runtime guard counter: must never resurrect (found
+                # live: a snapshot saved with tool_rounds 25 — the old
+                # never-reset bug — resurrected as 25, so resuming and
+                # approving a pending call died instantly at the gate)
+                tool_rounds: 0,
+                compaction_backoff: Map.get(state, :compaction_backoff, 0)
               })
               |> struct!()
 
