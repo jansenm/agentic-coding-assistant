@@ -1779,10 +1779,17 @@ defmodule CodingAgent.UI.Tui do
   # lands (llm_message handler)
   defp streaming_entries(%{deltas: "", reasoning: ""}), do: []
 
-  defp streaming_entries(%{deltas: "", reasoning: r}) when r != "", do: [{:reasoning, r}]
+  # the streaming reasoning entry is TRIMMED here so every consumer
+  # (window measure, viewport, widget) sees the same string — the raw
+  # buffer keeps its trailing "\n" and the window math overcounted by
+  # the phantom row per frame, leaving blank rows between the box tail
+  # and the input (found live: 'scroll up three screens of blanks')
+  defp streaming_entries(%{deltas: "", reasoning: r}) when r != "",
+    do: if(t = render_reasoning(r), do: [{:reasoning, t}], else: [])
 
   defp streaming_entries(%{deltas: d, reasoning: r}) do
-    if(r == "", do: [], else: [{:reasoning, r}]) ++ [{:assistant, d <> "▌"}]
+    if(t = render_reasoning(r), do: [{:reasoning, t}], else: []) ++
+      [{:assistant, d <> "▌"}]
   end
 
   defp normalize_entry({:tool, id, name, content}), do: {:tool, id, name, content}
