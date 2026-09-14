@@ -1350,6 +1350,10 @@ defmodule CodingAgent.UI.Tui do
   # trailing newline(s): the @air row owns the spacing after the block,
   # so trailing blanks only grow the box toward a screen of empty lines.
   def handle_info({:agent, {:reasoning_deltas, delta}}, state) do
+    # buffer-level: collapse doubled newlines and CRs. The trailing
+    # newline stays in the buffer (the next delta may rely on it as the
+    # line separator); the phantom empty row it produces is trimmed at
+    # render time (render_reasoning/1).
     reasoning =
       (state.reasoning <> delta)
       |> String.replace("\r", "")
@@ -1632,6 +1636,7 @@ defmodule CodingAgent.UI.Tui do
   end
 
   defp entry_widgets({:reasoning, text}, w, _te) do
+    text = render_reasoning(text)
     h = TranscriptView.height({:reasoning, text}, w, nil) - TranscriptView.air()
 
     widget = %Paragraph{
@@ -1679,6 +1684,15 @@ defmodule CodingAgent.UI.Tui do
   defp entry_widgets({:info, text}, _w, _te) do
     [{%Paragraph{text: "  " <> text, style: %Style{fg: :dark_gray}}, 1}]
   end
+
+  # Display trim: a trailing "\n" in the reasoning buffer measures as a
+  # phantom empty row (split on "\n" yields a trailing "" that
+  # wrapped_lines counts) while the Paragraph renders no extra row —
+  # the box grows a blank line at its end that never goes away. Trim
+  # here, never in the buffer (a per-delta trim would glue the next
+  # delta's first word to the last line when the provider streams the
+  # separator as its own delta).
+  defp render_reasoning(text), do: String.replace_trailing(text, "\n", "")
 
   # (info rects stay 1 row; the air below is background)
 
