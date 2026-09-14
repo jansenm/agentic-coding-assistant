@@ -949,10 +949,25 @@ defmodule CodingAgent.Core.Session do
     last_in = Map.get(state.usage || %{}, :last_input_tokens, 0)
 
     plan =
-      if last_in >= trigger do
-        Compaction.plan_tokens(state.context, last_in, trigger)
-      else
-        Compaction.plan(state.context)
+      cond do
+        last_in >= trigger ->
+          # provider-reported input tokens are ground truth (the token
+          # path compacts exactly when the real context is past trigger)
+          Compaction.plan_tokens(state.context, last_in, trigger)
+
+        # usage is genuinely unknown (first turn): fall back to a
+        # conservative chars heuristic
+        last_in == 0 ->
+          Compaction.plan(state.context)
+
+        true ->
+          # usage known but below the trigger: DO NOT compact. The old
+          # chars fallback fired at 80K chars (~20K tokens) even though
+          # the model's real input count was far below the 180K token
+          # trigger — found live: a fresh review session hit compaction
+          # after a handful of file reads, then hung for minutes in the
+          # summarize call (the real symptom the user reported).
+          warn_approaching_compaction(state, trigger)
       end
 
     case plan do
@@ -969,22 +984,38 @@ defmodule CodingAgent.Core.Session do
         # reasoning, no answer, no clue (found live — 2+ min of silence)
         broadcast(state, {:info, "· compacting context (this can take a while)…"})
 
-        case summarize_for_compaction(state) do
-          {:ok, summary_text} ->
-            context = Compaction.apply(state.context, summary_text)
-            state = %{state | context: context, compaction_backoff: 0}
-            persist(state)
-            broadcast(state, {:context_compacted, Compaction.keep_recent()})
-            state
+        # hard wall-clock bound: receive_timeout only covers INACTIVITY,
+        # and a slow cloud model streams the summary indefinitely (found
+        # live — compaction hung past 2 minutes mid-turn). 90s for a
+        # summarization, then give up and keep the full context.
+        task = Task.async(fn -> summarize_for_compaction(state) end)
 
-          {:error, reason} ->
-            Logger.warning("compaction failed, keeping full context: #{inspect(reason)}")
+        case Task.yield(task, 90_000) || Task.shutdown(task, :brutal_kill) do
+          {:ok, result} ->
+            case result do
+              {:ok, summary_text} ->
+                context = Compaction.apply(state.context, summary_text)
+                state = %{state | context: context, compaction_backoff: 0}
+                persist(state)
+                broadcast(state, {:context_compacted, Compaction.keep_recent()})
+                state
 
-            broadcast(
-              state,
-              {:info,
-               "· compaction failed (#{inspect(reason, printable_limit: 40)}); skipping the next 3 turns"}
-            )
+              {:error, reason} ->
+                Logger.warning("compaction failed, keeping full context: #{inspect(reason)}")
+
+                broadcast(
+                  state,
+                  {:info,
+                   "· compaction failed (#{inspect(reason, printable_limit: 40)}); skipping the next 3 turns"}
+                )
+
+                %{state | compaction_backoff: 3}
+            end
+
+          # timed out (nil): Task.shutdown returns nil for :brutal_kill
+          nil ->
+            Logger.warning("compaction summarize exceeded 90s, keeping full context")
+            broadcast(state, {:info, "· compaction timed out; skipping the next 3 turns"})
 
             %{state | compaction_backoff: 3}
         end
