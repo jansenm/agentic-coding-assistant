@@ -474,7 +474,11 @@ defmodule CodingAgent.Core.Session do
       state.context
       |> Context.append(ReqLLM.Context.user(prompt))
 
-    state = %{state | context: context, status: :running, last_error: nil}
+    # the loop guard is PER TURN: the counter previously only reset in
+    # the debug path, so it accumulated across a session's lifetime —
+    # found live: the review session died at the 25-round limit after
+    # several healthy turns (each turn's rounds stack on the old count)
+    state = %{state | context: context, status: :running, last_error: nil, tool_rounds: 0}
     broadcast(state, {:status_changed, :running})
 
     case continue_loop(state) do
