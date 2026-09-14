@@ -853,13 +853,25 @@ defmodule CodingAgent.Core.Session do
   def add_usage(state, usage) when is_map(usage) do
     prev = state.usage || %{input_tokens: 0, output_tokens: 0, cost: nil}
 
+    # a nil/zero input count (interrupted or error turn, provider usage
+    # event missing) must NOT clobber the honest count from the last
+    # complete turn — a zero here silently re-arms the chars-based
+    # compaction fallback on a fat context (found live: session
+    # resumed, compaction fired at 212K chars despite the sidebar
+    # showing 58.3k)
+    last_in =
+      case usage[:input_tokens] do
+        n when is_integer(n) and n > 0 -> n
+        _ -> Map.get(prev, :last_input_tokens, 0)
+      end
+
     next = %{
       input_tokens: Map.get(prev, :input_tokens, 0) + (usage[:input_tokens] || 0),
       output_tokens: Map.get(prev, :output_tokens, 0) + (usage[:output_tokens] || 0),
       # the LAST turn's input = the context size the provider actually
       # saw — the honest token-based compaction measure (a chars-based
       # estimate drifts; the provider's own count is ground truth)
-      last_input_tokens: usage[:input_tokens] || 0,
+      last_input_tokens: last_in,
       cost: sum_cost(prev[:cost], usage[:total_cost])
     }
 
