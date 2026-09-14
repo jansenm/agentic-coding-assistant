@@ -318,24 +318,27 @@ defmodule CodingAgent.Core.Session do
   # messages so the model sees the outcome. Approved/edited calls are
   # executed immediately; rejected calls get a rejection message.
   defp resolve_decisions(state, pending, by_id) do
-    {to_run, rejected} =
-      Enum.reduce(pending, {[], []}, fn call, {run, res} ->
+    {to_run, rejected, final_calls} =
+      Enum.reduce(pending, {[], [], []}, fn call, {run, res, finals} ->
         {id, name, _args} = call_parts(call)
         decision = Map.fetch!(by_id, id)
 
         case decision do
           :approve ->
-            {[call | run], res}
+            {[call | run], res, [call | finals]}
 
           {:edit, new_args} ->
-            {[edit_call(call, new_args) | run], res}
+            edited = edit_call(call, new_args)
+            {[edited | run], res, [edited | finals]}
 
           :reject ->
-            {run, [%{id: id, name: name, content: "error: the user rejected this action"} | res]}
+            {run, [%{id: id, name: name, content: "error: the user rejected this action"} | res],
+             [call | finals]}
         end
       end)
 
     to_run = Enum.reverse(to_run)
+    final_calls = Enum.reverse(final_calls)
 
     executed_results = execute_tools(state, to_run)
 
@@ -355,7 +358,7 @@ defmodule CodingAgent.Core.Session do
 
     # the canonical exchange validates id matching and appends the
     # assistant tool-call message with every result in order
-    assistant_msg = assistant_message_for(pending)
+    assistant_msg = assistant_message_for(final_calls)
     exchange = ReqLLM.Context.append_tool_exchange(state.context, assistant_msg, all_results)
 
     case exchange do
@@ -373,12 +376,27 @@ defmodule CodingAgent.Core.Session do
   defp assistant_message_for(calls) do
     tcalls =
       Enum.map(calls, fn call ->
-        {id, name, _args} = call_parts(call)
-        %ReqLLM.ToolCall{id: id, type: "function", function: %{name: name, arguments: "{}"}}
+        {id, name, args} = call_parts(call)
+
+        %ReqLLM.ToolCall{
+          id: id,
+          type: "function",
+          function: %{name: name, arguments: args_json(args)}
+        }
       end)
 
     %ReqLLM.Message{role: :assistant, content: [], tool_calls: tcalls}
   end
+
+  # The assistant tool-call message goes back to the model, so it must
+  # carry the args the model produced (or the user edited in). A
+  # hardcoded "{}" here erased every prior call's arguments from the
+  # model's view — the model then saw its own shell calls as empty and
+  # re-emitted empty-args calls (live: 12-round loop of
+  # "required :command option not found" — the "dropped command" bug).
+  defp args_json(args) when is_binary(args), do: args
+  defp args_json(args) when is_map(args), do: Jason.encode!(args)
+  defp args_json(_args), do: "{}"
 
   defp edit_call(%ReqLLM.ToolCall{} = call, new_args) do
     %{call | function: %{call.function | arguments: Jason.encode!(new_args)}}

@@ -107,6 +107,29 @@ defmodule CodingAgent.Core.Session.DecisionsTest do
       refute File.exists?(Path.join(@tmp_root, "rejected.txt"))
       assert File.read!(Path.join(@tmp_root, "edited.txt")) == "edited!"
       refute File.exists?(Path.join(@tmp_root, "orig.txt"))
+
+      # the assistant tool-call message that goes back to the model must
+      # carry the REAL arguments (original for approve/reject, edited for
+      # edit) — a hardcoded "{}" erased every prior call's args from the
+      # model's view (live bug: 12-round loop of empty-args shell calls,
+      # "required :command option not found")
+      assistant = Enum.find(state2.context.messages, fn m -> m.tool_calls != nil end)
+
+      args_by_id =
+        Map.new(assistant.tool_calls, fn tc ->
+          {tc.id, tc.function.arguments}
+        end)
+
+      # binary JSON or a decoded map, depending on the call shape; decode
+      # for comparison (encoded key order is sorted)
+      decoded =
+        Map.new(args_by_id, fn {id, args} ->
+          {id, if(is_binary(args), do: Jason.decode!(args), else: args)}
+        end)
+
+      assert decoded["c1"] == %{"path" => "approved.txt", "content" => "yes"}
+      assert decoded["c2"] == %{"path" => "rejected.txt", "content" => "no"}
+      assert decoded["c3"] == %{"path" => "edited.txt", "content" => "edited!"}
     end
 
     test "rejected-only batch feeds the rejection back to the model", %{policy: policy} do
