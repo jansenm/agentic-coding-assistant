@@ -16,6 +16,12 @@ config :coding_agent,
   # GLM sessions grew past 300k before compaction and burned quota at
   # unheard speeds). Visible in the sidebar; predictable by design.
   compaction_trigger_tokens: 180_000,
+  # Tool-round guard PER TURN (catches a single runaway loop, not
+  # normal work). GLM does one small grep per round — a review turn
+  # burned 25 rounds live and died mid-work; the default is now 100.
+  # Configurable: :max_tool_rounds in config.exs or a user config
+  # override, so heavyweight tasks can turn it up.
+  max_tool_rounds: 100,
   # environment variable holding the provider API key (ADR 008: secrets
   # come from the environment, never from config files). Cloud ollama
   # models are not in req_llm's catalog; suppress the unverified warning.

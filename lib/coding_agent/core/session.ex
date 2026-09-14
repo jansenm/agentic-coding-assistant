@@ -33,8 +33,16 @@ defmodule CodingAgent.Core.Session do
   # live report: a real multi-step task burned 16 gate rounds and the
   # turn died with "tool loop limit reached: 12" — the agent then
   # complained about "flaky parallel calls". 12 was a phase-2 guess;
-  # real coding tasks need more. 25 with the fail-closed behavior kept.
-  @max_tool_rounds 25
+  # GLM does one small grep per round: a review turn burned 25 rounds
+  # live (7ce59be made the counter per-turn, but 25 still dies on a
+  # legit review). Default now 100, configurable via
+  # :max_tool_rounds — the guard exists to catch a runaway loop, and
+  # its cost is proportional to the work actually requested.
+  @default_max_tool_rounds 100
+
+  defp max_tool_rounds do
+    Application.get_env(:coding_agent, :max_tool_rounds, @default_max_tool_rounds)
+  end
 
   # providers whose requests need no api_key option
 
@@ -524,10 +532,19 @@ defmodule CodingAgent.Core.Session do
   # decision. :ask pauses the session (:interrupted) until the driver
   # supplies decisions for every pending call via decide/3.
   defp gate_tools(state, calls) do
-    if state.tool_rounds >= @max_tool_rounds do
-      Logger.error("tool loop limit reached: #{@max_tool_rounds}")
-      state = fail_turn(state, {:tool_loop_limit, @max_tool_rounds})
-      {state, {:error, {:tool_loop_limit, @max_tool_rounds}}}
+    if state.tool_rounds >= max_tool_rounds() do
+      Logger.error("tool loop limit reached: #{max_tool_rounds()}")
+
+      # tell the user IN the transcript (a bare error turn is a
+      # mystery — the user then asks 'what stopped it now?')
+      broadcast(
+        state,
+        {:info,
+         "· turn stopped: #{max_tool_rounds()} tool rounds used (the per-turn guard) — ask it to continue for another budget"}
+      )
+
+      state = fail_turn(state, {:tool_loop_limit, max_tool_rounds()})
+      {state, {:error, {:tool_loop_limit, max_tool_rounds()}}}
     else
       state = %{state | tool_rounds: state.tool_rounds + 1}
 
