@@ -35,6 +35,7 @@ defmodule CodingAgent.UI.Tui do
   @input_height 4
   @input_max_height 12
   @tool_cap 30
+  @thinking_cap 12
 
   # rows the transcript pane loses to chrome: app margin top+bottom (2)
   # + spacing above/below it (2) + input area + status line. Kept in
@@ -1348,13 +1349,17 @@ defmodule CodingAgent.UI.Tui do
     # the UI transcript stores the DISPLAY shape (breathed markdown):
     # measure and render must never see different strings. The core
     # session keeps the full-fidelity text.
-    {:noreply,
-     %{
-       state
-       | transcript: state.transcript ++ [{:assistant, breathe(text)}],
-         deltas: "",
-         reasoning: ""
-     }}
+    #
+    # the streamed thinking block is PERSISTED (opencode parity):
+    # finished reasoning stays in the transcript as a dim entry ahead
+    # of the answer, so later turns don't erase what the model thought.
+    transcript =
+      case persist_reasoning(state.reasoning) do
+        nil -> state.transcript ++ [{:assistant, breathe(text)}]
+        entry -> state.transcript ++ [entry, {:assistant, breathe(text)}]
+      end
+
+    {:noreply, %{state | transcript: transcript, deltas: "", reasoning: ""}}
   end
 
   # agent thinking: streamed BEFORE the answer arrives; shown as a dim
@@ -1385,11 +1390,17 @@ defmodule CodingAgent.UI.Tui do
     id = "tool-#{System.unique_integer([:positive])}"
 
     # display shape: capped output (head+tail) — the core session
-    # keeps the full output
+    # keeps the full output. Thinking streamed ahead of the tool call
+    # persists too (same rule as llm_message).
     content = cap_lines(content, @tool_cap)
 
-    {:noreply,
-     %{state | transcript: state.transcript ++ [{:tool, id, name, content}], reasoning: ""}}
+    transcript =
+      case persist_reasoning(state.reasoning) do
+        nil -> state.transcript ++ [{:tool, id, name, content}]
+        entry -> state.transcript ++ [entry, {:tool, id, name, content}]
+      end
+
+    {:noreply, %{state | transcript: transcript, reasoning: ""}}
   end
 
   def handle_info({:agent, {:context_compacted, _keep}}, state) do
@@ -1711,6 +1722,26 @@ defmodule CodingAgent.UI.Tui do
   # delta's first word to the last line when the provider streams the
   # separator as its own delta).
   defp render_reasoning(text), do: String.replace_trailing(text, "\n", "")
+
+  # Finished thinking becomes a transcript entry (capped — a long
+  # reasoning trace must not eat the screen; the full fidelity lives in
+  # the core session). nil when there was nothing to persist.
+  defp persist_reasoning(reasoning) do
+    case reasoning |> render_reasoning() |> String.trim() do
+      "" ->
+        nil
+
+      text ->
+        lines = String.split(text, "\n")
+
+        capped =
+          if length(lines) > @thinking_cap,
+            do: Enum.take(lines, @thinking_cap) |> Enum.join("\n"),
+            else: text
+
+        {:reasoning, capped}
+    end
+  end
 
   # (info rects stay 1 row; the air below is background)
 

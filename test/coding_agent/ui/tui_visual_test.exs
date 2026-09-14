@@ -32,6 +32,32 @@ defmodule CodingAgent.UI.TuiVisualTest do
     st = :sys.get_state(pid).user_state
     assert st.reasoning == ""
     assert Enum.any?(st.transcript, &match?({:assistant, "The answer."}, &1))
+
+    # PERSISTED (opencode parity): the thinking block stays in the
+    # transcript as a dim entry ahead of the answer
+    assert Enum.any?(st.transcript, &match?({:reasoning, "step one, step two"}, &1))
+  end
+
+  test "thinking persists capped: a long trace keeps its head lines", %{pid: pid} do
+    long = Enum.map_join(1..40, "\n", &"line #{&1}")
+    send(pid, {:agent, {:reasoning_deltas, long}})
+    send(pid, {:agent, {:llm_message, "Answer."}})
+    Process.sleep(100)
+
+    st = :sys.get_state(pid).user_state
+
+    assert {:reasoning, capped} = Enum.find(st.transcript, &match?({:reasoning, _}, &1))
+    assert length(String.split(capped, "\n")) == 12
+    assert String.contains?(capped, "line 12")
+    refute String.contains?(capped, "line 13")
+  end
+
+  test "no thinking streamed: no empty persisted block", %{pid: pid} do
+    send(pid, {:agent, {:llm_message, "Just the answer."}})
+    Process.sleep(100)
+
+    st = :sys.get_state(pid).user_state
+    refute Enum.any?(st.transcript, &match?({:reasoning, _}, &1))
   end
 
   test "assistant entries breathe: blank line after headings", %{pid: pid} do
