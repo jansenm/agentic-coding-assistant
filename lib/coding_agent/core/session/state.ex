@@ -23,7 +23,12 @@ defmodule CodingAgent.Core.Session.State do
     usage: %{input_tokens: 0, output_tokens: 0, cost: nil},
     # set once the 80%-of-trigger warning has been broadcast (once,
     # not every turn)
-    compaction_warned: false
+    compaction_warned: false,
+    # consecutive compaction failures: with 0..backoff_left, compaction
+    # is SKIPPED (found live: GLM cloud needs minutes for an 80K-char
+    # summary call and fails with reason:"timeout" — retrying every
+    # turn meant 2+ minutes of dead silence before every real turn)
+    compaction_backoff: 0
   ]
 
   @type status :: :idle | :running | :interrupted | :error

@@ -917,6 +917,14 @@ defmodule CodingAgent.Core.Session do
   # does not error out. The compacted state persists immediately (the
   # next turn boundary would too, but a crash right after compaction
   # should not resurrect the fat context).
+  defp maybe_compact(%State{compaction_backoff: backoff} = state) when backoff > 0 do
+    # compaction failed recently — skip and count down (the summary call
+    # is minutes of cloud time; a per-turn retry is 2+ min of dead
+    # silence before every turn). The context degrades, it does not
+    # error out.
+    %{state | compaction_backoff: backoff - 1}
+  end
+
   defp maybe_compact(%State{} = state) do
     # absolute threshold from config — visible in the sidebar,
     # predictable (the opencode lesson: compaction must be a known
@@ -946,17 +954,29 @@ defmodule CodingAgent.Core.Session do
           "compacting context (#{Compaction.total_chars(state.context.messages)} chars)"
         )
 
+        # the summarize call is a slow NON-streaming round trip: tell the
+        # UI NOW, otherwise the user stares at a running dot with no
+        # reasoning, no answer, no clue (found live — 2+ min of silence)
+        broadcast(state, {:info, "· compacting context (this can take a while)…"})
+
         case summarize_for_compaction(state) do
           {:ok, summary_text} ->
             context = Compaction.apply(state.context, summary_text)
-            state = %{state | context: context}
+            state = %{state | context: context, compaction_backoff: 0}
             persist(state)
             broadcast(state, {:context_compacted, Compaction.keep_recent()})
             state
 
           {:error, reason} ->
             Logger.warning("compaction failed, keeping full context: #{inspect(reason)}")
-            state
+
+            broadcast(
+              state,
+              {:info,
+               "· compaction failed (#{inspect(reason, printable_limit: 40)}); skipping the next 3 turns"}
+            )
+
+            %{state | compaction_backoff: 3}
         end
     end
   end
@@ -980,7 +1000,12 @@ defmodule CodingAgent.Core.Session do
       |> Context.append(ReqLLM.Context.user(render_messages(old)))
 
     with {:ok, model_input, base_opts} <- request_parts(state),
-         {:ok, response} <- ReqLLM.generate_text(model_input, context, base_opts) do
+         # bound the summary round trip: GLM on an 80K-char context
+         # takes minutes; without a cap a slow summary stalls every
+         # turn's start (found live). 120s of inactivity is generous
+         # for a summarization that should stream continuously.
+         {:ok, response} <-
+           ReqLLM.generate_text(model_input, context, base_opts ++ [receive_timeout: 120_000]) do
       {:ok, ReqLLM.Response.text(response)}
     end
   end
