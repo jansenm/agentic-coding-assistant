@@ -20,6 +20,54 @@ defmodule CodingAgent.Core.CompactionTest do
     assert Compaction.plan(ctx(3)) == :none
   end
 
+  # locks the compaction trigger decision (Session.compaction_plan/2):
+  # known usage below the token trigger must NEVER compact — the old
+  # chars fallback fired at 80K chars (~20K tokens) and stalled every
+  # turn behind a slow summarize call (found live: the review session
+  # hung, then the session crashed on a CaseClauseError in maybe_compact)
+  describe "compaction_plan/2 (session trigger)" do
+    alias CodingAgent.Core.Session
+
+    defp state_with_usage(usage) do
+      %CodingAgent.Core.Session.State{
+        id: "t",
+        context: ctx(90),
+        model: "ollama:test",
+        status: :idle,
+        usage: usage
+      }
+    end
+
+    @trigger 180_000
+
+    test "known usage below the trigger: :none (no chars fallback)" do
+      # 100K chars would trigger the old chars path; 20K tokens is far
+      # below the 180K trigger
+      assert Session.compaction_plan(
+               %{state_with_usage(nil) | usage: %{last_input_tokens: 20_000}},
+               @trigger
+             ) == :none
+    end
+
+    test "known usage at/above the trigger compacts" do
+      assert {:ok, _old, _keep} =
+               Session.compaction_plan(
+                 %{state_with_usage(nil) | usage: %{last_input_tokens: 180_000}},
+                 @trigger
+               )
+    end
+
+    test "no usage (first turn): chars fallback applies" do
+      fat = ctx(90)
+
+      assert {:ok, _old, _keep} =
+               Session.compaction_plan(%{state_with_usage(nil) | context: fat}, @trigger)
+
+      thin = ctx(3)
+      assert Session.compaction_plan(%{state_with_usage(nil) | context: thin}, @trigger) == :none
+    end
+  end
+
   test "plan: splits old/keep above the threshold" do
     assert {:ok, old, keep} = Compaction.plan(ctx(90))
     # system message counts as old (compacted), keep_recent stay verbatim

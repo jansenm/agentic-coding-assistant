@@ -927,6 +927,33 @@ defmodule CodingAgent.Core.Session do
   # does not error out. The compacted state persists immediately (the
   # next turn boundary would too, but a crash right after compaction
   # should not resurrect the fat context).
+  @doc "Pure compaction trigger decision. Public: tests are LLM-free."
+  def compaction_plan(%State{} = state, trigger) do
+    last_in = Map.get(state.usage || %{}, :last_input_tokens, 0)
+
+    cond do
+      last_in >= trigger ->
+        # provider-reported input tokens are ground truth (the token
+        # path compacts exactly when the real context is past trigger)
+        Compaction.plan_tokens(state.context, last_in, trigger)
+
+      # usage is genuinely unknown (first turn): fall back to a
+      # conservative chars heuristic
+      last_in == 0 ->
+        Compaction.plan(state.context)
+
+      true ->
+        # usage known but below the trigger: DO NOT compact. The old
+        # chars fallback fired at 80K chars (~20K tokens) even though
+        # the model's real input count was far below the 180K token
+        # trigger — found live: a fresh review session hit compaction
+        # after a handful of file reads, then hung for minutes in the
+        # summarize call (the real symptom the user reported).
+        warn_approaching_compaction(state, trigger)
+        :none
+    end
+  end
+
   defp maybe_compact(%State{compaction_backoff: backoff} = state) when backoff > 0 do
     # compaction failed recently — skip and count down (the summary call
     # is minutes of cloud time; a per-turn retry is 2+ min of dead
@@ -946,29 +973,7 @@ defmodule CodingAgent.Core.Session do
         Compaction.default_trigger_tokens()
       )
 
-    last_in = Map.get(state.usage || %{}, :last_input_tokens, 0)
-
-    plan =
-      cond do
-        last_in >= trigger ->
-          # provider-reported input tokens are ground truth (the token
-          # path compacts exactly when the real context is past trigger)
-          Compaction.plan_tokens(state.context, last_in, trigger)
-
-        # usage is genuinely unknown (first turn): fall back to a
-        # conservative chars heuristic
-        last_in == 0 ->
-          Compaction.plan(state.context)
-
-        true ->
-          # usage known but below the trigger: DO NOT compact. The old
-          # chars fallback fired at 80K chars (~20K tokens) even though
-          # the model's real input count was far below the 180K token
-          # trigger — found live: a fresh review session hit compaction
-          # after a handful of file reads, then hung for minutes in the
-          # summarize call (the real symptom the user reported).
-          warn_approaching_compaction(state, trigger)
-      end
+    plan = compaction_plan(state, trigger)
 
     case plan do
       :none ->
