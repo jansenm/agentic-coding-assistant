@@ -35,6 +35,8 @@ defmodule CodingAgent.UI.Tui do
   @input_height 4
   @input_max_height 12
   @tool_cap 30
+  # how long an armed esc-to-quit stays armed (ms)
+  @quit_confirm_window 3_000
   @thinking_cap 12
 
   # rows the transcript pane loses to chrome: app margin top+bottom (2)
@@ -135,6 +137,10 @@ defmodule CodingAgent.UI.Tui do
       last_pane_height: max(th - @layout_overhead, 1),
       status: :idle,
       transcript: [],
+      # esc-to-quit confirm: first esc arms, second esc (within
+      # @quit_confirm_window) quits, any other key disarms
+      quit_confirm?: false,
+      quit_armed_at: 0,
       deltas: "",
       textarea: ExRatatui.textarea_new(),
       history: [],
@@ -252,6 +258,10 @@ defmodule CodingAgent.UI.Tui do
         last_pane_height: max(th - @layout_overhead, 1),
         status: status,
         transcript: history,
+        # esc-to-quit confirm: first esc arms, second esc (within
+        # @quit_confirm_window) quits, any other key disarms
+        quit_confirm?: false,
+        quit_armed_at: 0,
         deltas: "",
         textarea: ExRatatui.textarea_new(),
         history: recall,
@@ -733,6 +743,8 @@ defmodule CodingAgent.UI.Tui do
 
     case Bridge.translate(ev, bound) do
       {:text, code} ->
+        # text input disarms the quit confirm (only esc drives it)
+        state = %{state | quit_confirm?: false}
         {:noreply, put_in_textarea(state, code)}
 
       {:key, km_event} ->
@@ -1131,25 +1143,40 @@ defmodule CodingAgent.UI.Tui do
       :interrupt ->
         # esc while the model streams: stop the turn, keep the partial
         # answer (Session keeps it — opencode esc parity). When NOT
-        # running, esc falls through to the textarea (popups handle
-        # their own esc earlier in the event chain).
-        if state.status == :running do
-          Session.interrupt(state.session_id)
+        # running, esc arms the quit confirm: a SECOND esc (within the
+        # window) quits the TUI, anything else disarms. Esc-to-quit
+        # must never fire on the first press — the user types esc
+        # reflexively (found live: "ESC -> ARE YOU SURE -> ESC -> BREAK").
+        cond do
+          state.status == :running ->
+            Session.interrupt(state.session_id)
 
-          {:noreply,
-           %{
-             state
-             | status: :interrupting,
-               transcript: state.transcript ++ [{:info, "interrupting… (esc pressed)"}]
-           }}
-        else
-          forward_to_textarea(state, ev)
+            {:noreply,
+             %{
+               state
+               | status: :interrupting,
+                 transcript: state.transcript ++ [{:info, "interrupting… (esc pressed)"}]
+             }}
+
+          state.quit_confirm? and
+              System.monotonic_time(:millisecond) - Map.get(state, :quit_armed_at, 0) <=
+                @quit_confirm_window ->
+            # second esc within the window: quit
+            {:stop, %{state | quit_confirm?: false}}
+
+          true ->
+            # first esc while idle: arm (stale arms count as fresh — the
+            # user sees the "esc again to quit" hint and presses again)
+            now = System.monotonic_time(:millisecond)
+            {:noreply, %{state | quit_confirm?: true, quit_armed_at: now}}
         end
 
       :abort ->
         {:stop, state}
 
       _ ->
+        # any other key disarms the quit confirm (only esc drives it)
+        state = %{state | quit_confirm?: false}
         forward_to_textarea(state, ev)
     end
   end
@@ -1976,7 +2003,10 @@ defmodule CodingAgent.UI.Tui do
         _ -> {"?", :gray, "unknown"}
       end
 
-    status_text = label
+    status_text =
+      if Map.get(state, :quit_confirm?, false),
+        do: label <> "  — esc again to quit",
+        else: label
 
     line =
       Text.Line.new([

@@ -430,4 +430,72 @@ defmodule CodingAgent.UI.TuiVisualTest do
     # cleanup: the flag is per-turn; clear so no other session sees it
     CodingAgent.Core.Session.clear_interrupt(st2.session_id)
   end
+
+  test "esc to quit requires a double press while idle; a key in between disarms", %{pid: pid} do
+    # first esc: arms (does NOT quit)
+    :ok =
+      ExRatatui.Runtime.inject_event(pid, %ExRatatui.Event.Key{
+        code: "escape",
+        kind: "press",
+        modifiers: []
+      })
+
+    Process.sleep(150)
+    assert :sys.get_state(pid).user_state.quit_confirm? == true
+
+    # second esc within the window: quits
+    :ok =
+      ExRatatui.Runtime.inject_event(pid, %ExRatatui.Event.Key{
+        code: "escape",
+        kind: "press",
+        modifiers: []
+      })
+
+    wait_until(fn -> not Process.alive?(pid) end)
+
+    # fresh TUI: esc then another key disarms the confirm
+    pid2 =
+      start_supervised!(%{
+        id: String.to_atom("tui-#{System.unique_integer([:positive])}"),
+        start:
+          {CodingAgent.UI.Tui, :start_link,
+           [[name: nil, test_mode: {80, 30}, scope_root: File.cwd!()]]}
+      })
+
+    Process.sleep(700)
+
+    :ok =
+      ExRatatui.Runtime.inject_event(pid2, %ExRatatui.Event.Key{
+        code: "escape",
+        kind: "press",
+        modifiers: []
+      })
+
+    Process.sleep(100)
+    assert :sys.get_state(pid2).user_state.quit_confirm? == true
+
+    # any other key disarms
+    :ok =
+      ExRatatui.Runtime.inject_event(pid2, %ExRatatui.Event.Key{
+        code: "x",
+        kind: "press",
+        modifiers: []
+      })
+
+    Process.sleep(150)
+    assert :sys.get_state(pid2).user_state.quit_confirm? == false
+
+    refute Process.alive?(pid2) == false
+  end
+
+  defp wait_until(fun, tries \\ 50) do
+    if fun.() do
+      :ok
+    else
+      if tries <= 0, do: flunk("condition never became true")
+
+      Process.sleep(50)
+      wait_until(fun, tries - 1)
+    end
+  end
 end
