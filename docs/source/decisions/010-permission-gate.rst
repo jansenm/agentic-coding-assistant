@@ -301,6 +301,17 @@ env-var assignments (``FOO=1 grep …``) and shelling-out wrappers
 (``echo hi | grep hi`` runs), and evader spellings pass (``git grep``,
 ``awk``, ``find -exec``, ``bash -c``).
 
+**Pipes are a live question, deferred on purpose.** A pipe is the one
+plausibly *legitimate* shell-grep shape (``cat x | grep y`` is rare —
+``grep y x`` does it — but ``docker logs c | grep err`` is real: the
+left side produces the stream, grep merely filters). If live sessions
+show piped greps costing real keystrokes, the next step is a second
+segment in the verdict — after a ``|``, look at the next pipeline
+stage's leading word the same way — denying only the *standalone*
+grep and leaving piped ones to the gate's ``:ask`` (where the human
+sees the whole command). Deliberately NOT done now: no live evidence
+yet of the shape, and each widening deserves its own evidence.
+
 Honesty about what this is and is not:
 
 - **Not containment.** A committed agent bypasses it in five spellings;
