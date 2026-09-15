@@ -7,7 +7,7 @@ defmodule CodingAgent.Core.UsageTest do
   """
   use ExUnit.Case, async: false
 
-  alias CodingAgent.Core.{Compaction, Session}
+  alias CodingAgent.Core.Session
   alias CodingAgent.Core.Session.{State, Store}
 
   defp state do
@@ -51,46 +51,7 @@ defmodule CodingAgent.Core.UsageTest do
     Store.delete(s.id)
   end
 
-  describe "plan_tokens/3" do
-    test ":none below the trigger" do
-      ctx = ReqLLM.Context.new() |> ReqLLM.Context.append(ReqLLM.Context.user("hi"))
-      assert Compaction.plan_tokens(ctx, 100_000, 500_000) == :none
-    end
-
-    test "compacts at the absolute threshold, not a window percentage" do
-      ctx = ReqLLM.Context.new() |> ReqLLM.Context.append(ReqLLM.Context.user("hi"))
-
-      # the opencode lesson: an absolute trigger (default 180k) — a big
-      # window must NOT push compaction later
-      assert Compaction.plan_tokens(ctx, 179_999, 180_000) == :none
-      assert {:ok, _old, _keep} = Compaction.plan_tokens(ctx, 180_000, 180_000)
-      # 300k context with a 500k window still compacts (the %-trigger
-      # would have waited for 350k — exactly the failure mode being fixed)
-      assert {:ok, _old, _keep} = Compaction.plan_tokens(ctx, 300_000, 180_000)
-    end
-
-    test "no usage data (0) never triggers" do
-      ctx = ReqLLM.Context.new() |> ReqLLM.Context.append(ReqLLM.Context.user("hi"))
-      assert Compaction.plan_tokens(ctx, 0, 500_000) == :none
-    end
-  end
-
-  describe "warn_approaching_compaction/2" do
-    test "warns once at 80% of the trigger" do
-      s0 = state() |> Session.add_usage(%{input_tokens: 150_000, last_input_tokens: 150_000})
-      # 150k >= 144k (80% of 180k) -> warns
-      s1 = Session.warn_approaching_compaction(s0, 180_000)
-      assert s1.compaction_warned == true
-
-      # second call: no double warn
-      s2 = Session.warn_approaching_compaction(s1, 180_000)
-      assert s2 == s1
-    end
-
-    test "does not warn below 80%" do
-      s0 = state() |> Session.add_usage(%{input_tokens: 100_000, last_input_tokens: 100_000})
-      s1 = Session.warn_approaching_compaction(s0, 180_000)
-      assert s1.compaction_warned == false
-    end
-  end
+  # The plan_tokens/3 trigger locks live in compaction_test.exs next to
+  # the other compaction locks (plan boundary, apply, the session-level
+  # decide/2 decision and the task budget) — one home per concern.
 end

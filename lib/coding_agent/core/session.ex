@@ -10,18 +10,25 @@ defmodule CodingAgent.Core.Session do
 
   The session state is plain data (ADR 003: everything is data so
   persistence and interruption become states, not exceptions).
+
+  Separation of concerns within `CodingAgent.Core.Session.*`:
+
+  - this module — the loop: turn lifecycle, tool gating, interrupts,
+    event broadcast;
+  - `CodingAgent.Core.Session.Compactor` — the compaction operation
+    (trigger decision, summarize call, backoff);
+  - `CodingAgent.Core.Session.Request` — wire-request assembly
+    (model spec, providers, credentials) shared by every LLM call site;
+  - `CodingAgent.Core.Session.Store` — persistence.
   """
 
   use GenServer
 
   require Logger
 
-  alias CodingAgent.Core.Compaction
   alias CodingAgent.Core.Permissions
-  alias CodingAgent.Core.Providers
   alias CodingAgent.Core.UserConfig
-  alias CodingAgent.Core.Session.State
-  alias CodingAgent.Core.Session.Store
+  alias CodingAgent.Core.Session.{Compactor, Request, State, Store}
   alias ReqLLM.Context
 
   # GenServer call timeout. Gate decisions can take arbitrarily long
@@ -503,7 +510,8 @@ defmodule CodingAgent.Core.Session do
       raise "test-mode session #{state.id} reached call_llm — tests must be LLM-free"
     end
 
-    state = maybe_compact(state)
+    {state, changed?} = Compactor.maybe_compact(state)
+    if changed?, do: persist(state)
 
     case call_llm(state) do
       {:ok, %{type: :final_answer, text: text, usage: usage}} ->
@@ -739,7 +747,7 @@ defmodule CodingAgent.Core.Session do
   defp to_text(output), do: inspect(output, pretty: true, limit: 100)
 
   defp call_llm(state) do
-    with {:ok, model_input, base_opts} <- request_parts(state) do
+    with {:ok, model_input, base_opts} <- Request.build(state.model, state.provider_config) do
       opts = Keyword.put(base_opts, :tools, current_tools(state))
 
       with {:ok, stream_response} <- ReqLLM.stream_text(model_input, state.context, opts) do
@@ -768,42 +776,6 @@ defmodule CodingAgent.Core.Session do
           {:stream_error, error} -> {:error, {:stream_error, error}}
         end
       end
-    end
-  end
-
-  # Model + credential resolution (ADR 014): the model spec's first
-  # segment names a [providers.*] entry (or a native req_llm provider
-  # when the registry has no such table). Credentials: env first, then
-  # the global auth.toml. A provider with no credential connects
-  # keyless (local ollama proxy); one with a credential sends it.
-  defp request_parts(state) do
-    [name | rest] = String.split(state.model || "", ":", parts: 2)
-    model_id = Enum.at(rest, 0) || ""
-    cfg = state.provider_config || %{}
-
-    with {:ok, model_input} <- Providers.model_input(name, model_id, cfg),
-         {:ok, opts} <- request_opts(name, cfg) do
-      {:ok, model_input, opts}
-    end
-  end
-
-  defp request_opts(provider, cfg) do
-    case UserConfig.credential(provider) do
-      {:ok, %{api_key: key}} ->
-        {:ok, with_url(provider, cfg, api_key: key)}
-
-      {:error, :none} ->
-        {:ok, with_url(provider, cfg, [])}
-    end
-  end
-
-  defp with_url(provider, cfg, opts) do
-    case Providers.resolve(provider, cfg) do
-      {:ok, %Providers{base_url: url}} when is_binary(url) ->
-        Keyword.put(opts, :base_url, url)
-
-      _ ->
-        opts
     end
   end
 
@@ -914,29 +886,10 @@ defmodule CodingAgent.Core.Session do
     state
   end
 
-  # approaching the trigger (80%+): warn ONCE so compaction is never
-  # a silent surprise (the opencode lesson: users trained on 'it will
-  # auto compact' stop watching and then burn quota)
-  @doc "Warns once at 80% of the compaction trigger. Public: tests are LLM-free."
-  def warn_approaching_compaction(%State{} = state, trigger) do
-    last_in = Map.get(state.usage || %{}, :last_input_tokens, 0)
-    warn_at = trunc(trigger * 0.8)
-
-    if last_in >= warn_at and not state.compaction_warned do
-      state = %{state | compaction_warned: true}
-
-      broadcast(
-        state,
-        {:info,
-         "· context at #{div(last_in, 1000)}k tokens — compaction at #{div(trigger, 1000)}k will summarize older messages"}
-      )
-
-      persist(state)
-      state
-    else
-      state
-    end
-  end
+  # Compaction is delegated to `CodingAgent.Core.Session.Compactor`
+  # (trigger decision, summarize task, backoff); nothing of it lives
+  # here — the loop only asks "should the context shrink?" and gets
+  # {state, changed?} back.
 
   defp fail_turn(state, reason) do
     # the turn is over in every branch from here — drop any stale
@@ -952,160 +905,6 @@ defmodule CodingAgent.Core.Session do
   defp drop_interrupt(state) do
     clear_interrupt(state.id)
     state
-  end
-
-  # Slice 4b: compact the working context when it grows past the
-  # threshold. The summary call uses the same model without tools. On
-  # any failure, skip compaction — an oversized context degrades, it
-  # does not error out. The compacted state persists immediately (the
-  # next turn boundary would too, but a crash right after compaction
-  # should not resurrect the fat context).
-  @doc "Pure compaction trigger decision. Public: tests are LLM-free."
-  def compaction_plan(%State{} = state, trigger) do
-    last_in = Map.get(state.usage || %{}, :last_input_tokens, 0)
-
-    cond do
-      last_in >= trigger ->
-        # provider-reported input tokens are ground truth (the token
-        # path compacts exactly when the real context is past trigger)
-        Compaction.plan_tokens(state.context, last_in, trigger)
-
-      # usage is genuinely unknown (first turn): fall back to a
-      # conservative chars heuristic
-      last_in == 0 ->
-        Compaction.plan(state.context)
-
-      true ->
-        # usage known but below the trigger: DO NOT compact. The old
-        # chars fallback fired at 80K chars (~20K tokens) even though
-        # the model's real input count was far below the 180K token
-        # trigger — found live: a fresh review session hit compaction
-        # after a handful of file reads, then hung for minutes in the
-        # summarize call (the real symptom the user reported).
-        warn_approaching_compaction(state, trigger)
-        :none
-    end
-  end
-
-  defp maybe_compact(%State{compaction_backoff: backoff} = state) when backoff > 0 do
-    # compaction failed recently — skip and count down (the summary call
-    # is minutes of cloud time; a per-turn retry is 2+ min of dead
-    # silence before every turn). The context degrades, it does not
-    # error out.
-    %{state | compaction_backoff: backoff - 1}
-  end
-
-  defp maybe_compact(%State{} = state) do
-    # absolute threshold from config — visible in the sidebar,
-    # predictable (the opencode lesson: compaction must be a known
-    # quantity, not a silent %-of-window surprise)
-    trigger =
-      Application.get_env(
-        :coding_agent,
-        :compaction_trigger_tokens,
-        Compaction.default_trigger_tokens()
-      )
-
-    plan = compaction_plan(state, trigger)
-
-    case plan do
-      :none ->
-        warn_approaching_compaction(state, trigger)
-
-      {:ok, _old, _keep} ->
-        Logger.debug(
-          "compacting context (#{Compaction.total_chars(state.context.messages)} chars)"
-        )
-
-        # the summarize call is a slow NON-streaming round trip: tell the
-        # UI NOW, otherwise the user stares at a running dot with no
-        # reasoning, no answer, no clue (found live — 2+ min of silence)
-        broadcast(state, {:info, "· compacting context (this can take a while)…"})
-
-        # hard wall-clock bound: receive_timeout only covers INACTIVITY,
-        # and a slow cloud model streams the summary indefinitely (found
-        # live — compaction hung past 2 minutes mid-turn). 90s for a
-        # summarization, then give up and keep the full context.
-        task = Task.async(fn -> summarize_for_compaction(state) end)
-
-        case Task.yield(task, 90_000) || Task.shutdown(task, :brutal_kill) do
-          {:ok, result} ->
-            case result do
-              {:ok, summary_text} ->
-                context = Compaction.apply(state.context, summary_text)
-                state = %{state | context: context, compaction_backoff: 0}
-                persist(state)
-                broadcast(state, {:context_compacted, Compaction.keep_recent()})
-                state
-
-              {:error, reason} ->
-                Logger.warning("compaction failed, keeping full context: #{inspect(reason)}")
-
-                broadcast(
-                  state,
-                  {:info,
-                   "· compaction failed (#{inspect(reason, printable_limit: 40)}); skipping the next 3 turns"}
-                )
-
-                %{state | compaction_backoff: 3}
-            end
-
-          # timed out (nil): Task.shutdown returns nil for :brutal_kill
-          nil ->
-            Logger.warning("compaction summarize exceeded 90s, keeping full context")
-            broadcast(state, {:info, "· compaction timed out; skipping the next 3 turns"})
-
-            %{state | compaction_backoff: 3}
-        end
-    end
-  end
-
-  # The summarizer sees the OLD span only (the keep span is excluded —
-  # the model would otherwise copy it into the summary).
-  defp summarize_for_compaction(state) do
-    {:ok, old, _keep} = Compaction.plan(state.context)
-
-    context =
-      Context.new()
-      |> Context.append(
-        ReqLLM.Context.system(
-          "Summarize the following (possibly interrupted) coding-agent " <>
-            "conversation for later reuse. Preserve: the user's goals, " <>
-            "decisions made, files touched, commands run and their " <>
-            "outcomes, and anything explicitly promised. Be factual and " <>
-            "complete; omit small talk."
-        )
-      )
-      |> Context.append(ReqLLM.Context.user(render_messages(old)))
-
-    with {:ok, model_input, base_opts} <- request_parts(state),
-         # bound the summary round trip: GLM on an 80K-char context
-         # takes minutes; without a cap a slow summary stalls every
-         # turn's start (found live). 120s of inactivity is generous
-         # for a summarization that should stream continuously.
-         {:ok, response} <-
-           ReqLLM.generate_text(model_input, context, base_opts ++ [receive_timeout: 120_000]) do
-      {:ok, ReqLLM.Response.text(response)}
-    end
-  end
-
-  defp render_messages(msgs) do
-    Enum.map_join(msgs, "\n\n", fn
-      %ReqLLM.Message{role: role, content: parts} when is_list(parts) ->
-        text =
-          Enum.map_join(parts, "", fn
-            %ReqLLM.Message.ContentPart{text: t} when is_binary(t) -> t
-            _ -> ""
-          end)
-
-        "[#{role}] #{text}"
-
-      %ReqLLM.Message{role: role, content: c} when is_binary(c) ->
-        "[#{role}] #{c}"
-
-      _ ->
-        ""
-    end)
   end
 
   # Slice 4a: every turn boundary leaves a persisted snapshot.  # Slice 4a: every turn boundary leaves a persisted snapshot. A crash

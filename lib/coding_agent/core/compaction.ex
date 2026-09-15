@@ -1,6 +1,7 @@
 defmodule CodingAgent.Core.Compaction do
   @moduledoc """
-  Working-context compaction (slice 4b): the short-term memory tier.
+  Pure message plumbing for working-context compaction (slice 4b):
+  the short-term memory tier.
 
   The message history sent to the LLM grows fast (tool outputs are the
   bulk) and, unchecked, reaches the model's window mid-task. Compaction
@@ -8,60 +9,53 @@ defmodule CodingAgent.Core.Compaction do
   tail verbatim — the model keeps working with a compact summary plus
   fresh detail, instead of failing on window overflow.
 
+  This module is the data layer: plan (which span), apply (replace the
+  span with the summary), render (span → text for the summarizer). The
+  POLICY and the provider call live in
+  `CodingAgent.Core.Session.Compactor` — trigger thresholds, budgets,
+  backoff and broadcasting are that module's job, not ours.
+
   Design (docs/source/explanation/memory.rst):
 
-  - **Trigger**: context volume (chars over all messages) crossing a
-    threshold, checked before each LLM call — cheap, no tokenizer.
+  - **Trigger**: the provider's own last-turn input_tokens (ground
+    truth — chars estimates drift) crossing an ABSOLUTE token
+    threshold; chars are only the first-turn fallback when no usage
+    data exists. The trigger decision itself is the Compactor's.
   - **Boundary**: the summary covers everything except the last
     `@keep_recent` messages (never compact the freshest exchanges —
     that is what the model is about to reason over).
   - **The summary is produced by the model itself** via a dedicated
-    compaction call on the trimmed history; a summary message replaces
-    the compacted span.
+    compaction call on the rendered old span; a summary message
+    replaces the compacted span.
   - **Dual view note (v1)**: the CLI transcript is ephemeral, so v1
     compaction rewrites the agent view only. When the dual-view
     transcript lands (phase 5), the display view is the immutable
     record this operation must never touch.
-
-  Compaction is LLM-cost-aware: it runs at most once per turn and
-  never runs again until the context grows past the threshold again.
   """
 
   alias ReqLLM.Context
 
-  @trigger_chars 80_000
   @keep_recent 6
 
-  def trigger_chars, do: @trigger_chars
+  @default_trigger_tokens 180_000
+
   def keep_recent, do: @keep_recent
+  def default_trigger_tokens, do: @default_trigger_tokens
 
   @doc """
-  Returns the compaction plan for a context: `:none` when below the
-  threshold, otherwise {:ok, summary_span, keep_span} where the spans
-  are lists of messages.
+  First-turn fallback plan (no usage data yet): chars-based, `:none`
+  when below `trigger_chars`, otherwise `{:ok, summary_span,
+  keep_span}`. The session-level decision (`Session.Compactor.decide/2`)
+  only reaches this when usage is genuinely unknown.
   """
   @spec plan(Context.t()) :: :none | {:ok, summary_span :: list(), keep_span :: list()}
   def plan(%Context{messages: msgs}) do
-    total = total_chars(msgs)
-
-    if total < @trigger_chars do
+    if total_chars(msgs) < trigger_chars() do
       :none
     else
-      {old, keep} = split_at(msgs, @keep_recent)
-      {:ok, old, keep}
+      split(msgs)
     end
   end
-
-  # Token-based decision: the provider's own input_tokens of the LAST
-  # turn is the ground truth of context size — chars-based estimates
-  # drift (markdown, code, different languages). The trigger is an
-  # ABSOLUTE token threshold from config (:compaction_trigger_tokens,
-  # default 180k), NOT a percentage of the window: a big window with a
-  # %-trigger compacts far too late (the opencode lesson — the user's
-  # GLM sessions grew past 300k before compaction and burned quota at
-  # unheard speeds). `last_input_tokens: 0` (first turn / no usage
-  # data) falls back to the chars-based plan.
-  @default_trigger_tokens 180_000
 
   @doc """
   Token-based trigger: compact when the last observed input_tokens
@@ -69,43 +63,78 @@ defmodule CodingAgent.Core.Compaction do
   0` (no usage data yet) never triggers — the caller falls back to
   the chars-based plan.
   """
+  @spec plan_tokens(Context.t(), non_neg_integer(), pos_integer()) ::
+          :none | {:ok, summary_span :: list(), keep_span :: list()}
   def plan_tokens(
         %Context{messages: msgs},
         last_input_tokens,
         trigger_tokens \\ @default_trigger_tokens
       ) do
-    exceeded? = last_input_tokens >= trigger_tokens
-
-    if not exceeded? do
-      :none
+    if last_input_tokens >= trigger_tokens do
+      split(msgs)
     else
-      {old, keep} = split_at(msgs, @keep_recent)
-      {:ok, old, keep}
+      :none
     end
   end
 
-  @doc "The absolute token threshold that triggers compaction."
-  def default_trigger_tokens, do: @default_trigger_tokens
+  # The boundary: everything except the last @keep_recent messages.
+  defp split(msgs) do
+    case msgs do
+      msgs when length(msgs) > @keep_recent ->
+        {old, keep} = Enum.split(msgs, length(msgs) - @keep_recent)
+        {:ok, old, keep}
+
+      # too small to compact anything (old span would be empty)
+      _ ->
+        :none
+    end
+  end
 
   @doc """
-  Applies a plan: replaces the summarized span with one synthetic user
-  message carrying the summary. Returns the new context (or the
+  Applies a summary: replaces the summarized span with one synthetic
+  user message carrying the summary. Returns the new context (or the
   original when there is nothing to compact).
   """
   @spec apply(Context.t(), summary_text :: String.t()) :: Context.t()
   def apply(%Context{messages: msgs} = ctx, summary_text) do
-    {old, keep} = split_at(msgs, @keep_recent)
+    case split(msgs) do
+      {:ok, _old, keep} ->
+        summary_msg = %ReqLLM.Message{
+          role: :user,
+          content: [ReqLLM.Message.ContentPart.text(compact_summary_text(summary_text))]
+        }
 
-    if old == [] do
-      ctx
-    else
-      summary_msg = %ReqLLM.Message{
-        role: :user,
-        content: [ReqLLM.Message.ContentPart.text(compact_summary_text(summary_text))]
-      }
+        %Context{ctx | messages: [summary_msg | keep]}
 
-      %Context{ctx | messages: [summary_msg | keep]}
+      :none ->
+        ctx
     end
+  end
+
+  @doc """
+  Renders the summary span as one text block for the summarizer model —
+  the only place message text is flattened for an LLM call. (The UI
+  renders its own transcript; that view is display-only and never
+  touches compaction.)
+  """
+  @spec render(list()) :: String.t()
+  def render(msgs) do
+    Enum.map_join(msgs, "\n\n", fn
+      %ReqLLM.Message{role: role, content: parts} when is_list(parts) ->
+        text =
+          Enum.map_join(parts, "", fn
+            %ReqLLM.Message.ContentPart{text: t} when is_binary(t) -> t
+            _ -> ""
+          end)
+
+        "[#{role}] #{text}"
+
+      %ReqLLM.Message{role: role, content: c} when is_binary(c) ->
+        "[#{role}] #{c}"
+
+      _ ->
+        ""
+    end)
   end
 
   @doc "Total chars over all message text parts — the cheap size proxy."
@@ -126,11 +155,13 @@ defmodule CodingAgent.Core.Compaction do
   defp message_chars(%ReqLLM.Message{content: c}) when is_binary(c), do: String.length(c)
   defp message_chars(_), do: 0
 
-  defp split_at(msgs, keep_recent) when length(msgs) > keep_recent do
-    Enum.split(msgs, length(msgs) - keep_recent)
-  end
+  # Chars fallback threshold — ONLY consulted on the first turn (usage
+  # unknown). Known-but-below usage never falls back to this: the old
+  # 80K-chars trigger fired at ~20K tokens on fat contexts and stalled
+  # every turn behind a minutes-long summarize call (found live).
+  @chars_fallback 80_000
 
-  defp split_at(_, _), do: {[], []}
+  defp trigger_chars, do: @chars_fallback
 
   defp compact_summary_text(summary) do
     """

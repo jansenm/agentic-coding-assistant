@@ -108,21 +108,50 @@ archaeology). Revisit any of these only with a new ADR:
 Compaction (short-term tier)
 ----------------------------
 
-**Implemented in slice 4b** (:mod:`CodingAgent.Core.Compaction`):
-before every LLM call the session checks the context volume (chars
-across message text — a cheap proxy, no tokenizer). Past the 80k
-threshold, the *old* span (everything except the last 6 messages) is
-summarized by the model itself — one dedicated call, no tools — and
-replaced by a synthetic summary message; the recent tail stays
-verbatim. The compacted state persists immediately.
+**Implemented in slice 4b** — the operation is split by concern:
+
+- :mod:`CodingAgent.Core.Compaction` — pure message plumbing: the plan
+  (which span is summarized, everything except the last 6 messages),
+  ``apply`` (replace the span with the synthetic summary message) and
+  ``render`` (span → text for the summarizer model). No policy, no I/O.
+- :mod:`CodingAgent.Core.Session.Compactor` — the policy and the one
+  provider call: the trigger decision, the wall-clock budget, the
+  failure backoff, the UI broadcast.
+
+Before every LLM call the session asks the Compactor. The trigger is
+the provider's own ``last_input_tokens`` against the **absolute**
+threshold (``compaction_trigger_tokens``, default 180k) — chars
+estimates drift, the provider's count is ground truth. Chars are only
+the FIRST-TURN fallback (no usage data yet); known-but-below usage
+never compacts (the chars-only trigger fired at ~20k tokens on fat
+contexts and stalled every turn behind a minutes-long summarize call —
+found live). The session warns once at 80% of the trigger
+("· context at 144k tokens — compaction at 180k will summarize
+older messages") so it is never a silent surprise.
+
+The summarize call is a non-streaming round trip on the same model,
+executed in a task under
+:mod:`CodingAgent.Core.Session.Compactor.TaskSupervisor` — **never
+linked to the session process** (a crash inside the provider stack
+must degrade, not kill the turn) — and bounded twice: a receive
+(inactivity) timeout inside the call and a hard wall-clock budget
+(90 s) around it, because a slow cloud model can hold the call open
+indefinitely (found live — compaction hung past 2 minutes mid-turn).
+Every exit is handled — result, error, crash, budget — and failure
+degrades: the full (oversized) context is kept and compaction backs
+off for the next 3 turns instead of retrying every turn (2+ minutes
+of dead silence before every real turn, found live).
 
 Design notes:
 
+- **The plan is decided once and passed through** — the summarize task
+  re-plans nothing; the span it summarizes is exactly the span the
+  trigger decided on (a token-triggered decision re-planned on chars
+  once summarized a different span — or none, which crashed the task).
 - **Never compact the recent tail** — it is what the model reasons
   over next; losing it to summary would blind it mid-task.
 - **Failure degrades, never errors**: if the summary call fails, the
-  full (oversized) context is kept and the turn proceeds; compaction
-  retries on the next call.
+  full (oversized) context is kept and the turn proceeds.
 - **v1 rewrites the agent view only**: the CLI transcript is
   ephemeral today. When the dual-view transcript lands (phase 5), the
   display view is the immutable record compaction must never touch —
