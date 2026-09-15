@@ -43,7 +43,65 @@ defmodule CodingAgent.Core.Session.DecisionsTest do
   # applies approve/edit/reject on a real session process. We drive the
   # session's gate via its internal API using GenServer.call with an
   # injected :gate message (test-visible), avoiding live LLM calls.
-  describe "gate splitting (pure policy behavior)" do
+  describe "gate integration (ADR 010, LLM-free)" do
+    test "write_file defaults to allow-by-policy (ADR 010 amendment): a contained write runs without a pause" do
+      policy = Permissions.load(nil, nil)
+      assert Permissions.effective(policy, "write_file", "a.txt", "default") == :allow
+
+      id = "write-gate-#{System.unique_integer()}"
+
+      {:ok, _} =
+        CodingAgent.Core.Session.Supervisor.start_session(
+          id: id,
+          scope_root: @tmp_root,
+          test_mode: true
+        )
+
+      :ok =
+        Session.debug_gate(id, [
+          tool_call("w1", "write_file", %{"path" => "auto.txt", "content" => "auto"})
+        ])
+
+      # the amendment's acceptance: NO interruption — debug_gate leaves
+      # the synthetic :running status (no LLM loop in test mode), what
+      # matters is there is no parked approval
+      {:ok, state} = Session.state(id)
+      refute state.status == :interrupted
+      assert state.pending_tool_calls == []
+      assert File.read!(Path.join(@tmp_root, "auto.txt")) == "auto"
+    end
+
+    test "a repo-side [permissions.write_file] entry still pauses (policy above the class default)" do
+      toml_path = Path.join(@tmp_root, "ask-write.toml")
+
+      File.write!(toml_path, """
+      [permissions.write_file]
+      "*" = "ask"
+      """)
+
+      id = "write-gate-ask-#{System.unique_integer()}"
+
+      {:ok, _} =
+        CodingAgent.Core.Session.Supervisor.start_session(
+          id: id,
+          scope_root: @tmp_root,
+          policy: Permissions.load(nil, toml_path),
+          test_mode: true
+        )
+
+      :ok =
+        Session.debug_gate(id, [
+          tool_call("w1", "write_file", %{"path" => "parked.txt", "content" => "parked"})
+        ])
+
+      {:ok, state} = Session.state(id)
+      assert state.status == :interrupted
+      refute File.exists?(Path.join(@tmp_root, "parked.txt"))
+
+      {:ok, _} = Session.decide(id, [%{id: "w1", decision: :approve}])
+      assert File.read!(Path.join(@tmp_root, "parked.txt")) == "parked"
+    end
+
     test "read-only calls are auto-allowed under an ask-write policy", %{policy: policy} do
       assert Permissions.effective(policy, "read_file", "a.txt") == :allow
       assert Permissions.effective(policy, "list_dir", "a") == :allow
@@ -64,7 +122,9 @@ defmodule CodingAgent.Core.Session.DecisionsTest do
       deny_policy = Permissions.load(nil, path)
 
       assert Permissions.effective(deny_policy, "write_file", "secret/k") == :deny
-      assert Permissions.effective(deny_policy, "write_file", "other") == :ask
+      # outside the deny entry: back to the class default (allow since
+      # the 2026-09-15 amendment)
+      assert Permissions.effective(deny_policy, "write_file", "other") == :allow
     end
   end
 

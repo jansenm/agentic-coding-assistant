@@ -15,12 +15,22 @@ defmodule CodingAgent.UI.TuiLiveGateTest do
     File.mkdir_p!(root)
     on_exit(fn -> File.rm_rf!(root) end)
 
+    # repo-side ask policy: the 2026-09-15 amendment made write_file
+    # allow-by-default, and this test is about the PAUSE path
+    toml_path = Path.join(root, "permissions.toml")
+
+    File.write!(toml_path, """
+    [permissions.write_file]
+    "*" = "ask"
+    """)
+
     sid = "tui-live-gate-#{System.unique_integer()}"
 
     {:ok, _} =
       CodingAgent.Core.Session.Supervisor.start_session(
         id: sid,
         scope_root: root,
+        policy: CodingAgent.Core.Permissions.load(nil, toml_path),
         test_mode: true
       )
 

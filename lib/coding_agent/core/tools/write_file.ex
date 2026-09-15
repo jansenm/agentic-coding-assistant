@@ -1,7 +1,11 @@
 defmodule CodingAgent.Core.Tools.WriteFile do
   @moduledoc """
-  State-changing file write tool (slice 2b). Always subject to the
-  permission gate; never listed in the read-only registry.
+  Whole-file write tool (slice 2b). Allow-by-policy (ADR 010
+  amendment, 2026-09-15): the fence is structural, not social —
+  contained paths (physically resolved, `check_scope`) and every
+  landed change reviewable as a VCS diff. A repo or user policy file
+  can still turn write_file into ask/deny per path
+  (`[permissions.write_file] "config/**" = "ask"`).
   """
 
   alias CodingAgent.Core.Tools
@@ -12,7 +16,8 @@ defmodule CodingAgent.Core.Tools.WriteFile do
       name: "write_file",
       description:
         "Create or overwrite a text file inside the session scope. " <>
-          "Subject to the permission policy; may require approval.",
+          "Auto-approved by policy for in-scope paths unless a " <>
+          "permissions file tightens it.",
       parameter_schema: [
         path: [
           type: :string,

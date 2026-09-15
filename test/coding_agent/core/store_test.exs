@@ -176,10 +176,20 @@ defmodule CodingAgent.Core.Session.StoreTest do
 
       id = "live-#{System.unique_integer()}"
 
+      # ask-policy file: the amendment made write_file allow-by-default,
+      # and this test is ABOUT the interrupted persistence path
+      toml_path = Path.join(root, "permissions.toml")
+
+      File.write!(toml_path, """
+      [permissions.write_file]
+      "*" = "ask"
+      """)
+
       {:ok, _} =
         CodingAgent.Core.Session.Supervisor.start_session(
           id: id,
           scope_root: root,
+          policy: CodingAgent.Core.Permissions.load(nil, toml_path),
           test_mode: true
         )
 

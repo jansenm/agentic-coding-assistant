@@ -90,11 +90,11 @@ defmodule CodingAgent.Core.Tools.ShellTest do
   end
 
   describe "gate integration (ADR 010, LLM-free)" do
-    test "shell defaults to :ask like write_file" do
+    test "shell defaults to :ask (write_file is allow by the 2026-09-15 amendment)" do
       policy = Permissions.load(nil, nil)
       assert Permissions.effective(policy, "shell", "", "default") == :ask
       #    (write_file comparison for regression clarity)
-      assert Permissions.effective(policy, "write_file", "", "default") == :ask
+      assert Permissions.effective(policy, "write_file", "", "default") == :allow
     end
 
     test "a shell call interrupts the session and executes on approval" do

@@ -42,13 +42,11 @@ defmodule CodingAgent.Core.Permissions do
   # Class defaults when no policy entry matches. Read-only tools
   # allow-by-policy (slice 2a); every addition must be safe by
   # construction and contained (see Containment): grep/glob joined in
-  # 2d; `edit` joined by the 2026-09-15 ADR 010 amendment — contained
-  # (physically-resolved paths), fail-closed (a stale or ambiguous
-  # old_string refuses, the tool cannot guess) and reviewable (every
-  # landed change sits in the VCS diff). write_file (whole-file
-  # overwrite, no uniqueness check) and shell (no containment at all)
-  # stay ask; webfetch stays ask.
-  @allow_class ["list_dir", "read_file", "grep", "glob", "edit"]
+  # 2d; edit and write_file joined by the 2026-09-15 ADR 010 amendment
+  # — contained (physically-resolved paths) and reviewable (every
+  # landed change sits in the VCS diff). shell (no containment at all)
+  # and webfetch (foreign content ingress) stay ask.
+  @allow_class ["list_dir", "read_file", "grep", "glob", "edit", "write_file"]
 
   @decisions ~w(allow ask deny)
 

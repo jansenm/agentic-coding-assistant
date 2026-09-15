@@ -204,50 +204,62 @@ Consequences
   (role ``default`` in 2b), so the matrix phase adds data and
   resolution, not a permission redesign.
 
-Amendment 2026-09-15: ``edit`` joins the allow class
-----------------------------------------------------
+Amendment 2026-09-15: edit and write_file join the allow class
+--------------------------------------------------------------
 
 **Status: Accepted (amendment to the accepted ADR 010).**
 
-Live sessions with the shipped defaults paused on every ``edit`` —
-the annoyance was prompt noise, not safety: ``edit`` is fenced
-*structurally* in the same sense as the read-only tools, so the
-per-call human pause bought little.
-
-Three properties make edit safe-by-construction (enforced in
-``CodingAgent.Core.Tools.Edit``, not by the gate):
+Live sessions with the shipped defaults paused on every ``edit`` and
+``write_file`` — the annoyance was prompt noise, not safety. Both
+tools are fenced *structurally* (the check decides) in the same sense
+as the read-only tools; the per-call human pause bought nothing the
+working tree does not already give. The fence is containment plus
+VCS reviewability, enforced in the tools themselves, not by the gate:
 
 1. **Contained** — every path is resolved physically (symlinks
    followed) and must stay inside the session scope
-   (``Containment.check_scope!/2``), the same discipline as the
-   read-only tools (the path-hardening lessons).
-2. **Fail-closed on the match** — ``old_string`` must occur *exactly
-   once*; 0 matches (stale) and 2+ (ambiguous) both refuse. The tool
-   cannot guess, clobber, or spray: every landing site is the exact
-   unique string the model read.
-3. **Reviewable** — every landed change sits in the VCS working tree
-   as a diff. The evidence the approval prompt offered ("here is what
-   I am about to change") is the same diff the user reviews in git —
-   seen earlier, in context, and revertible. The prompt added a
-   keystroke, not a check.
+   (``Containment.check_scope!/2``); the walk discipline of the
+   read-only tools (the path-hardening lessons). The tool cannot
+   touch anything outside the workspace, no matter what the model
+   asks for.
+2. **Reviewable** — every landed change sits in the VCS working tree
+   as a diff. The evidence the approval prompt offered ("here is
+   what I am about to change") is the same diff the user reviews in
+   git — seen earlier, in context, and revertible. The prompt added
+   a keystroke, not a check.
 
-``write_file`` does *not* join the class: a whole-file overwrite has
-no uniqueness gate to fail closed (one ambiguous byte and the old
-content is gone — there is no diff against "the file the model
-read"). ``shell`` obviously stays :ask (no containment — fenced
-socially, see decision 5). ``webfetch`` stays :ask (foreign content
-ingress). The class default list in
-``CodingAgent.Core.Permissions`` is the single point of truth.
+``edit`` additionally fails closed on the match (``old_string`` must
+occur *exactly once*; stale and ambiguous matches refuse — it cannot
+guess, clobber or spray). ``write_file`` has no such uniqueness gate,
+but its blast radius is one file in a VCS-managed tree: the
+pre-change content is recoverable from git even when the write lands
+unwanted, and the diff surfaces it. Where the workspace is *not*
+under version control the user layer should keep both tools at
+``ask``:
+
+.. code-block:: toml
+
+   # ~/.config/coding-agent/permissions.toml
+   [permissions.edit]
+   "*" = "ask"
+
+   [permissions.write_file]
+   "*" = "ask"
+
+``shell`` obviously stays :ask (no containment — fenced socially, see
+decision 5). ``webfetch`` stays :ask (foreign content ingress). The
+class default list in ``CodingAgent.Core.Permissions`` is the single
+point of truth.
 
 The lookup semantics are unchanged — the amendment changes only the
-built-in class default for the tool name ``edit``; per-path entries
-(``[permissions.edit] "src/bank/**" = "ask"``) still apply above the
-class default, most-restrictive-wins across layers is untouched, and
-a repo or user file can turn edit back into ask/deny per path.
+built-in class defaults for the tool names ``edit`` and
+``write_file``; per-path entries (``[permissions.edit] "src/**" =
+"ask"``) still apply above the class default,
+most-restrictive-wins across layers is untouched, and a repo or user
+file can turn either tool back into ask/deny per path.
 
 Acceptance: ``test/coding_agent/core/permissions_test.exs`` locks the
-class default (``Permissions.default_for("edit") == :allow``), the
-gate-integration test in ``edit_test.exs`` proves an edit call on a
-contained path runs without a pause under the bare defaults, and the
-same test proves a repo-side ``[permissions.edit]`` entry still
-interrupts.
+class defaults, the gate-integration tests in ``edit_test.exs`` and
+``write_file``'s tests prove contained calls run without a pause
+under the bare defaults, and the same tests prove repo-side
+``[permissions.*]`` entries still interrupt.

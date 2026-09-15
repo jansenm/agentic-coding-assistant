@@ -73,10 +73,14 @@ defmodule CodingAgent.UI.Tui5bTest do
   end
 
   describe "approval dialog (5b)" do
+    # write_file became allow-by-policy (ADR 010 amendment 2026-09-15),
+    # so these drive the pause explicitly through a repo-side policy
+    # file — the dialog mechanics under test are unchanged.
     test "interrupted session renders pending calls; n rejects them" do
       root = Path.join(System.tmp_dir!(), "tui5b-#{System.unique_integer()}")
       File.mkdir_p!(root)
       on_exit(fn -> File.rm_rf!(root) end)
+      policy = write_ask_policy(root)
 
       sid = "tui5b-#{System.unique_integer()}"
 
@@ -84,6 +88,7 @@ defmodule CodingAgent.UI.Tui5bTest do
         CodingAgent.Core.Session.Supervisor.start_session(
           id: sid,
           scope_root: root,
+          policy: policy,
           test_mode: true
         )
 
@@ -108,6 +113,7 @@ defmodule CodingAgent.UI.Tui5bTest do
       root = Path.join(System.tmp_dir!(), "tui5b-#{System.unique_integer()}")
       File.mkdir_p!(root)
       on_exit(fn -> File.rm_rf!(root) end)
+      policy = write_ask_policy(root)
 
       sid = "tui5b-#{System.unique_integer()}"
 
@@ -115,6 +121,7 @@ defmodule CodingAgent.UI.Tui5bTest do
         CodingAgent.Core.Session.Supervisor.start_session(
           id: sid,
           scope_root: root,
+          policy: policy,
           test_mode: true
         )
 
@@ -137,6 +144,19 @@ defmodule CodingAgent.UI.Tui5bTest do
   end
 
   defp state(pid), do: :sys.get_state(pid) |> Map.get(:user_state)
+
+  # repo-side ask policy: the 2026-09-15 amendment made write_file
+  # allow-by-default, and the approval dialog needs a pause to exist
+  defp write_ask_policy(root) do
+    toml_path = Path.join(root, "permissions.toml")
+
+    File.write!(toml_path, """
+    [permissions.write_file]
+    "*" = "ask"
+    """)
+
+    CodingAgent.Core.Permissions.load(nil, toml_path)
+  end
 
   # generous ceiling: under the full suite's parallelism the alt-enter
   # round-trip (inject → TUI → session spawn → run_turn → broadcast)

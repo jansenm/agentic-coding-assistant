@@ -29,12 +29,12 @@ Eight tools, all scope-contained — every path is resolved physically
 (details: about-tools.rst):
 
 - Read-only, run without approval: `list_dir`, `read_file`, `grep`,
-  `glob` — and `edit` (allow-by-policy 2026-09-15: contained paths,
-  fail-closed exact-match, every change reviewable as a git diff; see
-  the ADR 010 amendment). A repo/user policy file can still turn
-  `edit` back to ask/deny per path.
+  `glob` — plus `edit` and `write_file` (allow-by-policy 2026-09-15:
+  contained paths, every change reviewable as a git diff; see the
+  ADR 010 amendment). A repo/user policy file can still turn them
+  back to ask/deny per path.
 - State-changing, paused for y/n approval in the terminal (approve, edit
-  the parameters, or reject): `write_file`, `shell`, `webfetch`
+  the parameters, or reject): `shell`, `webfetch`
 
 `shell` runs through `/bin/sh` with model-supplied `timeout_secs`
 (default 300 s, hard cap 1800 s) and is asked on *every* call — no

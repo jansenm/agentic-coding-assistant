@@ -22,27 +22,27 @@ defmodule CodingAgent.Core.PermissionsTest do
       policy = Permissions.load(nil, nil)
       assert policy.entries == %{}
       assert Permissions.default_for("read_file") == :allow
-      assert Permissions.default_for("write_file") == :ask
       assert Permissions.default_for("shell") == :ask
 
-      # ADR 010 amendment 2026-09-15: edit is allow-by-class (contained,
-      # fail-closed, VCS-reviewable); write_file and shell are not
+      # ADR 010 amendment 2026-09-15: edit AND write_file are
+      # allow-by-class (contained, VCS-reviewable); shell is not
       assert Permissions.default_for("edit") == :allow
+      assert Permissions.default_for("write_file") == :allow
       assert Permissions.default_for("webfetch") == :ask
     end
 
-    test "an edit allow default is overridable per path (class default is only the floor)" do
+    test "a write allow default is overridable per path (class default is only the floor)" do
       path =
-        write_policy("edit-ask.toml", """
-        [permissions.edit]
-        "src/bank/**" = "ask"
+        write_policy("write-ask.toml", """
+        [permissions.write_file]
+        "config/**" = "ask"
         """)
 
       policy = Permissions.load(nil, path)
 
-      assert Permissions.effective(policy, "edit", "src/bank/vault.ex") == :ask
+      assert Permissions.effective(policy, "write_file", "config/prod.exs") == :ask
       # outside the entry: back to the class default
-      assert Permissions.effective(policy, "edit", "lib/other.ex") == :allow
+      assert Permissions.effective(policy, "write_file", "lib/other.ex") == :allow
     end
 
     test "parses a valid policy" do
@@ -60,7 +60,9 @@ defmodule CodingAgent.Core.PermissionsTest do
 
       assert Permissions.effective(policy, "write_file", "docs/x.md") == :allow
       assert Permissions.effective(policy, "write_file", "secret/x") == :deny
-      assert Permissions.effective(policy, "write_file", "lib/x.ex") == :ask
+      # outside the entries: the class default (allow since the
+      # 2026-09-15 amendment)
+      assert Permissions.effective(policy, "write_file", "lib/x.ex") == :allow
     end
 
     test "fails closed on invalid TOML" do
@@ -154,7 +156,11 @@ defmodule CodingAgent.Core.PermissionsTest do
 
     test "single-segment glob does not cross directories", %{policy: policy} do
       assert Permissions.effective(policy, "write_file", "README.md") == :allow
-      assert Permissions.effective(policy, "write_file", "sub/README.md") == :ask
+
+      # "sub/README.md" matches no entry ("*.md" is per-segment) — but
+      # "**/*.exs" does not match either, so this is the class default
+      # (allow since the 2026-09-15 amendment), not the :ask entry
+      assert Permissions.effective(policy, "write_file", "sub/README.md") == :allow
     end
 
     test "double glob crosses directories", %{policy: policy} do
@@ -171,7 +177,9 @@ defmodule CodingAgent.Core.PermissionsTest do
     end
 
     test "no match falls back to class default", %{policy: policy} do
-      assert Permissions.effective(policy, "write_file", "src/a.ex") == :ask
+      # both tools' class default is allow (the 2026-09-15 amendment
+      # added write_file to the allow class; read_file was always there)
+      assert Permissions.effective(policy, "write_file", "src/a.ex") == :allow
       assert Permissions.effective(policy, "read_file", "src/a.ex") == :allow
     end
   end
@@ -179,8 +187,8 @@ defmodule CodingAgent.Core.PermissionsTest do
   describe "effective/4 role parameter" do
     test "ignores role for now (only default exists in 2b)" do
       policy = Permissions.load(nil, nil)
-      assert Permissions.effective(policy, "write_file", "x", "default") == :ask
-      assert Permissions.effective(policy, "write_file", "x", "future-role") == :ask
+      assert Permissions.effective(policy, "shell", "x", "default") == :ask
+      assert Permissions.effective(policy, "shell", "x", "future-role") == :ask
     end
   end
 end
