@@ -313,9 +313,32 @@ content is not in any diff to review), `.env*` (secrets). Sketch:
 a built-in `@ask_class` of path patterns checked before the class
 default — same matching dialect, most-restrictive-wins as usual,
 still overridable per layer; the check lives next to
-`default_for/1` in `CodingAgent.Core.Permissions`, keyed by tool name
-so `shell` could reuse it for a v2 command allow-list. Until then
+`default_for/1` in `CodingAgent.Core.Permissions`. Until then
 the manual equivalent is a repo-side policy file:
+
+```toml
+# .coding-agent/permissions.toml
+[permissions.write_file]
+".git/**" = "ask"
+"AGENTS.md" = "ask"
+".env*" = "ask"
+```
+
+**The y-fatigue countermeasure that SHIPPED (2026-09-15, ADR 010
+amendment 2)** went the opposite direction of this sketch: not a
+protected-path *ask*-class but a shell command **deny-list with
+steering** — a shell call whose leading program duplicates a native
+tool (grep/rg/ag/ack/sg in v1) is denied before the policy lookup with
+"please use the grep tool", costing the user zero keystrokes and
+steering the model to the allow-by-policy native tool in the same
+round. Deliberately shallow (first word, basename, wrappers/env
+looked behind; pipes and `git grep` pass through to the gate) and
+honest about scope: prompt hygiene, not containment. Live evidence
+drove the direction: nearly every remaining `y` was a grep-shaped
+shell duplicate, and a user trained to rubber-stamp prompts is the
+real security loss. `sed -n`/`cat`/`ls` are one-line follow-ups (each
+needs its collision check first). See ADR 010 amendment 2 +
+`Shell.blacklisted?/1`.
 
 ```toml
 # .coding-agent/permissions.toml

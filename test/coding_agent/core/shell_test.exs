@@ -126,6 +126,150 @@ defmodule CodingAgent.Core.Tools.ShellTest do
     test "a rejected shell call leaves no trace", do: reject_rejected_shell()
   end
 
+  # -- Command blacklist (2026-09-15 ADR 010 amendment 2) ----------------------
+
+  describe "command blacklist (2026-09-15 amendment 2)" do
+    test "shell grep is denied with steering to the native grep tool", %{tool: tool} do
+      {:ok, guidance} = Shell.blacklisted?(%{"command" => "grep -rn handle_call lib/"})
+      assert guidance =~ "grep tool"
+      assert guidance =~ "allow-by-policy"
+
+      # direct tool execution is untouched — the gate is the policy point
+      # (cwd is the tmp scope; make the file first)
+      File.write!(Path.join(@tmp_root, "t.ex"), "def f, do: 1")
+      assert {:ok, out} = ReqLLM.Tool.execute(tool, %{"command" => "grep -c def t.ex"})
+      assert out =~ "exit 0"
+    end
+
+    test "the whole grep family is denied: rg, ag, ack, sg" do
+      for prog <- ["rg", "ag", "ack", "sg"] do
+        assert {:ok, guidance} = Shell.blacklisted?(%{"command" => "#{prog} pattern lib/"})
+        assert guidance =~ "grep tool"
+      end
+    end
+
+    test "absolute-path programs are recognized by basename" do
+      assert {:ok, guidance} =
+               Shell.blacklisted?(%{"command" => "/usr/bin/grep -n foo bar.ex"})
+
+      assert guidance =~ "grep tool"
+      assert {:ok, guidance} = Shell.blacklisted?(%{"command" => "/bin/grep foo bar"})
+      assert guidance =~ "grep tool"
+    end
+
+    test "shelling-out wrappers and env-var assignments are looked behind" do
+      assert {:ok, _} = Shell.blacklisted?(%{"command" => "env grep foo bar"})
+      assert {:ok, _} = Shell.blacklisted?(%{"command" => "command grep foo bar"})
+      assert {:ok, _} = Shell.blacklisted?(%{"command" => "nohup grep foo bar"})
+      assert {:ok, _} = Shell.blacklisted?(%{"command" => "FOO=1 BAR=2 grep foo bar"})
+      assert {:ok, _} = Shell.blacklisted?(%{"command" => "  grep foo bar"})
+    end
+
+    test "non-grep leading programs pass: sed, cat, ls, touch, mix" do
+      # deliberately NOT covered yet (one-line follow-ups when wanted)
+      assert :error = Shell.blacklisted?(%{"command" => "sed -n '1,5p' mix.exs"})
+      assert :error = Shell.blacklisted?(%{"command" => "cat mix.exs"})
+      assert :error = Shell.blacklisted?(%{"command" => "ls lib"})
+      assert :error = Shell.blacklisted?(%{"command" => "mix test"})
+      assert :error = Shell.blacklisted?(%{"command" => "echo hello"})
+    end
+
+    test "deliberately shallow: pipes and evader spellings are NOT caught" do
+      assert :error = Shell.blacklisted?(%{"command" => "echo hi | grep hi"})
+      assert :error = Shell.blacklisted?(%{"command" => "git grep handle_call"})
+      assert :error = Shell.blacklisted?(%{"command" => "find . -name '*.ex' -exec grep x {} +"})
+      # chained but LEADING: the first word is still grep — caught. The
+      # shallow check is first-word only, in both directions.
+      assert {:ok, _} = Shell.blacklisted?(%{"command" => "grep -q foo bar && touch marker"})
+    end
+
+    test "degenerate inputs are :error, not crashes" do
+      assert :error = Shell.blacklisted?(%{})
+      assert :error = Shell.blacklisted?(%{"command" => ""})
+      assert :error = Shell.blacklisted?(%{"command" => nil})
+      assert :error = Shell.blacklisted?("grep foo")
+      assert :error = Shell.blacklisted?(nil)
+    end
+
+    test "gate denies blacklisted shell calls with NO keystroke (no interruption)" do
+      id = "shell-bl-#{System.unique_integer()}"
+
+      {:ok, _} =
+        CodingAgent.Core.Session.Supervisor.start_session(
+          id: id,
+          scope_root: @tmp_root,
+          test_mode: true
+        )
+
+      :ok =
+        Session.debug_gate(id, [
+          %{id: "g1", name: "shell", arguments: %{"command" => "grep -rn gate lib/"}}
+        ])
+
+      {:ok, state} = Session.state(id)
+      # the point of the feature: no human pause — the call is answered
+      # with the steering message in the same round
+      refute state.status == :interrupted
+      assert state.pending_tool_calls == []
+
+      last = ReqLLM.Context.to_list(state.context) |> List.last()
+      assert last.role == :tool
+      assert text_of(last) =~ "please use the grep tool"
+    end
+
+    test "gate denies only the blacklisted call in a mixed batch" do
+      id = "shell-bl-mixed-#{System.unique_integer()}"
+
+      {:ok, _} =
+        CodingAgent.Core.Session.Supervisor.start_session(
+          id: id,
+          scope_root: @tmp_root,
+          test_mode: true
+        )
+
+      :ok =
+        Session.debug_gate(id, [
+          %{id: "m1", name: "shell", arguments: %{"command" => "grep -rn gate lib/"}},
+          %{
+            id: "m2",
+            name: "write_file",
+            arguments: %{"path" => "bl-mixed.txt", "content" => "ok"}
+          }
+        ])
+
+      {:ok, state} = Session.state(id)
+      # m2 ran (allow class), m1 was answered without a pause
+      assert File.read!(Path.join(@tmp_root, "bl-mixed.txt")) == "ok"
+      refute state.status == :interrupted
+
+      tool_msgs =
+        state.context |> ReqLLM.Context.to_list() |> Enum.filter(&(&1.role == :tool))
+
+      contents = Enum.map_join(tool_msgs, "\n", &text_of/1)
+      assert contents =~ "please use the grep tool"
+    end
+
+    test "non-blacklisted shell calls still interrupt (touch stays gated)" do
+      id = "shell-bl-neg-#{System.unique_integer()}"
+
+      {:ok, _} =
+        CodingAgent.Core.Session.Supervisor.start_session(
+          id: id,
+          scope_root: @tmp_root,
+          test_mode: true
+        )
+
+      :ok =
+        Session.debug_gate(id, [
+          %{id: "n1", name: "shell", arguments: %{"command" => "touch bl-neg-marker"}}
+        ])
+
+      {:ok, state} = Session.state(id)
+      assert state.status == :interrupted
+      refute File.exists?(Path.join(@tmp_root, "bl-neg-marker"))
+    end
+  end
+
   defp reject_rejected_shell do
     id = "shell-gate-#{System.unique_integer()}"
 

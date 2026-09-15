@@ -27,6 +27,7 @@ defmodule CodingAgent.Core.Session do
   require Logger
 
   alias CodingAgent.Core.Permissions
+  alias CodingAgent.Core.Tools.Shell
   alias CodingAgent.Core.UserConfig
   alias CodingAgent.Core.Session.{Compactor, Request, State, Store}
   alias ReqLLM.Context
@@ -556,9 +557,46 @@ defmodule CodingAgent.Core.Session do
     else
       state = %{state | tool_rounds: state.tool_rounds + 1}
 
-      {auto, pending} =
+      # Command blacklist (2026-09-15 amendment 2, BEFORE the policy
+      # lookup): a shell call whose leading program duplicates a native
+      # tool is denied with a steering message — no keystroke for the
+      # user, and the model gets the better-tool hint as its tool
+      # result in the same round. append_tool_results here (not in the
+      # predicate) so the context update happens exactly once per call.
+      {denied, rest} =
         Enum.split_with(calls, fn call ->
-          {id, name, args} = call_parts(call)
+          {_id, name, args} = call_parts(call)
+          name == "shell" and match?({:ok, _}, Shell.blacklisted?(args))
+        end)
+
+      state =
+        case denied do
+          [] ->
+            state
+
+          denied ->
+            results =
+              Enum.map(denied, fn call ->
+                {id, _name, args} = call_parts(call)
+                {:ok, guidance} = Shell.blacklisted?(args)
+                Logger.warning("gate: shell command denied (blacklist): #{inspect(id)}")
+                decisions_log(state, id, :deny)
+                %{id: id, name: "shell", content: "error: #{guidance}"}
+              end)
+
+            state = append_tool_results(state, results)
+
+            Enum.each(results, fn r ->
+              broadcast(state, {:tool_executed, "shell", r.content})
+            end)
+
+            persist(state)
+            state
+        end
+
+      {auto, pending} =
+        Enum.split_with(rest, fn call ->
+          {_id, name, args} = call_parts(call)
 
           decision =
             Permissions.effective(
@@ -568,13 +606,14 @@ defmodule CodingAgent.Core.Session do
               "default"
             )
 
+          {id, _, _} = call_parts(call)
           decisions_log(state, id, decision)
           decision == :allow
         end)
 
       cond do
         auto != [] and pending == [] ->
-          run_tools(state, calls)
+          run_tools(state, rest)
 
         auto != [] ->
           # mixed: execute allowed ones now, park the rest
@@ -592,8 +631,9 @@ defmodule CodingAgent.Core.Session do
           {state, {:ok, state}}
 
         true ->
-          # all denied: report rejections to the model instead of executing
-          results = Enum.map(calls, fn call -> denied_result(call) end)
+          # all (remaining) denied: report rejections to the model instead
+          # of executing — `rest`, blacklisted calls were already answered
+          results = Enum.map(rest, fn call -> denied_result(call) end)
           state = append_tool_results(state, results)
 
           if state.test_mode do

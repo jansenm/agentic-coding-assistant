@@ -263,3 +263,79 @@ class defaults, the gate-integration tests in ``edit_test.exs`` and
 ``write_file``'s tests prove contained calls run without a pause
 under the bare defaults, and the same tests prove repo-side
 ``[permissions.*]`` entries still interrupt.
+
+Amendment 2026-09-15 (2): shell command blacklist — steering, not containment
+-----------------------------------------------------------------------------
+
+**Status: Accepted (second amendment to the accepted ADR 010).**
+
+Live sessions with the allow-class defaults showed where the keystroke
+cost actually lived: not in the write tools (amendment 1 solved those)
+but in ``shell`` calls that duplicate a native tool — most visibly
+``grep``-style searches, which the model reaches for because shell is
+its one universal tool. The 2026-09-15 roadmap note sketched a
+protected-*path* ask-class; the live evidence points the opposite way
+(the user explicitly declined an allow-list): the pain is not that
+dangerous shell runs too freely, but that the model repeats work the
+harness already has tools for — and every such call costs a ``y`` for
+nothing. y-fatigue is the enemy of the gate: a user trained to press
+``y`` after the first ten prompts is a user who will not read the
+eleventh, which *is* the safety loss.
+
+**Decision: a deny-list, checked before the policy lookup.** The
+opposite of an allow-list: not "these commands are safe", but "this
+shell spelling duplicates a native tool — use the tool". A shell call
+whose leading program is in the table is denied with a steering
+message as its tool result, in the same round:
+
+.. code-block:: elixir
+
+   # lib/coding_agent/core/tools/shell.ex — @redirect (v1)
+   "grep" => "please use the grep tool instead of shell grep ..."
+   "rg" / "ag" / "ack" / "sg" => "please use the grep tool ..."
+
+The check is deliberately **shallow**: the first command word only —
+basename of an absolute path (``/usr/bin/grep`` is caught), after
+env-var assignments (``FOO=1 grep …``) and shelling-out wrappers
+(``env`` / ``command`` / ``nohup``). Pipes do not widen the check
+(``echo hi | grep hi`` runs), and evader spellings pass (``git grep``,
+``awk``, ``find -exec``, ``bash -c``).
+
+Honesty about what this is and is not:
+
+- **Not containment.** A committed agent bypasses it in five spellings;
+  a malicious agent was never stoppable by a word list anyway (the
+  ADR 010 threat model already says so: the human sees the full command
+  at the gate on every non-denied call — that remains the real fence).
+- **It is prompt hygiene with a measurable gate-economics payoff.**
+  The native ``grep`` tool is allow-by-policy, so a denied shell grep
+  converts "ask + wrong-tool output" into "deny + redirect" — the model
+  re-emits the call against the native tool and the user's net
+  keystroke count for the search drops to zero.
+- **The tool callback stays a pure executor.** The verdict lives in
+  ``Shell.blacklisted?/1`` (public, unit-testable), the session's gate
+  checkpoint consults it before the policy lookup and answers denied
+  calls with tool-result messages directly. A direct
+  ``ReqLLM.Tool.execute`` bypasses the check — the gate is the policy
+  point (same discipline as the timeout soft cap).
+
+``sed -n`` (print-only) → ``read_file``/``edit``, ``cat`` →
+``read_file``, ``ls`` → ``list_dir`` are deliberate one-line follow-ups
+(same table, new entries) — not done now; each new word needs its
+collision check (``cat`` the pager-alias, ``ls`` the Lisp interpreter)
+and its own live evidence.
+
+Consequences: every blacklisted denial is a log line
+(``gate: shell command denied (blacklist)``); the class-default
+allow-list in ``Permissions`` is untouched (this check is shell-only
+and tool-argument-shaped, not path-shaped); the roadmap's
+protected-path sketch (``.git/**``, ``AGENTS.md``) remains the open
+half of the y-fatigue story — paths where a write is invisible to the
+review argument.
+
+Acceptance: ``test/coding_agent/core/shell_test.exs`` — the blacklist
+unit table (family members, basenames, wrappers, degenerate inputs,
+deliberate misses in both directions) plus gate-integration tests
+proving a denied call produces NO interruption, the steering message
+reaches the model as its tool result, and non-blacklisted shell calls
+still pause.
