@@ -1,6 +1,8 @@
 defmodule CodingAgent.Core.Tools.ShellTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias CodingAgent.Core.Permissions
   alias CodingAgent.Core.Session
   alias CodingAgent.Core.Tools.Shell
@@ -193,10 +195,13 @@ defmodule CodingAgent.Core.Tools.ShellTest do
           test_mode: true
         )
 
-      :ok =
-        Session.debug_gate(id, [
-          %{id: "g1", name: "shell", arguments: %{"command" => "grep -rn gate lib/"}}
-        ])
+      log =
+        capture_log(fn ->
+          :ok =
+            Session.debug_gate(id, [
+              %{id: "g1", name: "shell", arguments: %{"command" => "grep -rn gate lib/"}}
+            ])
+        end)
 
       {:ok, state} = Session.state(id)
       # the point of the feature: no human pause — the call is answered
@@ -207,6 +212,8 @@ defmodule CodingAgent.Core.Tools.ShellTest do
       last = ReqLLM.Context.to_list(state.context) |> List.last()
       assert last.role == :tool
       assert text_of(last) =~ "please use the grep tool"
+      assert log =~ "gate: shell command denied (blacklist)"
+      assert log =~ "\"g1\""
     end
 
     test "gate denies only the blacklisted call in a mixed batch" do
@@ -219,15 +226,18 @@ defmodule CodingAgent.Core.Tools.ShellTest do
           test_mode: true
         )
 
-      :ok =
-        Session.debug_gate(id, [
-          %{id: "m1", name: "shell", arguments: %{"command" => "grep -rn gate lib/"}},
-          %{
-            id: "m2",
-            name: "write_file",
-            arguments: %{"path" => "bl-mixed.txt", "content" => "ok"}
-          }
-        ])
+      log =
+        capture_log(fn ->
+          :ok =
+            Session.debug_gate(id, [
+              %{id: "m1", name: "shell", arguments: %{"command" => "grep -rn gate lib/"}},
+              %{
+                id: "m2",
+                name: "write_file",
+                arguments: %{"path" => "bl-mixed.txt", "content" => "ok"}
+              }
+            ])
+        end)
 
       {:ok, state} = Session.state(id)
       # m2 ran (allow class), m1 was answered without a pause
@@ -239,6 +249,8 @@ defmodule CodingAgent.Core.Tools.ShellTest do
 
       contents = Enum.map_join(tool_msgs, "\n", &text_of/1)
       assert contents =~ "please use the grep tool"
+      assert log =~ "gate: shell command denied (blacklist)"
+      assert log =~ "\"m1\""
     end
 
     test "non-blacklisted shell calls still interrupt (touch stays gated)" do

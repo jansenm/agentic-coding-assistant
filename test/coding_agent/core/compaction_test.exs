@@ -1,6 +1,8 @@
 defmodule CodingAgent.Core.CompactionTest do
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog
+
   alias CodingAgent.Core.Compaction
   alias CodingAgent.Core.Session.{Compactor, State}
 
@@ -164,10 +166,17 @@ defmodule CodingAgent.Core.CompactionTest do
   # a summarizer error degrades: keep the full context, set the backoff
   test "maybe_compact on summarizer error keeps the context and backs off" do
     s = state(usage: %{last_input_tokens: 180_000})
-    {s2, false} = Compactor.maybe_compact(s, fn _state, _span -> {:error, :provider_down} end)
 
-    assert s2.context == s.context
-    assert s2.compaction_backoff == 3
+    log =
+      capture_log(fn ->
+        {s2, false} = Compactor.maybe_compact(s, fn _state, _span -> {:error, :provider_down} end)
+
+        assert s2.context == s.context
+        assert s2.compaction_backoff == 3
+      end)
+
+    assert log =~ "compaction failed, keeping full context"
+    assert log =~ ":provider_down"
   end
 
   # an abnormal task exit must degrade like an error — the unhandled
@@ -176,11 +185,17 @@ defmodule CodingAgent.Core.CompactionTest do
   test "maybe_compact on abnormal task exit keeps the context and backs off" do
     s = state(usage: %{last_input_tokens: 180_000})
 
-    {s2, false} =
-      Compactor.maybe_compact(s, fn _state, _span -> raise "summarizer boom" end)
+    log =
+      capture_log(fn ->
+        {s2, false} =
+          Compactor.maybe_compact(s, fn _state, _span -> raise "summarizer boom" end)
 
-    assert s2.context == s.context
-    assert s2.compaction_backoff == 3
+        assert s2.context == s.context
+        assert s2.compaction_backoff == 3
+      end)
+
+    assert log =~ "summarizer boom"
+    assert log =~ "compaction failed, keeping full context"
   end
 
   # the wall-clock budget: a summarizer that never returns is killed at
@@ -192,11 +207,16 @@ defmodule CodingAgent.Core.CompactionTest do
     try do
       s = state(usage: %{last_input_tokens: 180_000})
 
-      {s2, false} =
-        Compactor.maybe_compact(s, fn _state, _span -> Process.sleep(5_000) end)
+      log =
+        capture_log(fn ->
+          {s2, false} =
+            Compactor.maybe_compact(s, fn _state, _span -> Process.sleep(5_000) end)
 
-      assert s2.context == s.context
-      assert s2.compaction_backoff == 3
+          assert s2.context == s.context
+          assert s2.compaction_backoff == 3
+        end)
+
+      assert log =~ "compaction summarize exceeded"
     after
       Application.delete_env(:coding_agent, :compaction_wall_clock_ms)
     end

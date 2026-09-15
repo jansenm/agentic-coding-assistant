@@ -154,6 +154,7 @@ defmodule CodingAgent.UI.Tui do
       reasoning: "",
       provider_down?: false,
       test_pid: Keyword.get(opts, :test_pid),
+      test_mode?: Keyword.get(opts, :test_mode) != nil,
       picker: sessions,
       picker_index: 0,
       picker_opts: opts,
@@ -278,6 +279,7 @@ defmodule CodingAgent.UI.Tui do
         reasoning: "",
         provider_down?: false,
         test_pid: Keyword.get(opts, :test_pid),
+        test_mode?: Keyword.get(opts, :test_mode) != nil,
         # loaded ONCE here, not per keypress (file I/O + TOML parse in
         # the input hot path was the crash vector for a broken live
         # config). Reload points: session switch, picker actions —
@@ -1187,7 +1189,7 @@ defmodule CodingAgent.UI.Tui do
     if value == "" do
       state
     else
-      Task.start(fn -> Session.run(state.session_id, value) end)
+      run_prompt(state, value)
 
       %{
         state
@@ -1199,6 +1201,18 @@ defmodule CodingAgent.UI.Tui do
           scroll_offset: 0
       }
     end
+  end
+
+  # Tests are LLM-free: a test-mode TUI must never reach the provider.
+  # The TUI's own test_mode only skipped the picker and the startup
+  # probe — an alt-enter still spawned Session.run and dialed the real
+  # provider (the econnrefused retry storm in the suite output). Guard
+  # the one place the TUI starts a turn.
+  defp run_prompt(%{test_mode?: true} = state, _prompt), do: state
+
+  defp run_prompt(state, prompt) do
+    Task.start(fn -> Session.run(state.session_id, prompt) end)
+    state
   end
 
   # decide/2 is a GenServer.call that runs the ENTIRE rest of the turn
@@ -1435,7 +1449,7 @@ defmodule CodingAgent.UI.Tui do
   end
 
   def handle_info({:__run__, prompt}, state) do
-    Task.start(fn -> Session.run(state.session_id, prompt) end)
+    run_prompt(state, prompt)
     {:noreply, %{state | status: :running, transcript: state.transcript ++ [{:user, prompt}]}}
   end
 
