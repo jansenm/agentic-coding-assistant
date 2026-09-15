@@ -302,6 +302,29 @@ scope, enforced with a guard suite that turns every known attack into
 a permanent tripwire). Also note their `permission.read` frontmatter
 granularity maps onto our tool table (`read` → `list_dir` + `read_file`).
 
+**Protected-path class for the allow-by-default write tools.** Since
+the 2026-09-15 amendment, `edit`/`write_file` auto-run anywhere in the
+scope — including paths where a write is effectively invisible to the
+review argument: `.git/*` (rewriting refs or hooks bypasses the VCS
+reviewability argument itself), `AGENTS.md` / `.coding-agent/*`
+(agent instructions and the project policy layer — a write there is
+self-modification of the harness's own steering, and `.gitignore`d
+content is not in any diff to review), `.env*` (secrets). Sketch:
+a built-in `@ask_class` of path patterns checked before the class
+default — same matching dialect, most-restrictive-wins as usual,
+still overridable per layer; the check lives next to
+`default_for/1` in `CodingAgent.Core.Permissions`, keyed by tool name
+so `shell` could reuse it for a v2 command allow-list. Until then
+the manual equivalent is a repo-side policy file:
+
+```toml
+# .coding-agent/permissions.toml
+[permissions.write_file]
+".git/**" = "ask"
+"AGENTS.md" = "ask"
+".env*" = "ask"
+```
+
 ## Ground rules
 
 - Every dependency addition worth debating gets an ADR (dependency count
