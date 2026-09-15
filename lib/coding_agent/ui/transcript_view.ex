@@ -2,17 +2,48 @@ defmodule CodingAgent.UI.TranscriptView do
   @moduledoc """
   Pure transcript layout for the block-based TUI (5c):
 
-  - height estimation per entry (wrap-aware approximation at pane width)
+  - height measurement per entry — **by rendering**, not by estimating
   - tail-window selection: auto-follow (offset 0) or pinned N lines up,
     clamped — the scroll model from 5a, lifted from lines to blocks.
 
   Pure and unit-tested; UI.Tui renders the returned window.
+
+  ## Why measured-by-render (the newline-bug lesson)
+
+  The reasoning box once grew one phantom blank row per streamed line
+  ("scroll up three screens of blanks"). Three trimming patches
+  (c4669c4, 0c11bb1, d95ca8a) chased the symptom through every route
+  the raw string could leak into the layout, because the root cause
+  was HERE: `height/3` and the renderer disagreed about what one
+  string paints. Every disagreement lands the same way — the entry
+  reserves rows the widget never paints (or paints rows the entry
+  clipped), and the error compounds while a block streams.
+
+  Estimates disagree with the renderer in four verified ways
+  (`paragraph` wrap on/off, trailing "\\n", interior blanks):
+
+  1. a trailing "\\n" measures +1 row (split yields a trailing "") and
+     paints 0 — the phantom row per streamed line;
+  2. a `wrap: false` Paragraph CLIPS long lines, estimates count a
+     wrap — overmeasure growing with line length;
+  3. `wrap: true` Paragraphs and Markdown reflow inline markup —
+     char-count estimates drift either way;
+  4. the widget text is built at RENDER time ("· thinking: ",
+     "▸ name\\n", borders) — estimating from the entry text alone
+     measures a different string than the one painted.
+
+  So `height/3` now renders each widget into an oversized headless
+  buffer (the same NIF call the real frame uses, same widget struct
+  the renderer draws) and counts painted rows. The widget is built by
+  the same code Tui renders with — measurement and paint cannot
+  diverge by construction. Results are cached in an ETS table keyed by
+  (phash2 of the full widget-defining tuple, width): per-frame cost is
+  a lookup, and the streaming text (whose phash changes every frame)
+  pays one probe per frame — bounded by the pane width, microseconds.
   """
 
   # border rows (2) + inner padding rows (2) of the user frame
   @user_frame_allowance 4
-
-  # tool blocks render as plain paragraphs (no border) — no allowance
 
   # empty rows after every NON-user block (answers, tools, info,
   # reasoning): the user frame stands out BY contrast — everything
@@ -30,40 +61,74 @@ defmodule CodingAgent.UI.TranscriptView do
   Rendered height of one entry at the given width, given which tool
   block (if any) is open. `open_id` matches a `{:tool, id, _, _}`
   entry; nil means every tool block is collapsed.
+
+  Measured by rendering the EXACT widget Tui draws (see the
+  moduledoc); `@air` rows are added by this module, not the widget.
   """
   @spec height(entry(), pos_integer(), open_id()) :: pos_integer()
   def height(entry, width, open_id) do
     case entry do
-      {:reasoning, text} ->
-        # +2: the "· thinking: " marker prefix wraps too — measure the
-        # same string the renderer builds
-        measure_text("· thinking: " <> text, width) + @air
-
-      {:info, text} ->
-        measure_text(text, width) + @air
-
+      # the user frame's Block paints border+padding glyphs across its
+      # whole rect, so the probe must cover the CONTENT only —
+      # chrome (borders + padding) is added arithmetically
       {:user, text} ->
-        measure_text(text, width) + @user_frame_allowance
+        inner_width = max(width - 4, 10)
 
-      {:assistant, text} ->
-        # +1 breathing row after every answer — the visual gap before
-        # the next question/tool block (user request, opencode parity)
-        measure_markdown(text, width) + @air
+        content =
+          painted_height(%ExRatatui.Widgets.Paragraph{text: text}, inner_width)
 
-      {:tool, id, name, content} ->
-        if id == open_id do
-          # +2: the bordered box the renderer draws around open tools
-          # (the overlap bug: borders paint rows the old measurement
-          # didn't count, so the next entry drew over the box bottom)
-          measure_text("▸ #{name}\n" <> content, width) + 2 + @air
-        else
-          measure_text(header(name, content), width) + @air
-        end
+        # user frames get no @air (the border chrome IS the spacing)
+        content + @user_frame_allowance
+
+      _ ->
+        {widget, chrome} = widget_for(entry, width, open_id)
+        painted_height(widget, width) + chrome + @air
     end
   end
 
-  defp measure_text(text, width) do
-    max(wrapped_lines(text, width), 1)
+  # The widget Tui renders for this entry + extra chrome rows the
+  # layout must count beyond painted content (borders around the open
+  # tool box). Building the widget HERE is the contract: whatever this
+  # returns is what the next frame paints.
+  defp widget_for({:reasoning, text}, _width, _open_id) do
+    {%ExRatatui.Widgets.Paragraph{
+       text: "· thinking: " <> text,
+       style: %ExRatatui.Style{fg: :dark_gray, modifiers: [:italic]}
+     }, 0}
+  end
+
+  defp widget_for({:info, text}, _width, _open_id) do
+    {%ExRatatui.Widgets.Paragraph{text: "  " <> text}, 0}
+  end
+
+  # (the user frame is measured specially in height/3 — its Block
+  # paints border+padding glyphs across the whole probe rect, so its
+  # content is probed bare and the chrome added arithmetically)
+
+  defp widget_for({:assistant, text}, _width, _open_id) do
+    {%ExRatatui.Widgets.Markdown{
+       content: text,
+       style: %ExRatatui.Style{fg: :white},
+       wrap: true
+     }, 0}
+  end
+
+  defp widget_for({:tool, id, name, content}, _width, open_id) do
+    if id == open_id do
+      # the open tool box paints border glyphs across its whole rect
+      # (same as the user frame) — probe the CONTENT and add the
+      # border rows arithmetically
+      {%ExRatatui.Widgets.Paragraph{
+         text: "▾ #{name}\n" <> content,
+         style: %ExRatatui.Style{fg: :dark_gray}
+       }, 2}
+    else
+      # collapsed: Tui paints a bare one-line header (no block)
+      {%ExRatatui.Widgets.Paragraph{
+         text: tool_header(name, content),
+         style: %ExRatatui.Style{fg: :dark_gray}
+       }, 0}
+    end
   end
 
   @doc "Rows of air after a block (the TUI clips rects to content and leaves these blank)."
@@ -115,16 +180,22 @@ defmodule CodingAgent.UI.TranscriptView do
     {top, selected}
   end
 
-  # -- measured heights (markdown) -------------------------------------------
+  # -- measured heights (render-into-buffer probe) ----------------------------
 
   @measure_cache :transcript_view_heights
 
-  defp measure_markdown(text, width) do
-    key = {:md, :erlang.phash2(text), width}
+  # Draw the widget into an oversized headless buffer and scan for the
+  # last non-blank row. This is the definition of "rendered height" —
+  # no estimate can drift from it, because it IS the render. Cache:
+  # the probe is a headless terminal alloc + one native draw per miss
+  # (microseconds), and every consumer (measure, viewport, widget
+  # building, scroll clamp) hits the same key every frame.
+  defp painted_height(widget, width) do
+    key = {:painted, widget_key(widget), width}
 
     case cache_get(key) do
       :not_found ->
-        h = do_measure_markdown(text, width)
+        h = do_painted_height(widget, width)
         cache_put(key, h)
         h
 
@@ -133,16 +204,11 @@ defmodule CodingAgent.UI.TranscriptView do
     end
   end
 
-  defp do_measure_markdown(text, width) do
-    # draw the widget into an oversized headless buffer, scan for the
-    # last non-blank row: the REAL rendered height (markdown reflows
-    # inline markup, so estimates drift — measured is exact)
-    widget = %ExRatatui.Widgets.Markdown{
-      content: text,
-      style: %ExRatatui.Style{fg: :white},
-      wrap: true
-    }
+  # Cache key: every field that changes the paint, from the widget
+  # struct itself (phash2 on the struct — nested maps included).
+  defp widget_key(widget), do: :erlang.phash2(widget)
 
+  defp do_painted_height(widget, width) do
     probe_height = 400
     term = ExRatatui.init_test_terminal(width, probe_height)
 
@@ -181,15 +247,7 @@ defmodule CodingAgent.UI.TranscriptView do
       :ets.insert(@measure_cache, {key, value})
   end
 
-  defp wrapped_lines(text, width) do
-    text
-    |> String.split("\n")
-    |> Enum.reduce(0, fn line, acc ->
-      acc + max(ceil(String.length(line) / max(width, 1)), 1)
-    end)
-  end
-
-  defp header(name, content) do
+  defp tool_header(name, content) do
     "▸ #{name}: #{content |> String.split("\n") |> List.first() |> String.slice(0, 80)}"
   end
 end

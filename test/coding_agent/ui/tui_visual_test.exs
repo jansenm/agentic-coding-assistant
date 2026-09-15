@@ -108,11 +108,11 @@ defmodule CodingAgent.UI.TuiVisualTest do
     Process.sleep(200)
 
     st = :sys.get_state(pid).user_state
-    {:tool, id, _, _} = Enum.find(st.transcript, &match?({:tool, _, _, _}, &1))
+    {:tool, tool_id, _, _} = Enum.find(st.transcript, &match?({:tool, _, _, _}, &1))
     {:assistant, _} = Enum.find(st.transcript, &match?({:assistant, _}, &1))
 
     entries = st.transcript
-    [tool_h, answer_h] = for e <- entries, do: TranscriptView.height(e, 100, st.open_tool_id)
+    [tool_h, answer_h] = for e <- entries, do: TranscriptView.height(e, 100, tool_id)
 
     # the box needs: border(2) + its 2 text rows; measured height covers
     # text + border + air — so the widget rect (h - air) fits the box
