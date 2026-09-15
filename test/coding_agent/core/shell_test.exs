@@ -157,7 +157,6 @@ defmodule CodingAgent.Core.Tools.ShellTest do
       assert guidance =~ "grep tool"
     end
 
-
     test "non-grep leading programs pass: sed, cat, ls, touch, mix" do
       # deliberately NOT covered yet (one-line follow-ups when wanted)
       assert :error = Shell.blacklisted?(%{"command" => "sed -n '1,5p' mix.exs"})
