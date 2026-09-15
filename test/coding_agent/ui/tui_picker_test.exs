@@ -90,7 +90,6 @@ defmodule CodingAgent.UI.TuiPickerTest do
     pid = start_picker(root)
     Process.sleep(700)
 
-    before = MapSet.new(Map.keys(:sys.get_state(pid).user_state))
     ExRatatui.Runtime.inject_event(pid, %ExRatatui.Event.Key{kind: "press", code: "q"})
     Process.sleep(300)
 

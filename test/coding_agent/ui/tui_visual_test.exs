@@ -23,7 +23,6 @@ defmodule CodingAgent.UI.TuiVisualTest do
     assert st.reasoning == "step one, step two"
 
     # it participates in layout: the reasoning entry has a measured height
-    entries = (st.transcript ++ [{:reasoning, st.reasoning}]) |> Enum.map(& &1)
     assert TranscriptView.height({:reasoning, "step one, step two"}, 78, nil) >= 1
 
     # the answer replaces the thinking block
