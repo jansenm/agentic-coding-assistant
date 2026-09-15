@@ -39,11 +39,16 @@ defmodule CodingAgent.Core.Permissions do
   @enforce_keys [:entries, :enabled]
   defstruct entries: %{}, enabled: []
 
-  # tools whose class defaults to allow (read-only; slice 2a policy)
-  # Read-only tools: allow-by-policy (ADR 010 class default). Every
-  # addition must be read-only by construction and contained (see
-  # Containment); grep/glob joined in 2d.
-  @allow_class ["list_dir", "read_file", "grep", "glob"]
+  # Class defaults when no policy entry matches. Read-only tools
+  # allow-by-policy (slice 2a); every addition must be safe by
+  # construction and contained (see Containment): grep/glob joined in
+  # 2d; `edit` joined by the 2026-09-15 ADR 010 amendment — contained
+  # (physically-resolved paths), fail-closed (a stale or ambiguous
+  # old_string refuses, the tool cannot guess) and reviewable (every
+  # landed change sits in the VCS diff). write_file (whole-file
+  # overwrite, no uniqueness check) and shell (no containment at all)
+  # stay ask; webfetch stays ask.
+  @allow_class ["list_dir", "read_file", "grep", "glob", "edit"]
 
   @decisions ~w(allow ask deny)
 

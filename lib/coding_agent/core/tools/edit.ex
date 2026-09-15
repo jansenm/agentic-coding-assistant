@@ -1,7 +1,13 @@
 defmodule CodingAgent.Core.Tools.Edit do
   @moduledoc """
-  Targeted string-replacement tool (slice 2e), gated like `write_file`
-  (ROADMAP: "fails closed on non-unique match").
+  Targeted string-replacement tool (slice 2e). Allow-by-policy (ADR 010
+  amendment, 2026-09-15): the fence is structural, not social —
+  contained paths (physically resolved), fail-closed matching below,
+  and every landed change reviewable as a VCS diff. `write_file`
+  (whole-file overwrite, no uniqueness gate) and `shell` (no
+  containment) remain behind the approval prompt. A repo or user
+  policy file can still turn edit into ask/deny per path
+  (`[permissions.edit] "src/**" = "ask"`).
 
   Why string replacement instead of whole-file writes: models reproduce
   entire files expensively and error-prone; `edit` ships only the
@@ -29,8 +35,8 @@ defmodule CodingAgent.Core.Tools.Edit do
           "The old_string must occur EXACTLY ONCE — if it is ambiguous, " <>
           "include more surrounding text to make it unique. Re-read the " <>
           "file if unsure. Use old_string \"\" only to create a new file " <>
-          "with new_string as its content. Subject to the permission " <>
-          "policy; requires approval.",
+          "with new_string as its content. Auto-approved by policy for " <>
+          "in-scope paths unless a permissions file tightens it.",
       parameter_schema: [
         path: [type: :string, required: true, doc: "File to edit, within the session scope"],
         old_string: [type: :string, required: true, doc: "Exact text to replace"],

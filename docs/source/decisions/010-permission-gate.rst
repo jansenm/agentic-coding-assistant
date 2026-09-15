@@ -203,3 +203,51 @@ Consequences
 - The role dimension exists in the lookup function from day one
   (role ``default`` in 2b), so the matrix phase adds data and
   resolution, not a permission redesign.
+
+Amendment 2026-09-15: ``edit`` joins the allow class
+----------------------------------------------------
+
+**Status: Accepted (amendment to the accepted ADR 010).**
+
+Live sessions with the shipped defaults paused on every ``edit`` —
+the annoyance was prompt noise, not safety: ``edit`` is fenced
+*structurally* in the same sense as the read-only tools, so the
+per-call human pause bought little.
+
+Three properties make edit safe-by-construction (enforced in
+``CodingAgent.Core.Tools.Edit``, not by the gate):
+
+1. **Contained** — every path is resolved physically (symlinks
+   followed) and must stay inside the session scope
+   (``Containment.check_scope!/2``), the same discipline as the
+   read-only tools (the path-hardening lessons).
+2. **Fail-closed on the match** — ``old_string`` must occur *exactly
+   once*; 0 matches (stale) and 2+ (ambiguous) both refuse. The tool
+   cannot guess, clobber, or spray: every landing site is the exact
+   unique string the model read.
+3. **Reviewable** — every landed change sits in the VCS working tree
+   as a diff. The evidence the approval prompt offered ("here is what
+   I am about to change") is the same diff the user reviews in git —
+   seen earlier, in context, and revertible. The prompt added a
+   keystroke, not a check.
+
+``write_file`` does *not* join the class: a whole-file overwrite has
+no uniqueness gate to fail closed (one ambiguous byte and the old
+content is gone — there is no diff against "the file the model
+read"). ``shell`` obviously stays :ask (no containment — fenced
+socially, see decision 5). ``webfetch`` stays :ask (foreign content
+ingress). The class default list in
+``CodingAgent.Core.Permissions`` is the single point of truth.
+
+The lookup semantics are unchanged — the amendment changes only the
+built-in class default for the tool name ``edit``; per-path entries
+(``[permissions.edit] "src/bank/**" = "ask"``) still apply above the
+class default, most-restrictive-wins across layers is untouched, and
+a repo or user file can turn edit back into ask/deny per path.
+
+Acceptance: ``test/coding_agent/core/permissions_test.exs`` locks the
+class default (``Permissions.default_for("edit") == :allow``), the
+gate-integration test in ``edit_test.exs`` proves an edit call on a
+contained path runs without a pause under the bare defaults, and the
+same test proves a repo-side ``[permissions.edit]`` entry still
+interrupts.

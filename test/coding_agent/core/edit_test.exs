@@ -112,9 +112,9 @@ defmodule CodingAgent.Core.Tools.EditTest do
   end
 
   describe "gate integration (ADR 010, LLM-free)" do
-    test "edit defaults to :ask; approve path applies; reject does not" do
+    test "edit defaults to allow-by-policy (ADR 010 amendment): a contained edit runs without a pause" do
       policy = Permissions.load(nil, nil)
-      assert Permissions.effective(policy, "edit", "code.ex", "default") == :ask
+      assert Permissions.effective(policy, "edit", "code.ex", "default") == :allow
 
       id = "edit-gate-#{System.unique_integer()}"
 
@@ -138,6 +138,48 @@ defmodule CodingAgent.Core.Tools.EditTest do
           }
         ])
 
+      # the amendment's acceptance: NO interruption — debug_gate leaves
+      # the synthetic :running status (no LLM loop in test mode), what
+      # matters is there is no parked approval
+      {:ok, state} = Session.state(id)
+      refute state.status == :interrupted
+      assert state.pending_tool_calls == []
+      assert File.read!(Path.join(@root, "code.ex")) =~ "def one, do: :one"
+    end
+
+    test "a repo-side [permissions.edit] entry still pauses (policy above the class default)" do
+      policy_path = Path.join(@root, "permissions.toml")
+
+      File.write!(policy_path, """
+      [permissions.edit]
+      "*" = "ask"
+      """)
+
+      policy = Permissions.load(nil, policy_path)
+
+      id = "edit-gate-ask-#{System.unique_integer()}"
+
+      {:ok, _} =
+        CodingAgent.Core.Session.Supervisor.start_session(
+          id: id,
+          scope_root: @root,
+          policy: policy,
+          test_mode: true
+        )
+
+      :ok =
+        Session.debug_gate(id, [
+          %{
+            id: "e1",
+            name: "edit",
+            arguments: %{
+              "path" => "code.ex",
+              "old_string" => "def one, do: 1",
+              "new_string" => "def one, do: :one"
+            }
+          }
+        ])
+
       {:ok, state} = Session.state(id)
       assert state.status == :interrupted
       # nothing changed yet
@@ -145,8 +187,28 @@ defmodule CodingAgent.Core.Tools.EditTest do
 
       {:ok, _} = Session.decide(id, [%{id: "e1", decision: :approve}])
       assert File.read!(Path.join(@root, "code.ex")) =~ "def one, do: :one"
+    end
 
-      # rejection path leaves the file alone
+    test "reject path still leaves the file alone (approve/reject round-trip under an ask policy)" do
+      policy_path = Path.join(@root, "permissions.toml")
+
+      File.write!(policy_path, """
+      [permissions.edit]
+      "*" = "ask"
+      """)
+
+      policy = Permissions.load(nil, policy_path)
+
+      id = "edit-gate-#{System.unique_integer()}"
+
+      {:ok, _} =
+        CodingAgent.Core.Session.Supervisor.start_session(
+          id: id,
+          scope_root: @root,
+          policy: policy,
+          test_mode: true
+        )
+
       :ok =
         Session.debug_gate(id, [
           %{
@@ -154,14 +216,14 @@ defmodule CodingAgent.Core.Tools.EditTest do
             name: "edit",
             arguments: %{
               "path" => "code.ex",
-              "old_string" => "def one, do: :one",
+              "old_string" => "def one, do: 1",
               "new_string" => "DESTROY"
             }
           }
         ])
 
       {:ok, _} = Session.decide(id, [%{id: "e2", decision: :reject}])
-      assert File.read!(Path.join(@root, "code.ex")) =~ "def one, do: :one"
+      assert File.read!(Path.join(@root, "code.ex")) =~ "def one, do: 1"
       refute File.read!(Path.join(@root, "code.ex")) =~ "DESTROY"
     end
   end

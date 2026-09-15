@@ -24,6 +24,25 @@ defmodule CodingAgent.Core.PermissionsTest do
       assert Permissions.default_for("read_file") == :allow
       assert Permissions.default_for("write_file") == :ask
       assert Permissions.default_for("shell") == :ask
+
+      # ADR 010 amendment 2026-09-15: edit is allow-by-class (contained,
+      # fail-closed, VCS-reviewable); write_file and shell are not
+      assert Permissions.default_for("edit") == :allow
+      assert Permissions.default_for("webfetch") == :ask
+    end
+
+    test "an edit allow default is overridable per path (class default is only the floor)" do
+      path =
+        write_policy("edit-ask.toml", """
+        [permissions.edit]
+        "src/bank/**" = "ask"
+        """)
+
+      policy = Permissions.load(nil, path)
+
+      assert Permissions.effective(policy, "edit", "src/bank/vault.ex") == :ask
+      # outside the entry: back to the class default
+      assert Permissions.effective(policy, "edit", "lib/other.ex") == :allow
     end
 
     test "parses a valid policy" do

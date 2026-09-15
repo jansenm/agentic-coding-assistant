@@ -59,6 +59,18 @@ execution, with human-in-the-loop pause on ``:ask`` (design: ADR 010;
 the registry's ``gated/1`` lists them, and the gate inserts at the
 loop checkpoint where slice 2a executed unconditionally).
 
+**Class defaults, 2026-09-15** — ``edit`` joined the allow class
+(alongside the read-only tools) via the ADR 010 amendment: a gate test
+proved allow-by-default for contained edit paths, with ``shell``
+still asking on every call. The safety argument (below, "Editing")
+is structural: fail-closed matching, physical containment, VCS
+reviewability. ``write_file`` and ``webfetch`` remain :ask — a
+whole-file overwrite has no uniqueness gate to fail closed, and a
+fetch pulls foreign content in. A repo or user layer can still turn
+``edit`` back into ask/deny per path (``[permissions.edit] "src/**"
+= "ask"``); the class default is only what applies when nothing
+matches.
+
 Searching: grep and glob (slice 2d)
 -----------------------------------
 
@@ -98,6 +110,15 @@ once*, else the tool refuses — a stale match ("not found") and an
 ambiguous match ("2 matches — include more surrounding text") are both
 errors the model resolves by re-reading and widening. This fail-closed
 posture is why it is safe to approve quickly: the tool cannot guess.
+
+That same posture is why **edit is allow-by-policy** (2026-09-15):
+contained paths (physically resolved), fail-closed matching (it
+declines to act rather than guess), and VCS reviewability (every
+landed change is a diff). Approval-per-edit was prompt noise, not
+safety — the diff the user reviews in git is the same evidence the
+prompt asked them to eyeball, seen earlier and in context. The fence
+is structural, like the read-only tools; shell below is the contrast
+case.
 
 The empty ``old_string`` create-path (write a new file) is the one
 sanctioned creation; on an existing file the same call refuses.
