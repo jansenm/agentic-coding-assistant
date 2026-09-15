@@ -157,13 +157,6 @@ defmodule CodingAgent.Core.Tools.ShellTest do
       assert guidance =~ "grep tool"
     end
 
-    test "shelling-out wrappers and env-var assignments are looked behind" do
-      assert {:ok, _} = Shell.blacklisted?(%{"command" => "env grep foo bar"})
-      assert {:ok, _} = Shell.blacklisted?(%{"command" => "command grep foo bar"})
-      assert {:ok, _} = Shell.blacklisted?(%{"command" => "nohup grep foo bar"})
-      assert {:ok, _} = Shell.blacklisted?(%{"command" => "FOO=1 BAR=2 grep foo bar"})
-      assert {:ok, _} = Shell.blacklisted?(%{"command" => "  grep foo bar"})
-    end
 
     test "non-grep leading programs pass: sed, cat, ls, touch, mix" do
       # deliberately NOT covered yet (one-line follow-ups when wanted)

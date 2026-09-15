@@ -136,7 +136,7 @@ defmodule CodingAgent.UI.TuiMenuTest do
   end
 
   test "switching attaches the chosen session (keep-alive)", %{root: tmp_root} do
-    _a = seed_session("pick-a", tmp_root)
+    a = seed_session("pick-a", tmp_root)
     b = seed_session("pick-b", tmp_root)
 
     pid = start_tui(tmp_root)
@@ -166,13 +166,13 @@ defmodule CodingAgent.UI.TuiMenuTest do
     Process.sleep(300)
 
     st3 = :sys.get_state(pid).user_state
-    idx = Enum.find_index(st3.menu_popup.items, &(&1.id == _a))
+    idx = Enum.find_index(st3.menu_popup.items, &(&1.id == a))
     assert idx != nil, "switched-away session must still be listed"
     key(pid, "enter")
     Process.sleep(700)
 
     st4 = :sys.get_state(pid).user_state
-    assert st4.session_id == _a
+    assert st4.session_id == a
   end
 
   # -- model menu (ctrl-x m) ----------------------------------------------

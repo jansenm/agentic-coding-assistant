@@ -24,8 +24,7 @@ defmodule CodingAgent.Core.Tools.Shell do
   grep family (grep/sg/rg/ag/ack); sed → edit/read_file, cat →
   read_file, ls → list_dir are one-line follow-ups.
 
-  The check is deliberately shallow (first command word after
-  shelling-out wrappers like `env`/`command`/`exec`; basename of an
+  The check is deliberately shallow (first command word; basename of an
   absolute path) and honest about scope: guidance at the gate, not
   containment — `git grep`, `awk`, `find -exec`, `bash -c` pass, and a
   malicious agent is not stoppable by a word list (the human still sees
@@ -33,7 +32,7 @@ defmodule CodingAgent.Core.Tools.Shell do
 
   Output: stdout+stderr combined (merged through /bin/sh), exit code,
   wall time. On truncation head and tail are kept (tail matters for
-  test summaries). On timeout the process is killed and whatever output
+  test summaries). On timeout the process is killed, and whatever output
   was captured so far is returned together with a timeout note.
   """
 
@@ -65,7 +64,7 @@ defmodule CodingAgent.Core.Tools.Shell do
   end
 
   @doc """
-  The timeout actually used for an execution, after clamping.
+  The timeout is actually used for an execution, after clamping.
   Used by the gate (soft-cap decision) and tests.
   """
   @spec effective_timeout(term()) :: {:ok, pos_integer()} | {:error, String.t()}
@@ -128,23 +127,19 @@ defmodule CodingAgent.Core.Tools.Shell do
     "ack" => "please use the grep tool instead of shell ack",
     # sg = sushi-ripgrep's wrapper; the name collision with the Unix
     # set-group sg is accepted — an agent essentially never wants that
-    "sg" => "please use the grep tool instead of shell sg"
+    "sg" => "please use the grep tool instead of shell sg",
+    "timeout" => "please set the timeout as a parameter on the tool call"
   }
 
-  @wrappers ["env", "command", "nohup"]
-
   @doc """
-  The command-blacklist verdict for a shell call's arguments:
-  `{:ok, guidance}` when the leading program duplicates a native tool
-  (the value is the deny message for the model), `:error` otherwise.
+  The command-blacklist verdict for a shell call's arguments: `{:ok, guidance}` when the leading
+  program duplicates a native tool (the value is the denied message for the model), `:error`
+  otherwise.
 
-  Deliberately shallow, on purpose: the FIRST program word only —
-  basename of an absolute path, after env-var assignments (`FOO=1`)
-  and shelling-out wrappers (`env`, `command`, `nohup`). Pipes do not
-  widen the check (`echo hi | grep hi` runs) and neither do evader
-  spellings (`git grep`, `awk`, `find -exec`). This is prompt
-  hygiene, not containment — shell stays ask-at-the-gate for
-  everything not listed.
+  Deliberately shallow, on purpose: the FIRST program word only — basename of an absolute path,
+  after env-var assignments (`FOO=1`). Pipes do not widen the check (`echo hi | grep hi` runs) and
+  neither do evader spellings (`git grep`, `awk`, `find -exec`). This is prompt hygiene, not
+  containment — shell stays ask-at-the-gate for everything not listed.
   """
   @spec blacklisted?(term()) :: {:ok, String.t()} | :error
   def blacklisted?(args) when is_map(args) do
@@ -163,7 +158,7 @@ defmodule CodingAgent.Core.Tools.Shell do
     |> String.trim_leading()
     |> String.split(~r/\s+/)
     |> Enum.drop_while(fn token ->
-      token in @wrappers or Regex.match?(~r/^[A-Za-z_][A-Za-z0-9_]*=/, token)
+      Regex.match?(~r/^[A-Za-z_][A-Za-z0-9_]*=/, token)
     end)
     |> case do
       [] -> :error
