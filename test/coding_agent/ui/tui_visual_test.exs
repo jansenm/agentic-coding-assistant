@@ -337,7 +337,7 @@ defmodule CodingAgent.UI.TuiVisualTest do
 
     st2 = sync(pid)
     assert st2.status == :interrupting
-    assert CodingAgent.Core.Session.interrupted?(st2.session_id)
+    assert CodingAgent.Core.Interrupt.requested?(st2.session_id)
     # the "interrupting…" info line shows in the transcript
     assert Enum.any?(st2.transcript, fn
              {:info, t} -> String.contains?(t, "interrupting")
@@ -345,7 +345,34 @@ defmodule CodingAgent.UI.TuiVisualTest do
            end)
 
     # cleanup: the flag is per-turn; clear so no other session sees it
-    CodingAgent.Core.Session.clear_interrupt(st2.session_id)
+    CodingAgent.Core.Interrupt.clear(st2.session_id)
+  end
+
+  test "esc while stopping never arms quit; only idle esc does", %{pid: pid} do
+    # while running, repeated esc must keep (re)requesting the stop and
+    # never arm the quit confirm — the old cascade (esc -> interrupting
+    # -> arm -> quit) killed the app
+    agent(pid, {:status_changed, :running})
+
+    key(pid, "escape")
+    assert sync(pid).status == :interrupting
+    refute sync(pid).quit_confirm?
+
+    # the turn is still stopping (no :idle broadcast arrived yet)
+    key(pid, "escape")
+    st = sync(pid)
+
+    refute st.quit_confirm?
+    assert Process.alive?(pid)
+    assert st.status == :interrupting
+
+    # and once idle again, esc is allowed to arm
+    agent(pid, {:status_changed, :idle})
+    key(pid, "escape")
+
+    assert sync(pid).quit_confirm?
+
+    CodingAgent.Core.Interrupt.clear(st.session_id)
   end
 
   test "esc to quit requires a double press while idle; a key in between disarms", %{pid: pid} do

@@ -259,4 +259,27 @@ defmodule CodingAgent.Core.Session.DecisionsTest do
     assert File.read!(Path.join(@tmp_root, "b2.txt")) == "2"
     assert File.read!(Path.join(@tmp_root, "b3.txt")) == "3"
   end
+
+  test "a stop before a tool round skips execution (synthetic results)" do
+    id = "dec-stop-#{System.unique_integer()}"
+
+    {:ok, _} =
+      CodingAgent.Core.Session.Supervisor.start_session(
+        id: id,
+        scope_root: @tmp_root,
+        policy: Permissions.load(nil, nil)
+      )
+
+    # the user pressed esc just before the auto round ran
+    CodingAgent.Core.Interrupt.request(id)
+
+    :ok =
+      Session.debug_gate(id, [
+        tool_call("s1", "write_file", %{"path" => "never.txt", "content" => "x"})
+      ])
+
+    # the tool never ran, even though the policy would have allowed it
+    refute File.exists?(Path.join(@tmp_root, "never.txt"))
+    CodingAgent.Core.Interrupt.clear(id)
+  end
 end
