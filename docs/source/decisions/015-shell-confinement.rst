@@ -184,6 +184,46 @@ it is justified three times over: it protects history from accidents,
 it removes the largest block of approval prompts, and it makes commits
 reviewable as a delta before promotion.
 
+### The escape-hatch gap: git inside a script, and the approval path
+
+A dedicated ``git`` tool only helps when the *agent* calls git. Real
+repositories call git from **scripts** — a release script, a build
+script, a Makefile target. Measured: running ``./release.sh`` (which
+does ``git add``/``commit``) under the shell profile (``.git``
+read-only) fails::
+
+   fatal: Unable to create '/tmp/scope/.git/index.lock': Read-only file system
+
+The same script under a profile where ``.git`` is inside the writable
+overlay succeeds — commit and tag land in the delta, real repository
+untouched (``commits=1, app=v1``). Note this is not a reason to widen
+the *default* shell profile: a script is arbitrary code the agent
+wrote or found, and the default must stay safe.
+
+**Decision for the gap: an approval path, not a wider default.** The
+agent may *request* that a specific script run with git write access.
+The escalation is explicit, per invocation, and user-visible:
+
+1. The agent calls ``shell`` with a flag/param such as
+   ``git_write: true`` (or an equivalent dedicated "run with git"
+   mode). This is **not** inferred from the command text — the agent
+   states its intent, the human decides.
+2. The gate raises ``:ask`` with the full script shown, exactly like
+   today's shell prompt but *rarer*: the default shell path needs no
+   prompt, so the only prompts left are network and this git-write
+   escalation.
+3. On approval, the sandbox mounts ``.git`` writable (inside the
+   overlay) for that one invocation. The commit is still a delta,
+   promoted at session end like everything else.
+
+This keeps the two properties that matter: the **default** stays
+read-only-``.git`` (an agent cannot rewrite history by accident), and
+the **legitimate** script path remains possible without the user
+resorting to ``shell = allow``. It is consistent with the standing
+rule that the human sees the full command on every ``:ask``, and it
+composes with the ``git`` tool: both write ``.git`` only through the
+overlay, so neither can corrupt the real repository.
+
 ### User-configurable mounts (repo and user layer)
 
 Measured that user configuration maps cleanly onto bwrap mounts:
@@ -235,11 +275,15 @@ stubbable.
 ### Gate rule under the proposal
 
 1. ``shell`` becomes allow-by-default *inside the active profile*.
-2. An **escalation** is ``:ask``: network access, or a write target
-   outside the sandbox. Escalations are coarse booleans ("may this call
-   use the network"), not a proxy allow-list.
+2. An **escalation** is ``:ask``. There are two: **network access**, and
+   **git write access** (the ``git write`` request from the escape-hatch
+   gap above, for scripts that commit). Both are coarse booleans the
+   agent *states*, never inferred from command text — "may this call use
+   the network", "may this script write ``.git``". Escalations are not a
+   proxy allow-list.
 3. ``shell`` stays ``deny``-able per policy as before.
-4. The ``git`` tool has its own profile (``.git`` read-write overlay).
+4. The ``git`` tool has its own profile (``.git`` read-write overlay),
+   as does a ``shell`` call approved for git write.
 
 Residual risks (stated, not hidden)
 -----------------------------------
@@ -284,7 +328,13 @@ Open questions for the decision
    defer?
 4. **``git`` tool**: confirm the separate read-write-``.git`` profile
    (and, relatedly, its place in the tool registry)?
-5. Does an accepted ADR 015 amend ADR 010's shell section (as the
+5. **Script git write**: confirm the explicit ``git write`` escalation
+   for scripts — the agent requests it, the human approves the script
+   with git access for that one invocation. Alternatives: a persistent
+   per-repo "this script may write .git" allow entry, or requiring the
+   user to commit outside the sandbox (rejected — it defeats
+   agent-assisted releases).
+6. Does an accepted ADR 015 amend ADR 010's shell section (as the
    earlier amendments did) or supersede it?
 
 If accepted, the first code step is intentionally trivial and
