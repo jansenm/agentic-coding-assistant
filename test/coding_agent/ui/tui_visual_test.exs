@@ -322,7 +322,7 @@ defmodule CodingAgent.UI.TuiVisualTest do
     assert rows |> Enum.at(idx + 2) |> String.contains?("line three")
   end
 
-  test "esc while running raises the interrupt flag; esc while idle falls through", %{pid: pid} do
+  test "esc while running needs TWO presses to raise the interrupt flag", %{pid: pid} do
     # not running: esc must NOT touch the flag (it falls through to the
     # textarea — popups handle their own esc earlier in the chain)
     key(pid, "escape")
@@ -330,14 +330,24 @@ defmodule CodingAgent.UI.TuiVisualTest do
     st = sync(pid)
     refute st.status == :interrupting
 
-    # running: esc raises the session's interrupt flag
+    # running: a LONE esc only arms (vim muscle memory: esc is pressed
+    # out of habit, it must never stop a running turn)
     agent(pid, {:status_changed, :running})
 
+    key(pid, "escape")
+
+    st_armed = sync(pid)
+    refute st_armed.status == :interrupting
+    assert st_armed.stop_confirm?
+    refute CodingAgent.Core.Interrupt.requested?(st_armed.session_id)
+
+    # second esc within the window: stop
     key(pid, "escape")
 
     st2 = sync(pid)
     assert st2.status == :interrupting
     assert CodingAgent.Core.Interrupt.requested?(st2.session_id)
+    refute st2.stop_confirm?
     # the "interrupting…" info line shows in the transcript
     assert Enum.any?(st2.transcript, fn
              {:info, t} -> String.contains?(t, "interrupting")
@@ -348,12 +358,31 @@ defmodule CodingAgent.UI.TuiVisualTest do
     CodingAgent.Core.Interrupt.clear(st2.session_id)
   end
 
-  test "esc while stopping never arms quit; only idle esc does", %{pid: pid} do
-    # while running, repeated esc must keep (re)requesting the stop and
-    # never arm the quit confirm — the old cascade (esc -> interrupting
-    # -> arm -> quit) killed the app
+  test "a text key between escs disarms the stop confirm", %{pid: pid} do
     agent(pid, {:status_changed, :running})
 
+    key(pid, "escape")
+    assert sync(pid).stop_confirm?
+
+    # the status line tells the user a second esc will stop
+    assert Enum.any?(buffer(pid), &String.contains?(&1, "esc again to stop"))
+
+    # typing disarms — the second press must be a real esc pair
+    key(pid, "a")
+    refute sync(pid).stop_confirm?
+
+    key(pid, "escape")
+    st = sync(pid)
+    refute st.status == :interrupting
+    refute CodingAgent.Core.Interrupt.requested?(st.session_id)
+  end
+
+  test "esc while stopping never arms quit; only idle esc does", %{pid: pid} do
+    # while busy, esc must never arm the quit confirm — the old cascade
+    # (esc -> interrupting -> arm -> quit) killed the app
+    agent(pid, {:status_changed, :running})
+
+    key(pid, "escape")
     key(pid, "escape")
     assert sync(pid).status == :interrupting
     refute sync(pid).quit_confirm?
@@ -364,13 +393,15 @@ defmodule CodingAgent.UI.TuiVisualTest do
 
     refute st.quit_confirm?
     assert Process.alive?(pid)
-    assert st.status == :interrupting
+    # after the stop, esc re-arms the stop confirm, not quit
+    assert st.stop_confirm?
 
-    # and once idle again, esc is allowed to arm
+    # and once idle again, esc is allowed to arm quit
     agent(pid, {:status_changed, :idle})
     key(pid, "escape")
 
     assert sync(pid).quit_confirm?
+    refute sync(pid).stop_confirm?
 
     CodingAgent.Core.Interrupt.clear(st.session_id)
   end
