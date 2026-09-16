@@ -25,7 +25,7 @@ defmodule CodingAgent.UI.TuiVisualTest do
     agent(pid, {:reasoning_deltas, "step one, "})
     agent(pid, {:reasoning_deltas, "step two"})
 
-    assert sync(pid).reasoning == "step one, step two"
+    assert sync(pid).stream == [{:reasoning, "step one, step two"}]
 
     # it participates in layout: the reasoning entry has a measured height
     assert TranscriptView.height({:reasoning, "step one, step two"}, 78, nil) >= 1
@@ -33,12 +33,53 @@ defmodule CodingAgent.UI.TuiVisualTest do
     # the answer replaces the thinking block
     agent(pid, {:llm_message, "The answer."})
     st = sync(pid)
-    assert st.reasoning == ""
+    assert st.stream == []
     assert Enum.any?(st.transcript, &match?({:assistant, "The answer."}, &1))
 
     # PERSISTED (opencode parity): the thinking block stays in the
     # transcript as a dim entry ahead of the answer
     assert Enum.any?(st.transcript, &match?({:reasoning, "step one, step two"}, &1))
+  end
+
+  test "answer text interleaves with thoughts in arrival order", %{pid: pid} do
+    # the user's report: a statement made while thinking was pinned in a
+    # sticky block above the input and later thinking scrolled past it.
+    # A statement must stay BETWEEN the thoughts it was made between.
+    agent(pid, {:reasoning_deltas, "first thought"})
+    agent(pid, {:llm_deltas, "a statement"})
+    agent(pid, {:reasoning_deltas, "second thought"})
+
+    assert sync(pid).stream == [
+             {:reasoning, "first thought"},
+             {:assistant, "a statement"},
+             {:reasoning, "second thought"}
+           ]
+
+    # persisted in that same order (opencode parity)
+    agent(pid, {:llm_message, "a statement"})
+    st = sync(pid)
+
+    assert st.stream == []
+
+    assert Enum.filter(
+             st.transcript,
+             &match?({kind, _} when kind in [:reasoning, :assistant], &1)
+           ) ==
+             [
+               {:reasoning, "first thought"},
+               {:assistant, "a statement"},
+               {:reasoning, "second thought"}
+             ]
+  end
+
+  test "reasoning-only stream falls back to the final answer text", %{pid: pid} do
+    # no assistant deltas (non-streamed / provider quirk): the session's
+    # authoritative text must still land, after the thinking block
+    agent(pid, {:reasoning_deltas, "only thinking here"})
+    agent(pid, {:llm_message, "The final answer."})
+
+    kinds = Enum.map(sync(pid).transcript, fn {kind, _} -> kind end)
+    assert kinds == [:reasoning, :assistant]
   end
 
   test "thinking persists capped: a long trace keeps its head lines", %{pid: pid} do
@@ -169,6 +210,21 @@ defmodule CodingAgent.UI.TuiVisualTest do
     assert msg =~ "Stream failed:"
     refute msg =~ "%Finch.TransportError"
     assert st.status == :error
+  end
+
+  test "a failed turn flushes partial output instead of dropping it", %{pid: pid} do
+    agent(pid, {:reasoning_deltas, "started thinking"})
+    agent(pid, {:llm_deltas, "partial answer"})
+
+    reason = %ReqLLM.Error.API.Stream{reason: "Stream failed: boom"}
+    agent(pid, {:status_changed, :error, reason})
+
+    st = sync(pid)
+    assert st.stream == []
+
+    kinds = Enum.map(st.transcript, fn {kind, _} -> kind end)
+    assert kinds == [:reasoning, :assistant, :info]
+    assert Enum.any?(st.transcript, &match?({:assistant, "partial answer"}, &1))
   end
 
   test "startup provider check: down -> red status + transcript line; up -> recovery", %{
@@ -308,7 +364,7 @@ defmodule CodingAgent.UI.TuiVisualTest do
 
     # no doubled newlines; at most ONE trailing newline (line separator
     # for the next delta) — the box must not fill with blank rows
-    assert st.reasoning == "line one\nline two\nline three\n"
+    assert st.stream == [{:reasoning, "line one\nline two\nline three\n"}]
 
     rows = buffer(pid)
 

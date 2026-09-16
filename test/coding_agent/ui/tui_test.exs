@@ -19,7 +19,7 @@ defmodule CodingAgent.UI.TuiTest do
       assert state.session_id =~ "tui-"
     end
 
-    test "streaming deltas accumulate in the delta buffer" do
+    test "streaming deltas accumulate in the stream buffer" do
       pid = start_supervised!({Tui, name: nil, test_mode: {80, 10}})
 
       send(pid, {:agent, {:llm_deltas, "Hel"}})
@@ -27,7 +27,7 @@ defmodule CodingAgent.UI.TuiTest do
       send(pid, {:agent, {:status_changed, :running}})
 
       state = sync(pid)
-      assert state.deltas == "Hello"
+      assert state.stream == [{:assistant, "Hello"}]
       assert state.status == :running
     end
 
@@ -39,7 +39,7 @@ defmodule CodingAgent.UI.TuiTest do
       send(pid, {:agent, {:tool_executed, "shell", "exit 0\n--- output ---\nstuff"}})
 
       state = sync(pid)
-      assert state.deltas == ""
+      assert state.stream == []
 
       assert [
                {:assistant, "answer text"},

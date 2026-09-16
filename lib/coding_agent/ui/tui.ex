@@ -150,7 +150,12 @@ defmodule CodingAgent.UI.Tui do
       # (within @stop_confirm_window) stops, any other key disarms
       stop_confirm?: false,
       stop_armed_at: 0,
-      deltas: "",
+      # in-flight stream, IN ARRIVAL ORDER: a list of
+      # {:reasoning, text} | {:assistant, text} blocks. Reasoning and
+      # answer text interleave exactly as the provider streamed them
+      # (opencode-style) instead of two buffers that force reasoning
+      # first; cleared/persisted when the turn's message lands.
+      stream: [],
       textarea: ExRatatui.textarea_new(),
       history: [],
       history_index: nil,
@@ -160,7 +165,6 @@ defmodule CodingAgent.UI.Tui do
       last_error: nil,
       scroll_offset: 0,
       open_tool_id: nil,
-      reasoning: "",
       provider_down?: false,
       test_pid: Keyword.get(opts, :test_pid),
       test_mode?: Keyword.get(opts, :test_mode) != nil,
@@ -283,7 +287,8 @@ defmodule CodingAgent.UI.Tui do
         # esc (within @stop_confirm_window) stops, any other key disarms
         stop_confirm?: false,
         stop_armed_at: 0,
-        deltas: "",
+        # in-flight stream, IN ARRIVAL ORDER (see mount_picker)
+        stream: [],
         textarea: ExRatatui.textarea_new(),
         history: recall,
         history_index: nil,
@@ -296,7 +301,6 @@ defmodule CodingAgent.UI.Tui do
         # tool output blocks collapsed by default ('t' toggles) — same
         # for live execution and resumed history (user request #1)
         open_tool_id: nil,
-        reasoning: "",
         provider_down?: false,
         test_pid: Keyword.get(opts, :test_pid),
         test_mode?: Keyword.get(opts, :test_mode) != nil,
@@ -1258,8 +1262,9 @@ defmodule CodingAgent.UI.Tui do
           history_index: nil,
           transcript: state.transcript ++ [{:user, value}],
           status: :running,
-          # a fresh turn: no stale esc arm from the previous one
+          # a fresh turn: no stale esc arm or stream from the previous one
           stop_confirm?: false,
+          stream: [],
           scroll_offset: 0
       }
     end
@@ -1389,7 +1394,7 @@ defmodule CodingAgent.UI.Tui do
   end
 
   def handle_info({:agent, {:llm_deltas, delta}}, state) do
-    {:noreply, %{state | deltas: state.deltas <> delta}}
+    {:noreply, %{state | stream: append_stream(state.stream, :assistant, delta)}}
   end
 
   def handle_info({:agent, {:status_changed, status}}, state) do
@@ -1410,17 +1415,16 @@ defmodule CodingAgent.UI.Tui do
 
   def handle_info({:agent, {:status_changed, :error, reason}}, state) do
     # a failed turn (e.g. provider down) becomes a visible transcript
-    # line, not a raw logger dump over the alternate screen
+    # line, not a raw logger dump over the alternate screen. Partial
+    # streamed output is flushed first so it is not lost when the error
+    # line lands, then the buffer clears.
     msg =
       "✖ turn failed: #{error_text(reason)} — the session is idle again; check the provider (ollama up? key set?) and retry"
 
+    transcript = state.transcript ++ persist_stream(state.stream, nil) ++ [{:info, msg}]
+
     {:noreply,
-     %{
-       state
-       | status: :error,
-         stop_confirm?: false,
-         transcript: state.transcript ++ [{:info, msg}]
-     }}
+     %{state | status: :error, stop_confirm?: false, transcript: transcript, stream: []}}
   end
 
   def handle_info({:agent, {:status_changed, status, _detail}}, state) do
@@ -1464,57 +1468,42 @@ defmodule CodingAgent.UI.Tui do
     # measure and render must never see different strings. The core
     # session keeps the full-fidelity text.
     #
-    # the streamed thinking block is PERSISTED (opencode parity):
-    # finished reasoning stays in the transcript as a dim entry ahead
-    # of the answer, so later turns don't erase what the model thought.
-    transcript =
-      case persist_reasoning(state.reasoning) do
-        nil -> state.transcript ++ [{:assistant, breathe(text)}]
-        entry -> state.transcript ++ [entry, {:assistant, breathe(text)}]
-      end
-
-    {:noreply, %{state | transcript: transcript, deltas: "", reasoning: ""}}
+    # The in-flight stream is persisted IN ARRIVAL ORDER (opencode
+    # parity): each reasoning block stays a dim entry at the position it
+    # streamed, so an answer the agent gave BETWEEN thoughts keeps that
+    # position instead of collapsing below everything it thought later.
+    # `text` is the authoritative full answer; it is used only when no
+    # assistant deltas streamed (non-streamed / resumed turns).
+    transcript = state.transcript ++ persist_stream(state.stream, text)
+    {:noreply, %{state | transcript: transcript, stream: []}}
   end
 
-  # agent thinking: streamed BEFORE the answer arrives; shown as a dim
-  # transient block and dropped when the turn's text lands.
+  # agent thinking: a dim block that interleaves with the answer text in
+  # the order the provider streamed them (see append_stream/3).
   #
   # Live report (clarified): the LINES rendered fine, but every delta
   # appended an empty line at the END — the box filled with blank rows
   # as the thinking streamed. Squeezing the DELTA misses the case where
   # GLM sends "\n" and "" deltas separately (l1\n + \n = l1\n\n ACROSS
-  # deltas). Squeeze the ACCUMULATED string instead, and strip the
+  # deltas). Squeeze the ACCUMULATED block instead, and strip the
   # trailing newline(s): the @air row owns the spacing after the block,
   # so trailing blanks only grow the box toward a screen of empty lines.
   def handle_info({:agent, {:reasoning_deltas, delta}}, state) do
-    # buffer-level: collapse doubled newlines and CRs. The trailing
-    # newline stays in the buffer (the next delta may rely on it as the
-    # line separator); the phantom empty row it produces is trimmed at
-    # render time (render_reasoning/1).
-    reasoning =
-      (state.reasoning <> delta)
-      |> String.replace("\r", "")
-      |> String.replace("\n\n", "\n")
-      |> String.replace_trailing("\n\n", "\n")
-
-    {:noreply, %{state | reasoning: reasoning}}
+    {:noreply, %{state | stream: append_stream(state.stream, :reasoning, delta)}}
   end
 
   def handle_info({:agent, {:tool_executed, name, content}}, state) do
     id = "tool-#{System.unique_integer([:positive])}"
 
     # display shape: capped output (head+tail) — the core session
-    # keeps the full output. Thinking streamed ahead of the tool call
-    # persists too (same rule as llm_message).
+    # keeps the full output. Reasoning/answer streamed ahead of the tool
+    # call persists too (same rule as llm_message).
     content = cap_lines(content, @tool_cap)
 
     transcript =
-      case persist_reasoning(state.reasoning) do
-        nil -> state.transcript ++ [{:tool, id, name, content}]
-        entry -> state.transcript ++ [entry, {:tool, id, name, content}]
-      end
+      state.transcript ++ persist_stream(state.stream, nil) ++ [{:tool, id, name, content}]
 
-    {:noreply, %{state | transcript: transcript, reasoning: ""}}
+    {:noreply, %{state | transcript: transcript, stream: []}}
   end
 
   def handle_info({:agent, {:context_compacted, _keep}}, state) do
@@ -1523,7 +1512,14 @@ defmodule CodingAgent.UI.Tui do
 
   def handle_info({:__run__, prompt}, state) do
     run_prompt(state, prompt)
-    {:noreply, %{state | status: :running, transcript: state.transcript ++ [{:user, prompt}]}}
+
+    {:noreply,
+     %{
+       state
+       | status: :running,
+         transcript: state.transcript ++ [{:user, prompt}],
+         stream: []
+     }}
   end
 
   # Terminal resize: the local transport dispatches no Resize events,
@@ -1856,6 +1852,100 @@ defmodule CodingAgent.UI.Tui do
   # separator as its own delta).
   defp render_reasoning(text), do: String.replace_trailing(text, "\n", "")
 
+  # Append a streamed delta to the IN-ORDER stream buffer. A delta of the
+  # SAME kind extends the last block; a kind SWITCH opens a new block, so
+  # reasoning and answer text keep their interleaved arrival order
+  # (opencode-style: a statement made between thoughts stays there). The
+  # cursor "▌" is not stored here — streaming_entries/1 appends it to the
+  # last assistant block at render time.
+  defp append_stream([], kind, delta), do: [{kind, normalize_block(kind, delta)}]
+
+  defp append_stream(stream, kind, delta) do
+    case List.last(stream) do
+      {^kind, prev} ->
+        List.replace_at(stream, -1, {kind, normalize_block(kind, prev <> delta)})
+
+      _other ->
+        stream ++ [{kind, normalize_block(kind, delta)}]
+    end
+  end
+
+  # Reasoning is normalized on the ACCUMULATED block (the GLM-split-delta
+  # lesson: "l1\n" + "\n" is one blank across deltas), collapsing doubled
+  # newlines and CRs but keeping at most one trailing newline as the next
+  # line's separator. Assistant text is kept verbatim (markdown).
+  defp normalize_block(:assistant, text), do: text
+
+  defp normalize_block(:reasoning, text) do
+    text
+    |> String.replace("\r", "")
+    |> String.replace("\n\n", "\n")
+    |> String.replace_trailing("\n\n", "\n")
+  end
+
+  # The in-flight stream as display entries, in order; the last assistant
+  # block carries the cursor. Reasoning blocks are trimmed so every
+  # consumer (measure, viewport, widget) sees the same string the widget
+  # paints — the raw buffer keeps its trailing "\n" and the window math
+  # overcounted the phantom row per frame (found live: 'scroll up three
+  # screens of blanks').
+  defp streaming_entries(%{stream: []}), do: []
+
+  defp streaming_entries(%{stream: stream}) do
+    last = length(stream) - 1
+
+    stream
+    |> Enum.with_index()
+    |> Enum.flat_map(fn
+      {{:reasoning, text}, _i} ->
+        case render_reasoning(text) do
+          "" -> []
+          t -> [{:reasoning, t}]
+        end
+
+      {{:assistant, text}, ^last} ->
+        [{:assistant, text <> "▌"}]
+
+      {{:assistant, text}, _i} ->
+        [{:assistant, text}]
+    end)
+  end
+
+  # Persist the in-flight stream as transcript entries, in arrival order.
+  # `final_text` is the authoritative answer from the session; when no
+  # assistant delta streamed (non-streamed/resumed turns) it becomes the
+  # single assistant entry.
+  defp persist_stream([], nil), do: []
+
+  defp persist_stream([], final_text), do: [{:assistant, breathe(final_text)}]
+
+  defp persist_stream(stream, final_text) do
+    stream
+    |> Enum.flat_map(fn
+      {:reasoning, text} ->
+        case persist_reasoning(text) do
+          nil -> []
+          entry -> [entry]
+        end
+
+      {:assistant, text} ->
+        if String.trim(text) == "", do: [], else: [{:assistant, breathe(text)}]
+    end)
+    |> ensure_answer(final_text)
+  end
+
+  # If deltas streamed only reasoning (no assistant text), fall back to
+  # the session's final text so the answer is never dropped.
+  defp ensure_answer(entries, nil), do: entries
+
+  defp ensure_answer(entries, final_text) do
+    if Enum.any?(entries, &match?({:assistant, _}, &1)) do
+      entries
+    else
+      entries ++ [{:assistant, breathe(final_text)}]
+    end
+  end
+
   # Finished thinking becomes a transcript entry (capped — a long
   # reasoning trace must not eat the screen; the full fidelity lives in
   # the core session). nil when there was nothing to persist.
@@ -1879,24 +1969,6 @@ defmodule CodingAgent.UI.Tui do
   # (info rects stay 1 row; the air below is background)
 
   defp first_line(text), do: text |> String.split("\n") |> List.first() |> String.slice(0, 80)
-
-  # transient stream entries: thinking first (dim), the in-flight
-  # answer after it (with cursor); both clear when the final message
-  # lands (llm_message handler)
-  defp streaming_entries(%{deltas: "", reasoning: ""}), do: []
-
-  # the streaming reasoning entry is TRIMMED here so every consumer
-  # (window measure, viewport, widget) sees the same string — the raw
-  # buffer keeps its trailing "\n" and the window math overcounted by
-  # the phantom row per frame, leaving blank rows between the box tail
-  # and the input (found live: 'scroll up three screens of blanks')
-  defp streaming_entries(%{deltas: "", reasoning: r}) when r != "",
-    do: if(t = render_reasoning(r), do: [{:reasoning, t}], else: [])
-
-  defp streaming_entries(%{deltas: d, reasoning: r}) do
-    if(t = render_reasoning(r), do: [{:reasoning, t}], else: []) ++
-      [{:assistant, d <> "▌"}]
-  end
 
   defp normalize_entry({:tool, id, name, content}), do: {:tool, id, name, content}
   defp normalize_entry({:user, t}), do: {:user, t}
