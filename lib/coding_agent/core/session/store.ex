@@ -112,9 +112,16 @@ defmodule CodingAgent.Core.Session.Store do
             # and %State{state | new_key: ...} raises KeyError against
             # such maps (the update validates against the runtime map,
             # not the compiled definition — found live resuming
-            # tui-1730). Rebuild functionally instead:
+            # tui-1730). Rebuild functionally instead.
+            #
+            # Drop keys this build does not know FIRST: a NEWER snapshot
+            # (same format_version 1, written by a later app version)
+            # carries extra struct keys and struct!/1 raises KeyError on
+            # them — an old binary must fail closed, not crash
+            # (codereview §4).
             restored =
               state
+              |> Map.take(Map.keys(State.__struct__()))
               |> Map.merge(%{
                 subscribers: [],
                 status: idle_or_interrupted(state),
@@ -169,6 +176,13 @@ defmodule CodingAgent.Core.Session.Store do
       new_id == "" or new_id == id ->
         {:error, :invalid_name}
 
+      # path-injection guard (codereview §5): new_id goes straight into
+      # path/1, so "../x" would escape the sessions dir. The picker's
+      # rename buffer accepts any printable char (including / and .), so
+      # this is reachable interactively — keep the invariant explicit.
+      not safe_id?(new_id) ->
+        {:error, :invalid_name}
+
       File.exists?(path(new_id)) ->
         {:error, :exists}
 
@@ -185,6 +199,14 @@ defmodule CodingAgent.Core.Session.Store do
             err
         end
     end
+  end
+
+  # A session id names exactly one file in the sessions dir: no path
+  # separators, no "..", no leading dot (a name must not collide with
+  # the hidden ".tmp-*" save files or traverse upward).
+  @spec safe_id?(String.t()) :: boolean()
+  defp safe_id?(id) do
+    Regex.match?(~r/^[A-Za-z0-9][A-Za-z0-9._-]*$/, id)
   end
 
   # a live session under the old id re-saves with its in-memory (old)

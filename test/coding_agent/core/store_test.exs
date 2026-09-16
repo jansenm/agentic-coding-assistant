@@ -142,6 +142,28 @@ defmodule CodingAgent.Core.Session.StoreTest do
       File.write!(Store.path(id), payload)
       assert {:error, _} = Store.load(id)
     end
+
+    test "a NEWER snapshot with unknown struct keys fails closed, not KeyError (codereview §4)" do
+      id = "newer-#{System.unique_integer()}"
+      state = build_state(id)
+
+      # simulate a snapshot written by a later app version: extra keys
+      # in the struct map (same format_version 1) — struct!/1 rejects
+      # unknown keys, so the old binary must drop them, not crash
+      newer =
+        state
+        |> Map.put(:a_field_from_the_future, 42)
+        |> Map.put(:another_future_key, "x")
+
+      payload = :erlang.term_to_binary({1, newer})
+      File.mkdir_p!(@test_dir)
+      File.write!(Store.path(id), payload)
+
+      # must not raise; unknown keys dropped, known state restored
+      assert {:ok, loaded} = Store.load(id)
+      assert loaded.id == id
+      assert loaded.model == "ollama:test-model"
+    end
   end
 
   describe "list/0" do
@@ -322,6 +344,27 @@ defmodule CodingAgent.Core.Session.StoreTest do
     assert {:error, :invalid_name} = Store.rename("ren-c", "")
     assert {:error, :invalid_name} = Store.rename("ren-c", "  ")
     assert {:error, :invalid_name} = Store.rename("ren-c", "ren-c")
+  end
+
+  test "rename/2 refuses path-injecting ids (codereview §5)" do
+    ctx = Context.new([Context.user("hi")])
+
+    State.new(id: "ren-inj", context: ctx, model: "m", status: :idle, scope_root: @test_dir)
+    |> Store.save()
+
+    # every one of these would escape or collide with the sessions dir;
+    # none may rename, and the original must stay intact
+    for bad <- ["../evil", "../../x", "a/b", "a\\b", ".hidden", ".tmp-1", "-lead", "/abs"] do
+      assert {:error, :invalid_name} = Store.rename("ren-inj", bad),
+             "expected #{inspect(bad)} to be refused"
+    end
+
+    assert File.exists?(Store.path("ren-inj"))
+    assert {:ok, %{id: "ren-inj"}} = Store.load("ren-inj")
+
+    # a valid dotted/dashed name still works (the guard is not too tight)
+    assert {:ok, "ren.v2-ok"} = Store.rename("ren-inj", "ren.v2-ok")
+    assert File.exists?(Store.path("ren.v2-ok"))
   end
 
   test "rename/2 notifies a live session: its next save lands on the new id" do
