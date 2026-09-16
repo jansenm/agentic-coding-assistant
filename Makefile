@@ -18,22 +18,24 @@ endif
 ## STANDARD TARGETS
 ## ----------------
 
-## all                 » default target: build the crate
+MIX ?= mix
+
+## all                 » default target: build the app
 .PHONY: all all-do
 all: all-start all-do build all-end
 all-do:
 
-## build               » build the crate (debug, includes LSP)
+## build               » compile the Elixir app
 .PHONY: build build-do
-build: build-start $(MANPAGES) build-do build-end
+build: build-start build-do build-end
 build-do:
-	@echo "todo"
+	$(MIX) compile
 
-## test                » run the tests
+## test                » run the test suite (LLM-free, network-free)
 .PHONY: test test-do
 test: test-start build test-do test-end
 test-do:
-	@echo "todo"
+	$(MIX) test
 
 ## check               » run the tests (GNU standard alias)
 .PHONY: check
@@ -43,23 +45,22 @@ check: test
 .PHONY: doc doc-do
 doc: doc-start doc-do doc-end
 doc-do:
-	@cd docs && $(MAKE) -F Makefile build
+	$(MAKE) -C docs build
 
 ##
 ## INSTALLATION
 ## ------------
 
-## install             » install binaries and man pages
-.PHONY: install install-do
-install: install-start install-do install-end
-install-do:
-	@echo "todo"
+## install             » not packaged: nothing to install (run via `mix`)
+.PHONY: install
+install:
+	$(info coding_agent is not distributable yet — run it with `mix`.)
+	$(info see README for `mix deps.get` / `mix test`.)
 
-## uninstall           » remove installed files
-.PHONY: uninstall uninstall-do
-uninstall: uninstall-start uninstall-do uninstall-end
-uninstall-do:
-	@echo "todo"
+## uninstall           » nothing installed, nothing to remove
+.PHONY: uninstall
+uninstall:
+	$(info nothing was installed by `make install`.)
 
 ##
 ## HELPER
@@ -69,17 +70,19 @@ uninstall-do:
 ## CODE QUALITY
 ## ------------
 
-## commit              » execute commit checks
+## commit              » execute the pre-commit checks (format + warnings + tests)
 .PHONY: commit commit-do
 commit: commit-start commit-do commit-end
 commit-do:
-	@echo "todo"
+	$(MIX) format --check-formatted
+	MIX_ENV=test $(MIX) compile --warnings-as-errors
+	$(MIX) test
 
 ## format              » format the sources
 .PHONY: format format-do
 format: format-start format-do format-end
 format-do:
-	@echo "todo"
+	$(MIX) format
 
 ## reuse               » run reuse
 .PHONY: reuse reuse-do
@@ -95,13 +98,13 @@ reuse-do:
 .PHONY: clean clean-do
 clean: clean-start mostlyclean clean-do clean-end
 clean-do:
-	@cd docs && $(MAKE) -F Makefile clean
+	$(MAKE) -C docs clean
 
-## mostlyclean         » remove build artifacts
+## mostlyclean         » remove build artifacts (keep deps)
 .PHONY: mostlyclean mostlyclean-do
 mostlyclean: mostlyclean-start mostlyclean-do mostlyclean-end
 mostlyclean-do:
-	@echo "todo"
+	rm -rf _build
 
 ## distclean           » remove everything not part of the release
 .PHONY: distclean distclean-do

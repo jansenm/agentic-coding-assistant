@@ -48,8 +48,8 @@ skills execution, todowrite, question — see "Later".
 | Runtime                  | Elixir/OTP, pure-Elixir dependency tree            | [002](docs/source/decisions/002-elixir-beam.rst)        |
 | Agent core               | Hand-rolled loop, no agent framework               | [003](docs/source/decisions/003-agent-framework.rst)    |
 | LLM client               | `req_llm`                                          | [005](docs/source/decisions/005-llm-client.rst)         |
-| Terminal UI              | Hand-rolled on `ex_termbox`                        | [004](docs/source/decisions/004-terminal-framework.rst) |
-| Terminal input           | Readline-style editing component on termbox events | [006](docs/source/decisions/006-terminal-input.rst)     |
+| Terminal UI              | Hand-rolled on `ex_ratatui` (supersedes `ex_termbox`) | [004](docs/source/decisions/004-terminal-framework.rst), [012](docs/source/decisions/012-tui-backend.rst) |
+| Terminal input           | Readline-style editing component on ratatui events | [006](docs/source/decisions/006-terminal-input.rst), [012](docs/source/decisions/012-tui-backend.rst) |
 | Multi-agent target model | Specialist/repository matrix                       | [007](docs/source/decisions/007-agent-matrix.rst)       |
 
 ## Phases

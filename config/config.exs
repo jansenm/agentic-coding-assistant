@@ -1,6 +1,6 @@
 import Config
 
-# CodeingAgent configuration (ADR 008): collect knobs here while the
+# CodingAgent configuration (ADR 008): collect knobs here while the
 # application grows; secrets come from the environment, never this file.
 
 config :coding_agent,
@@ -21,12 +21,16 @@ config :coding_agent,
   # burned 25 rounds live and died mid-work; the default is now 100.
   # Configurable: :max_tool_rounds in config.exs or a user config
   # override, so heavyweight tasks can turn it up.
-  max_tool_rounds: 100,
-  # environment variable holding the provider API key (ADR 008: secrets
-  # come from the environment, never from config files). Cloud ollama
-  # models are not in req_llm's catalog; suppress the unverified warning.
-  api_key_env: "ANTHROPIC_API_KEY"
+  max_tool_rounds: 100
 
+# Credentials are NOT configured here: secrets come from the environment
+# (ADR 008), and Request resolves them per provider as `<NAME>_API_KEY`
+# via UserConfig.credential/1, then auth.toml. The old `api_key_env:
+# "ANTHROPIC_API_KEY"` key was read by nobody — it sat under a comment
+# about cloud ollama and misled (codereview docs drift).
+#
+# Cloud ollama models are not in req_llm's catalog; suppress the
+# unverified-model warning.
 config :req_llm, warn_unverified_models: false
 
 # Import environment specific config. This must remain at the bottom
