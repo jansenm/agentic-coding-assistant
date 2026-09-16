@@ -174,6 +174,15 @@ defmodule CodingAgent.Core.Session do
     test_mode = Keyword.get(opts, :test_mode, false)
     policy = Keyword.get(opts, :policy) || load_policy(scope_root)
 
+    # Resume support (4a): a resumed session must carry the persisted
+    # usage forward. last_input_tokens is the ONLY sound compaction
+    # measure; without it decide/2 takes the chars fallback and compacts
+    # a just-resumed session on its first command regardless of the real
+    # token count (found live: every resumed session compacted at once).
+    usage = Keyword.get(opts, :usage) || %{input_tokens: 0, output_tokens: 0, cost: nil}
+    compaction_warned = Keyword.get(opts, :compaction_warned, false)
+    compaction_backoff = Keyword.get(opts, :compaction_backoff, 0)
+
     # Project memory (4c): AGENTS.md at the scope root is read once at
     # session start and appended to the system prompt — the long-term
     # memory tier that writes knowledge down as files (memory.rst).
@@ -210,6 +219,12 @@ defmodule CodingAgent.Core.Session do
        # with :bad_entry and the model menu showed only the current
        # model.
        provider_config: UserConfig.load(scope_root).config["providers"] || %{},
+       # resumed state carried forward: usage drives the compaction
+       # trigger (see above), warned/backoff avoid re-warning and
+       # re-retrying a summarize that already failed before the restart
+       usage: usage,
+       compaction_warned: compaction_warned,
+       compaction_backoff: compaction_backoff,
        test_mode: test_mode
      )}
   end

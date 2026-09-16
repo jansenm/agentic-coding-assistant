@@ -197,7 +197,12 @@ defmodule Mix.Tasks.Agent do
           context: persisted.context,
           model: persisted.model,
           scope_root: persisted.scope_root,
-          policy: persisted.policy
+          policy: persisted.policy,
+          # carry the persisted usage forward or the session takes the
+          # chars fallback and compacts on the first command
+          usage: persisted.usage,
+          compaction_warned: persisted.compaction_warned,
+          compaction_backoff: persisted.compaction_backoff
         ]
 
         {:ok, _pid} = CodingAgent.Core.Session.Supervisor.start_session(opts)

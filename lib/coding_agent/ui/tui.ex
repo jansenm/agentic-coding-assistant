@@ -17,8 +17,9 @@ defmodule CodingAgent.UI.Tui do
 
   use ExRatatui.App
 
-  alias CodingAgent.Core.{Compaction, Session}
+  alias CodingAgent.Core.Session
   alias CodingAgent.Core.Providers.Discovery
+  alias CodingAgent.Core.Session.Compactor
   alias CodingAgent.Core.Session.Supervisor
   alias CodingAgent.Core.Session.Store
   alias CodingAgent.UI.{Bridge, Keymap, Menu, TranscriptView}
@@ -349,7 +350,12 @@ defmodule CodingAgent.UI.Tui do
                  context: state.context,
                  model: state.model,
                  scope_root: state.scope_root,
-                 policy: state.policy
+                 policy: state.policy,
+                 # carry the persisted usage forward or the session takes
+                 # the chars fallback and compacts on the first command
+                 usage: state.usage,
+                 compaction_warned: state.compaction_warned,
+                 compaction_backoff: state.compaction_backoff
                ) do
           {:ok, pid, state}
         end
@@ -1915,12 +1921,11 @@ defmodule CodingAgent.UI.Tui do
     usage = Map.get(state, :session_usage) || %{input_tokens: 0, output_tokens: 0, cost: nil}
     window = Application.get_env(:coding_agent, :context_window_tokens, 500_000)
 
-    trigger =
-      Application.get_env(
-        :coding_agent,
-        :compaction_trigger_tokens,
-        Compaction.default_trigger_tokens()
-      )
+    # ONE reader of the compaction policy: the sidebar renders the same
+    # trigger/warn numbers the Compactor decides on (the old copies
+    # re-read the config key and re-hardcoded the 0.8 fraction).
+    trigger = Compactor.trigger()
+    warn_at = Compactor.warn_threshold()
 
     # per-frame UserConfig.load removed (the CPU storm): the merged
     # config ships in state, read once per mount
@@ -1942,9 +1947,9 @@ defmodule CodingAgent.UI.Tui do
     last_in = Map.get(usage, :last_input_tokens, 0)
     pct = trunc(last_in * 100 / max(window, 1))
 
-    # pre-compaction notice territory: 80%+ of the trigger → visible warning
+    # pre-compaction notice territory: the Compactor's warn threshold
     pct_style =
-      if last_in >= trunc(trigger * 0.8), do: %Style{fg: :yellow}, else: %Style{fg: :dark_gray}
+      if last_in >= warn_at, do: %Style{fg: :yellow}, else: %Style{fg: :dark_gray}
 
     lines = [
       Text.Line.new([Text.Span.new("session", style: %Style{fg: :dark_gray})]),
