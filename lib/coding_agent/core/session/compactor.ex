@@ -291,14 +291,24 @@ defmodule CodingAgent.Core.Session.Compactor do
 
   # Absolute threshold from config — visible in the sidebar, predictable
   # (the opencode lesson: compaction must be a known quantity, not a
-  # silent %-of-window surprise).
-  defp trigger do
+  # silent %-of-window surprise). Public: the sidebar renders the same
+  # number, and there must be ONE reader of the config key.
+  @spec trigger() :: pos_integer()
+  def trigger do
     Application.get_env(
       :coding_agent,
       :compaction_trigger_tokens,
       Compaction.default_trigger_tokens()
     )
   end
+
+  @doc """
+  The token count at which the approaching-compaction warning fires
+  (`#{@warn_fraction}` of the trigger). Public so the sidebar and
+  `warn_approaching/2` cannot drift apart on the fraction.
+  """
+  @spec warn_threshold() :: non_neg_integer()
+  def warn_threshold, do: trunc(trigger() * @warn_fraction)
 
   defp wall_clock,
     do: Application.get_env(:coding_agent, :compaction_wall_clock_ms, @wall_clock_ms)
