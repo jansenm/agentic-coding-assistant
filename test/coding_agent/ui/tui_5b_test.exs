@@ -134,6 +134,43 @@ defmodule CodingAgent.UI.Tui5bTest do
       # status settles via the {:__decided__} reply (races the file write)
       wait_until(fn -> sync(pid).status == :idle end)
     end
+
+    test "a refused decide does not lose the dialog (codereview §13)" do
+      root = Path.join(System.tmp_dir!(), "tui5b-#{System.unique_integer()}")
+      File.mkdir_p!(root)
+      on_exit(fn -> File.rm_rf!(root) end)
+      policy = write_ask_policy(root)
+
+      sid = "tui5b-#{System.unique_integer()}"
+
+      {:ok, _} =
+        CodingAgent.Core.Session.Supervisor.start_session(
+          id: sid,
+          scope_root: root,
+          policy: policy,
+          test_mode: true
+        )
+
+      :ok =
+        CodingAgent.Core.Session.debug_gate(sid, [
+          %{id: "c1", name: "write_file", arguments: %{"path" => "z.txt", "content" => "z"}}
+        ])
+
+      pid = start_app(session_id: sid)
+      assert length(sync(pid).pending) == 1
+
+      # the session stops waiting on its own (as after a race): the TUI's
+      # optimistic close must NOT have discarded the dialog silently —
+      # a refused decide re-syncs to the real state instead of erroring
+      {:ok, _} = CodingAgent.Core.Session.decide(sid, [%{id: "c1", decision: :reject}])
+
+      type(pid, "y")
+
+      # converges to idle with no pending dialog and no crash; the file
+      # was rejected by the first decide, so y did not write it
+      wait_until(fn -> sync(pid).status == :idle and sync(pid).pending == [] end)
+      refute File.exists?(Path.join(root, "z.txt"))
+    end
   end
 
   # repo-side ask policy: the 2026-09-15 amendment made write_file

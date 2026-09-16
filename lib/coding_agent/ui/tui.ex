@@ -166,6 +166,10 @@ defmodule CodingAgent.UI.Tui do
       history_draft: nil,
       pending: [],
       pending_edit: nil,
+      # true from pressing y/n until the {:__decided__} reply lands:
+      # the dialog is hidden but `pending` is NOT dropped, so an
+      # errored decide/2 can re-show it (codereview §13)
+      deciding?: false,
       last_error: nil,
       scroll_offset: 0,
       open_tool_id: nil,
@@ -303,6 +307,7 @@ defmodule CodingAgent.UI.Tui do
         history_draft: nil,
         pending: pending,
         pending_edit: nil,
+        deciding?: false,
         last_error: nil,
         # 0 = follow the tail (auto-scroll); >0 = pinned N lines up
         scroll_offset: 0,
@@ -798,7 +803,9 @@ defmodule CodingAgent.UI.Tui do
         {:noreply, put_in_textarea(state, code)}
 
       {:key, km_event} ->
-        if state.pending != [] do
+        # while the decide task is in flight the dialog is hidden and its
+        # keys must not fire again
+        if state.pending != [] and not Map.get(state, :deciding?, false) do
           handle_decision_key(km_event, state)
         else
           handle_input_key(km_event, ev, state)
@@ -1318,8 +1325,11 @@ defmodule CodingAgent.UI.Tui do
       send(parent, {:__decided__, result})
     end)
 
-    # optimistic UI: dialog closes now, real status arrives with the reply
-    %{state | pending: [], pending_edit: nil, status: :running}
+    # Optimistic UI: HIDE the dialog now (deciding?), but KEEP `pending`
+    # until the reply. If decide/2 errors (e.g. {:not_interrupted, :idle}
+    # from a race), the dialog can re-appear instead of losing the user's
+    # answer with the calls still parked on the session (codereview §13).
+    %{state | deciding?: true, pending_edit: nil, status: :running}
   end
 
   defp forward_to_textarea(state, ev) do
@@ -1400,11 +1410,34 @@ defmodule CodingAgent.UI.Tui do
 
   @impl true
   def handle_info({:__decided__, {:ok, status}}, state) do
-    {:noreply, %{state | status: status}}
+    # The decisions landed. The parked calls are gone UNLESS the turn
+    # paused again (status :interrupted) — in that case a fresh
+    # status_changed broadcast carries the new pending list, so keep it
+    # and just clear the deciding guard.
+    pending = if status == :interrupted, do: state.pending, else: []
+    {:noreply, %{state | status: status, pending: pending, deciding?: false}}
+  end
+
+  # the session is no longer waiting (its parked calls resolved or were
+  # dropped elsewhere): the dialog is stale, clear it
+  def handle_info({:__decided__, {:error, {:not_interrupted, status}}}, state) do
+    {:noreply, %{state | pending: [], deciding?: false, status: status}}
   end
 
   def handle_info({:__decided__, {:error, reason}}, state) do
-    {:noreply, %{state | last_error: reason, status: :error}}
+    # any other refusal (e.g. missing decisions): the session may still
+    # hold the calls, so RE-OPEN the dialog with a visible note instead
+    # of silently losing the user's y/n — `pending` was never dropped
+    # (codereview §13)
+    {:noreply,
+     %{
+       state
+       | last_error: reason,
+         deciding?: false,
+         stop_confirm?: false,
+         status: :interrupted,
+         transcript: state.transcript ++ [{:info, "✖ decision failed: #{error_text(reason)}"}]
+     }}
   end
 
   def handle_info({:agent, {:llm_deltas, delta}}, state) do
@@ -1416,6 +1449,16 @@ defmodule CodingAgent.UI.Tui do
     # arm is stale once the agent is no longer busy
     state =
       if status in [:idle, :error, :interrupted], do: %{state | stop_confirm?: false}, else: state
+
+    # an authoritative move OFF :interrupted means the parked calls are
+    # resolved or gone: clear the dialog and the deciding guard (a
+    # refused decide/2 can race a status broadcast — codereview §13)
+    state =
+      if status != :interrupted do
+        %{state | pending: [], deciding?: false}
+      else
+        state
+      end
 
     {:noreply, %{state | status: status}}
   end
@@ -2351,6 +2394,10 @@ defmodule CodingAgent.UI.Tui do
   end
 
   defp dialog_widgets(%{pending: []}, _area), do: []
+
+  # hidden while the decide task runs, but `pending` is retained so an
+  # error reply can re-show it (codereview §13)
+  defp dialog_widgets(%{deciding?: true}, _area), do: []
 
   defp dialog_widgets(%{pending: pending}, area) do
     pending
