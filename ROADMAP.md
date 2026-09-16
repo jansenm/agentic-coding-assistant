@@ -8,7 +8,10 @@ SPDX-License-Identifier: MPL-2.0
 An agentic coding assistant for Elixir/BEAM — trustworthy, lightweight,
 compilable from source, terminal-first.
 
-Status: **phase 2 in progress** — the Mix app `coding_agent` is live
+Status: **phase 5 in progress** — phases 1-2 (core loop, tool subsystem)
+and 4 (sessions & memory) are done; the dogfood milestone is
+conditionally met, and the terminal experience (5a-5c, 5f-5h) has
+shipped its core. The Mix app `coding_agent` is live
 (single app, supervision tree, req_llm wired): streaming agent loop,
 multi-turn chat, scoped file tools, permission gate (HITL). The
 architecture and technology decisions are recorded as ADRs in
@@ -34,12 +37,15 @@ post-milestone:
 - Loop: multi-turn chat with streaming (✅); model tool-calling
   reliability and context management (compaction) are the real
   unknowns — dogfooding is how we find out.
-- Safety: shipping `agent-permissions.toml` hardened from day one
-  (shell always-ask, `git` behind the gate), with git as the undo
+- Safety: shipping the project policy file hardened from day one
+  (`.coding-agent/permissions.toml`, ADR 014; the legacy
+  `agent-permissions.toml` at the scope root is still read) —
+  shell always-ask, `git` behind the gate — with git as the undo
   mechanism.
 
 Explicitly *not* needed for the milestone: webfetch, websearch, lsp,
-skills execution, todowrite, question — see "Later".
+skills execution, todowrite, question — see "Later". (Webfetch has
+since shipped anyway, ADR 013 — dogfood showed doc work needed it.)
 
 ## Decided
 
@@ -65,9 +71,9 @@ skills execution, todowrite, question — see "Later".
    - **2a. Read-only tools** ✅ — registry, `list_dir` + `read_file`
      with path-escape checks, full ReAct loop (verified live: correct
      recursive file count).
-   - **2b. Permission gate** ✅ — `agent-permissions.toml`
+   - **2b. Permission gate** ✅ — project policy file
      (restrictive-wins layered merge, fail-closed), gate checkpoint with
-     `:allow | :ask | :deny`, `decide/3` API (`:approve | :edit |
+     `:allow | :ask | :deny`, `decide/2` API (`:approve | :edit |
      :reject`), `write_file` behind the gate, stdin approval stub.
      Acceptance demo passed → ADR 010 Accepted.
    - **2c. Shell execution** ✅ — command semantics per ADR 010 (always-
@@ -106,18 +112,20 @@ skills execution, todowrite, question — see "Later".
 3. **Dogfood milestone** — **conditionally met** (first real task:
    README rework, executed end-to-end in `mix agent --chat`, agent-
    initiated verification via shell, fact-checked result committed).
-   Proven: the loop, all seven tools, gate round-trips, model
-   research-before-write. Not yet proven: long sessions (context
-   growth — no compaction), multi-turn work-in-progress, trust
-   scaling. Those are exactly phase 4's territory, which becomes the
-   critical path. Dogfood also surfaced 9+ interaction bugs, fixed
+   Proven: the loop, the then-seven tools, gate round-trips, model
+   research-before-write. Not yet proven at the time: long sessions
+   (context growth — no compaction), multi-turn work-in-progress, trust
+   scaling. Those were phase 4's territory, now ✅ (persistence,
+   resume, compaction, project memory); the remaining proof is sustained
+   real-world use. Dogfood also surfaced 9+ interaction bugs, fixed
    along the way (hung receive, one-shot approval loop, 2-min decide
    timeout, write_file-shaped arg editing, silent reject-on-prose,
    grep/glob wrongly gated, paste-queue desync, stateless transcript
    framing) — the phase-5 TUI requirements list.
 4. **Sessions & memory** ✅ — persistence, resume, compaction of the
-   working context, project memory (AGENTS.md at session start).
-   The dual display view is phase-5 TUI work.
+   working context, project memory (AGENTS.md at session start; the
+   parent-dir walk / user-level fallback of 4c are the phase-5
+   remainder). The dual display view is phase-5 TUI work.
 
    - **4a. Persistence & resume** ✅ — `Session.Store`:
      version-tagged `term_to_binary` snapshots under
@@ -131,7 +139,8 @@ skills execution, todowrite, question — see "Later".
      rejection broke cross-process resume; stream errors crashed the
      session GenServer instead of failing the turn.
    - **4b. Compaction** ✅ — summarize-and-trim before each LLM call:
-     80k-char trigger, last 6 messages kept verbatim, model-written
+     80k-char trigger (superseded by 5f's absolute token trigger),
+     last 6 messages kept verbatim, model-written
      summary replaces the old span, compacted state persists
      immediately; summary-call failure degrades (keeps full context),
      never errors. Lifecycle verbs shipped first per the storage
@@ -144,17 +153,25 @@ skills execution, todowrite, question — see "Later".
      with a warning; missing = normal). Knowledge stays in the repo —
      versioned, greppable, editable with our own tools. Parent-dir
      walk and user-level fallback remain phase 5.
-   - **4c. Project memory** ✅ — `AGENTS.md` at the scope root is read
-     at session start into the system prompt (64 KiB cap, truncated
-     with a warning; missing = normal). Knowledge stays in the repo —
-     versioned, greppable, editable with our own tools. Parent-dir
-     walk and user-level fallback remain phase 5.
 5. **Terminal experience** — transcript pane, input line (ADR 006
-   semantics on ADR 012 backend), approval flows, session switcher.
+   semantics on ADR 012 backend), approval flows, session switcher ✅.
    The dogfood ledger is the requirements list (state line, approval
    widget with multiline editing, multi-line paste, streaming render,
-   session switcher, resize/scrollback).
+   session switcher ✅, resize/scrollback).
 
+   Slices are lettered by when they entered the plan; 5d/5e were never
+   scoped. (ADR 011 labels the session-switcher binding "5d"; that
+   shipped via the ctrl-x menu as 5h instead.)
+
+   - **5a. Foundation + state line** ✅ — ADR 012 (ex_ratatui
+     backend, superseding the termbox amendment: the C build was
+     broken (waf/python2-era) and the rust core is the battle-tested
+     part: ratatui 48M downloads on crossterm 185M). UI.Tui driver
+     app: alt-screen transcript + status line rendering live session
+     events (deltas, status, tool executions, compaction notices),
+     session resume support, `mix tui` entry. 4 headless-runtime
+     tests (test_mode + event injection) — the discipline from
+     ADR 011/012 holds: no terminal needed in CI.
    - **5b. Input + approval flow** ✅ — input area (ex_ratatui
      Textarea) driven by the ADR 011 keymap via UI.Bridge: enter =
      newline, alt-enter = send, ctrl-enter = send (kitty hook),
@@ -188,17 +205,8 @@ skills execution, todowrite, question — see "Later".
      headless buffer, cached in ETS) with mouse wheel + pgup/pgdn,
      clamped at both ends AT THE INPUT (the silent-inflation hang).
      Real terminal dims via mount capture + 500ms resize poller (the
-     render-persistence illusion + no local Resize events — both found
-     live). Status line carries live scroll diagnostics.
-   - **5a. Foundation + state line** ✅ — ADR 012 (ex_ratatui
-     backend, superseding the termbox amendment: the C build was
-     broken (waf/python2-era) and the rust core is the battle-tested
-     part: ratatui 48M downloads on crossterm 185M). UI.Tui driver
-     app: alt-screen transcript + status line rendering live session
-     events (deltas, status, tool executions, compaction notices),
-     session resume support, `mix tui` entry. 4 headless-runtime
-     tests (test_mode + event injection) — the discipline from
-     ADR 011/012 holds: no terminal needed in CI.
+      render-persistence illusion + no local Resize events — both found
+      live). Status line carries live scroll diagnostics.
    - **5f. Compaction recalibrated (the opencode lesson)** ✅ —
      absolute token trigger (`compaction_trigger_tokens`, 180k
      default) replacing the 70%-of-window rule: the user's GLM
@@ -222,8 +230,20 @@ skills execution, todowrite, question — see "Later".
      (opencode-style, floor 4 rows, cap 12) and re-derives pane dims
      on every keystroke; tool loop limit 12 -> 25 (a real task burned
      16 gate rounds and died; the agent blamed 'flaky parallel calls')
-     with an honest error message; webfetch (ADR 013) so doc work
+     with an honest error message — later raised to 100 per the 5f
+     review lesson; webfetch (ADR 013) so doc work
      doesn't burn tool rounds; compaction recalibrated (5f).
+   - **5h. Command menus, session switcher, esc-stop, markdown thinking**
+     ✅ — `ctrl-x` command menu (fast-path letter within 1 s, timeout
+     opens the popup; `switch session`, `toggle tool output`,
+     `show keymaps`, `toggle sidebar`, `quit`), session switcher with
+     keep-alive attach; double-esc to stop a running turn (armed esc,
+     disarmed by any key/status change) on the `Core.Interrupt` ETS seam
+     with hard stream cancel; reasoning rendered as Markdown like the
+     answer (dim+italic base style, hard breaks preserve line structure);
+     sidebar widened 24 -> 36 columns and toggleable (`ctrl-x p` / mount
+     `sidebar: false`); answer text interleaves with thoughts in arrival
+     order rather than collapsing below them.
 6. **Multi-agent** — agent definitions as data, orchestration roles
    (plan/execute/analyze), the specialist/repository matrix (ADR 007).
    Cross-repo change atomicity gets its own ADR first.
@@ -244,8 +264,11 @@ TUI wish-list (user's own list, keyboard-first, from the live sessions):
 - **Frame-scrolling artifacts** (user will fix personally when
   learning the code — not a stopper): scrolling with the frames
   around user input / tool call boxes still glitches.
-- **5d leftover: approval-arg editing** in the TUI dialog (currently
-  an on-screen 'arrives later' notice; e is reserved).
+- **Approval-arg editing** in the TUI dialog (currently an on-screen
+  'arrives later' notice; e is reserved). Leftover from the phase-5
+  approval work; ADR 011 separately labels an unbuilt session-switcher
+  binding "5d", and that switcher has since shipped via the ctrl-x menu
+  (5h), so treat "5d" as a loose label.
 - `reasoning_effort` config knob surfaced in the sidebar (currently
   shows 'effort: default'; add `reasoning_effort: :high` to config
   when GLM effort is wanted).
@@ -269,16 +292,24 @@ TUI wish-list (user's own list, keyboard-first, from the live sessions):
   entry_widgets), never in the buffer (per-delta trim glues the next
   delta's first word when the separator streams as its own delta —
   test-locked).
+- **Session list decodes the full context per file** (one day, perf):
+  `Store.list/0` and `list_in/1` still `term_to_binary`-decode every
+  whole session (context included) just to read id/model/mtime/scope.
+  The double decode is gone (one `list_entries/0` pass), but a picker
+  at 50+ sessions will feel it. Cheap fix: a small sidecar/header
+  (id/model/mtime/scope written at save time, or a light summary
+  element in the versioned tuple). Not correctness — defer until a
+  picker actually lags.
 
 | opencode tool | Ours | Note |
 |---|---|---|
 | `read` | `read_file` ✅ | parity (containment is *structural* here, not config-advised) |
-| `write` | `write_file` ✅ | parity; ours always-gated (stricter, deliberate) |
-| `bash` | `shell` (2c) | parity; ours always-ask in v1 vs their config-optional |
-| `glob` | (2d) | slot into existing read-only containment |
-| `grep` | (2d) | line-numbered, capped |
-| `edit`/`apply_patch` | (2e) | fail-closed on non-unique match |
-| `webfetch` | `webfetch` ✅ (7a) | ADR 013: always-ask, scheme allowlist, SSRF private-net block, 128 KiB cap; de-tagged text (markdown conversion one day) |
+| `write` | `write_file` ✅ | parity; allow-by-default since the 2026-09-15 ADR 010 amendment (contained + reviewable via the VCS diff); an out-of-scope path is refused by containment, not prompted |
+| `bash` | `shell` ✅ (2c) | parity; ours always-ask in v1 vs their config-optional |
+| `glob` | `glob` ✅ (2d) | slot into existing read-only containment |
+| `grep` | `grep` ✅ (2d) | line-numbered, capped |
+| `edit`/`apply_patch` | `edit` ✅ (2e) | fail-closed on non-unique match |
+| `webfetch` | `webfetch` ✅ | ADR 013: always-ask, scheme allowlist, SSRF private-net block (re-checked per redirect hop), 128 KiB cap; de-tagged text (markdown conversion one day) |
 | `websearch` | one day | search-API dependency; low value for a coding agent |
 | `lsp` | unlikely | language-server surface is huge; compile/test loop covers most agent needs |
 | `skill` | ADR 007 territory | frontmatter loading documented in configuration-landscape; execution later |
@@ -293,7 +324,7 @@ Beyond tools — the trajectory after dogfooding, roughly:
 
 1. **Get it running for dogfooding** (milestone above).
 2. **Optimize it for dogfooding** — the loop learns this repo's workflow (compaction, the delegate-locator idea: a cheap local model hunts files in its own context and returns location lines only, grove-explore-style; audit traces like grove's `tap`).
-3. **Then the owner's actual domain**: Java / Maven / Jenkins workspace motivation — multi-repo matrix (ADR 007), Maven POM comprehension, Jenkinsfile/Groovy tooling. All future; nothing here should block slices 2c-2e.
+3. **Then the owner's actual domain**: Java / Maven / Jenkins workspace motivation — multi-repo matrix (ADR 007), Maven POM comprehension, Jenkinsfile/Groovy tooling. All future; nothing here blocks the shipped tools (2c-2e are done).
 
 The structural difference to record when touching ADR 010 next:
 opencode-style agents fail *open* on symlink escapes (their `read`
@@ -340,14 +371,6 @@ shell duplicate, and a user trained to rubber-stamp prompts is the
 real security loss. `sed -n`/`cat`/`ls` are one-line follow-ups (each
 needs its collision check first). See ADR 010 amendment 2 +
 `Shell.blacklisted?/1`.
-
-```toml
-# .coding-agent/permissions.toml
-[permissions.write_file]
-".git/**" = "ask"
-"AGENTS.md" = "ask"
-".env*" = "ask"
-```
 
 ## Ground rules
 
