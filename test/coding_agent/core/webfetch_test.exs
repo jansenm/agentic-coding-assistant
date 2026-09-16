@@ -1,5 +1,5 @@
 defmodule CodingAgent.Core.Tools.WebFetchTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   @tmp_root System.tmp_dir!() |> Path.join("agent-webfetch-#{System.unique_integer()}")
 
@@ -62,14 +62,13 @@ defmodule CodingAgent.Core.Tools.WebFetchTest do
       )
     end
 
-    test "public IPv4 literal passes the host check (request may still fail)" do
-      tool = CodingAgent.Core.Tools.WebFetch.tool(nil)
-
-      # 93.184.216.34 (example.com historically) — host check passes;
-      # the fetch itself fails offline, which is fine: the assertion is
-      # that the error is NOT the private-address refusal
-      {:error, msg} = ReqLLM.Tool.execute(tool, %{"url" => "http://93.184.216.34/x"})
-      refute msg =~ "refusing private network address"
+    test "public IPv4 literal passes the host check (guarded directly, no fetch)" do
+      # 93.184.216.34 (example.com historically) — the host check must
+      # NOT refuse it. Asserted through the guard seam (check_host/1)
+      # rather than a real fetch: the point is the verdict, not the
+      # network round-trip (a live fetch here cost ~5 s per run).
+      assert :ok = CodingAgent.Core.Tools.WebFetch.check_host(%URI{host: "93.184.216.34"})
+      assert :ok = CodingAgent.Core.Tools.WebFetch.check_host(%URI{host: "8.8.8.8"})
     end
   end
 

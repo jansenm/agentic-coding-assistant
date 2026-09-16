@@ -74,8 +74,12 @@ defmodule CodingAgent.Core.Tools.WebFetch do
 
   # SSRF guard (ADR 013): resolve and refuse private ranges. The
   # documented residual risk is DNS rebinding between this check and
-  # the connect — accepted for v1.
-  defp check_host(%URI{host: host}) do
+  # the connect — accepted for v1. Public for tests (@doc false): the
+  # guard is the security boundary, so it is asserted directly without
+  # a real fetch.
+  @doc false
+  @spec check_host(URI.t()) :: :ok | {:error, String.t()}
+  def check_host(%URI{host: host}) do
     host = host |> URI.decode()
 
     cond do
