@@ -9,10 +9,10 @@ defmodule CodingAgent.UI.TuiVisualTest do
   alias CodingAgent.UI.Tui
   alias CodingAgent.UI.TranscriptView
 
-  defp start_tui(size \\ {80, 24}) do
+  defp start_tui(size \\ {80, 24}, opts \\ []) do
     start_supervised!(%{
       id: String.to_atom("tui-#{System.unique_integer([:positive])}"),
-      start: {Tui, :start_link, [[name: nil, test_mode: size, scope_root: File.cwd!()]]}
+      start: {Tui, :start_link, [[name: nil, test_mode: size, scope_root: File.cwd!()] ++ opts]}
     })
   end
 
@@ -298,6 +298,46 @@ defmodule CodingAgent.UI.TuiVisualTest do
     assert box_rows >= 5
   end
 
+  test "sidebar is wider and toggles off (ctrl-x p / sidebar: false)" do
+    pid = start_tui({100, 30})
+    fire(pid, :__resize_poll__)
+
+    # visible by default; the panel claims @sidebar_width columns
+    assert sync(pid).sidebar_visible?
+    assert buffer(pid) |> Enum.at(1) |> String.contains?("agent")
+
+    # the wider panel fits a full model id (the 24-col cut it mid-name:
+    # "ollama_cloud:glm-5.3-f|"; 36 leaves room for the whole string)
+    st = sync(pid)
+    model = st.model || "?"
+    assert String.length(model) <= 34
+
+    # toggle off via the menu fast path: the panel is gone, the
+    # transcript starts at the left edge
+    key(pid, "x", ["ctrl"])
+    key(pid, "p")
+    refute sync(pid).sidebar_visible?
+
+    rows = buffer(pid)
+    refute rows |> Enum.at(1) |> String.contains?("agent")
+    # the transcript now begins at column 0 — a reasoning line sits at
+    # the left edge with no 36-col gutter before it
+    agent(pid, {:reasoning_deltas, "flush left"})
+    assert buffer(pid) |> Enum.any?(&String.starts_with?(&1, "  flush left"))
+
+    # toggle back on
+    key(pid, "x", ["ctrl"])
+    key(pid, "p")
+    assert sync(pid).sidebar_visible?
+    assert buffer(pid) |> Enum.at(1) |> String.contains?("agent")
+  end
+
+  test "sidebar: false seeds the panel off at mount (test seam)" do
+    pid = start_tui({100, 30}, sidebar: false)
+    refute sync(pid).sidebar_visible?
+    refute buffer(pid) |> Enum.at(1) |> String.contains?("agent")
+  end
+
   test "approval dialog: cleared background, above status, capped width" do
     pid = start_tui({160, 30})
 
@@ -314,8 +354,9 @@ defmodule CodingAgent.UI.TuiVisualTest do
 
     rows = buffer(pid)
 
-    # dialog visible, centered: its left edge starts well right of
-    # the sidebar column (24) — centered on a 160-wide window
+    # dialog visible, centered on the whole window (it overlays the
+    # sidebar, not the transcript pane): its left edge sits in the
+    # middle of the 160-wide frame
     approval = Enum.find(rows, &String.contains?(&1, "APPROVAL"))
     assert approval != nil
     lead = approval |> String.graphemes() |> Enum.find_index(&(&1 == "╔"))
@@ -334,14 +375,17 @@ defmodule CodingAgent.UI.TuiVisualTest do
     assert Enum.any?(dialog_rows, &String.contains?(&1, "y = approve"))
   end
 
-  test "reasoning deltas with doubled newlines render without blank lines" do
-    pid = start_tui({100, 30})
+  test "reasoning is markdown: single newlines stay lines, blank runs collapse to one break" do
+    # sidebar off: the transcript starts at column 0, so the assertions
+    # read the pane directly (no column slicing) — the toggle doubles as
+    # the test seam the panel made necessary
+    pid = start_tui({100, 30}, sidebar: false)
 
-    agent(pid, {:reasoning_deltas, "line one\n\nline two\n\nline three\n\n"})
+    # single newlines: markdown would JOIN these as a soft break, so the
+    # renderer injects hard breaks — the three lines stay consecutive
+    agent(pid, {:reasoning_deltas, "line one\nline two\nline three"})
     rows = buffer(pid)
 
-    # the three lines are CONSECUTIVE (no blank rows between them —
-    # GLM's doubled newlines squeezed at accumulation)
     idx =
       rows
       |> Enum.with_index()
@@ -350,10 +394,56 @@ defmodule CodingAgent.UI.TuiVisualTest do
 
     assert rows |> Enum.at(idx + 1) |> String.contains?("line two")
     assert rows |> Enum.at(idx + 2) |> String.contains?("line three")
+
+    # a runaway blank run is ONE paragraph break, not a screen of blanks
+    # (GLM's split deltas used to grow the box unboundedly under Paragraph)
+    pid2 = start_tui({100, 30}, sidebar: false)
+    agent(pid2, {:reasoning_deltas, "para one\n\n\n\n\n\npara two"})
+    rows2 = buffer(pid2)
+
+    idx2 =
+      rows2
+      |> Enum.with_index()
+      |> Enum.find(fn {r, _} -> String.contains?(r, "para one") end)
+      |> elem(1)
+
+    assert rows2 |> Enum.at(idx2 + 1) |> String.trim() == ""
+    assert rows2 |> Enum.at(idx2 + 2) |> String.contains?("para two")
   end
 
-  test "split newline deltas do not grow the thinking box" do
-    pid = start_tui({100, 30})
+  test "reasoning is rendered as markdown structure, not flat text" do
+    pid = start_tui({110, 34}, sidebar: false)
+
+    agent(pid, {:reasoning_deltas, "## Plan\ncheck **files** first\n\n```elixir\nx = 1\n```"})
+
+    rows = buffer(pid)
+
+    # inline emphasis is PARSED: the "**" markers are consumed by the
+    # widget (a Paragraph would have painted them literally)
+    assert Enum.any?(rows, &String.contains?(&1, "check files first"))
+    refute Enum.any?(rows, &String.contains?(&1, "**files**"))
+
+    # the heading text and its line survive (the "##" prefix stays in
+    # the buffer like the assistant path — the widget styles the span)
+    assert Enum.any?(rows, &String.contains?(&1, "Plan"))
+
+    # fenced code survives verbatim: no hard-break spaces injected and
+    # the fence markers stay on their own lines
+    assert Enum.any?(rows, &String.contains?(&1, "```elixir"))
+    assert Enum.any?(rows, &String.contains?(&1, "x = 1"))
+    refute Enum.any?(rows, &String.contains?(&1, "x = 1  "))
+
+    # and the lines did NOT melt together (markdown soft break avoided):
+    # "check files first" occupies its OWN row, never fused onto the
+    # heading row ("## Plan check files first")
+    refute Enum.any?(
+             rows,
+             &(String.contains?(&1, "Plan") and String.contains?(&1, "files first"))
+           )
+  end
+
+  test "split newline deltas buffer verbatim (markdown paragraph breaks)" do
+    pid = start_tui({100, 30}, sidebar: false)
 
     # GLM-style split deltas: text, newline, blank line as separate events
     Enum.each(["line one", "\n", "\n", "line two", "\n", "\n", "line three", "\n"], fn d ->
@@ -362,20 +452,23 @@ defmodule CodingAgent.UI.TuiVisualTest do
 
     st = sync(pid)
 
-    # no doubled newlines; at most ONE trailing newline (line separator
-    # for the next delta) — the box must not fill with blank rows
-    assert st.stream == [{:reasoning, "line one\nline two\nline three\n"}]
+    # the buffer is verbatim markdown now — blank lines are paragraph
+    # breaks, and CommonMark collapses runs of them at render
+    assert st.stream == [{:reasoning, "line one\n\nline two\n\nline three\n"}]
 
     rows = buffer(pid)
 
+    # each paragraph is separated by exactly one blank row
     idx =
       rows
       |> Enum.with_index()
       |> Enum.find(fn {r, _} -> String.contains?(r, "line one") end)
       |> elem(1)
 
-    assert rows |> Enum.at(idx + 1) |> String.contains?("line two")
-    assert rows |> Enum.at(idx + 2) |> String.contains?("line three")
+    assert rows |> Enum.at(idx + 1) |> String.trim() == ""
+    assert rows |> Enum.at(idx + 2) |> String.contains?("line two")
+    assert rows |> Enum.at(idx + 3) |> String.trim() == ""
+    assert rows |> Enum.at(idx + 4) |> String.contains?("line three")
   end
 
   test "esc while running needs TWO presses to raise the interrupt flag", %{pid: pid} do

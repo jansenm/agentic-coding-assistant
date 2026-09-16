@@ -28,9 +28,9 @@ defmodule CodingAgent.UI.TranscriptView do
      wrap — overmeasure growing with line length;
   3. `wrap: true` Paragraphs and Markdown reflow inline markup —
      char-count estimates drift either way;
-  4. the widget text is built at RENDER time ("· thinking: ",
-     "▸ name\\n", borders) — estimating from the entry text alone
-     measures a different string than the one painted.
+  4. the widget text is built at RENDER time ("▸ name\\n", borders,
+     hard-break markers in reasoning) — estimating from the entry text
+     alone measures a different string than the one painted.
 
   So `height/3` now renders each widget into an oversized headless
   buffer (the same NIF call the real frame uses, same widget struct
@@ -90,10 +90,13 @@ defmodule CodingAgent.UI.TranscriptView do
   # layout must count beyond painted content (borders around the open
   # tool box). Building the widget HERE is the contract: whatever this
   # returns is what the next frame paints.
+  # Same Markdown widget Tui paints for thinking (measure = paint): the
+  # style distinguishes it from the answer, not a text prefix.
   defp widget_for({:reasoning, text}, _width, _open_id) do
-    {%ExRatatui.Widgets.Paragraph{
-       text: "· thinking: " <> text,
-       style: %ExRatatui.Style{fg: :dark_gray, modifiers: [:italic]}
+    {%ExRatatui.Widgets.Markdown{
+       content: text,
+       style: %ExRatatui.Style{fg: :dark_gray, modifiers: [:italic]},
+       wrap: true
      }, 0}
   end
 

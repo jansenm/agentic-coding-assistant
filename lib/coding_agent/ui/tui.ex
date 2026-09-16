@@ -73,8 +73,12 @@ defmodule CodingAgent.UI.Tui do
   # content column is capped and centered instead of stretching.
   @measure 100
 
-  # right panel width: session name, model, context tokens, % window
-  @sidebar_width 24
+  # left panel width: session name, model, context tokens, % window.
+  # Widened from 24 after live use: model ids ("ollama_cloud:glm-5.3-flash")
+  # were cut mid-name. Toggleable at runtime (Menu :toggle_sidebar, the
+  # footer hint shows the chord); hidden leaves the panel out of the
+  # layout entirely rather than painting an empty column.
+  @sidebar_width 36
 
   @impl true
   def mount(opts) do
@@ -174,6 +178,10 @@ defmodule CodingAgent.UI.Tui do
       picker_prompt: prompt,
       picker_op: nil,
       picker_scope: Path.expand(root),
+      # sidebar panel: visible by default; toggled at runtime
+      # (Menu :toggle_sidebar) or seeded off via `sidebar: false`
+      # (tests read a clean transcript buffer without a 36-col panel)
+      sidebar_visible?: Keyword.get(opts, :sidebar, true),
       menu_pending: false,
       menu_popup: nil,
       menu_popup_id: nil,
@@ -325,6 +333,10 @@ defmodule CodingAgent.UI.Tui do
         # menu mode: :menu_pending (a prefix chord was pressed, the
         # next letter within @menu_timeout fires the item directly) or
         # a popup map (navigate/enter). nil = normal input.
+        # sidebar panel: visible by default; toggled at runtime
+        # (Menu :toggle_sidebar) or seeded off via `sidebar: false`
+        # (tests read a clean transcript buffer without a 36-col panel)
+        sidebar_visible?: Keyword.get(opts, :sidebar, true),
         menu_pending: false,
         menu_popup: nil,
         menu_popup_id: nil,
@@ -1082,6 +1094,8 @@ defmodule CodingAgent.UI.Tui do
     {:noreply, toggle_last_tool(state)}
   end
 
+  defp run_menu_action(:toggle_sidebar, state), do: {:noreply, toggle_sidebar(state)}
+
   defp run_menu_action(:quit, state), do: {:stop, :normal, state}
 
   defp run_menu_action(:show_keymaps, state) do
@@ -1610,11 +1624,15 @@ defmodule CodingAgent.UI.Tui do
         spacing: 1
       )
 
-    [sidebar_area, mid_area] =
-      Layout.split(main_area, :horizontal, [
-        {:length, @sidebar_width},
-        {:min, 0}
-      ])
+    # sidebar hidden: give the whole width to the transcript instead of
+    # painting an empty column (the pane stays usable on narrow panes)
+    {sidebar_area, mid_area} =
+      if Map.get(state, :sidebar_visible?, true) do
+        [sa, ma] = Layout.split(main_area, :horizontal, [{:length, @sidebar_width}, {:min, 0}])
+        {sa, ma}
+      else
+        {nil, main_area}
+      end
 
     in_h = input_height(state)
 
@@ -1626,10 +1644,17 @@ defmodule CodingAgent.UI.Tui do
     [transcript_area, input_area] =
       Layout.split(mid_area, :vertical, [{:min, 0}, {:length, in_h}], spacing: 1)
 
+    sidebar_widgets =
+      if sidebar_area do
+        [{sidebar_widget(state), sidebar_area}]
+      else
+        []
+      end
+
     widgets =
       transcript_widgets(state, transcript_area) ++
+        sidebar_widgets ++
         [
-          {sidebar_widget(state), sidebar_area},
           {input_widget(state), input_area},
           {status_widget(state), status_area}
         ]
@@ -1793,16 +1818,24 @@ defmodule CodingAgent.UI.Tui do
     [{widget, h}]
   end
 
+  # Thinking is rendered as MARKDOWN like the answer (opencode parity):
+  # headings, lists, inline/fenced code carry structure instead of
+  # arriving as flat dim text. No "· thinking: " prefix — it would be
+  # parsed as prose and break a heading on line 1 — so the dim+italic
+  # base style is the only signal that this block is the model's
+  # reasoning, not its answer. The widget struct is built by
+  # TranscriptView (measure = paint contract), never here.
   defp entry_widgets({:reasoning, text}, w, _te) do
     text = render_reasoning(text)
     h = TranscriptView.height({:reasoning, text}, w, nil) - TranscriptView.air()
 
-    widget = %Paragraph{
-      text: "· thinking: " <> text,
-      style: %Style{fg: :dark_gray, modifiers: [:italic]}
-    }
-
-    [{widget, h}]
+    [
+      {%Markdown{
+         content: text,
+         style: %Style{fg: :dark_gray, modifiers: [:italic]},
+         wrap: true
+       }, max(h, 1)}
+    ]
   end
 
   defp entry_widgets({:assistant, text}, w, _te) do
@@ -1843,14 +1876,51 @@ defmodule CodingAgent.UI.Tui do
     [{%Paragraph{text: "  " <> text, style: %Style{fg: :dark_gray}}, 1}]
   end
 
-  # Display trim: a trailing "\n" in the reasoning buffer measures as a
-  # phantom empty row (split on "\n" yields a trailing "" that
-  # wrapped_lines counts) while the Paragraph renders no extra row —
-  # the box grows a blank line at its end that never goes away. Trim
-  # here, never in the buffer (a per-delta trim would glue the next
-  # delta's first word to the last line when the provider streams the
-  # separator as its own delta).
-  defp render_reasoning(text), do: String.replace_trailing(text, "\n", "")
+  # Display shape of the thinking buffer, shared by measure, paint and
+  # persistence so all three see the same string. Reasoning is Markdown
+  # now, but its line structure must survive: CommonMark treats a lone
+  # "\n" as a SOFT break that joins lines ("line one line two"), and a
+  # reasoning trace is line-structured. So each non-blank line followed
+  # by another becomes a HARD break (two trailing spaces) — markdown
+  # still parses headings/bold/code, but lines stay lines. Blank lines
+  # remain paragraph breaks and CommonMark collapses runs of them, so
+  # GLM's runaway blanks cannot return. The trailing "\n" is trimmed
+  # (Paragraph-era phantom-row fix; keeps the buffer canonical).
+  defp render_reasoning(text) do
+    text
+    |> String.replace_trailing("\n", "")
+    |> harden_line_breaks()
+  end
+
+  # Two trailing spaces = CommonMark hard break, applied to every
+  # non-blank line that has a following line. Lines inside a ``` fence
+  # and the fence markers themselves are skipped: code blocks preserve
+  # their own newlines and injected spaces corrupt the literal text.
+  # Idempotent (a line already ending in "  " is left alone) because the
+  # transform runs every frame and again when an entry is restored.
+  defp harden_line_breaks(text) do
+    lines = String.split(text, "\n")
+    last = length(lines) - 1
+
+    {lines, _} =
+      lines
+      |> Enum.with_index()
+      |> Enum.map_reduce(false, fn {line, i}, in_fence ->
+        fence? = String.starts_with?(String.trim_leading(line), "```")
+
+        line =
+          if in_fence or fence? or i == last or String.trim(line) == "" or
+               String.ends_with?(line, "  ") do
+            line
+          else
+            line <> "  "
+          end
+
+        {line, if(fence?, do: not in_fence, else: in_fence)}
+      end)
+
+    Enum.join(lines, "\n")
+  end
 
   # Append a streamed delta to the IN-ORDER stream buffer. A delta of the
   # SAME kind extends the last block; a kind SWITCH opens a new block, so
@@ -1870,18 +1940,14 @@ defmodule CodingAgent.UI.Tui do
     end
   end
 
-  # Reasoning is normalized on the ACCUMULATED block (the GLM-split-delta
-  # lesson: "l1\n" + "\n" is one blank across deltas), collapsing doubled
-  # newlines and CRs but keeping at most one trailing newline as the next
-  # line's separator. Assistant text is kept verbatim (markdown).
+  # Both kinds are markdown now, so both are kept verbatim (only CRs
+  # stripped): blank lines are paragraph breaks and CommonMark collapses
+  # runs of them to one, so the GLM-split-delta runaway ("l1\n" + "\n"
+  # across deltas) cannot grow the box the way it did under Paragraph.
+  # `render_reasoning/1` still trims trailing newlines at display so the
+  # buffer never ends on a separator.
   defp normalize_block(:assistant, text), do: text
-
-  defp normalize_block(:reasoning, text) do
-    text
-    |> String.replace("\r", "")
-    |> String.replace("\n\n", "\n")
-    |> String.replace_trailing("\n\n", "\n")
-  end
+  defp normalize_block(:reasoning, text), do: String.replace(text, "\r", "")
 
   # The in-flight stream as display entries, in order; the last assistant
   # block carries the cursor. Reasoning blocks are trimmed so every
@@ -2042,6 +2108,15 @@ defmodule CodingAgent.UI.Tui do
     end
   end
 
+  # Toggle the left panel. Hidden also re-clamps the scroll: the pane
+  # re-measures wider (content_width), so a stale offset from the narrow
+  # layout could sit past the new max (the stale-offset lesson).
+  defp toggle_sidebar(state) do
+    state
+    |> Map.update!(:sidebar_visible?, &(not &1))
+    |> clamp_scroll_now()
+  end
+
   defp sidebar_widget(state) do
     usage = Map.get(state, :session_usage) || %{input_tokens: 0, output_tokens: 0, cost: nil}
     window = Application.get_env(:coding_agent, :context_window_tokens, 500_000)
@@ -2132,6 +2207,9 @@ defmodule CodingAgent.UI.Tui do
           Text.Line.new([Text.Span.new("", style: %Style{})]),
           Text.Line.new([
             Text.Span.new("ctrl-t toggles tools", style: %Style{fg: :dark_gray})
+          ]),
+          Text.Line.new([
+            Text.Span.new("ctrl-x p hides panel", style: %Style{fg: :dark_gray})
           ])
         ]
 

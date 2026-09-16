@@ -52,6 +52,13 @@ defmodule CodingAgent.UI.Menu do
         needs_popup: false
       },
       %{
+        action: :toggle_sidebar,
+        key: "p",
+        label: "toggle sidebar",
+        menu: :main,
+        needs_popup: false
+      },
+      %{
         action: :show_keymaps,
         key: "k",
         label: "show keymaps",
