@@ -1,26 +1,17 @@
 defmodule CodingAgent.UI.Tui5bTest do
-  use ExUnit.Case, async: false
+  use CodingAgent.TuiCase, async: true
 
   alias CodingAgent.UI.Tui
-  alias ExRatatui.Runtime
 
   defp start_app(opts \\ []) do
-    pid =
-      start_supervised!({Tui, [name: nil, test_mode: {80, 24}, scope_root: File.cwd!()] ++ opts})
-
-    Process.sleep(50)
-    pid
+    start_supervised!({Tui, [name: nil, test_mode: {80, 24}, scope_root: File.cwd!()] ++ opts})
   end
 
-  defp type(pid, code, mods \\ []) do
-    :ok =
-      Runtime.inject_event(pid, %ExRatatui.Event.Key{code: code, kind: "press", modifiers: mods})
-  end
+  defp type(pid, code, mods \\ []), do: key(pid, code, mods)
 
   defp input_value(pid) do
     pid
-    |> :sys.get_state()
-    |> Map.get(:user_state)
+    |> sync()
     |> Map.get(:textarea)
     |> ExRatatui.textarea_get_value()
   end
@@ -47,24 +38,26 @@ defmodule CodingAgent.UI.Tui5bTest do
       type(pid, "i")
       type(pid, "enter", ["alt"])
 
-      wait_until(fn -> length(state(pid).transcript) == 1 end)
-      assert [{:user, "hi"}] = state(pid).transcript
+      # send_input handles the key synchronously; the transcript line and
+      # status flip happen inside the inject_event call. The Session.run
+      # Task is a no-op under test_mode (tests are LLM-free).
+      st = sync(pid)
+      assert [{:user, "hi"}] = st.transcript
       assert input_value(pid) == ""
-      assert state(pid).status == :running
+      assert st.status == :running
     end
 
     test "empty buffer alt-enter does not send" do
       pid = start_app()
       type(pid, "enter", ["alt"])
-      Process.sleep(100)
-      assert state(pid).transcript == []
+      assert sync(pid).transcript == []
     end
 
     test "bracketed paste lands in the buffer (paste-queue desync is gone)" do
       pid = start_app()
 
       :ok =
-        Runtime.inject_event(pid, %ExRatatui.Event.Paste{
+        ExRatatui.Runtime.inject_event(pid, %ExRatatui.Event.Paste{
           content: "line one\nline two\nline three"
         })
 
@@ -98,14 +91,14 @@ defmodule CodingAgent.UI.Tui5bTest do
         ])
 
       pid = start_app(session_id: sid)
-      assert state(pid).status == :interrupted
-      assert length(state(pid).pending) == 1
+      assert sync(pid).status == :interrupted
+      assert length(sync(pid).pending) == 1
 
       type(pid, "n")
 
       # decide runs in a task; status settles via the {:__decided__} reply
-      wait_until(fn -> state(pid).status == :idle end)
-      assert state(pid).pending == []
+      wait_until(fn -> sync(pid).status == :idle end)
+      assert sync(pid).pending == []
       refute File.exists?(Path.join(root, "x.txt"))
     end
 
@@ -131,7 +124,7 @@ defmodule CodingAgent.UI.Tui5bTest do
         ])
 
       pid = start_app(session_id: sid)
-      assert length(state(pid).pending) == 1
+      assert length(sync(pid).pending) == 1
 
       type(pid, "y")
 
@@ -139,11 +132,9 @@ defmodule CodingAgent.UI.Tui5bTest do
       assert File.read!(Path.join(root, "y.txt")) == "yes"
 
       # status settles via the {:__decided__} reply (races the file write)
-      wait_until(fn -> state(pid).status == :idle end)
+      wait_until(fn -> sync(pid).status == :idle end)
     end
   end
-
-  defp state(pid), do: :sys.get_state(pid) |> Map.get(:user_state)
 
   # repo-side ask policy: the 2026-09-15 amendment made write_file
   # allow-by-default, and the approval dialog needs a pause to exist
@@ -156,21 +147,5 @@ defmodule CodingAgent.UI.Tui5bTest do
     """)
 
     CodingAgent.Core.Permissions.load(nil, toml_path)
-  end
-
-  # generous ceiling: under the full suite's parallelism the alt-enter
-  # round-trip (inject → TUI → session spawn → run_turn → broadcast)
-  # can blow past 1s — the tui_5b flake (1-in-3 runs) was a timeout,
-  # not a logic break. Same cure as the live-gate flake: fewer, longer
-  # polls.
-  defp wait_until(fun, tries \\ 150) do
-    if fun.() do
-      :ok
-    else
-      if tries <= 0, do: flunk("wait_until timed out")
-
-      Process.sleep(50)
-      wait_until(fun, tries - 1)
-    end
   end
 end

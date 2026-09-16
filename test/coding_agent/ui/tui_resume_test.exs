@@ -1,5 +1,5 @@
 defmodule CodingAgent.UI.TuiResumeTest do
-  use ExUnit.Case, async: false
+  use CodingAgent.TuiCase, async: true
 
   alias CodingAgent.Core.Session.Store
   alias CodingAgent.UI.Tui
@@ -38,11 +38,8 @@ defmodule CodingAgent.UI.TuiResumeTest do
         {Tui, [name: nil, test_mode: {80, 24}, resume_id: sid, scope_root: File.cwd!()]}
       )
 
-    wait_until(fn ->
-      :sys.get_state(pid).user_state.transcript != []
-    end)
-
-    transcript = :sys.get_state(pid).user_state.transcript
+    # restored history is seeded synchronously in mount
+    transcript = sync(pid).transcript
 
     assert {:user, "remember the codeword BANANA"} in transcript
     assert {:assistant, "Codeword noted."} in transcript
@@ -87,9 +84,7 @@ defmodule CodingAgent.UI.TuiResumeTest do
         {Tui, [name: nil, test_mode: {80, 24}, resume_id: sid, scope_root: File.cwd!()]}
       )
 
-    wait_until(fn -> :sys.get_state(pid).user_state.transcript != [] end)
-
-    transcript = :sys.get_state(pid).user_state.transcript
+    transcript = sync(pid).transcript
     assert Enum.any?(transcript, fn {role, t} -> role == :info and t =~ "compacted" end)
     assert {:assistant, "after compaction"} in transcript
   end
@@ -98,15 +93,6 @@ defmodule CodingAgent.UI.TuiResumeTest do
     case elem(e, 0) do
       :tool -> elem(e, 3)
       _ -> elem(e, 1)
-    end
-  end
-
-  defp wait_until(fun, tries \\ 150) do
-    if fun.() do
-      :ok
-    else
-      Process.sleep(50)
-      wait_until(fun, tries - 1)
     end
   end
 
@@ -141,9 +127,7 @@ defmodule CodingAgent.UI.TuiResumeTest do
           {Tui, [name: nil, test_mode: {80, 24}, resume_id: sid, scope_root: File.cwd!()]}
         )
 
-      wait_until(fn -> :sys.get_state(pid).user_state.transcript != [] end)
-
-      st = :sys.get_state(pid).user_state
+      st = sync(pid)
       tool = Enum.find(st.transcript, fn e -> elem(e, 0) == :tool end)
       assert tool != nil
       assert elem(tool, 2) == "shell"
@@ -151,24 +135,14 @@ defmodule CodingAgent.UI.TuiResumeTest do
       # (single-open accordion)
       assert st.open_tool_id == nil
 
-      :ok =
-        ExRatatui.Runtime.inject_event(pid, %ExRatatui.Event.Key{
-          code: "t",
-          kind: "press",
-          modifiers: ["ctrl"]
-        })
+      key(pid, "t", ["ctrl"])
 
-      st2 = :sys.get_state(pid).user_state
+      st2 = sync(pid)
       assert st2.open_tool_id == elem(tool, 1)
 
-      :ok =
-        ExRatatui.Runtime.inject_event(pid, %ExRatatui.Event.Key{
-          code: "t",
-          kind: "press",
-          modifiers: ["ctrl"]
-        })
+      key(pid, "t", ["ctrl"])
 
-      assert :sys.get_state(pid).user_state.open_tool_id == nil
+      assert sync(pid).open_tool_id == nil
     end
   end
 end

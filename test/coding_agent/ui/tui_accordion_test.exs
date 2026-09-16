@@ -4,7 +4,7 @@ defmodule CodingAgent.UI.TuiAccordionTest do
   closes the first, ctrl-t opens the most recent block. Hit-testing
   maps a screen row to the covering entry.
   """
-  use ExUnit.Case, async: false
+  use CodingAgent.TuiCase, async: true
 
   alias CodingAgent.UI.Tui
 
@@ -16,71 +16,37 @@ defmodule CodingAgent.UI.TuiAccordionTest do
   test "ctrl-t opens the most recent tool block, ctrl-t again closes it", %{pid: pid} do
     send(pid, {:agent, {:tool_executed, "read_file", "one line"}})
     send(pid, {:agent, {:tool_executed, "shell", "out1\nout2"}})
-    Process.sleep(100)
 
-    st = :sys.get_state(pid).user_state
+    st = sync(pid)
     assert st.open_tool_id == nil
 
-    :ok =
-      ExRatatui.Runtime.inject_event(pid, %ExRatatui.Event.Key{
-        code: "t",
-        kind: "press",
-        modifiers: ["ctrl"]
-      })
-
-    Process.sleep(100)
-    st = :sys.get_state(pid).user_state
+    key(pid, "t", ["ctrl"])
+    st = sync(pid)
     # most recent = the shell block
     assert st.open_tool_id != nil
     id = st.open_tool_id
     assert st.transcript |> Enum.find(&match?({:tool, ^id, _, _}, &1)) |> elem(2) == "shell"
 
-    :ok =
-      ExRatatui.Runtime.inject_event(pid, %ExRatatui.Event.Key{
-        code: "t",
-        kind: "press",
-        modifiers: ["ctrl"]
-      })
-
-    Process.sleep(100)
-    assert :sys.get_state(pid).user_state.open_tool_id == nil
+    key(pid, "t", ["ctrl"])
+    assert sync(pid).open_tool_id == nil
   end
 
   test "click on a collapsed tool header opens THAT block", %{pid: pid} do
     send(pid, {:agent, {:tool_executed, "read_file", "one line"}})
-    Process.sleep(100)
 
     # entries are placed TOP-anchored in the pane; frame row 0 is the
     # app margin, so the first pane row is frame row 1
     y = 1
 
-    :ok =
-      ExRatatui.Runtime.inject_event(pid, %ExRatatui.Event.Mouse{
-        kind: "down",
-        button: "left",
-        x: 5,
-        y: y
-      })
-
-    Process.sleep(100)
-    st = :sys.get_state(pid).user_state
-    assert st.open_tool_id != nil
+    click(pid, 5, y)
+    assert sync(pid).open_tool_id != nil
   end
 
   test "click below the transcript pane (input area) does nothing", %{pid: pid} do
     send(pid, {:agent, {:tool_executed, "read_file", "one line"}})
-    Process.sleep(100)
 
     # 24-row terminal: transcript rows are 0..18; 20 is input area
-    :ok =
-      ExRatatui.Runtime.inject_event(pid, %ExRatatui.Event.Mouse{
-        kind: "down",
-        button: "left",
-        x: 5,
-        y: 20
-      })
-
-    Process.sleep(100)
-    assert :sys.get_state(pid).user_state.open_tool_id == nil
+    click(pid, 5, 20)
+    assert sync(pid).open_tool_id == nil
   end
 end

@@ -4,31 +4,35 @@ defmodule CodingAgent.UI.TuiVisualTest do
   headings), tool-output caps, reasoning blocks (distinct dim style),
   status-line colors.
   """
-  use ExUnit.Case, async: false
+  use CodingAgent.TuiCase, async: true
 
   alias CodingAgent.UI.Tui
   alias CodingAgent.UI.TranscriptView
 
+  defp start_tui(size \\ {80, 24}) do
+    start_supervised!(%{
+      id: String.to_atom("tui-#{System.unique_integer([:positive])}"),
+      start: {Tui, :start_link, [[name: nil, test_mode: size, scope_root: File.cwd!()]]}
+    })
+  end
+
   setup do
-    pid = start_supervised!({Tui, [name: nil, test_mode: {80, 24}, scope_root: File.cwd!()]})
+    pid = start_tui()
     %{pid: pid}
   end
 
   test "reasoning deltas render as a transient dim block, cleared on the answer", %{pid: pid} do
-    send(pid, {:agent, {:reasoning_deltas, "step one, "}})
-    send(pid, {:agent, {:reasoning_deltas, "step two"}})
-    Process.sleep(100)
+    agent(pid, {:reasoning_deltas, "step one, "})
+    agent(pid, {:reasoning_deltas, "step two"})
 
-    st = :sys.get_state(pid).user_state
-    assert st.reasoning == "step one, step two"
+    assert sync(pid).reasoning == "step one, step two"
 
     # it participates in layout: the reasoning entry has a measured height
     assert TranscriptView.height({:reasoning, "step one, step two"}, 78, nil) >= 1
 
     # the answer replaces the thinking block
-    send(pid, {:agent, {:llm_message, "The answer."}})
-    Process.sleep(100)
-    st = :sys.get_state(pid).user_state
+    agent(pid, {:llm_message, "The answer."})
+    st = sync(pid)
     assert st.reasoning == ""
     assert Enum.any?(st.transcript, &match?({:assistant, "The answer."}, &1))
 
@@ -39,11 +43,10 @@ defmodule CodingAgent.UI.TuiVisualTest do
 
   test "thinking persists capped: a long trace keeps its head lines", %{pid: pid} do
     long = Enum.map_join(1..40, "\n", &"line #{&1}")
-    send(pid, {:agent, {:reasoning_deltas, long}})
-    send(pid, {:agent, {:llm_message, "Answer."}})
-    Process.sleep(100)
+    agent(pid, {:reasoning_deltas, long})
+    agent(pid, {:llm_message, "Answer."})
 
-    st = :sys.get_state(pid).user_state
+    st = sync(pid)
 
     assert {:reasoning, capped} = Enum.find(st.transcript, &match?({:reasoning, _}, &1))
     assert length(String.split(capped, "\n")) == 12
@@ -52,18 +55,16 @@ defmodule CodingAgent.UI.TuiVisualTest do
   end
 
   test "no thinking streamed: no empty persisted block", %{pid: pid} do
-    send(pid, {:agent, {:llm_message, "Just the answer."}})
-    Process.sleep(100)
+    agent(pid, {:llm_message, "Just the answer."})
 
-    st = :sys.get_state(pid).user_state
+    st = sync(pid)
     refute Enum.any?(st.transcript, &match?({:reasoning, _}, &1))
   end
 
   test "assistant entries breathe: blank line after headings", %{pid: pid} do
-    send(pid, {:agent, {:llm_message, "# Title\nbody line"}})
-    Process.sleep(100)
+    agent(pid, {:llm_message, "# Title\nbody line"})
 
-    st = :sys.get_state(pid).user_state
+    st = sync(pid)
     {:assistant, text} = Enum.find(st.transcript, &match?({:assistant, _}, &1))
 
     # normalize_entry applied breathe: heading is followed by one blank line
@@ -74,10 +75,9 @@ defmodule CodingAgent.UI.TuiVisualTest do
 
   test "expanded tool output is capped with head+tail and an elision note", %{pid: pid} do
     long = Enum.map_join(1..60, "\n", &"line #{&1}")
-    send(pid, {:agent, {:tool_executed, "shell", long}})
-    Process.sleep(100)
+    agent(pid, {:tool_executed, "shell", long})
 
-    st = :sys.get_state(pid).user_state
+    st = sync(pid)
     # collapsed by default: one line
     assert st.open_tool_id == nil
 
@@ -93,20 +93,12 @@ defmodule CodingAgent.UI.TuiVisualTest do
   end
 
   test "open tool box never overlaps the next entry (border rows counted)", %{pid: pid} do
-    send(pid, {:agent, {:tool_executed, "glob", "lib/coding_agent.ex"}})
-    send(pid, {:agent, {:llm_message, "# Answer\n\nHere is the result of the glob."}})
-    Process.sleep(100)
+    agent(pid, {:tool_executed, "glob", "lib/coding_agent.ex"})
+    agent(pid, {:llm_message, "# Answer\n\nHere is the result of the glob."})
 
-    :ok =
-      ExRatatui.Runtime.inject_event(pid, %ExRatatui.Event.Key{
-        code: "t",
-        kind: "press",
-        modifiers: ["ctrl"]
-      })
+    key(pid, "t", ["ctrl"])
 
-    Process.sleep(200)
-
-    st = :sys.get_state(pid).user_state
+    st = sync(pid)
     {:tool, tool_id, _, _} = Enum.find(st.transcript, &match?({:tool, _, _, _}, &1))
     {:assistant, _} = Enum.find(st.transcript, &match?({:assistant, _}, &1))
 
@@ -127,20 +119,12 @@ defmodule CodingAgent.UI.TuiVisualTest do
     # 40-line tool content (no trailing blanks needed) + answer: total
     # exceeds the 80x24 test pane (15 rows) so the box straddles the top
     content = Enum.map_join(1..40, "\n", &"row #{&1}")
-    send(pid, {:agent, {:tool_executed, "read_file", content}})
-    send(pid, {:agent, {:llm_message, "# Answer\n\nDone."}})
-    Process.sleep(100)
+    agent(pid, {:tool_executed, "read_file", content})
+    agent(pid, {:llm_message, "# Answer\n\nDone."})
 
-    :ok =
-      ExRatatui.Runtime.inject_event(pid, %ExRatatui.Event.Key{
-        code: "t",
-        kind: "press",
-        modifiers: ["ctrl"]
-      })
+    key(pid, "t", ["ctrl"])
 
-    Process.sleep(200)
-
-    st = :sys.get_state(pid).user_state
+    st = sync(pid)
     {:tool, id, _, _} = Enum.find(st.transcript, &match?({:tool, _, _, _}, &1))
     assert st.open_tool_id == id
 
@@ -159,10 +143,9 @@ defmodule CodingAgent.UI.TuiVisualTest do
 
   test "cap_lines trims trailing blank lines before capping", %{pid: pid} do
     content = Enum.map_join(1..10, "\n", &"row #{&1}") <> String.duplicate("\n", 20)
-    send(pid, {:agent, {:tool_executed, "read_file", content}})
-    Process.sleep(100)
+    agent(pid, {:tool_executed, "read_file", content})
 
-    st = :sys.get_state(pid).user_state
+    st = sync(pid)
     {:tool, _, _, stored} = Enum.find(st.transcript, &match?({:tool, _, _, _}, &1))
 
     # the 20 trailing blanks are gone; the 10 real lines survive
@@ -176,10 +159,9 @@ defmodule CodingAgent.UI.TuiVisualTest do
       reason: "Stream failed: %Finch.TransportError{reason: :econnrefused}"
     }
 
-    send(pid, {:agent, {:status_changed, :error, reason}})
-    Process.sleep(100)
+    agent(pid, {:status_changed, :error, reason})
 
-    st = :sys.get_state(pid).user_state
+    st = sync(pid)
     {:info, msg} = Enum.find(st.transcript, &match?({:info, _}, &1))
 
     assert msg =~ "✖ turn failed"
@@ -192,14 +174,12 @@ defmodule CodingAgent.UI.TuiVisualTest do
   test "startup provider check: down -> red status + transcript line; up -> recovery", %{
     pid: pid
   } do
-    send(
+    agent(
       pid,
-      {:agent, {:provider_status, :down, "could not reach the provider (connection refused)"}}
+      {:provider_status, :down, "could not reach the provider (connection refused)"}
     )
 
-    Process.sleep(100)
-
-    st = :sys.get_state(pid).user_state
+    st = sync(pid)
     assert st.status == :error
     assert st.provider_down? == true
     {:info, msg} = Enum.find(st.transcript, &match?({:info, _}, &1))
@@ -207,58 +187,42 @@ defmodule CodingAgent.UI.TuiVisualTest do
     assert msg =~ "connection refused"
 
     # recovery flips back to idle (only for probe-caused error state)
-    send(pid, {:agent, {:provider_status, :up}})
-    Process.sleep(100)
-    st = :sys.get_state(pid).user_state
+    agent(pid, {:provider_status, :up})
+    st = sync(pid)
     assert st.status == :idle
     assert st.provider_down? == false
   end
 
   test "a real turn error (status_changed) is not cleared by a later :up", %{pid: pid} do
     reason = %ReqLLM.Error.API.Stream{reason: "Stream failed: boom"}
-    send(pid, {:agent, {:status_changed, :error, reason}})
-    Process.sleep(100)
-    send(pid, {:agent, {:provider_status, :up}})
-    Process.sleep(100)
+    agent(pid, {:status_changed, :error, reason})
+    agent(pid, {:provider_status, :up})
 
     # no provider_down? flag set -> the error stays a turn error
-    st = :sys.get_state(pid).user_state
+    st = sync(pid)
     assert st.status == :error
   end
 
-  test "resume: provider check broadcast lands on the effective session id", %{pid: _} do
+  test "resume: provider check broadcast lands on the effective session id" do
     # fresh instance whose session id we read, then a broadcast on that id
-    {:ok, pid} =
-      CodingAgent.UI.Tui.start_link(name: nil, test_mode: {120, 40}, scope_root: File.cwd!())
+    {:ok, pid} = Tui.start_link(name: nil, test_mode: {120, 40}, scope_root: File.cwd!())
 
-    sid = :sys.get_state(pid).user_state.session_id
+    sid = sync(pid).session_id
 
-    send(pid, {:agent, {:provider_status, :down, "could not reach the provider"}})
-    Process.sleep(100)
+    agent(pid, {:provider_status, :down, "could not reach the provider"})
 
-    st = :sys.get_state(pid).user_state
+    st = sync(pid)
     assert st.status == :error
     assert st.provider_down? == true
     assert sid != nil
   end
 
-  defp start_tui do
-    start_supervised!(%{
-      id: String.to_atom("tui-#{System.unique_integer([:positive])}"),
-      start:
-        {CodingAgent.UI.Tui, :start_link,
-         [[name: nil, test_mode: {100, 30}, scope_root: File.cwd!()]]}
-    })
-  end
-
   test "sidebar spans the full window height and the input grows while typing" do
-    pid = start_tui()
-    # let the resize poll fire once so pane dims are real
-    Process.sleep(700)
-    rt = :sys.get_state(pid)
-    buf = fn -> rt.terminal_ref |> ExRatatui.get_buffer_content() |> String.split("\n") end
+    pid = start_tui({100, 30})
+    # seed deterministic pane dims (live resize polling is off in test_mode)
+    fire(pid, :__resize_poll__)
 
-    rows = buf.()
+    rows = buffer(pid)
     # sidebar starts on the first content row; its border column still
     # drawn at the input row (full-height span — it used to stop above)
     assert rows |> Enum.at(1) |> String.contains?("agent")
@@ -266,13 +230,12 @@ defmodule CodingAgent.UI.TuiVisualTest do
 
     # floor: empty input = 4 rows; typing 5 lines grows the box
     ExRatatui.textarea_insert_str(
-      rt.user_state.textarea,
+      sync(pid).textarea,
       "l1\nl2\nl3\nl4\nl5"
     )
 
-    send(pid, :__resize_poll__)
-    Process.sleep(150)
-    rows = buf.()
+    fire(pid, :__resize_poll__)
+    rows = buffer(pid)
     assert rows |> Enum.any?(fn r -> String.contains?(r, "l5") end)
     # 5 typed lines visible = the box grew past its 4-row floor
     box_rows = Enum.count(rows, &String.contains?(&1, "l"))
@@ -280,31 +243,20 @@ defmodule CodingAgent.UI.TuiVisualTest do
   end
 
   test "approval dialog: cleared background, above status, capped width" do
-    pid =
-      start_supervised!(%{
-        id: String.to_atom("tui-#{System.unique_integer([:positive])}"),
-        start:
-          {CodingAgent.UI.Tui, :start_link,
-           [[name: nil, test_mode: {160, 30}, scope_root: File.cwd!()]]}
-      })
+    pid = start_tui({160, 30})
 
-    Process.sleep(700)
-
-    send(
+    agent(
       pid,
-      {:agent,
-       {:status_changed, :interrupted,
-        [
-          %ReqLLM.ToolCall{
-            id: "call_1",
-            function: %{name: "shell", arguments: Jason.encode!(%{"command" => "mix test"})}
-          }
-        ]}}
+      {:status_changed, :interrupted,
+       [
+         %ReqLLM.ToolCall{
+           id: "call_1",
+           function: %{name: "shell", arguments: Jason.encode!(%{"command" => "mix test"})}
+         }
+       ]}
     )
 
-    Process.sleep(800)
-    rt = :sys.get_state(pid)
-    rows = ExRatatui.get_buffer_content(rt.terminal_ref) |> String.split("\n")
+    rows = buffer(pid)
 
     # dialog visible, centered: its left edge starts well right of
     # the sidebar column (24) — centered on a 160-wide window
@@ -327,19 +279,10 @@ defmodule CodingAgent.UI.TuiVisualTest do
   end
 
   test "reasoning deltas with doubled newlines render without blank lines" do
-    pid =
-      start_supervised!(%{
-        id: String.to_atom("tui-#{System.unique_integer([:positive])}"),
-        start:
-          {CodingAgent.UI.Tui, :start_link,
-           [[name: nil, test_mode: {100, 30}, scope_root: File.cwd!()]]}
-      })
+    pid = start_tui({100, 30})
 
-    Process.sleep(700)
-    send(pid, {:agent, {:reasoning_deltas, "line one\n\nline two\n\nline three\n\n"}})
-    Process.sleep(800)
-    rt = :sys.get_state(pid)
-    rows = ExRatatui.get_buffer_content(rt.terminal_ref) |> String.split("\n")
+    agent(pid, {:reasoning_deltas, "line one\n\nline two\n\nline three\n\n"})
+    rows = buffer(pid)
 
     # the three lines are CONSECUTIVE (no blank rows between them —
     # GLM's doubled newlines squeezed at accumulation)
@@ -354,30 +297,20 @@ defmodule CodingAgent.UI.TuiVisualTest do
   end
 
   test "split newline deltas do not grow the thinking box" do
-    pid =
-      start_supervised!(%{
-        id: String.to_atom("tui-#{System.unique_integer([:positive])}"),
-        start:
-          {CodingAgent.UI.Tui, :start_link,
-           [[name: nil, test_mode: {100, 30}, scope_root: File.cwd!()]]}
-      })
-
-    Process.sleep(700)
+    pid = start_tui({100, 30})
 
     # GLM-style split deltas: text, newline, blank line as separate events
     Enum.each(["line one", "\n", "\n", "line two", "\n", "\n", "line three", "\n"], fn d ->
       send(pid, {:agent, {:reasoning_deltas, d}})
     end)
 
-    Process.sleep(1000)
-    rt = :sys.get_state(pid)
-    st = rt.user_state
+    st = sync(pid)
 
     # no doubled newlines; at most ONE trailing newline (line separator
     # for the next delta) — the box must not fill with blank rows
     assert st.reasoning == "line one\nline two\nline three\n"
 
-    rows = ExRatatui.get_buffer_content(rt.terminal_ref) |> String.split("\n")
+    rows = buffer(pid)
 
     idx =
       rows
@@ -392,32 +325,17 @@ defmodule CodingAgent.UI.TuiVisualTest do
   test "esc while running raises the interrupt flag; esc while idle falls through", %{pid: pid} do
     # not running: esc must NOT touch the flag (it falls through to the
     # textarea — popups handle their own esc earlier in the chain)
-    :ok =
-      ExRatatui.Runtime.inject_event(pid, %ExRatatui.Event.Key{
-        code: "escape",
-        kind: "press",
-        modifiers: []
-      })
+    key(pid, "escape")
 
-    Process.sleep(150)
-
-    st = :sys.get_state(pid).user_state
+    st = sync(pid)
     refute st.status == :interrupting
 
     # running: esc raises the session's interrupt flag
-    send(pid, {:agent, {:status_changed, :running}})
-    Process.sleep(50)
+    agent(pid, {:status_changed, :running})
 
-    :ok =
-      ExRatatui.Runtime.inject_event(pid, %ExRatatui.Event.Key{
-        code: "escape",
-        kind: "press",
-        modifiers: []
-      })
+    key(pid, "escape")
 
-    Process.sleep(150)
-
-    st2 = :sys.get_state(pid).user_state
+    st2 = sync(pid)
     assert st2.status == :interrupting
     assert CodingAgent.Core.Session.interrupted?(st2.session_id)
     # the "interrupting…" info line shows in the transcript
@@ -432,69 +350,25 @@ defmodule CodingAgent.UI.TuiVisualTest do
 
   test "esc to quit requires a double press while idle; a key in between disarms", %{pid: pid} do
     # first esc: arms (does NOT quit)
-    :ok =
-      ExRatatui.Runtime.inject_event(pid, %ExRatatui.Event.Key{
-        code: "escape",
-        kind: "press",
-        modifiers: []
-      })
+    key(pid, "escape")
 
-    Process.sleep(150)
-    assert :sys.get_state(pid).user_state.quit_confirm? == true
+    assert sync(pid).quit_confirm? == true
 
     # second esc within the window: quits
-    :ok =
-      ExRatatui.Runtime.inject_event(pid, %ExRatatui.Event.Key{
-        code: "escape",
-        kind: "press",
-        modifiers: []
-      })
+    key(pid, "escape")
 
     wait_until(fn -> not Process.alive?(pid) end)
 
     # fresh TUI: esc then another key disarms the confirm
-    pid2 =
-      start_supervised!(%{
-        id: String.to_atom("tui-#{System.unique_integer([:positive])}"),
-        start:
-          {CodingAgent.UI.Tui, :start_link,
-           [[name: nil, test_mode: {80, 30}, scope_root: File.cwd!()]]}
-      })
+    pid2 = start_tui({80, 30})
 
-    Process.sleep(700)
-
-    :ok =
-      ExRatatui.Runtime.inject_event(pid2, %ExRatatui.Event.Key{
-        code: "escape",
-        kind: "press",
-        modifiers: []
-      })
-
-    Process.sleep(100)
-    assert :sys.get_state(pid2).user_state.quit_confirm? == true
+    key(pid2, "escape")
+    assert sync(pid2).quit_confirm? == true
 
     # any other key disarms
-    :ok =
-      ExRatatui.Runtime.inject_event(pid2, %ExRatatui.Event.Key{
-        code: "x",
-        kind: "press",
-        modifiers: []
-      })
-
-    Process.sleep(150)
-    assert :sys.get_state(pid2).user_state.quit_confirm? == false
+    key(pid2, "x")
+    assert sync(pid2).quit_confirm? == false
 
     refute Process.alive?(pid2) == false
-  end
-
-  defp wait_until(fun, tries \\ 50) do
-    if fun.() do
-      :ok
-    else
-      if tries <= 0, do: flunk("condition never became true")
-
-      Process.sleep(50)
-      wait_until(fun, tries - 1)
-    end
   end
 end

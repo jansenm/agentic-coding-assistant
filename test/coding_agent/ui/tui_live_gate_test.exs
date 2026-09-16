@@ -1,5 +1,5 @@
 defmodule CodingAgent.UI.TuiLiveGateTest do
-  use ExUnit.Case, async: false
+  use CodingAgent.TuiCase, async: true
 
   alias CodingAgent.UI.Tui
 
@@ -39,9 +39,7 @@ defmodule CodingAgent.UI.TuiLiveGateTest do
         {Tui, [name: nil, test_mode: {80, 24}, session_id: sid, scope_root: root]}
       )
 
-    Process.sleep(50)
-
-    assert :sys.get_state(pid).user_state.pending == []
+    assert sync(pid).pending == []
 
     # the REAL gate path: debug_gate interrupts the session and
     # broadcasts with the pending calls — exactly what a live run does
@@ -50,35 +48,19 @@ defmodule CodingAgent.UI.TuiLiveGateTest do
         %{id: "c1", name: "write_file", arguments: %{"path" => "x.txt", "content" => "hi"}}
       ])
 
-    wait_until(fn -> :sys.get_state(pid).user_state.pending != [] end)
-    assert length(:sys.get_state(pid).user_state.pending) == 1
-    assert :sys.get_state(pid).user_state.status == :interrupted
+    wait_until(fn -> sync(pid).pending != [] end)
+    assert length(sync(pid).pending) == 1
+    assert sync(pid).status == :interrupted
 
     # y approves through the async decide task (never blocks the TUI)
-    :ok =
-      ExRatatui.Runtime.inject_event(pid, %ExRatatui.Event.Key{
-        code: "y",
-        kind: "press",
-        modifiers: []
-      })
+    key(pid, "y")
 
     # optimistic close, then the reply settles the status. The reply
     # Task races the approved tool's file write — wait on the STATUS
     # (the reply carries it), not the file
-    wait_until(fn ->
-      :sys.get_state(pid).user_state.status == :idle
-    end)
+    wait_until(fn -> sync(pid).status == :idle end)
 
     assert File.exists?(Path.join(root, "x.txt"))
-    assert :sys.get_state(pid).user_state.last_error == nil
-  end
-
-  defp wait_until(fun, tries \\ 150) do
-    if fun.() do
-      :ok
-    else
-      Process.sleep(50)
-      wait_until(fun, tries - 1)
-    end
+    assert sync(pid).last_error == nil
   end
 end

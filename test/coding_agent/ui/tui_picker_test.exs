@@ -1,37 +1,35 @@
 defmodule CodingAgent.UI.TuiPickerTest do
-  use ExUnit.Case, async: false
-
-  @tmp_root System.tmp_dir!() |> Path.join("agent-picker-#{System.unique_integer()}")
+  use CodingAgent.TuiCase, async: true
 
   setup do
-    File.mkdir_p!(@tmp_root)
-
-    # sweep leftovers from previous test runs (store dir is shared)
-    Enum.each(CodingAgent.Core.Session.Store.list(), fn %{id: id} ->
-      if String.starts_with?(id, "pick-"), do: CodingAgent.Core.Session.Store.delete(id)
-    end)
+    # per-test scope root: list_in/1 filters on it, so tests are isolated
+    # by their own root (no shared pick-* sweep needed)
+    root = System.tmp_dir!() |> Path.join("agent-picker-#{System.unique_integer()}")
+    File.mkdir_p!(root)
+    on_exit(fn -> File.rm_rf!(root) end)
 
     # two persisted sessions scoped to the picker cwd
-    Enum.each(["alpha", "beta"], fn name ->
-      id = "pick-#{name}-#{System.unique_integer([:positive])}"
+    ids =
+      for name <- ["alpha", "beta"] do
+        id = "pick-#{name}-#{System.unique_integer([:positive])}"
 
-      context = ReqLLM.Context.new() |> ReqLLM.Context.append(ReqLLM.Context.user("hi"))
+        context = ReqLLM.Context.new() |> ReqLLM.Context.append(ReqLLM.Context.user("hi"))
 
-      state =
-        CodingAgent.Core.Session.State.new(
-          id: id,
-          context: context,
-          model: "m",
-          status: :idle,
-          scope_root: @tmp_root,
-          policy: CodingAgent.Core.Permissions.load(nil, nil)
-        )
+        state =
+          CodingAgent.Core.Session.State.new(
+            id: id,
+            context: context,
+            model: "m",
+            status: :idle,
+            scope_root: root,
+            policy: CodingAgent.Core.Permissions.load(nil, nil)
+          )
 
-      CodingAgent.Core.Session.Store.save(state)
-    end)
+        CodingAgent.Core.Session.Store.save(state)
+        id
+      end
 
-    on_exit(fn -> File.rm_rf!(@tmp_root) end)
-    %{root: @tmp_root}
+    %{root: root, ids: ids}
   end
 
   defp start_picker(root) do
@@ -45,9 +43,8 @@ defmodule CodingAgent.UI.TuiPickerTest do
 
   test "picker shows the cwd's sessions, enter resumes the selected one", %{root: root} do
     pid = start_picker(root)
-    Process.sleep(700)
 
-    rt = :sys.get_state(pid)
+    rt = runtime(pid)
     st = rt.user_state
     # picker active, session NOT started (session_id nil)
     assert is_list(st.picker) and length(st.picker) == 2,
@@ -56,17 +53,16 @@ defmodule CodingAgent.UI.TuiPickerTest do
     assert st.session_id == nil
 
     # rendered: both ids visible, the selected row marked
-    rows = ExRatatui.get_buffer_content(rt.terminal_ref) |> String.split("\n")
+    rows = buffer(pid)
     joined = Enum.join(rows, "\n")
     assert joined =~ "sessions"
     assert joined =~ "pick-alpha" or joined =~ "pick-beta"
 
     # down to the second row, enter -> resumed session attached
-    ExRatatui.Runtime.inject_event(pid, %ExRatatui.Event.Key{kind: "press", code: "down"})
-    ExRatatui.Runtime.inject_event(pid, %ExRatatui.Event.Key{kind: "press", code: "enter"})
-    Process.sleep(700)
+    key(pid, "down")
+    key(pid, "enter")
 
-    st2 = :sys.get_state(pid).user_state
+    st2 = sync(pid)
     assert st2.session_id != nil
     assert st2.picker == nil
     assert st2.status == :idle
@@ -74,12 +70,10 @@ defmodule CodingAgent.UI.TuiPickerTest do
 
   test "n starts a fresh session from the picker", %{root: root} do
     pid = start_picker(root)
-    Process.sleep(700)
 
-    ExRatatui.Runtime.inject_event(pid, %ExRatatui.Event.Key{kind: "press", code: "n"})
-    Process.sleep(700)
+    key(pid, "n")
 
-    st = :sys.get_state(pid).user_state
+    st = sync(pid)
     assert st.session_id != nil
     assert st.picker == nil
     # a NEW session: id does not collide with the seeded ones
@@ -88,12 +82,11 @@ defmodule CodingAgent.UI.TuiPickerTest do
 
   test "q quits from the picker without creating a session", %{root: root} do
     pid = start_picker(root)
-    Process.sleep(700)
 
-    ExRatatui.Runtime.inject_event(pid, %ExRatatui.Event.Key{kind: "press", code: "q"})
-    Process.sleep(300)
+    key(pid, "q")
 
     # the TUI process stopped
+    wait_until(fn -> not Process.alive?(pid) end)
     refute Process.alive?(pid)
   end
 
@@ -109,18 +102,15 @@ defmodule CodingAgent.UI.TuiPickerTest do
            [[name: nil, test_mode: {100, 30}, picker: true, scope_root: empty]]}
       })
 
-    Process.sleep(700)
-    st = :sys.get_state(pid).user_state
+    st = sync(pid)
     # picker skipped: a session attached immediately
     assert st.picker == nil
     assert st.session_id != nil
   end
 
-  test "picker renders rows with id, status and age" do
-    pid = start_picker(@tmp_root)
-    Process.sleep(700)
-    rt = :sys.get_state(pid)
-    rows = ExRatatui.get_buffer_content(rt.terminal_ref) |> String.split("\n")
+  test "picker renders rows with id, status and age", %{root: root} do
+    pid = start_picker(root)
+    rows = buffer(pid)
     joined = Enum.join(rows, "\n")
 
     # picker box with header + both sessions + age hints

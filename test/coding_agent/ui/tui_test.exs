@@ -1,5 +1,5 @@
 defmodule CodingAgent.UI.TuiTest do
-  use ExUnit.Case, async: false
+  use CodingAgent.TuiCase, async: true
 
   alias CodingAgent.UI.Tui
   alias ExRatatui.Runtime
@@ -13,7 +13,7 @@ defmodule CodingAgent.UI.TuiTest do
     test "status line shows idle + session id" do
       pid = start_supervised!({Tui, name: nil, test_mode: {80, 10}})
 
-      state = :sys.get_state(pid).user_state
+      state = sync(pid)
       assert state.status == :idle
       assert state.transcript == []
       assert state.session_id =~ "tui-"
@@ -26,12 +26,7 @@ defmodule CodingAgent.UI.TuiTest do
       send(pid, {:agent, {:llm_deltas, "lo"}})
       send(pid, {:agent, {:status_changed, :running}})
 
-      wait_until(fn ->
-        state = :sys.get_state(pid).user_state
-        state.deltas == "Hello" and state.status == :running
-      end)
-
-      state = :sys.get_state(pid).user_state
+      state = sync(pid)
       assert state.deltas == "Hello"
       assert state.status == :running
     end
@@ -43,12 +38,7 @@ defmodule CodingAgent.UI.TuiTest do
       send(pid, {:agent, {:llm_message, "answer text"}})
       send(pid, {:agent, {:tool_executed, "shell", "exit 0\n--- output ---\nstuff"}})
 
-      wait_until(fn ->
-        state = :sys.get_state(pid).user_state
-        state.transcript != [] and length(state.transcript) == 2
-      end)
-
-      state = :sys.get_state(pid).user_state
+      state = sync(pid)
       assert state.deltas == ""
 
       assert [
@@ -69,20 +59,9 @@ defmodule CodingAgent.UI.TuiTest do
           modifiers: ["ctrl"]
         })
 
-      wait_until(fn ->
-        not Process.alive?(pid)
-      end)
+      wait_until(fn -> not Process.alive?(pid) end)
 
       refute Process.alive?(pid)
-    end
-  end
-
-  defp wait_until(fun, tries \\ 50) do
-    if fun.() do
-      :ok
-    else
-      Process.sleep(10)
-      wait_until(fun, tries - 1)
     end
   end
 
@@ -95,7 +74,7 @@ defmodule CodingAgent.UI.TuiTest do
     test "the TUI process is actually registered on the event registry" do
       {:ok, pid} = Tui.start_link(name: nil, test_mode: {80, 10}, scope_root: File.cwd!())
 
-      sid = :sys.get_state(pid).user_state.session_id
+      sid = sync(pid).session_id
       subscribers = Registry.lookup(CodingAgent.EventRegistry, {:session_events, sid})
       assert pid in Enum.map(subscribers, fn {p, _} -> p end)
     end
@@ -103,17 +82,15 @@ defmodule CodingAgent.UI.TuiTest do
     test "broadcast events reach the TUI and update state" do
       {:ok, pid} = Tui.start_link(name: nil, test_mode: {80, 10}, scope_root: File.cwd!())
 
-      sid = :sys.get_state(pid).user_state.session_id
+      sid = sync(pid).session_id
 
       Registry.dispatch(CodingAgent.EventRegistry, {:session_events, sid}, fn entries ->
         for {p, _} <- entries, do: send(p, {:agent, {:llm_message, "broadcast"}})
       end)
 
-      wait_until(fn ->
-        :sys.get_state(pid).user_state.transcript != []
-      end)
-
-      assert [{:assistant, "broadcast"}] = :sys.get_state(pid).user_state.transcript
+      # the dispatch sent from THIS process, so the sync call is fenced
+      # behind it (per-sender FIFO) — no polling needed
+      assert [{:assistant, "broadcast"}] = sync(pid).transcript
     end
   end
 end

@@ -1,18 +1,5 @@
 defmodule CodingAgent.UI.TuiHistoryTest do
-  use ExUnit.Case, async: false
-
-  setup do
-    Process.sleep(50)
-    :ok
-  end
-
-  defp key(pid, code, mods \\ []) do
-    ExRatatui.Runtime.inject_event(pid, %ExRatatui.Event.Key{
-      kind: "press",
-      code: code,
-      modifiers: mods
-    })
-  end
+  use CodingAgent.TuiCase, async: true
 
   test "ctrl-p recalls the last sent prompt; ctrl-n returns to the live draft" do
     {:ok, pid} =
@@ -23,26 +10,20 @@ defmodule CodingAgent.UI.TuiHistoryTest do
         scope: System.tmp_dir!()
       )
 
-    Process.sleep(600)
-
     key(pid, "h")
-    Process.sleep(150)
     key(pid, "enter", ["ctrl"])
-    Process.sleep(400)
 
     # no crash on ctrl-p (was: history_step stub returned nil as state)
     key(pid, "p", ["ctrl"])
-    Process.sleep(300)
 
-    st = :sys.get_state(pid).user_state
+    st = sync(pid)
     assert st.history_index == 0
     assert Process.alive?(pid)
 
     # back to the live draft
     key(pid, "n", ["ctrl"])
-    Process.sleep(300)
 
-    st2 = :sys.get_state(pid).user_state
+    st2 = sync(pid)
     assert st2.history_index == nil
     assert Process.alive?(pid)
   end
@@ -61,7 +42,7 @@ defmodule CodingAgent.UI.TuiHistoryTest do
 
     st =
       CodingAgent.Core.Session.State.new(
-        id: "recall-seed",
+        id: "recall-seed-#{System.unique_integer([:positive])}",
         context: ctx,
         model: "m",
         status: :idle,
@@ -76,24 +57,16 @@ defmodule CodingAgent.UI.TuiHistoryTest do
         test_mode: {80, 24},
         scope_root: root,
         scope: root,
-        resume_id: "recall-seed"
+        resume_id: st.id
       )
 
-    Process.sleep(700)
-
-    st0 = :sys.get_state(pid).user_state
+    # recall is seeded synchronously in mount
+    st0 = sync(pid)
     assert st0.history == ["first prompt", "second prompt"]
 
-    ExRatatui.Runtime.inject_event(pid, %ExRatatui.Event.Key{
-      kind: "press",
-      code: "p",
-      modifiers: ["ctrl"]
-    })
+    key(pid, "p", ["ctrl"])
 
-    Process.sleep(300)
-
-    st1 = :sys.get_state(pid).user_state
-    assert st1.history_index == 0
+    assert sync(pid).history_index == 0
   end
 
   test "picker delete: d arms, y deletes and refreshes the list" do
@@ -101,20 +74,10 @@ defmodule CodingAgent.UI.TuiHistoryTest do
     File.mkdir_p!(root)
     on_exit(fn -> File.rm_rf!(root) end)
 
-    for i <- 1..2 do
-      ctx = ReqLLM.Context.new([ReqLLM.Context.user("p#{i}")])
-
-      st =
-        CodingAgent.Core.Session.State.new(
-          id: "del-#{i}",
-          context: ctx,
-          model: "m",
-          status: :idle,
-          scope_root: root
-        )
-
-      CodingAgent.Core.Session.Store.save(st)
-    end
+    a = "del-a-#{System.unique_integer([:positive])}"
+    b = "del-b-#{System.unique_integer([:positive])}"
+    save_session(a, root)
+    save_session(b, root)
 
     {:ok, pid} =
       CodingAgent.UI.Tui.start_link(
@@ -125,33 +88,27 @@ defmodule CodingAgent.UI.TuiHistoryTest do
         picker: true
       )
 
-    Process.sleep(700)
+    key(pid, "d")
 
-    ExRatatui.Runtime.inject_event(pid, %ExRatatui.Event.Key{kind: "press", code: "d"})
-    Process.sleep(150)
+    # not yet deleted until y; whatever row is selected is only ARMED
+    st = sync(pid)
+    assert {:delete, armed} = st.picker_op
+    assert armed in [a, b]
+    assert File.exists?(CodingAgent.Core.Session.Store.path(armed))
 
-    # not yet deleted until y
-    st = :sys.get_state(pid).user_state
-    assert match?({:delete, "del-2"}, st.picker_op)
-    assert File.exists?(CodingAgent.Core.Session.Store.path("del-1"))
+    key(pid, "y")
 
-    ExRatatui.Runtime.inject_event(pid, %ExRatatui.Event.Key{kind: "press", code: "y"})
-    Process.sleep(400)
-
-    st2 = :sys.get_state(pid).user_state
+    st2 = sync(pid)
     assert st2.picker_op == nil
-    assert Enum.map(st2.picker, & &1.id) == ["del-1"]
-    assert File.exists?(CodingAgent.Core.Session.Store.path("del-1"))
+    assert Enum.map(st2.picker, & &1.id) == [a, b] -- [armed]
+    refute File.exists?(CodingAgent.Core.Session.Store.path(armed))
 
     # esc cancels a delete prompt without deleting
-    ExRatatui.Runtime.inject_event(pid, %ExRatatui.Event.Key{kind: "press", code: "d"})
-    Process.sleep(150)
-    ExRatatui.Runtime.inject_event(pid, %ExRatatui.Event.Key{kind: "press", code: "esc"})
-    Process.sleep(300)
+    key(pid, "d")
+    key(pid, "esc")
 
-    st3 = :sys.get_state(pid).user_state
+    st3 = sync(pid)
     assert st3.picker_op == nil
-    assert File.exists?(CodingAgent.Core.Session.Store.path("del-1"))
   end
 
   test "picker rename: r + typing + enter renames in place" do
@@ -163,7 +120,7 @@ defmodule CodingAgent.UI.TuiHistoryTest do
 
     st =
       CodingAgent.Core.Session.State.new(
-        id: "ren-a",
+        id: "ren-a-#{System.unique_integer([:positive])}",
         context: ctx,
         model: "m",
         status: :idle,
@@ -181,18 +138,26 @@ defmodule CodingAgent.UI.TuiHistoryTest do
         picker: true
       )
 
-    Process.sleep(700)
+    for c <- ["r", "2", "b", "enter"], do: key(pid, c)
 
-    for c <- ["r", "2", "b", "enter"] do
-      ExRatatui.Runtime.inject_event(pid, %ExRatatui.Event.Key{kind: "press", code: c})
-      Process.sleep(100)
-    end
-
-    Process.sleep(300)
-    st2 = :sys.get_state(pid).user_state
+    st2 = sync(pid)
     assert st2.picker_op == nil
     assert Enum.map(st2.picker, & &1.id) == ["2b"]
     assert File.exists?(CodingAgent.Core.Session.Store.path("2b"))
-    refute File.exists?(CodingAgent.Core.Session.Store.path("ren-a"))
+    refute File.exists?(CodingAgent.Core.Session.Store.path(st.id))
+  end
+
+  defp save_session(id, root) do
+    ctx = ReqLLM.Context.new([ReqLLM.Context.user("p")])
+
+    CodingAgent.Core.Session.Store.save(
+      CodingAgent.Core.Session.State.new(
+        id: id,
+        context: ctx,
+        model: "m",
+        status: :idle,
+        scope_root: root
+      )
+    )
   end
 end
