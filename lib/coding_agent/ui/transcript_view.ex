@@ -243,8 +243,23 @@ defmodule CodingAgent.UI.TranscriptView do
     :ets.insert(@measure_cache, {key, value})
   rescue
     _ ->
-      :ets.new(@measure_cache, [:named_table, :public, :set, read_concurrency: true])
+      ensure_table()
       :ets.insert(@measure_cache, {key, value})
+  end
+
+  # Lazy creation is racy under parallel renders: two processes can both
+  # find no table and race to :ets.new — the loser raises. Create only
+  # when absent and treat "already exists" as success.
+  defp ensure_table do
+    if :ets.whereis(@measure_cache) == :undefined do
+      try do
+        :ets.new(@measure_cache, [:named_table, :public, :set, read_concurrency: true])
+      rescue
+        ArgumentError -> :ok
+      end
+    end
+
+    :ok
   end
 
   defp tool_header(name, content) do
