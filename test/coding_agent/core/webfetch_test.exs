@@ -90,6 +90,79 @@ defmodule CodingAgent.Core.Tools.WebFetchTest do
     end
   end
 
+  describe "redirect re-validation (SSRF, codereview §8)" do
+    test "a redirect to a private address is refused (the §8 hole)" do
+      # a public page 302-ing to the AWS metadata endpoint must NOT be
+      # followed: check_host runs on the resolved hop
+      assert {:error, msg} = follow("http://169.254.169.254/latest/meta-data/")
+      assert msg =~ "refusing private network address"
+
+      assert {:error, msg2} = follow("http://127.0.0.1:8080/admin")
+      assert msg2 =~ "refusing private network address"
+
+      assert {:error, msg3} = follow("http://10.0.0.5/internal")
+      assert msg3 =~ "refusing private network address"
+    end
+
+    test "a redirect to localhost is refused" do
+      assert {:error, msg} = follow("http://localhost:4000/dashboard")
+      assert msg =~ "refusing local address"
+    end
+
+    test "a redirect to a disallowed scheme is refused" do
+      assert {:error, msg} = follow("file:///etc/passwd")
+      assert msg =~ "scheme not allowed"
+    end
+
+    test "redirect without a Location header is an error" do
+      assert {:error, msg} = follow(nil)
+      assert msg =~ "without a Location"
+    end
+
+    test "the hop budget is bounded (too many redirects)" do
+      assert {:error, "too many redirects"} =
+               apply_private(:follow, [
+                 [{"location", ["http://example.com/x"]}],
+                 URI.parse("http://example.com/"),
+                 0
+               ])
+    end
+
+    test "relative Location resolves against the current URL before the check" do
+      # resolve_location is the re-parse boundary: a relative hop must
+      # merge onto the current host (and pass the scheme allowlist)
+      assert {:ok, resolved} =
+               apply_private(:resolve_location, [
+                 URI.parse("http://example.com/a/b"),
+                 "/next"
+               ])
+
+      assert resolved.host == "example.com"
+      assert resolved.scheme == "http"
+      assert resolved.path == "/next"
+
+      # an absolute hop to another public host resolves too
+      assert {:ok, other} =
+               apply_private(:resolve_location, [
+                 URI.parse("http://example.com/a"),
+                 "https://other.example.org/x"
+               ])
+
+      assert other.host == "other.example.org"
+      assert other.scheme == "https"
+
+      # a scheme-relative //host form keeps the current scheme
+      assert {:ok, proto_rel} =
+               apply_private(:resolve_location, [
+                 URI.parse("https://example.com/a"),
+                 "//cdn.example.org/x"
+               ])
+
+      assert proto_rel.host == "cdn.example.org"
+      assert proto_rel.scheme == "https"
+    end
+  end
+
   describe "HTML de-tagging (no network)" do
     test "script/style dropped, tags removed, entities decoded" do
       html =
@@ -104,4 +177,13 @@ defmodule CodingAgent.Core.Tools.WebFetchTest do
   end
 
   defp apply_private(fun, args), do: :erlang.apply(CodingAgent.Core.Tools.WebFetch, fun, args)
+
+  # The redirect loop follows Location MANUALLY and re-runs the host
+  # check on each hop. follow/3 is the hop seam and returns BEFORE any
+  # request, so the verdicts below are reached offline — exactly the
+  # property that closes the §8 hole.
+  defp follow(location, from \\ "http://example.com/start") do
+    headers = if location == nil, do: [], else: [{"location", [location]}]
+    apply_private(:follow, [headers, URI.parse(from), 5])
+  end
 end

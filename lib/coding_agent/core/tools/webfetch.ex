@@ -1,6 +1,9 @@
 defmodule CodingAgent.Core.Tools.WebFetch do
   @max_bytes 128 * 1024
   @timeout_ms 15_000
+  # hop budget for the manual redirect loop (was Req's max_redirects)
+  @max_redirects 5
+  @redirect_statuses [301, 302, 303, 307, 308]
 
   @private_v4 [
     {127, 0, 0, 0, 8},
@@ -14,6 +17,14 @@ defmodule CodingAgent.Core.Tools.WebFetch do
   Network read tool (slice 7a), per ADR 013: always-ask in v1, scheme
   allowlist (http/https), private-network block (SSRF), 128 KiB cap,
   15 s timeout, no retries. HTML is de-tagged; binary types refused.
+
+  Redirects are followed MANUALLY (`redirect: false` + our own hop
+  loop) so the SSRF guard re-runs on every hop. Req's own
+  `redirect: :follow` validated only the first URL: a public page could
+  302 to `169.254.169.254` and the fetch would obey (codereview §8).
+  Each `Location` is resolved against the current URL, re-parsed
+  (scheme allowlist) and re-checked with `check_host/1`; the hop budget
+  is bounded by `@max_redirects`.
   """
 
   alias CodingAgent.Core.Tools
@@ -37,8 +48,8 @@ defmodule CodingAgent.Core.Tools.WebFetch do
   defp execute(args) do
     url = Map.get(args, :url) || Map.get(args, "url")
 
-    with {:ok, parsed} <- parse_url(url),
-         :ok <- check_host(parsed) do
+    with {:ok, parsed} <- parse_url(url) do
+      # every hop (the first included) passes check_host inside fetch/1
       fetch(parsed)
     end
   end
@@ -146,16 +157,28 @@ defmodule CodingAgent.Core.Tools.WebFetch do
 
   # -- Fetch ------------------------------------------------------------------
 
-  defp fetch(uri) do
-    url = URI.to_string(uri)
+  defp fetch(uri), do: fetch(uri, @max_redirects)
 
-    case Req.get(url,
-           redirect: :follow,
-           max_redirects: 5,
+  defp fetch(uri, hops_left) do
+    # Re-check EVERY hop, not just the first: the Location is attacker
+    # controlled, so a public URL redirecting to a private one must be
+    # refused here (the §8 hole).
+    with :ok <- check_host(uri) do
+      request(uri, hops_left)
+    end
+  end
+
+  defp request(uri, hops_left) do
+    case Req.get(URI.to_string(uri),
+           redirect: false,
            receive_timeout: @timeout_ms,
            max_retries: 0,
            retry: :safe_transient
          ) do
+      {:ok, %Req.Response{status: status, headers: headers}}
+      when status in @redirect_statuses ->
+        follow(headers, uri, hops_left)
+
       {:ok, %Req.Response{status: status, headers: headers, body: body}}
       when status in 200..299 ->
         content_type = content_type(headers)
@@ -173,6 +196,49 @@ defmodule CodingAgent.Core.Tools.WebFetch do
 
       {:error, err} ->
         Tools.error("fetch failed: #{Exception.message(err)}")
+    end
+  end
+
+  # Manual hop: resolve the Location against the current URL (relative
+  # redirects), re-parse it through the scheme allowlist, then recurse
+  # with one fewer hop. fetch/2 re-runs check_host on the resolved URI.
+  # Public for tests (@doc false): the hop seam returns BEFORE any
+  # request, so the SSRF re-check is asserted offline.
+  @doc false
+  def follow(_headers, _uri, 0), do: Tools.error("too many redirects")
+
+  def follow(headers, uri, hops_left) do
+    case location(headers) do
+      nil ->
+        Tools.error("redirect without a Location header")
+
+      location ->
+        with {:ok, resolved} <- resolve_location(uri, location) do
+          fetch(resolved, hops_left - 1)
+        end
+    end
+  end
+
+  # Merge a (possibly relative) Location against the current URL and run
+  # the scheme allowlist. Public for tests (@doc false): this is the
+  # re-parse boundary, and asserting it network-free is what lets the
+  # redirect tests cover the check without a live hop.
+  @doc false
+  def resolve_location(uri, location) do
+    merged = URI.merge(uri, URI.parse(location))
+    parse_url(URI.to_string(merged))
+  rescue
+    # a malformed Location must fail closed, never raise out of the tool
+    _ -> Tools.error("invalid redirect location: #{inspect(location)}")
+  end
+
+  defp location(headers) do
+    headers
+    |> Enum.find(fn {k, _} -> String.downcase(k) == "location" end)
+    |> case do
+      {_, [v | _]} -> v
+      {_, v} when is_binary(v) -> v
+      _ -> nil
     end
   end
 
