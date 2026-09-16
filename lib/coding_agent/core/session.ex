@@ -29,6 +29,7 @@ defmodule CodingAgent.Core.Session do
   alias CodingAgent.Core.Permissions
   alias CodingAgent.Core.Tools.Shell
   alias CodingAgent.Core.UserConfig
+  alias CodingAgent.Core.Interrupt
   alias CodingAgent.Core.Session.{Compactor, Request, State, Store}
   alias ReqLLM.Context
 
@@ -115,58 +116,12 @@ defmodule CodingAgent.Core.Session do
   @doc """
   Interrupts a running turn (user stop request, opencode's esc).
 
-  The streaming loop checks this flag between stream events and stops
-  early; whatever text already streamed becomes the turn's answer
-  (opencode parity: partial output is kept). Safe to call at any time:
-  when no turn is running the flag is cleared and this is a no-op that
-  reports :not_running.
-
-  A plain GenServer call would queue behind the in-flight turn — the
-  flag must live outside the session process, so it lands in the
-  interrupt ETS table (cleared by the session when the turn ends).
+  Delegates to `CodingAgent.Core.Interrupt`, which owns the flag and the
+  active stream's cancel handle. This is a thin convenience so callers
+  (the TUI) don't need to know the coordinator module.
   """
   @spec interrupt(String.t()) :: :ok
-  def interrupt(id) do
-    interrupt_table()
-    |> :ets.insert({key(id), true})
-
-    :ok
-  end
-
-  @doc false
-  @spec interrupted?(String.t()) :: boolean()
-  def interrupted?(id) do
-    case :ets.lookup(interrupt_table(), key(id)) do
-      [{_k, true}] -> true
-      _ -> false
-    end
-  end
-
-  @doc false
-  @spec clear_interrupt(String.t()) :: :ok
-  def clear_interrupt(id) do
-    :ets.delete(interrupt_table(), key(id))
-    :ok
-  end
-
-  defp interrupt_table do
-    # the table is created by the Application's start (or lazily here for
-    # tests that start sessions without the whole tree)
-    case :ets.whereis(CodingAgent.SessionInterrupts) do
-      :undefined ->
-        :ets.new(CodingAgent.SessionInterrupts, [
-          :set,
-          :named_table,
-          :public,
-          read_concurrency: true
-        ])
-
-      tid ->
-        tid
-    end
-  end
-
-  defp key(id), do: {:interrupt, id}
+  defdelegate interrupt(id), to: CodingAgent.Core.Interrupt, as: :request
 
   @doc """
   Finishes a turn after phase-2 tool executions; phase 1 uses this to
@@ -511,29 +466,49 @@ defmodule CodingAgent.Core.Session do
       raise "test-mode session #{state.id} reached call_llm — tests must be LLM-free"
     end
 
-    {state, changed?} = Compactor.maybe_compact(state)
-    if changed?, do: persist(state)
+    # Loop boundary: a stop requested during an uninterruptible step
+    # (compaction summarize, a long tool round) is honored here before
+    # another provider call starts. There is no streamed text at this
+    # point — end the turn idle (no empty assistant message on the wire)
+    # and tell the transcript why.
+    if Interrupt.requested?(state.id) do
+      state = state |> drop_interrupt() |> stop_at_boundary()
+      {state, {:ok, state}}
+    else
+      {state, changed?} = Compactor.maybe_compact(state)
+      if changed?, do: persist(state)
 
-    case call_llm(state) do
-      {:ok, %{type: :final_answer, text: text, usage: usage}} ->
-        state = state |> add_usage(usage) |> drop_interrupt() |> complete_turn(text)
-        {state, {:ok, state}}
+      case call_llm(state) do
+        {:ok, %{type: :final_answer, text: text, usage: usage}} ->
+          state = state |> add_usage(usage) |> drop_interrupt() |> complete_turn(text)
+          {state, {:ok, state}}
 
-      {:ok, %{type: :tool_calls, tool_calls: calls, usage: usage}} ->
-        state = state |> add_usage(usage) |> drop_interrupt()
-        gate_tools(state, calls)
+        {:ok, %{type: :tool_calls, tool_calls: calls, usage: usage}} ->
+          state = state |> add_usage(usage) |> drop_interrupt()
+          gate_tools(state, calls)
 
-      # user stop (Session.interrupt/1): the partial text streamed so
-      # far becomes the turn's answer (opencode esc parity — nothing
-      # lost, the model can be nudged on from there)
-      {:interrupted, partial} ->
-        state = state |> drop_interrupt() |> complete_turn(partial)
-        {state, {:ok, state}}
+        # user stop (Interrupt.request/1): the partial text streamed so
+        # far becomes the turn's answer (opencode esc parity — nothing
+        # lost, the model can be nudged on from there)
+        {:interrupted, partial} ->
+          state = state |> drop_interrupt() |> complete_turn(partial)
+          {state, {:ok, state}}
 
-      {:error, reason} ->
-        state = state |> drop_interrupt() |> fail_turn(reason)
-        {state, {:error, reason}}
+        {:error, reason} ->
+          state = state |> drop_interrupt() |> fail_turn(reason)
+          {state, {:error, reason}}
+      end
     end
+  end
+
+  # Turn end for a boundary stop: no streamed text exists, so there is
+  # nothing to keep — just go idle and surface a transcript note.
+  defp stop_at_boundary(state) do
+    state = %{state | status: :idle}
+    broadcast(state, {:info, "· turn stopped (esc)"})
+    broadcast(state, {:status_changed, :idle})
+    persist(state)
+    state
   end
 
   # The permission checkpoint (ADR 010): read-only tools pass by policy
@@ -716,31 +691,50 @@ defmodule CodingAgent.Core.Session do
   defp execute_tools(state, calls) do
     tools = current_tools(state)
 
-    Enum.map(calls, fn call ->
-      {id, name, args} = call_parts(call)
-      executing = %{id: id, name: name}
+    # A stop requested between sequential tool executions of one round is
+    # honored here: already-run tools keep their real result, everything
+    # after the stop gets a synthetic result (the exchange still needs
+    # one result per tool call to stay valid on the wire). Mid-tool
+    # cancellation (a running shell) is deliberately out of scope — see
+    # CodingAgent.Core.Interrupt.
+    {results, _stopped?} =
+      Enum.reduce(calls, {[], false}, fn call, {acc, stopped?} ->
+        {id, name, args} = call_parts(call)
+        executing = %{id: id, name: name}
 
-      case Enum.find(tools, &(&1.name == name)) do
-        nil ->
-          # list the valid names: the model can self-correct in one round
-          # (found live: GLM emitted tool calls named "assistant" —
-          # provider-side mislabeling; with the names in the error it
-          # retries with the right tool instead of spiraling)
-          names = tools |> Enum.map(& &1.name) |> Enum.sort()
+        cond do
+          stopped? or Interrupt.requested?(state.id) ->
+            {[Map.put(executing, :content, "error: stopped by the user") | acc], true}
 
-          Map.put(
-            executing,
-            :content,
-            "error: unknown tool #{inspect(name)} — available tools: #{Enum.join(names, ", ")}"
-          )
+          true ->
+            {[run_one_tool(executing, name, args, tools) | acc], false}
+        end
+      end)
 
-        tool ->
-          case ReqLLM.Tool.execute(tool, args) do
-            {:ok, output} -> Map.put(executing, :content, to_text(output))
-            {:error, msg} -> Map.put(executing, :content, "error: #{to_text(msg)}")
-          end
-      end
-    end)
+    Enum.reverse(results)
+  end
+
+  defp run_one_tool(executing, name, args, tools) do
+    case Enum.find(tools, &(&1.name == name)) do
+      nil ->
+        # list the valid names: the model can self-correct in one round
+        # (found live: GLM emitted tool calls named "assistant" —
+        # provider-side mislabeling; with the names in the error it
+        # retries with the right tool instead of spiraling)
+        names = tools |> Enum.map(& &1.name) |> Enum.sort()
+
+        Map.put(
+          executing,
+          :content,
+          "error: unknown tool #{inspect(name)} — available tools: #{Enum.join(names, ", ")}"
+        )
+
+      tool ->
+        case ReqLLM.Tool.execute(tool, args) do
+          {:ok, output} -> Map.put(executing, :content, to_text(output))
+          {:error, msg} -> Map.put(executing, :content, "error: #{to_text(msg)}")
+        end
+    end
   end
 
   # Tool calls arrive in two shapes: as ReqLLM.ToolCall structs
@@ -793,12 +787,19 @@ defmodule CodingAgent.Core.Session do
       with {:ok, stream_response} <- ReqLLM.stream_text(model_input, state.context, opts) do
         events = ReqLLM.StreamResponse.events(stream_response)
 
+        # Hand the active stream's hard-cancel to the interrupt
+        # coordinator: a stop request then closes the underlying
+        # ReqLLM.StreamResponse, which cancels the HTTP work and
+        # releases the session's blocked `next` call — the only way to
+        # stop a reasoning-only stream that never emits another delta.
+        Interrupt.register(state.id, fn -> ReqLLM.StreamResponse.close(stream_response) end)
+
         # consume_stream throws {:stream_error, ...} on stream failures
-        # (e.g. provider down) and {:user_interrupt, text} when the user
-        # stops the turn. Catch both HERE: a transport error is a failed
-        # turn, an interrupt is a finished (partial) turn — neither may
-        # crash the session (the GenServer used to terminate on this
-        # path — found in the 4a live smoke test).
+        # and returns {:interrupted, text} when the user stops the turn.
+        # Catch the throw HERE: a transport error is a failed turn, an
+        # interrupt is a finished (partial) turn — neither may crash the
+        # session (the GenServer used to terminate on this path — found
+        # in the 4a live smoke test).
         try do
           case consume_stream(events, state.id) do
             {:interrupted, partial} ->
@@ -814,6 +815,8 @@ defmodule CodingAgent.Core.Session do
           end
         catch
           {:stream_error, error} -> {:error, {:stream_error, error}}
+        after
+          Interrupt.unregister(state.id)
         end
       end
     end
@@ -821,37 +824,90 @@ defmodule CodingAgent.Core.Session do
 
   @doc false
   def consume_stream(events, session_id) do
-    events
-    |> Enum.reduce_while({:streaming, "", []}, fn
-      %{type: :text_delta, data: delta}, {:streaming, acc, calls} ->
-        broadcast_text(session_id, delta)
-        interrupt_check({:streaming, acc <> delta, calls}, session_id)
+    partial_key = {__MODULE__, :partial, session_id}
+    Process.put(partial_key, "")
 
-      %{type: :reasoning_delta, data: delta}, {:streaming, acc, calls} ->
-        broadcast_reasoning(session_id, delta)
-        {:cont, {:streaming, acc, calls}}
-
-      %{type: :tool_call, data: call}, {:streaming, acc, calls} ->
-        {:cont, {:streaming, acc, [call | calls]}}
-
-      %{type: :error, data: error}, _acc ->
-        throw({:stream_error, error})
-
-      _event, acc ->
-        {:cont, acc}
-    end)
-    |> then(fn
-      {:interrupted, text, _calls} -> {:interrupted, text}
-      {:streaming, text, calls} -> {text, Enum.reverse(calls)}
-    end)
+    try do
+      events
+      |> Enum.reduce_while({:streaming, "", []}, fn event, acc ->
+        event
+        |> handle_event(acc, session_id, partial_key)
+        |> interrupt_check(session_id)
+      end)
+      |> interrupt_result(session_id)
+    catch
+      # Narrow race: Interrupt fires StreamResponse.close from a spawned
+      # process; if it lands between two events, the next
+      # StreamServer.next call reaches the already-stopped server and
+      # exits. If a stop was requested that is exactly the intended
+      # outcome — return the partial text streamed so far instead of
+      # letting the exit crash the session. Any other exit is a real
+      # stream failure and is re-raised.
+      :exit, reason ->
+        if Interrupt.requested?(session_id) do
+          {:interrupted, Process.get(partial_key, "")}
+        else
+          :erlang.raise(:exit, reason, __STACKTRACE__)
+        end
+    after
+      Process.delete(partial_key)
+    end
   end
 
-  # The user's stop request lands in the ETS flag (Session.interrupt/1
-  # cannot GenServer.call — the session is busy consuming this very
-  # stream). Checked after every stream event; stop early keeping the
-  # partial text as the turn's answer (opencode esc parity).
+  defp interrupt_result({:interrupted, text, _calls}, _session_id), do: {:interrupted, text}
+
+  defp interrupt_result({:streaming, text, calls}, session_id) do
+    # A hard cancel (Interrupt fires StreamResponse.close) empties the
+    # provider queue and ends the stream with a plain `:halt` — no
+    # further event reaches interrupt_check. Classify that as an
+    # interrupt too, so the partial answer is kept instead of looking
+    # like a clean finish.
+    if Interrupt.requested?(session_id) do
+      {:interrupted, text}
+    else
+      {text, Enum.reverse(calls)}
+    end
+  end
+
+  # Broadcast the event's payload and fold it into the accumulator. The
+  # flag check lives in interrupt_check/2 applied after EVERY event (not
+  # per clause): a non-delta event after a hard cancel must also halt, or
+  # the next pull would hit the already-stopped StreamServer and exit.
+  defp handle_event(%{type: :text_delta, data: delta}, {:streaming, acc, calls}, session_id, key) do
+    broadcast_text(session_id, delta)
+    partial = acc <> delta
+    Process.put(key, partial)
+    {:streaming, partial, calls}
+  end
+
+  defp handle_event(
+         %{type: :reasoning_delta, data: delta},
+         {:streaming, acc, calls},
+         session_id,
+         key
+       ) do
+    broadcast_reasoning(session_id, delta)
+    Process.put(key, acc)
+    {:streaming, acc, calls}
+  end
+
+  defp handle_event(%{type: :tool_call, data: call}, {:streaming, acc, calls}, _session_id, _key) do
+    {:streaming, acc, [call | calls]}
+  end
+
+  defp handle_event(%{type: :error, data: error}, _acc, _session_id, _key) do
+    throw({:stream_error, error})
+  end
+
+  defp handle_event(_event, acc, _session_id, _key), do: acc
+
+  # The user's stop request lands in the coordinator's ETS flag
+  # (`Interrupt.request/1` cannot GenServer.call the session — it is busy
+  # consuming this very stream). Checked after every stream event; stop
+  # early keeping the partial text as the turn's answer (opencode esc
+  # parity).
   defp interrupt_check({:streaming, acc, calls}, session_id) do
-    if interrupted?(session_id) do
+    if Interrupt.requested?(session_id) do
       {:halt, {:interrupted, acc, calls}}
     else
       {:cont, {:streaming, acc, calls}}
@@ -941,9 +997,9 @@ defmodule CodingAgent.Core.Session do
     state
   end
 
-  # turn-end cleanup: the interrupt flag is per-turn, never carries over
+  # turn-end cleanup: the stop flag is per-turn, never carries over
   defp drop_interrupt(state) do
-    clear_interrupt(state.id)
+    Interrupt.clear(state.id)
     state
   end
 
@@ -978,37 +1034,5 @@ defmodule CodingAgent.Core.Session do
     Registry.dispatch(CodingAgent.EventRegistry, {:session_events, state.id}, fn entries ->
       for {pid, _} <- entries, do: send(pid, {:agent, event})
     end)
-  end
-end
-
-defmodule CodingAgent.Core.Session.InterruptTable do
-  @moduledoc """
-  Owner of the user-interrupt flag table (`Session.interrupt/1`).
-
-  The table MUST be owned by a long-lived supervised process: the
-  interrupt flag is written from the TUI process (a plain ETS insert —
-  a GenServer.call would queue behind the in-flight turn) and read by
-  the session mid-stream. A lazily created table is owned by whichever
-  process first touches it (found live: the interrupting process exits,
-  the table — and the pending flag — vanish with it).
-  """
-
-  use GenServer
-
-  @name CodingAgent.SessionInterrupts
-
-  def start_link(_opts), do: GenServer.start_link(__MODULE__, nil, name: __MODULE__)
-
-  @impl true
-  def init(_nil) do
-    case :ets.whereis(@name) do
-      :undefined ->
-        :ets.new(@name, [:set, :named_table, :public, read_concurrency: true])
-
-      _tid ->
-        :ok
-    end
-
-    {:ok, nil}
   end
 end
