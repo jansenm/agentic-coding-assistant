@@ -186,8 +186,28 @@ defmodule CodingAgent.Core.Permissions do
   defp rank(:ask), do: 1
   defp rank(:deny), do: 2
 
+  # Enablement merges by INTERSECTION, not union: a layer may only
+  # narrow the enabled set, never widen it. Union would let a project
+  # file re-enable a tool the user disabled — an elevation, which the
+  # non-elevation rule forbids (ADR 010 §2). A layer with no [tools]
+  # enabled section ([] here) imposes no restriction and is skipped;
+  # all layers silent => [] => `enabled/1` returns :default.
   defp enabled_tools(layers) do
-    layers |> Enum.flat_map(&Map.get(&1, "__enabled", [])) |> Enum.uniq()
+    layers
+    |> Enum.map(&Map.get(&1, "__enabled", []))
+    |> Enum.reject(&(&1 == []))
+    |> case do
+      [] ->
+        []
+
+      lists ->
+        [first | rest] = Enum.map(lists, &MapSet.new/1)
+
+        rest
+        |> Enum.reduce(first, &MapSet.intersection/2)
+        |> MapSet.to_list()
+        |> Enum.sort()
+    end
   end
 
   # -- Lookup ----------------------------------------------------------------------
@@ -275,8 +295,11 @@ defmodule CodingAgent.Core.Permissions do
   # -- Tool list ------------------------------------------------------------------
 
   @doc """
-  Tools enabled for this policy; an empty `[tools] enabled` section
-  means "registry default" (all read-only tools).
+  Tools enabled for this policy. An empty `[tools] enabled` section in
+  every layer means `:default` — the whole registry (`Tools.all/1`); a
+  non-empty list is a whitelist the session narrows the registry to.
+  Layers merge by intersection, so a project layer can only disable
+  more, never re-enable what a user layer disabled.
   """
   @spec enabled(t()) :: [String.t()] | :default
   def enabled(%__MODULE__{enabled: []}), do: :default

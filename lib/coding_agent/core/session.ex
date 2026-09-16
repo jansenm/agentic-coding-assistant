@@ -812,7 +812,20 @@ defmodule CodingAgent.Core.Session do
   end
 
   defp current_tools(state) do
-    CodingAgent.Core.Tools.all(tool_scope(state))
+    tools = CodingAgent.Core.Tools.all(tool_scope(state))
+
+    # [tools] enabled is a REAL whitelist (ADR 010): an empty section is
+    # "registry default" (every tool); a non-empty list narrows the
+    # registry to exactly those names. Previously parsed, validated and
+    # tested — and then ignored, so a security knob read like it worked
+    # while every tool stayed available (codereview §3). A disabled tool
+    # is simply absent from the list the provider sees; a model that
+    # calls it anyway gets the gate's "unknown tool — available tools:
+    # …" error and self-corrects.
+    case Permissions.enabled(state.policy) do
+      :default -> tools
+      names -> Enum.filter(tools, &(&1.name in names))
+    end
   end
 
   defp tool_scope(state) do

@@ -140,6 +140,56 @@ defmodule CodingAgent.Core.PermissionsTest do
     end
   end
 
+  describe "[tools] enabled (whitelist, non-elevation)" do
+    test "no layer sets it -> :default (the whole registry)" do
+      assert Permissions.enabled(Permissions.load(nil, nil)) == :default
+    end
+
+    test "a single layer's list is the whitelist" do
+      user =
+        write_policy("en-user.toml", """
+        [tools]
+        enabled = ["list_dir", "read_file"]
+        """)
+
+      assert Permissions.enabled(Permissions.load(user, nil)) == ["list_dir", "read_file"]
+    end
+
+    test "layers intersect: a project layer can only disable more, never re-enable" do
+      user =
+        write_policy("en-i-user.toml", """
+        [tools]
+        enabled = ["list_dir", "read_file", "grep"]
+        """)
+
+      repo =
+        write_policy("en-i-repo.toml", """
+        [tools]
+        enabled = ["read_file", "grep", "write_file"]
+        """)
+
+      # union would be all four (project re-enabling list_dir);
+      # intersection is the only non-elevating merge
+      assert Permissions.enabled(Permissions.load(user, repo)) == ["grep", "read_file"]
+    end
+
+    test "an empty enabled list imposes no restriction (skipped in the merge)" do
+      user =
+        write_policy("en-empty.toml", """
+        [tools]
+        enabled = []
+        """)
+
+      repo =
+        write_policy("en-r.toml", """
+        [tools]
+        enabled = ["read_file"]
+        """)
+
+      assert Permissions.enabled(Permissions.load(user, repo)) == ["read_file"]
+    end
+  end
+
   describe "pattern matching" do
     setup do
       path =

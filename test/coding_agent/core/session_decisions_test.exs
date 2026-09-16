@@ -481,6 +481,88 @@ defmodule CodingAgent.Core.Session.DecisionsTest do
     end
   end
 
+  # codereview §3: [tools] enabled is a real whitelist.
+  describe "[tools] enabled enforcement (codereview §3)" do
+    test "a disabled tool is absent from the registry and never executes" do
+      toml = Path.join(@tmp_root, "enabled.toml")
+
+      File.write!(toml, """
+      [tools]
+      enabled = ["list_dir", "read_file"]
+      """)
+
+      id = "enabled-#{System.unique_integer()}"
+
+      {:ok, _} =
+        CodingAgent.Core.Session.Supervisor.start_session(
+          id: id,
+          scope_root: @tmp_root,
+          policy: Permissions.load(nil, toml)
+        )
+
+      # write_file is allow-by-class-default, but it is DISABLED here:
+      # the model must get the unknown-tool error and the file must not
+      # appear
+      :ok =
+        Session.debug_gate(id, [
+          tool_call("w1", "write_file", %{"path" => "disabled.txt", "content" => "x"})
+        ])
+
+      {:ok, state} = Session.state(id)
+      refute File.exists?(Path.join(@tmp_root, "disabled.txt"))
+
+      assert_round_shape(state.context, [["w1"]], ["w1"])
+      [tool] = tool_messages(state.context)
+      assert text_of(tool) =~ "unknown tool"
+      assert text_of(tool) =~ "available tools: list_dir, read_file"
+    end
+
+    test "an enabled tool still runs" do
+      toml = Path.join(@tmp_root, "enabled-ok.toml")
+
+      File.write!(toml, """
+      [tools]
+      enabled = ["list_dir", "read_file"]
+      """)
+
+      id = "enabled-ok-#{System.unique_integer()}"
+
+      {:ok, _} =
+        CodingAgent.Core.Session.Supervisor.start_session(
+          id: id,
+          scope_root: @tmp_root,
+          policy: Permissions.load(nil, toml)
+        )
+
+      :ok =
+        Session.debug_gate(id, [
+          tool_call("r1", "read_file", %{"path" => "missing.txt"})
+        ])
+
+      {:ok, state} = Session.state(id)
+      [tool] = tool_messages(state.context)
+      refute text_of(tool) =~ "unknown tool"
+    end
+
+    test "no [tools] section: the whole registry stays available" do
+      id = "enabled-default-#{System.unique_integer()}"
+
+      {:ok, _} =
+        CodingAgent.Core.Session.Supervisor.start_session(
+          id: id,
+          scope_root: @tmp_root,
+          policy: Permissions.load(nil, nil)
+        )
+
+      :ok =
+        Session.debug_gate(id, [
+          tool_call("w1", "write_file", %{"path" => "default-on.txt", "content" => "x"})
+        ])
+
+      assert File.read!(Path.join(@tmp_root, "default-on.txt")) == "x"
+    end
+  end
+
   # Asserts the canonical exchange shape: every assistant tool-call
   # message (id-lists, in order) plus the tool result ids (in order),
   # with no orphan — every result id declared by an assistant message.
