@@ -135,7 +135,7 @@ defmodule CodingAgent.UI.Tui5bTest do
       wait_until(fn -> sync(pid).status == :idle end)
     end
 
-    test "a refused decide does not lose the dialog (codereview §13)" do
+    test "a refused decide does not lose the dialog" do
       root = Path.join(System.tmp_dir!(), "tui5b-#{System.unique_integer()}")
       File.mkdir_p!(root)
       on_exit(fn -> File.rm_rf!(root) end)

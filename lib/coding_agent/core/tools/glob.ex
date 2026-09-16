@@ -73,9 +73,8 @@ defmodule CodingAgent.Core.Tools.Glob do
 
   # -- Pure-string glob matching (Elixir 1.20 has no Path.match/2) -------
   # The matcher itself lives in Core.GlobMatch (the one dialect shared
-  # with the permission layer, codereview §10). Glob adds brace
-  # expansion on top, a search-time convenience the policy loader does
-  # not offer.
+  # with the permission layer). Glob adds brace expansion on top, a
+  # search-time convenience the policy loader does not offer.
 
   alias CodingAgent.Core.GlobMatch
 

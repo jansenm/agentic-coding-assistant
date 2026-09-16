@@ -261,9 +261,9 @@ defmodule CodingAgent.Core.Permissions do
 
   # -- Glob matching ---------------------------------------------------------------
   # ONE matcher (Core.GlobMatch), shared with the glob tool so a policy
-  # pattern and a search pattern cannot drift (codereview §10: the old
-  # local builder made "**" unable to match zero directories, so
-  # "docs/**/*.ex" silently missed files directly under docs/).
+  # pattern and a search pattern cannot drift. The old local builder made
+  # "**" unable to match zero directories, so "docs/**/*.ex" silently
+  # missed files directly under docs/.
 
   defp glob_match?(pattern, path), do: GlobMatch.match?(pattern, path)
 

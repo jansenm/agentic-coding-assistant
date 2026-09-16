@@ -135,7 +135,7 @@ defmodule CodingAgent.Core.Session do
   LLM. Test-only hook (phase-2 test support); not part of the public
   driver contract. Refuses a non-test session with
   `{:error, :not_test_mode}` — it must never silently turn a live
-  session into a test-mode one (codereview §11).
+  session into a test-mode one.
   """
   @doc since: "0.1.0"
   @spec debug_gate(String.t(), [map()]) :: :ok | {:error, term()}
@@ -316,9 +316,8 @@ defmodule CodingAgent.Core.Session do
   def handle_call({:debug_gate, calls}, _from, %{test_mode: true} = state) do
     # test_mode is REQUIRED, never set here: it used to be flipped true
     # unconditionally, so a live session that ever touched the hook
-    # raised "test-mode session reached call_llm" on its next real turn
-    # (codereview §11). Callers (all tests) already start the session
-    # with test_mode: true.
+    # raised "test-mode session reached call_llm" on its next real turn.
+    # Callers (all tests) already start the session with test_mode: true.
     state = %{state | status: :running, tool_rounds: 0}
     {state, _result} = gate_tools(state, calls)
     {:reply, :ok, state}
@@ -726,7 +725,7 @@ defmodule CodingAgent.Core.Session do
   # execution still rejects a physically-escaping path — but it means an
   # allow-pattern is not a capability. A "tmp/** = allow" pattern next
   # to a symlink tmp -> /etc matches the CALL and then fails at
-  # execution with "path escapes the session scope" (codereview §9).
+  # execution with "path escapes the session scope".
   defp call_rel_path(state, args) when is_map(args) do
     path = Map.get(args, "path") || Map.get(args, :path)
 
@@ -837,7 +836,7 @@ defmodule CodingAgent.Core.Session do
     # "registry default" (every tool); a non-empty list narrows the
     # registry to exactly those names. Previously parsed, validated and
     # tested — and then ignored, so a security knob read like it worked
-    # while every tool stayed available (codereview §3). A disabled tool
+    # while every tool stayed available. A disabled tool
     # is simply absent from the list the provider sees; a model that
     # calls it anyway gets the gate's "unknown tool — available tools:
     # …" error and self-corrects.

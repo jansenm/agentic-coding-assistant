@@ -16,9 +16,9 @@ defmodule CodingAgent.Core.GlobMatch do
   `Permissions` joined per-segment regexes with `/`, so `**` became
   `(?:.*)` wedged between slashes and could NOT match the zero-directory
   case (`docs/**/*.ex` did not match `docs/a.ex`) — despite the
-  moduledoc promising "same dialect as the permission layer"
-  (codereview §10). A user writing `"docs/**/*.ex" = "deny"` got a
-  silent hole for files directly in `docs/`.
+  moduledoc promising "same dialect as the permission layer". A user
+  writing `"docs/**/*.ex" = "deny"` got a silent hole for files directly
+  in `docs/`.
 
   Braces (`{a,b}`) are NOT part of this dialect; `Glob` expands them
   before calling in (a search-time convenience the policy loader does

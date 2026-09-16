@@ -90,8 +90,8 @@ defmodule CodingAgent.Core.Tools.WebFetchTest do
     end
   end
 
-  describe "redirect re-validation (SSRF, codereview §8)" do
-    test "a redirect to a private address is refused (the §8 hole)" do
+  describe "redirect re-validation (SSRF)" do
+    test "a redirect to a private address is refused" do
       # a public page 302-ing to the AWS metadata endpoint must NOT be
       # followed: check_host runs on the resolved hop
       assert {:error, msg} = follow("http://169.254.169.254/latest/meta-data/")
@@ -181,7 +181,7 @@ defmodule CodingAgent.Core.Tools.WebFetchTest do
   # The redirect loop follows Location MANUALLY and re-runs the host
   # check on each hop. follow/3 is the hop seam and returns BEFORE any
   # request, so the verdicts below are reached offline — exactly the
-  # property that closes the §8 hole.
+  # property that closes the SSRF hole.
   defp follow(location, from \\ "http://example.com/start") do
     headers = if location == nil, do: [], else: [{"location", [location]}]
     apply_private(:follow, [headers, URI.parse(from), 5])

@@ -233,7 +233,7 @@ defmodule CodingAgent.Core.PermissionsTest do
       assert Permissions.effective(policy, "read_file", "src/a.ex") == :allow
     end
 
-    test "** matches zero directories (codereview §10)" do
+    test "** matches zero directories" do
       path =
         write_policy("double-star.toml", """
         [permissions.write_file]
@@ -254,7 +254,7 @@ defmodule CodingAgent.Core.PermissionsTest do
       assert Permissions.effective(policy, "write_file", "lib/deep/secret.txt") == :deny
     end
 
-    test "a policy glob and the glob tool agree (one dialect, codereview §10)" do
+    test "a policy glob and the glob tool agree (one dialect)" do
       alias CodingAgent.Core.GlobMatch
 
       for {pattern, path} <- [

@@ -21,7 +21,7 @@ defmodule CodingAgent.Core.Tools.WebFetch do
   Redirects are followed MANUALLY (`redirect: false` + our own hop
   loop) so the SSRF guard re-runs on every hop. Req's own
   `redirect: :follow` validated only the first URL: a public page could
-  302 to `169.254.169.254` and the fetch would obey (codereview §8).
+  302 to `169.254.169.254` and the fetch would obey.
   Each `Location` is resolved against the current URL, re-parsed
   (scheme allowlist) and re-checked with `check_host/1`; the hop budget
   is bounded by `@max_redirects`.
@@ -162,7 +162,7 @@ defmodule CodingAgent.Core.Tools.WebFetch do
   defp fetch(uri, hops_left) do
     # Re-check EVERY hop, not just the first: the Location is attacker
     # controlled, so a public URL redirecting to a private one must be
-    # refused here (the §8 hole).
+    # refused here.
     with :ok <- check_host(uri) do
       request(uri, hops_left)
     end

@@ -117,8 +117,7 @@ defmodule CodingAgent.Core.Session.Store do
             # Drop keys this build does not know FIRST: a NEWER snapshot
             # (same format_version 1, written by a later app version)
             # carries extra struct keys and struct!/1 raises KeyError on
-            # them — an old binary must fail closed, not crash
-            # (codereview §4).
+            # them — an old binary must fail closed, not crash.
             restored =
               state
               |> Map.take(Map.keys(State.__struct__()))
@@ -132,9 +131,9 @@ defmodule CodingAgent.Core.Session.Store do
                 # never-reset bug — resurrected as 25, so resuming and
                 # approving a pending call died instantly at the gate)
                 tool_rounds: 0,
-                # round carry (codereview §2): a snapshot from before the
-                # atomic-exchange change has neither key; default both so
-                # struct!/1 does not raise on an older binary
+                # round carry: a snapshot from before the atomic-exchange
+                # change has neither key; default both so struct!/1 does
+                # not raise on an older binary
                 pending_round_calls: Map.get(state, :pending_round_calls, []),
                 pending_round_results: Map.get(state, :pending_round_results, []),
                 compaction_backoff: Map.get(state, :compaction_backoff, 0)
@@ -176,8 +175,8 @@ defmodule CodingAgent.Core.Session.Store do
       new_id == "" or new_id == id ->
         {:error, :invalid_name}
 
-      # path-injection guard (codereview §5): new_id goes straight into
-      # path/1, so "../x" would escape the sessions dir. The picker's
+      # path-injection guard: new_id goes straight into path/1, so
+      # "../x" would escape the sessions dir. The picker's
       # rename buffer accepts any printable char (including / and .), so
       # this is reachable interactively — keep the invariant explicit.
       not safe_id?(new_id) ->
@@ -242,7 +241,7 @@ defmodule CodingAgent.Core.Session.Store do
     # ONE decode per file: scope_root is read off the same entry list/0
     # uses. list_in used to call list/0 (which loads every state) and
     # then load/1 each id AGAIN to filter — the second decode was pure
-    # waste (codereview §12).
+    # waste.
     list_entries()
     |> Enum.filter(&(&1.scope_root && Path.expand(&1.scope_root) == root))
     |> Enum.map(&Map.take(&1, [:id, :saved_at, :model, :status]))

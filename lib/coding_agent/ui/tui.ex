@@ -168,7 +168,7 @@ defmodule CodingAgent.UI.Tui do
       pending_edit: nil,
       # true from pressing y/n until the {:__decided__} reply lands:
       # the dialog is hidden but `pending` is NOT dropped, so an
-      # errored decide/2 can re-show it (codereview §13)
+      # errored decide/2 can re-show it
       deciding?: false,
       last_error: nil,
       scroll_offset: 0,
@@ -1328,7 +1328,7 @@ defmodule CodingAgent.UI.Tui do
     # Optimistic UI: HIDE the dialog now (deciding?), but KEEP `pending`
     # until the reply. If decide/2 errors (e.g. {:not_interrupted, :idle}
     # from a race), the dialog can re-appear instead of losing the user's
-    # answer with the calls still parked on the session (codereview §13).
+    # answer with the calls still parked on the session.
     %{state | deciding?: true, pending_edit: nil, status: :running}
   end
 
@@ -1428,7 +1428,6 @@ defmodule CodingAgent.UI.Tui do
     # any other refusal (e.g. missing decisions): the session may still
     # hold the calls, so RE-OPEN the dialog with a visible note instead
     # of silently losing the user's y/n — `pending` was never dropped
-    # (codereview §13)
     {:noreply,
      %{
        state
@@ -1452,7 +1451,7 @@ defmodule CodingAgent.UI.Tui do
 
     # an authoritative move OFF :interrupted means the parked calls are
     # resolved or gone: clear the dialog and the deciding guard (a
-    # refused decide/2 can race a status broadcast — codereview §13)
+    # refused decide/2 can race a status broadcast)
     state =
       if status != :interrupted do
         %{state | pending: [], deciding?: false}
@@ -2396,7 +2395,7 @@ defmodule CodingAgent.UI.Tui do
   defp dialog_widgets(%{pending: []}, _area), do: []
 
   # hidden while the decide task runs, but `pending` is retained so an
-  # error reply can re-show it (codereview §13)
+  # error reply can re-show it
   defp dialog_widgets(%{deciding?: true}, _area), do: []
 
   defp dialog_widgets(%{pending: pending}, area) do

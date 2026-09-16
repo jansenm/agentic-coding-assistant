@@ -21,8 +21,8 @@ defmodule CodingAgent.Core.Session.State do
     # the round (so the assistant message can declare them all, in final
     # edited form) and the results already computed (auto-executed,
     # blacklist-denied, policy-denied). Without them a mixed round
-    # appended bare tool results with no declaring assistant message
-    # (codereview §2) and a resumed round lost the auto results.
+    # appended bare tool results with no declaring assistant message,
+    # and a resumed round lost the auto results.
     pending_round_calls: [],
     pending_round_results: [],
     subscribers: [],

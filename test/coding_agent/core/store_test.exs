@@ -143,7 +143,7 @@ defmodule CodingAgent.Core.Session.StoreTest do
       assert {:error, _} = Store.load(id)
     end
 
-    test "a NEWER snapshot with unknown struct keys fails closed, not KeyError (codereview §4)" do
+    test "a NEWER snapshot with unknown struct keys fails closed, not KeyError" do
       id = "newer-#{System.unique_integer()}"
       state = build_state(id)
 
@@ -383,7 +383,7 @@ defmodule CodingAgent.Core.Session.StoreTest do
     assert {:error, :invalid_name} = Store.rename("ren-c", "ren-c")
   end
 
-  test "rename/2 refuses path-injecting ids (codereview §5)" do
+  test "rename/2 refuses path-injecting ids" do
     ctx = Context.new([Context.user("hi")])
 
     State.new(id: "ren-inj", context: ctx, model: "m", status: :idle, scope_root: @test_dir)

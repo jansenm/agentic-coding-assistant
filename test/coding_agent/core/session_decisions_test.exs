@@ -128,7 +128,7 @@ defmodule CodingAgent.Core.Session.DecisionsTest do
       assert Permissions.effective(deny_policy, "write_file", "other") == :allow
     end
 
-    test "debug_gate refuses a non-test session (codereview §11)" do
+    test "debug_gate refuses a non-test session" do
       # a live session must never be silently flipped into test mode by
       # the test hook; it used to set test_mode: true unconditionally,
       # so the next real turn raised "reached call_llm"
@@ -311,13 +311,12 @@ defmodule CodingAgent.Core.Session.DecisionsTest do
     CodingAgent.Core.Interrupt.clear(id)
   end
 
-  # codereview §2: the tool round must reach the model as ONE canonical
-  # exchange — the assistant message declares every application call of
-  # the round, and every result has a declaring call. Bare tool results
-  # with no preceding assistant message are orphaned and strict
-  # OpenAI-compatible backends reject or mis-associate them by
-  # tool_call_id.
-  describe "atomic tool-round exchange (codereview §2)" do
+  # The tool round must reach the model as ONE canonical exchange — the
+  # assistant message declares every application call of the round, and
+  # every result has a declaring call. Bare tool results with no
+  # preceding assistant message are orphaned and strict OpenAI-compatible
+  # backends reject or mis-associate them by tool_call_id.
+  describe "atomic tool-round exchange" do
     test "an all-auto round declares the assistant tool-call message, not orphaned results" do
       id = "round-auto-#{System.unique_integer()}"
 
@@ -512,8 +511,8 @@ defmodule CodingAgent.Core.Session.DecisionsTest do
     end
   end
 
-  # codereview §3: [tools] enabled is a real whitelist.
-  describe "[tools] enabled enforcement (codereview §3)" do
+  # [tools] enabled is a real whitelist.
+  describe "[tools] enabled enforcement" do
     test "a disabled tool is absent from the registry and never executes" do
       toml = Path.join(@tmp_root, "enabled.toml")
 

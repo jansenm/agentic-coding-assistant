@@ -25,10 +25,10 @@ config :coding_agent,
 
 # Credentials are NOT configured here: secrets come from the environment
 # (ADR 008), and Request resolves them per provider as `<NAME>_API_KEY`
-# via UserConfig.credential/1, then auth.toml. The old `api_key_env:
-# "ANTHROPIC_API_KEY"` key was read by nobody — it sat under a comment
-# about cloud ollama and misled (codereview docs drift).
-#
+# via UserConfig.credential/1, then auth.toml. Do not add an
+# `api_key_env` key — nothing reads it; the provider name is the source
+# of the env var name.
+
 # Cloud ollama models are not in req_llm's catalog; suppress the
 # unverified-model warning.
 config :req_llm, warn_unverified_models: false
