@@ -24,23 +24,38 @@ defmodule CodingAgent.Core.Providers.DiscoveryTest do
     pid =
       spawn(fn -> accept(listen, body, parent) end)
 
-    %{port: port, pid: pid}
+    %{port: port, pid: pid, listen: listen}
   end
 
   defp accept(listen, body, parent) do
-    {:ok, sock} = :gen_tcp.accept(listen)
-    {:ok, req} = :gen_tcp.recv(sock, 0, 2_000)
-    send(parent, {:req, req})
+    case :gen_tcp.accept(listen) do
+      {:ok, sock} ->
+        {:ok, req} = :gen_tcp.recv(sock, 0, 2_000)
+        send(parent, {:req, req})
 
-    resp =
-      "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: #{byte_size(body)}\r\nconnection: close\r\n\r\n#{body}"
+        resp =
+          "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: #{byte_size(body)}\r\nconnection: close\r\n\r\n#{body}"
 
-    :gen_tcp.send(sock, resp)
-    :gen_tcp.close(sock)
-    accept(listen, body, parent)
+        :gen_tcp.send(sock, resp)
+        :gen_tcp.close(sock)
+        accept(listen, body, parent)
+
+      # stop_stub closed the listen socket: exit quietly (a crash here
+      # would print a process error over the test output)
+      {:error, :closed} ->
+        :ok
+    end
   end
 
-  defp stop_stub(%{pid: pid}), do: Process.exit(pid, :kill)
+  # Close the LISTEN socket too, not just the acceptor: a killed
+  # acceptor leaves the port listening with no one to answer, so the
+  # next request hangs until the 3 s receive_timeout (found: the cache
+  # test's post-invalidate fetch waited out the full timeout). Closing
+  # the listen socket gives the next connect an immediate econnrefused.
+  defp stop_stub(%{pid: pid, listen: listen}) do
+    :gen_tcp.close(listen)
+    Process.exit(pid, :kill)
+  end
 
   describe "models/2 (menu-facing, never raises)" do
     test "unknown discover dialect: note, no entries, no raise" do

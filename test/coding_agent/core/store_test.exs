@@ -148,9 +148,14 @@ defmodule CodingAgent.Core.Session.StoreTest do
     test "lists sessions newest-first with metadata" do
       a = build_state("list-a-#{System.unique_integer()}")
       :ok = Store.save(a)
-      Process.sleep(1100)
       b = build_state("list-b-#{System.unique_integer()}")
       :ok = Store.save(b)
+
+      # order by mtime: set them explicitly instead of sleeping a second
+      # for the filesystem clock to separate the two saves
+      now = System.os_time(:second)
+      File.touch!(Store.path(a.id), now - 60)
+      File.touch!(Store.path(b.id), now)
 
       sessions = Store.list()
       ids = Enum.map(sessions, & &1.id)
