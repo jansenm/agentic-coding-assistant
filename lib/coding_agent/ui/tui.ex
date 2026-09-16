@@ -367,7 +367,14 @@ defmodule CodingAgent.UI.Tui do
                  # the chars fallback and compacts on the first command
                  usage: state.usage,
                  compaction_warned: state.compaction_warned,
-                 compaction_backoff: state.compaction_backoff
+                 compaction_backoff: state.compaction_backoff,
+                 # a session parked at the gate resumes PARKED (see
+                 # Session.init/1): pending calls and the round half
+                 # already decided come back so decide/2 can finish it
+                 status: state.status,
+                 pending_tool_calls: state.pending_tool_calls,
+                 pending_round_calls: state.pending_round_calls,
+                 pending_round_results: state.pending_round_results
                ) do
           {:ok, pid, state}
         end

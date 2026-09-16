@@ -202,7 +202,13 @@ defmodule Mix.Tasks.Agent do
           # chars fallback and compacts on the first command
           usage: persisted.usage,
           compaction_warned: persisted.compaction_warned,
-          compaction_backoff: persisted.compaction_backoff
+          compaction_backoff: persisted.compaction_backoff,
+          # resume a gate-parked session parked (pending calls + the
+          # round half already decided survive the restart)
+          status: persisted.status,
+          pending_tool_calls: persisted.pending_tool_calls,
+          pending_round_calls: persisted.pending_round_calls,
+          pending_round_results: persisted.pending_round_results
         ]
 
         {:ok, _pid} = CodingAgent.Core.Session.Supervisor.start_session(opts)
@@ -211,6 +217,18 @@ defmodule Mix.Tasks.Agent do
         IO.puts("""
         Resumed session #{persisted.id} (#{length(ReqLLM.Context.to_list(persisted.context))} messages in context).
         """)
+
+        # A session parked at the gate when it stopped resumes PARKED.
+        # Resolve that round before prompting for new input, or the
+        # pending calls (and the auto-executed half of the round) would
+        # sit stranded in state while the user types a new prompt.
+        case CodingAgent.Core.Session.state(persisted.id) do
+          {:ok, %{status: :interrupted} = state} ->
+            finish_turn(persisted.id, {:ok, state})
+
+          _ ->
+            :ok
+        end
 
         loop(persisted.id)
 

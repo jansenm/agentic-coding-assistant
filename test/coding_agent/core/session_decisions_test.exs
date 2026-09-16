@@ -3,6 +3,7 @@ defmodule CodingAgent.Core.Session.DecisionsTest do
 
   alias CodingAgent.Core.Permissions
   alias CodingAgent.Core.Session
+  alias CodingAgent.Core.Session.Store
 
   @tmp_root System.tmp_dir!() |> Path.join("agent-decisions-#{System.unique_integer()}")
 
@@ -281,5 +282,231 @@ defmodule CodingAgent.Core.Session.DecisionsTest do
     # the tool never ran, even though the policy would have allowed it
     refute File.exists?(Path.join(@tmp_root, "never.txt"))
     CodingAgent.Core.Interrupt.clear(id)
+  end
+
+  # codereview §2: the tool round must reach the model as ONE canonical
+  # exchange — the assistant message declares every application call of
+  # the round, and every result has a declaring call. Bare tool results
+  # with no preceding assistant message are orphaned and strict
+  # OpenAI-compatible backends reject or mis-associate them by
+  # tool_call_id.
+  describe "atomic tool-round exchange (codereview §2)" do
+    test "an all-auto round declares the assistant tool-call message, not orphaned results" do
+      id = "round-auto-#{System.unique_integer()}"
+
+      {:ok, _} =
+        CodingAgent.Core.Session.Supervisor.start_session(
+          id: id,
+          scope_root: @tmp_root,
+          policy: Permissions.load(nil, nil)
+        )
+
+      :ok =
+        Session.debug_gate(id, [
+          tool_call("a1", "write_file", %{"path" => "auto-round.txt", "content" => "x"})
+        ])
+
+      {:ok, state} = Session.state(id)
+      assert_round_shape(state.context, [["a1"]], ["a1"])
+    end
+
+    test "a mixed round declares all calls once decided, in call order" do
+      toml = Path.join(@tmp_root, "mixed.toml")
+
+      File.write!(toml, """
+      [permissions.write_file]
+      "*" = "ask"
+      """)
+
+      id = "round-mixed-#{System.unique_integer()}"
+
+      {:ok, _} =
+        CodingAgent.Core.Session.Supervisor.start_session(
+          id: id,
+          scope_root: @tmp_root,
+          policy: Permissions.load(nil, toml)
+        )
+
+      # read_file auto-allows, write_file asks -> mixed round
+      :ok =
+        Session.debug_gate(id, [
+          tool_call("r1", "read_file", %{"path" => "nope.txt"}),
+          tool_call("w1", "write_file", %{"path" => "mixed.txt", "content" => "x"})
+        ])
+
+      # held back until the human answers: no half-formed exchange yet
+      {:ok, held} = Session.state(id)
+      assert held.status == :interrupted
+      refute Enum.any?(ReqLLM.Context.to_list(held.context), &(&1.role == :tool))
+
+      {:ok, state} = Session.decide(id, [%{id: "w1", decision: :approve}])
+
+      # both calls declared by ONE assistant message, results in order
+      assert_round_shape(state.context, [["r1", "w1"]], ["r1", "w1"])
+    end
+
+    test "a policy deny never parks as an approvable pending call" do
+      toml = Path.join(@tmp_root, "deny-round.toml")
+
+      File.write!(toml, """
+      [permissions.write_file]
+      "secret/**" = "deny"
+      """)
+
+      id = "round-deny-#{System.unique_integer()}"
+      File.mkdir_p!(Path.join(@tmp_root, "secret"))
+
+      {:ok, _} =
+        CodingAgent.Core.Session.Supervisor.start_session(
+          id: id,
+          scope_root: @tmp_root,
+          policy: Permissions.load(nil, toml)
+        )
+
+      :ok =
+        Session.debug_gate(id, [
+          tool_call("d1", "write_file", %{"path" => "secret/k", "content" => "x"})
+        ])
+
+      {:ok, state} = Session.state(id)
+      # ADR 010: deny = "never even ask" — no pause, no approve path
+      refute state.status == :interrupted
+      assert state.pending_tool_calls == []
+      refute File.exists?(Path.join(@tmp_root, "secret/k"))
+
+      # the model gets a denial result in the same round
+      assert_round_shape(state.context, [["d1"]], ["d1"])
+      [tool] = tool_messages(state.context)
+      assert text_of(tool) =~ "permission denied"
+    end
+
+    test "an edited call's args reach the assistant message; results stay ordered" do
+      toml = Path.join(@tmp_root, "edit-round.toml")
+
+      File.write!(toml, """
+      [permissions.write_file]
+      "*" = "ask"
+      """)
+
+      id = "round-edit-#{System.unique_integer()}"
+
+      {:ok, _} =
+        CodingAgent.Core.Session.Supervisor.start_session(
+          id: id,
+          scope_root: @tmp_root,
+          policy: Permissions.load(nil, toml)
+        )
+
+      :ok =
+        Session.debug_gate(id, [
+          tool_call("e1", "write_file", %{"path" => "orig.txt", "content" => "original"}),
+          tool_call("e2", "write_file", %{"path" => "keep.txt", "content" => "keep"})
+        ])
+
+      {:ok, state} =
+        Session.decide(id, [
+          %{id: "e1", decision: {:edit, %{"path" => "edited.txt", "content" => "edited!"}}},
+          %{id: "e2", decision: :reject}
+        ])
+
+      assert_round_shape(state.context, [["e1", "e2"]], ["e1", "e2"])
+
+      assert File.read!(Path.join(@tmp_root, "edited.txt")) == "edited!"
+      refute File.exists?(Path.join(@tmp_root, "orig.txt"))
+
+      assistant = Enum.find(ReqLLM.Context.to_list(state.context), & &1.tool_calls)
+      args = args_by_id(assistant)
+
+      assert args["e1"] == %{"path" => "edited.txt", "content" => "edited!"}
+      assert args["e2"] == %{"path" => "keep.txt", "content" => "keep"}
+    end
+
+    test "a gate-parked round survives a cold restart and completes" do
+      toml = Path.join(@tmp_root, "resume-round.toml")
+
+      File.write!(toml, """
+      [permissions.write_file]
+      "*" = "ask"
+      """)
+
+      id = "round-resume-#{System.unique_integer()}"
+      File.write!(Path.join(@tmp_root, "resume-existing.txt"), "was here")
+
+      {:ok, pid} =
+        CodingAgent.Core.Session.Supervisor.start_session(
+          id: id,
+          scope_root: @tmp_root,
+          policy: Permissions.load(nil, toml),
+          test_mode: true
+        )
+
+      # mixed round: the read auto-runs, the write parks
+      :ok =
+        Session.debug_gate(id, [
+          tool_call("r1", "read_file", %{"path" => "resume-existing.txt"}),
+          tool_call("w1", "write_file", %{"path" => "resume-new.txt", "content" => "new"})
+        ])
+
+      {:ok, persisted} = Store.load(id)
+      assert persisted.status == :interrupted
+      assert persisted.pending_round_results != []
+
+      # cold restart, exactly the fields the resume paths forward
+      GenServer.stop(pid)
+
+      {:ok, _} =
+        CodingAgent.Core.Session.Supervisor.start_session(
+          id: id,
+          context: persisted.context,
+          model: persisted.model,
+          scope_root: @tmp_root,
+          policy: persisted.policy,
+          test_mode: true,
+          status: persisted.status,
+          pending_tool_calls: persisted.pending_tool_calls,
+          pending_round_calls: persisted.pending_round_calls,
+          pending_round_results: persisted.pending_round_results
+        )
+
+      {:ok, resumed} = Session.state(id)
+      assert resumed.status == :interrupted
+      assert Enum.map(resumed.pending_tool_calls, & &1.id) == ["w1"]
+
+      # completing the round after the restart keeps the auto half and
+      # yields ONE exchange with both calls declared
+      {:ok, state} = Session.decide(id, [%{id: "w1", decision: :approve}])
+      assert state.status == :idle
+      assert_round_shape(state.context, [["r1", "w1"]], ["r1", "w1"])
+      assert File.read!(Path.join(@tmp_root, "resume-new.txt")) == "new"
+    end
+  end
+
+  # Asserts the canonical exchange shape: every assistant tool-call
+  # message (id-lists, in order) plus the tool result ids (in order),
+  # with no orphan — every result id declared by an assistant message.
+  defp assert_round_shape(context, tool_calls_declared, result_ids) do
+    msgs = ReqLLM.Context.to_list(context)
+
+    declared =
+      msgs
+      |> Enum.filter(& &1.tool_calls)
+      |> Enum.map(fn m -> Enum.map(m.tool_calls, & &1.id) end)
+
+    assert declared == tool_calls_declared
+
+    assert Enum.map(tool_messages(context), & &1.tool_call_id) == result_ids
+
+    all_declared = List.flatten(declared)
+    assert Enum.all?(result_ids, &(&1 in all_declared))
+  end
+
+  defp tool_messages(context) do
+    context |> ReqLLM.Context.to_list() |> Enum.filter(&(&1.role == :tool))
+  end
+
+  defp args_by_id(assistant) do
+    Map.new(assistant.tool_calls, fn tc ->
+      {tc.id, Jason.decode!(tc.function.arguments)}
+    end)
   end
 end

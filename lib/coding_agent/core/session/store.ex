@@ -125,6 +125,11 @@ defmodule CodingAgent.Core.Session.Store do
                 # never-reset bug — resurrected as 25, so resuming and
                 # approving a pending call died instantly at the gate)
                 tool_rounds: 0,
+                # round carry (codereview §2): a snapshot from before the
+                # atomic-exchange change has neither key; default both so
+                # struct!/1 does not raise on an older binary
+                pending_round_calls: Map.get(state, :pending_round_calls, []),
+                pending_round_results: Map.get(state, :pending_round_results, []),
                 compaction_backoff: Map.get(state, :compaction_backoff, 0)
               })
               |> struct!()

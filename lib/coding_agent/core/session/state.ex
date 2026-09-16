@@ -15,6 +15,16 @@ defmodule CodingAgent.Core.Session.State do
     :policy,
     provider_config: %{},
     pending_tool_calls: [],
+    # The current round's tool exchange is appended ATOMICALLY: while any
+    # call of the round waits at the gate, nothing goes on the wire yet.
+    # These carry the already-known half across the pause — every call of
+    # the round (so the assistant message can declare them all, in final
+    # edited form) and the results already computed (auto-executed,
+    # blacklist-denied, policy-denied). Without them a mixed round
+    # appended bare tool results with no declaring assistant message
+    # (codereview §2) and a resumed round lost the auto results.
+    pending_round_calls: [],
+    pending_round_results: [],
     subscribers: [],
     tool_rounds: 0,
     test_mode: false,
@@ -43,6 +53,8 @@ defmodule CodingAgent.Core.Session.State do
           policy: CodingAgent.Core.Permissions.t() | nil,
           provider_config: %{String.t() => term()} | nil,
           pending_tool_calls: [map()],
+          pending_round_calls: [map()],
+          pending_round_results: [map()],
           subscribers: [reference()],
           tool_rounds: non_neg_integer(),
           test_mode: boolean()

@@ -3,10 +3,9 @@ defmodule CodingAgent.Core.Session do
   One agent session: an OTP process owning one conversation.
 
   Implements the agent loop from `docs/source/explanation/agent-loop.rst`.
-  Phase 1 slice: prompt in, streamed LLM response out; tool calls are
-  detected but the tool subsystem (phase 2) is not wired yet, so a
-  tool-call turn surfaces as `{:tool_calls_requested, calls, state}` to
-  the caller instead of being executed.
+  A tool-call turn runs the tools through the permission gate and
+  continues the loop; a call that needs a human parks the round as
+  `:interrupted` until `decide/2`.
 
   The session state is plain data (ADR 003: everything is data so
   persistence and interruption become states, not exceptions).
@@ -124,15 +123,6 @@ defmodule CodingAgent.Core.Session do
   defdelegate interrupt(id), to: CodingAgent.Core.Interrupt, as: :request
 
   @doc """
-  Finishes a turn after phase-2 tool executions; phase 1 uses this to
-  continue the loop after a human provides or performs a tool result.
-  """
-  @spec submit_tool_results(String.t(), [map()]) ::
-          {:ok, State.t()} | {:error, term()}
-  def submit_tool_results(id, results),
-    do: GenServer.call(via(id), {:tool_results, results}, @call_timeout)
-
-  @doc """
   Supplies decisions for pending tool calls (ADR 010: approve / edit /
   reject, one decision per call) and resumes the interrupted turn.
   """
@@ -183,6 +173,16 @@ defmodule CodingAgent.Core.Session do
     compaction_warned = Keyword.get(opts, :compaction_warned, false)
     compaction_backoff = Keyword.get(opts, :compaction_backoff, 0)
 
+    # A session that was parked at the gate when it last stopped resumes
+    # PARKED, not idle: the pending calls (and the half of the round that
+    # was already decided — auto-executed, blacklist/policy-denied) come
+    # back so `decide/2` can finish the exchange. Dropping them used to
+    # silently discard work the user then had to redo.
+    status = Keyword.get(opts, :status, :idle)
+    pending_tool_calls = Keyword.get(opts, :pending_tool_calls, [])
+    pending_round_calls = Keyword.get(opts, :pending_round_calls, [])
+    pending_round_results = Keyword.get(opts, :pending_round_results, [])
+
     # Project memory (4c): AGENTS.md at the scope root is read once at
     # session start and appended to the system prompt — the long-term
     # memory tier that writes knowledge down as files (memory.rst).
@@ -208,9 +208,12 @@ defmodule CodingAgent.Core.Session do
        id: id,
        context: context,
        model: model,
-       status: :idle,
+       status: status,
        scope_root: scope_root,
        policy: policy,
+       pending_tool_calls: pending_tool_calls,
+       pending_round_calls: pending_round_calls,
+       pending_round_results: pending_round_results,
        # [providers.*] snapshot (layer 0 < global < project): consulted
        # per request (request_parts/1) and by the TUI's model menu
        # (provider_config_of/1). Found live NEVER SEEDED — every
@@ -308,12 +311,6 @@ defmodule CodingAgent.Core.Session do
     {:reply, result, state}
   end
 
-  def handle_call({:tool_results, results}, _from, state) do
-    state = append_tool_results(state, results)
-    {state, result} = continue_loop(state)
-    {:reply, result, state}
-  end
-
   def handle_call({:debug_gate, calls}, _from, state) do
     state = %{state | status: :running, tool_rounds: 0, test_mode: true}
     {state, _result} = gate_tools(state, calls)
@@ -359,28 +356,33 @@ defmodule CodingAgent.Core.Session do
   # Apply approve/edit/reject to every pending call; build tool-result
   # messages so the model sees the outcome. Approved/edited calls are
   # executed immediately; rejected calls get a rejection message.
+  #
+  # The round is completed as ONE canonical exchange (see complete_round):
+  # the assistant message declares every application call of the round —
+  # including the auto-executed and policy-denied ones carried in state
+  # across the pause — in final (possibly edited) form.
   defp resolve_decisions(state, pending, by_id) do
-    {to_run, rejected, final_calls} =
-      Enum.reduce(pending, {[], [], []}, fn call, {run, res, finals} ->
+    {to_run, decided_results, decided_calls} =
+      Enum.reduce(pending, {[], [], %{}}, fn call, {run, results, calls} ->
         {id, name, _args} = call_parts(call)
         decision = Map.fetch!(by_id, id)
 
         case decision do
           :approve ->
-            {[call | run], res, [call | finals]}
+            {[call | run], results, Map.put(calls, id, call)}
 
           {:edit, new_args} ->
             edited = edit_call(call, new_args)
-            {[edited | run], res, [edited | finals]}
+            {[edited | run], results, Map.put(calls, id, edited)}
 
           :reject ->
-            {run, [%{id: id, name: name, content: "error: the user rejected this action"} | res],
-             [call | finals]}
+            result = %{id: id, name: name, content: "error: the user rejected this action"}
+            {run, [result | results], Map.put(calls, id, call)}
         end
       end)
 
     to_run = Enum.reverse(to_run)
-    final_calls = Enum.reverse(final_calls)
+    decided_results = Enum.reverse(decided_results)
 
     executed_results = execute_tools(state, to_run)
 
@@ -388,24 +390,38 @@ defmodule CodingAgent.Core.Session do
       broadcast(state, {:tool_executed, r.name, r.content})
     end)
 
-    all_results =
-      Enum.map(rejected ++ executed_results, fn r ->
-        %ReqLLM.Message{
-          role: :tool,
-          name: r.name,
-          tool_call_id: r.id,
-          content: [ReqLLM.Message.ContentPart.text(r.content)]
-        }
+    # A session persisted before the round carry existed has no
+    # pending_round_calls: fall back to the pending calls alone (still a
+    # coherent exchange, just without the auto/denied halves).
+    round_calls =
+      if state.pending_round_calls == [], do: pending, else: state.pending_round_calls
+
+    final_calls =
+      Enum.map(round_calls, fn call ->
+        {id, _, _} = call_parts(call)
+        Map.get(decided_calls, id, call)
       end)
 
-    # the canonical exchange validates id matching and appends the
-    # assistant tool-call message with every result in order
+    all_results = state.pending_round_results ++ decided_results ++ executed_results
+
+    result_msgs =
+      Enum.map(all_results, fn %{id: id, name: name, content: content} ->
+        Context.tool_result_message(name, id, content)
+      end)
+
     assistant_msg = assistant_message_for(final_calls)
-    exchange = ReqLLM.Context.append_tool_exchange(state.context, assistant_msg, all_results)
+    exchange = ReqLLM.Context.append_tool_exchange(state.context, assistant_msg, result_msgs)
 
     case exchange do
       {:ok, context} ->
-        state = %{state | pending_tool_calls: [], context: context}
+        state = %{
+          state
+          | context: context,
+            pending_tool_calls: [],
+            pending_round_calls: [],
+            pending_round_results: []
+        }
+
         persist(state)
         state
 
@@ -550,42 +566,30 @@ defmodule CodingAgent.Core.Session do
       # Command blacklist (2026-09-15 amendment 2, BEFORE the policy
       # lookup): a shell call whose leading program duplicates a native
       # tool is denied with a steering message — no keystroke for the
-      # user, and the model gets the better-tool hint as its tool
-      # result in the same round. append_tool_results here (not in the
-      # predicate) so the context update happens exactly once per call.
-      {denied, rest} =
+      # user, and the model gets the better-tool hint as its tool result
+      # in the same round.
+      {blacklisted, rest} =
         Enum.split_with(calls, fn call ->
           {_id, name, args} = call_parts(call)
           name == "shell" and match?({:ok, _}, Shell.blacklisted?(args))
         end)
 
-      state =
-        case denied do
-          [] ->
-            state
+      blacklist_results =
+        Enum.map(blacklisted, fn call ->
+          {id, _name, args} = call_parts(call)
+          {:ok, guidance} = Shell.blacklisted?(args)
+          Logger.warning("gate: shell command denied (blacklist): #{inspect(id)}")
+          decisions_log(state, id, :deny)
+          %{id: id, name: "shell", content: "error: #{guidance}"}
+        end)
 
-          denied ->
-            results =
-              Enum.map(denied, fn call ->
-                {id, _name, args} = call_parts(call)
-                {:ok, guidance} = Shell.blacklisted?(args)
-                Logger.warning("gate: shell command denied (blacklist): #{inspect(id)}")
-                decisions_log(state, id, :deny)
-                %{id: id, name: "shell", content: "error: #{guidance}"}
-              end)
-
-            state = append_tool_results(state, results)
-
-            Enum.each(results, fn r ->
-              broadcast(state, {:tool_executed, "shell", r.content})
-            end)
-
-            persist(state)
-            state
-        end
-
-      {auto, pending} =
-        Enum.split_with(rest, fn call ->
+      # Policy split. :deny is answered in this same round (ADR 010:
+      # "never even ask") — it must NOT park at the gate, because a
+      # parked call is an approve prompt, and approving it would run a
+      # call the policy forbade (found live: approving a denied
+      # write_file created the file).
+      {auto, pending, policy_denied} =
+        Enum.reduce(rest, {[], [], []}, fn call, {auto, pending, denied} ->
           {_id, name, args} = call_parts(call)
 
           decision =
@@ -598,59 +602,83 @@ defmodule CodingAgent.Core.Session do
 
           {id, _, _} = call_parts(call)
           decisions_log(state, id, decision)
-          decision == :allow
+
+          case decision do
+            :allow -> {[call | auto], pending, denied}
+            :ask -> {auto, [call | pending], denied}
+            :deny -> {auto, pending, [call | denied]}
+          end
         end)
 
-      cond do
-        auto != [] and pending == [] ->
-          run_tools(state, rest)
+      auto = Enum.reverse(auto)
+      pending = Enum.reverse(pending)
+      policy_denied = Enum.reverse(policy_denied)
 
-        auto != [] ->
-          # mixed: execute allowed ones now, park the rest
-          execute_and_continue(state, auto, pending)
+      # Results already decided for this round, before any human input.
+      known_calls = blacklisted ++ policy_denied
+      known_results = blacklist_results ++ Enum.map(policy_denied, &denied_result/1)
 
-        pending != [] ->
-          state = %{
-            state
-            | status: :interrupted,
-              pending_tool_calls: pending
-          }
+      if pending == [] do
+        auto_results = execute_tools(state, auto)
+        results = known_results ++ auto_results
+        broadcast_tools(state, known_calls ++ auto, known_results ++ auto_results)
+        state = complete_round(state, calls, results)
+        finish_round(state)
+      else
+        # SOME call needs a human. The exchange is appended atomically
+        # only once the whole round is decided, so nothing half-formed
+        # ever reaches the wire. The auto/denied results computed now
+        # are carried in state across the pause (and a resume) instead.
+        auto_results = execute_tools(state, auto)
 
-          broadcast(state, {:status_changed, :interrupted, pending})
-          persist(state)
-          {state, {:ok, state}}
+        state = %{
+          state
+          | status: :interrupted,
+            pending_tool_calls: pending,
+            pending_round_calls: calls,
+            pending_round_results: known_results ++ auto_results
+        }
 
-        true ->
-          # all (remaining) denied: report rejections to the model instead
-          # of executing — `rest`, blacklisted calls were already answered
-          results = Enum.map(rest, fn call -> denied_result(call) end)
-          state = append_tool_results(state, results)
-
-          if state.test_mode do
-            {state, {:ok, state}}
-          else
-            continue_loop(state)
-          end
+        broadcast_tools(state, known_calls ++ auto, known_results ++ auto_results)
+        broadcast(state, {:status_changed, :interrupted, pending})
+        persist(state)
+        {state, {:ok, state}}
       end
     end
   end
 
-  # Auto-executed calls, then continue with the pending ones parked.
-  defp execute_and_continue(state, auto, pending) do
-    auto_results = execute_tools(state, auto)
-    state = %{state | pending_tool_calls: pending, status: :interrupted}
-    state = %{state | context: append_tool_results(state, auto_results).context}
-    broadcast_tools(state, auto, auto_results)
-    broadcast(state, {:status_changed, :interrupted, pending})
-    persist(state)
-    {state, {:ok, state}}
+  # A tool round is appended as ONE canonical exchange: the assistant
+  # message declares every application call of the round, and every call
+  # has exactly one result. Appending bare tool results without the
+  # declaring assistant message (the old per-path behavior) ships an
+  # orphaned exchange that strict OpenAI-compatible backends reject or
+  # mis-associate by `tool_call_id` — and the ids of already-run auto
+  # calls would otherwise vanish from the model's view entirely.
+  defp complete_round(state, calls, results) do
+    assistant_msg = assistant_message_for(calls)
+
+    result_msgs =
+      Enum.map(results, fn %{id: id, name: name, content: content} ->
+        Context.tool_result_message(name, id, content)
+      end)
+
+    case ReqLLM.Context.append_tool_exchange(state.context, assistant_msg, result_msgs) do
+      {:ok, context} ->
+        %{
+          state
+          | context: context,
+            pending_tool_calls: [],
+            pending_round_calls: [],
+            pending_round_results: []
+        }
+
+      {:error, reason} ->
+        Logger.error("tool exchange failed: #{inspect(reason)}")
+        state
+    end
   end
 
-  defp run_tools(state, calls) do
-    results = execute_tools(state, calls)
-    state = append_tool_results(state, results)
-    broadcast_tools(state, calls, results)
-
+  defp finish_round(state) do
     if state.test_mode do
       {state, {:ok, state}}
     else
@@ -931,15 +959,6 @@ defmodule CodingAgent.Core.Session do
 
   defp classify([]), do: :final_answer
   defp classify(_calls), do: :tool_calls
-
-  defp append_tool_results(state, results) do
-    messages =
-      Enum.map(results, fn %{id: id, name: name, content: content} ->
-        Context.tool_result_message(name, id, content)
-      end)
-
-    %{state | context: Context.append(state.context, messages), pending_tool_calls: []}
-  end
 
   # cumulative session usage: input+output per turn; cost only when
   # the provider prices it (ollama cloud: usage.cost may be nil)
