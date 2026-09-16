@@ -1150,34 +1150,24 @@ defmodule CodingAgent.UI.Tui do
         {:noreply, history_step(state, -1)}
 
       :interrupt ->
-        # esc while the model streams: stop the turn, keep the partial
-        # answer (Session keeps it — opencode esc parity). When NOT
-        # running, esc arms the quit confirm: a SECOND esc (within the
-        # window) quits the TUI, anything else disarms. Esc-to-quit
-        # must never fire on the first press — the user types esc
-        # reflexively (found live: "ESC -> ARE YOU SURE -> ESC -> BREAK").
-        cond do
-          state.status == :running ->
-            Session.interrupt(state.session_id)
+        # esc while a turn is in flight (running OR already stopping):
+        # (re)request the stop — idempotent, and it must NEVER arm the
+        # quit confirm. The old cascade was found live: esc #1 set
+        # :interrupting, esc #2 fell through (status no longer :running)
+        # and ARMED quit, esc #3 killed the app. Esc-to-quit is only
+        # reachable while idle; to quit a busy app use ctrl-c.
+        if state.status in [:running, :interrupting] do
+          Session.interrupt(state.session_id)
 
-            {:noreply,
-             %{
-               state
-               | status: :interrupting,
-                 transcript: state.transcript ++ [{:info, "interrupting… (esc pressed)"}]
-             }}
-
-          state.quit_confirm? and
-              System.monotonic_time(:millisecond) - Map.get(state, :quit_armed_at, 0) <=
-                @quit_confirm_window ->
-            # second esc within the window: quit
-            {:stop, %{state | quit_confirm?: false}}
-
-          true ->
-            # first esc while idle: arm (stale arms count as fresh — the
-            # user sees the "esc again to quit" hint and presses again)
-            now = System.monotonic_time(:millisecond)
-            {:noreply, %{state | quit_confirm?: true, quit_armed_at: now}}
+          {:noreply,
+           %{
+             state
+             | status: :interrupting,
+               quit_confirm?: false,
+               transcript: state.transcript ++ [{:info, "interrupting… (esc pressed)"}]
+           }}
+        else
+          interrupt_idle(state)
         end
 
       :abort ->
@@ -1187,6 +1177,23 @@ defmodule CodingAgent.UI.Tui do
         # any other key disarms the quit confirm (only esc drives it)
         state = %{state | quit_confirm?: false}
         forward_to_textarea(state, ev)
+    end
+  end
+
+  # Idle esc-to-quit: esc #1 arms, esc #2 within the window quits,
+  # anything else disarms. Esc-to-quit must never fire on the first
+  # press — the user types esc reflexively (found live:
+  # "ESC -> ARE YOU SURE -> ESC -> BREAK").
+  defp interrupt_idle(state) do
+    if state.quit_confirm? and
+         System.monotonic_time(:millisecond) - Map.get(state, :quit_armed_at, 0) <=
+           @quit_confirm_window do
+      {:stop, %{state | quit_confirm?: false}}
+    else
+      # stale arms count as fresh — the user sees the "esc again to
+      # quit" hint and presses again
+      now = System.monotonic_time(:millisecond)
+      {:noreply, %{state | quit_confirm?: true, quit_armed_at: now}}
     end
   end
 
