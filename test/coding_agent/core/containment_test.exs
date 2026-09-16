@@ -1,5 +1,5 @@
 defmodule CodingAgent.Core.ContainmentTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   # The guard tests for THE containment walk. These attacks target the
   # single implementation in Containment — the same mistakes were made

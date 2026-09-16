@@ -5,7 +5,7 @@ defmodule CodingAgent.Core.UsageTest do
   trigger — the provider's own last-turn input_tokens against the
   context window (chars estimates drift; provider counts are truth).
   """
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias CodingAgent.Core.Session
   alias CodingAgent.Core.Session.{State, Store}

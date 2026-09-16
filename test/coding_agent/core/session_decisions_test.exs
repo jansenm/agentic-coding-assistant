@@ -1,5 +1,5 @@
 defmodule CodingAgent.Core.Session.DecisionsTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias CodingAgent.Core.Permissions
   alias CodingAgent.Core.Session

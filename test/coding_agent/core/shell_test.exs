@@ -1,5 +1,5 @@
 defmodule CodingAgent.Core.Tools.ShellTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   import ExUnit.CaptureLog
 

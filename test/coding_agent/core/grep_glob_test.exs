@@ -1,5 +1,5 @@
 defmodule CodingAgent.Core.Tools.GrepGlobTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias CodingAgent.Core.Tools
 
