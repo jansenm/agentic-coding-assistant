@@ -195,7 +195,14 @@ defmodule CodingAgent.UI.Tui do
             end
         end
 
-      Process.send_after(self(), :__resize_poll__, 500)
+      # resize poll: the local transport dispatches no Resize events, so
+      # the live TUI polls the host tty. In test_mode that NIF would read
+      # the HOST terminal (nondeterministic) — skip the timer; tests seed
+      # deterministic pane dims from the declared size and may fire
+      # :__resize_poll__ explicitly.
+      unless Keyword.get(opts, :test_mode) do
+        Process.send_after(self(), :__resize_poll__, 500)
+      end
 
       # the ACTUAL session id (a resumed session keeps its persisted id)
       effective_id = (restored && restored.id) || id
@@ -1250,8 +1257,8 @@ defmodule CodingAgent.UI.Tui do
   end
 
   defp rederive_pane(state) do
-    case ExRatatui.terminal_size() do
-      {w, h} when is_integer(w) and is_integer(h) ->
+    case pane_size(state) do
+      {w, h} ->
         pane_w = max(w - @width_overhead, 10)
         pane_h = max(h - layout_overhead(state), 1)
 
@@ -1466,10 +1473,14 @@ defmodule CodingAgent.UI.Tui do
   end
 
   def handle_info(:__resize_poll__, state) do
-    Process.send_after(self(), :__resize_poll__, 500)
+    # re-arm only in production: under test_mode the poll is driven
+    # explicitly (the host tty is not the virtual test terminal)
+    unless state.test_mode? do
+      Process.send_after(self(), :__resize_poll__, 500)
+    end
 
-    case ExRatatui.terminal_size() do
-      {w, h} when is_integer(w) and is_integer(h) ->
+    case pane_size(state) do
+      {w, h} ->
         pane_w = max(w - @width_overhead, 10)
         pane_h = max(h - layout_overhead(state), 1)
 
@@ -1490,6 +1501,21 @@ defmodule CodingAgent.UI.Tui do
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
+
+  # Test mode reports its declared virtual size; production reads the tty.
+  defp pane_size(%{test_mode?: true} = state) do
+    case state.mount_opts[:test_mode] do
+      {w, h} when is_integer(w) and is_integer(h) -> {w, h}
+      _ -> :unknown
+    end
+  end
+
+  defp pane_size(_state) do
+    case ExRatatui.terminal_size() do
+      {w, h} when is_integer(w) and is_integer(h) -> {w, h}
+      _ -> :unknown
+    end
+  end
 
   # -- Rendering -------------------------------------------------------------
 
