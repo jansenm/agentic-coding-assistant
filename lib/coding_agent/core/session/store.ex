@@ -261,14 +261,23 @@ defmodule CodingAgent.Core.Session.Store do
 
           case File.stat(path, time: :posix) do
             {:ok, %{mtime: mtime}} ->
-              with {:ok, state} <- load(id) do
-                %{
-                  id: id,
-                  saved_at: DateTime.from_unix!(mtime),
-                  model: state.model,
-                  status: state.status,
-                  scope_root: state.scope_root
-                }
+              # a file can vanish or corrupt between ls and load; an
+              # error tuple is NOT nil, so filter on the map shape — the
+              # old `with`+reject(is_nil) let {:error, _} through and
+              # sort_by crashed on it (BadMapError, found live under a
+              # concurrent picker test)
+              case load(id) do
+                {:ok, state} ->
+                  %{
+                    id: id,
+                    saved_at: DateTime.from_unix!(mtime),
+                    model: state.model,
+                    status: state.status,
+                    scope_root: state.scope_root
+                  }
+
+                {:error, _} ->
+                  nil
               end
 
             {:error, _} ->
