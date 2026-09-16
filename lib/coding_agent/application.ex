@@ -2,11 +2,12 @@ defmodule CodingAgent.Application do
   @moduledoc """
   OTP application for the coding agent.
 
-  Supervision tree per ADR 003/008: the process registries, the
-  interrupt flag table, the compaction summarize-task supervisor
-  (compaction tasks must NOT be linked to the session process — a
-  provider-stack crash inside the summarize call is contained there)
-  and the dynamic session supervisor.
+  Supervision tree per ADR 003/008: the process
+  registries, the user-interrupt coordinator (its ETS flag/handle table
+  must outlive the process that raises the stop), the compaction
+  summarize-task supervisor (compaction tasks must NOT be linked to the
+  session process — a provider-stack crash inside the summarize call is
+  contained there) and the dynamic session supervisor.
   """
 
   use Application
@@ -19,7 +20,7 @@ defmodule CodingAgent.Application do
       {Registry, keys: :unique, name: CodingAgent.Registry},
       {Registry,
        keys: :duplicate, name: CodingAgent.EventRegistry, partitions: System.schedulers_online()},
-      CodingAgent.Core.Session.InterruptTable,
+      CodingAgent.Core.Interrupt,
       CodingAgent.Core.Session.Compactor.TaskSupervisor,
       CodingAgent.Core.Session.Supervisor
     ]
