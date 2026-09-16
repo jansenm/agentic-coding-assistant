@@ -127,6 +127,29 @@ defmodule CodingAgent.Core.Session.DecisionsTest do
       # the 2026-09-15 amendment)
       assert Permissions.effective(deny_policy, "write_file", "other") == :allow
     end
+
+    test "debug_gate refuses a non-test session (codereview §11)" do
+      # a live session must never be silently flipped into test mode by
+      # the test hook; it used to set test_mode: true unconditionally,
+      # so the next real turn raised "reached call_llm"
+      id = "notest-#{System.unique_integer()}"
+
+      {:ok, _} =
+        CodingAgent.Core.Session.Supervisor.start_session(
+          id: id,
+          scope_root: @tmp_root
+        )
+
+      assert {:error, :not_test_mode} =
+               Session.debug_gate(id, [
+                 tool_call("w1", "write_file", %{"path" => "x.txt", "content" => "x"})
+               ])
+
+      # the session stays untouched: still not test_mode, nothing ran
+      {:ok, state} = Session.state(id)
+      refute state.test_mode
+      refute File.exists?(Path.join(@tmp_root, "x.txt"))
+    end
   end
 
   describe "resolve_decisions through a live session process" do
@@ -142,7 +165,8 @@ defmodule CodingAgent.Core.Session.DecisionsTest do
         CodingAgent.Core.Session.Supervisor.start_session(
           id: id,
           scope_root: @tmp_root,
-          policy: policy
+          policy: policy,
+          test_mode: true
         )
 
       calls = [
@@ -200,7 +224,8 @@ defmodule CodingAgent.Core.Session.DecisionsTest do
         CodingAgent.Core.Session.Supervisor.start_session(
           id: id,
           scope_root: @tmp_root,
-          policy: policy
+          policy: policy,
+          test_mode: true
         )
 
       :ok =
@@ -235,7 +260,8 @@ defmodule CodingAgent.Core.Session.DecisionsTest do
       CodingAgent.Core.Session.Supervisor.start_session(
         id: id,
         scope_root: @tmp_root,
-        policy: policy
+        policy: policy,
+        test_mode: true
       )
 
     calls = [
@@ -268,7 +294,8 @@ defmodule CodingAgent.Core.Session.DecisionsTest do
       CodingAgent.Core.Session.Supervisor.start_session(
         id: id,
         scope_root: @tmp_root,
-        policy: Permissions.load(nil, nil)
+        policy: Permissions.load(nil, nil),
+        test_mode: true
       )
 
     # the user pressed esc just before the auto round ran
@@ -298,7 +325,8 @@ defmodule CodingAgent.Core.Session.DecisionsTest do
         CodingAgent.Core.Session.Supervisor.start_session(
           id: id,
           scope_root: @tmp_root,
-          policy: Permissions.load(nil, nil)
+          policy: Permissions.load(nil, nil),
+          test_mode: true
         )
 
       :ok =
@@ -324,7 +352,8 @@ defmodule CodingAgent.Core.Session.DecisionsTest do
         CodingAgent.Core.Session.Supervisor.start_session(
           id: id,
           scope_root: @tmp_root,
-          policy: Permissions.load(nil, toml)
+          policy: Permissions.load(nil, toml),
+          test_mode: true
         )
 
       # read_file auto-allows, write_file asks -> mixed round
@@ -360,7 +389,8 @@ defmodule CodingAgent.Core.Session.DecisionsTest do
         CodingAgent.Core.Session.Supervisor.start_session(
           id: id,
           scope_root: @tmp_root,
-          policy: Permissions.load(nil, toml)
+          policy: Permissions.load(nil, toml),
+          test_mode: true
         )
 
       :ok =
@@ -394,7 +424,8 @@ defmodule CodingAgent.Core.Session.DecisionsTest do
         CodingAgent.Core.Session.Supervisor.start_session(
           id: id,
           scope_root: @tmp_root,
-          policy: Permissions.load(nil, toml)
+          policy: Permissions.load(nil, toml),
+          test_mode: true
         )
 
       :ok =
@@ -497,7 +528,8 @@ defmodule CodingAgent.Core.Session.DecisionsTest do
         CodingAgent.Core.Session.Supervisor.start_session(
           id: id,
           scope_root: @tmp_root,
-          policy: Permissions.load(nil, toml)
+          policy: Permissions.load(nil, toml),
+          test_mode: true
         )
 
       # write_file is allow-by-class-default, but it is DISABLED here:
@@ -531,7 +563,8 @@ defmodule CodingAgent.Core.Session.DecisionsTest do
         CodingAgent.Core.Session.Supervisor.start_session(
           id: id,
           scope_root: @tmp_root,
-          policy: Permissions.load(nil, toml)
+          policy: Permissions.load(nil, toml),
+          test_mode: true
         )
 
       :ok =
@@ -551,7 +584,8 @@ defmodule CodingAgent.Core.Session.DecisionsTest do
         CodingAgent.Core.Session.Supervisor.start_session(
           id: id,
           scope_root: @tmp_root,
-          policy: Permissions.load(nil, nil)
+          policy: Permissions.load(nil, nil),
+          test_mode: true
         )
 
       :ok =

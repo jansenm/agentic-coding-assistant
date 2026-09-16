@@ -133,7 +133,9 @@ defmodule CodingAgent.Core.Session do
   @doc """
   Feeds tool calls directly into the permission gate, bypassing the
   LLM. Test-only hook (phase-2 test support); not part of the public
-  driver contract.
+  driver contract. Refuses a non-test session with
+  `{:error, :not_test_mode}` — it must never silently turn a live
+  session into a test-mode one (codereview §11).
   """
   @doc since: "0.1.0"
   @spec debug_gate(String.t(), [map()]) :: :ok | {:error, term()}
@@ -311,10 +313,19 @@ defmodule CodingAgent.Core.Session do
     {:reply, result, state}
   end
 
-  def handle_call({:debug_gate, calls}, _from, state) do
-    state = %{state | status: :running, tool_rounds: 0, test_mode: true}
+  def handle_call({:debug_gate, calls}, _from, %{test_mode: true} = state) do
+    # test_mode is REQUIRED, never set here: it used to be flipped true
+    # unconditionally, so a live session that ever touched the hook
+    # raised "test-mode session reached call_llm" on its next real turn
+    # (codereview §11). Callers (all tests) already start the session
+    # with test_mode: true.
+    state = %{state | status: :running, tool_rounds: 0}
     {state, _result} = gate_tools(state, calls)
     {:reply, :ok, state}
+  end
+
+  def handle_call({:debug_gate, _calls}, _from, state) do
+    {:reply, {:error, :not_test_mode}, state}
   end
 
   # ADR 010: driver decisions for interrupted (pending) tool calls.
