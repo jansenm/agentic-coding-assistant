@@ -141,6 +141,11 @@ defmodule CodingAgent.Core.CompactionTest do
     assert s2 == s1
   end
 
+  test "warn_threshold/0 is the single 80% source the sidebar and warner share" do
+    # the sidebar used to re-hardcode 0.8; the fraction now lives here
+    assert Compactor.warn_threshold() == trunc(Compactor.trigger() * 0.8)
+  end
+
   test "warn_approaching: does not warn below 80%" do
     s0 = state(usage: %{last_input_tokens: 100_000})
     {s1, false} = Compactor.warn_approaching(s0, @trigger)

@@ -96,6 +96,57 @@ defmodule CodingAgent.UI.TuiResumeTest do
     end
   end
 
+  test "resumed sessions carry the persisted usage (no first-command compaction)" do
+    # Found live: every resumed session compacted on its first command.
+    # The TUI resume path did not forward the snapshot's usage, so the
+    # live session defaulted last_input_tokens to 0 and took the chars
+    # fallback regardless of the real context size.
+    sid = "resume-usage-#{System.unique_integer()}"
+
+    fat =
+      for _i <- 1..90 do
+        %ReqLLM.Message{
+          role: :assistant,
+          content: [ReqLLM.Message.ContentPart.text(String.pad_leading("m", 1000, "x"))]
+        }
+      end
+
+    context = %ReqLLM.Context{
+      messages: [
+        %ReqLLM.Message{role: :system, content: [ReqLLM.Message.ContentPart.text("sys")]}
+        | fat
+      ]
+    }
+
+    usage = %{input_tokens: 123_456, output_tokens: 7, last_input_tokens: 50_000, cost: nil}
+
+    :ok =
+      Store.save(
+        CodingAgent.Core.Session.State.new(
+          id: sid,
+          context: context,
+          model: "ollama:test-model",
+          status: :idle,
+          usage: usage
+        )
+      )
+
+    pid =
+      start_supervised!(
+        {Tui, [name: nil, test_mode: {80, 24}, resume_id: sid, scope_root: File.cwd!()]}
+      )
+
+    st = sync(pid)
+    assert st.session_usage == usage
+
+    {:ok, live} = CodingAgent.Core.Session.state(sid)
+    assert live.usage == usage
+    # >80K chars (chars fallback would fire) but 50k tokens < the 180k
+    # trigger: the decision must be :none
+    trigger = CodingAgent.Core.Session.Compactor.trigger()
+    assert CodingAgent.Core.Session.Compactor.decide(live, trigger) == :none
+  end
+
   describe "tool entries on resume (5c regression)" do
     # Found live: resumed tool messages became {:tool, "▸ name: text"}
     # 2-tuples, which normalize_entry downgraded to :info — full content,

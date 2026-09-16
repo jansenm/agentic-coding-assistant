@@ -129,6 +129,15 @@ found live). The session warns once at 80% of the trigger
 ("· context at 144k tokens — compaction at 180k will summarize
 older messages") so it is never a silent surprise.
 
+**One reader of the trigger policy.** ``Compactor.trigger/0`` and
+``Compactor.warn_threshold/0`` are the only code that read
+``compaction_trigger_tokens`` or the 80% fraction; the sidebar renders
+exactly what the decision uses. A resumed session must carry the
+persisted ``usage`` (and ``compaction_warned`` / ``compaction_backoff``)
+into its live state — otherwise ``last_input_tokens`` restarts at 0 and
+a just-resumed context takes the chars fallback and compacts on the
+first command (found live).
+
 The summarize call is a non-streaming round trip on the same model,
 executed in a task under
 :mod:`CodingAgent.Core.Session.Compactor.TaskSupervisor` — **never

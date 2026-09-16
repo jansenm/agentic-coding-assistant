@@ -161,4 +161,66 @@ defmodule CodingAgent.Core.SessionTest do
       assert {:ok, %State{}} = Session.state(id)
     end
   end
+
+  describe "resumed usage (compaction trigger)" do
+    # Found live: every resumed session compacted on its first command.
+    # Store.load preserves usage, but neither resume path forwarded it,
+    # so init/1 defaulted usage to zeros — last_input_tokens 0 takes the
+    # chars fallback (80K chars) and a just-resumed fat context compacted
+    # regardless of its real token count.
+
+    test "a resumed session carries last_input_tokens from the snapshot" do
+      id = "test-#{System.unique_integer()}"
+      usage = %{input_tokens: 123_456, output_tokens: 7, last_input_tokens: 50_000, cost: nil}
+
+      start_supervised!(
+        {Session,
+         id: id,
+         model: "anthropic:claude-haiku-4-5",
+         usage: usage,
+         compaction_warned: true,
+         compaction_backoff: 2}
+      )
+
+      {:ok, state} = Session.state(id)
+      assert state.usage == usage
+      assert state.compaction_warned == true
+      assert state.compaction_backoff == 2
+    end
+
+    test "a resumed fat context below the token trigger does NOT compact" do
+      id = "test-#{System.unique_integer()}"
+      # >80K chars (the chars fallback would fire) but only 50k tokens
+      msgs =
+        for _i <- 1..90 do
+          %ReqLLM.Message{
+            role: :assistant,
+            content: [ReqLLM.Message.ContentPart.text(String.pad_leading("m", 1000, "x"))]
+          }
+        end
+
+      context = %ReqLLM.Context{
+        messages: [
+          %ReqLLM.Message{
+            role: :system,
+            content: [ReqLLM.Message.ContentPart.text("system")]
+          }
+          | msgs
+        ]
+      }
+
+      start_supervised!(
+        {Session,
+         id: id,
+         model: "anthropic:claude-haiku-4-5",
+         context: context,
+         usage: %{input_tokens: 123_456, output_tokens: 7, last_input_tokens: 50_000, cost: nil}}
+      )
+
+      {:ok, state} = Session.state(id)
+
+      trigger = CodingAgent.Core.Session.Compactor.trigger()
+      assert CodingAgent.Core.Session.Compactor.decide(state, trigger) == :none
+    end
+  end
 end
