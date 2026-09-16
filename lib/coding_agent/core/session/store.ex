@@ -224,6 +224,33 @@ defmodule CodingAgent.Core.Session.Store do
           %{id: String.t(), saved_at: DateTime.t(), model: String.t() | nil, status: atom()}
         ]
   def list do
+    list_entries()
+    |> Enum.map(&Map.take(&1, [:id, :saved_at, :model, :status]))
+  end
+
+  @doc """
+  Sessions for one working directory, newest first (the session
+  picker: `mix tui` shows this when the cwd has previous sessions).
+  Filters on the persisted scope_root.
+  """
+  @spec list_in(String.t()) :: [
+          %{id: String.t(), saved_at: DateTime.t(), model: String.t() | nil, status: atom()}
+        ]
+  def list_in(root) do
+    root = Path.expand(root)
+
+    # ONE decode per file: scope_root is read off the same entry list/0
+    # uses. list_in used to call list/0 (which loads every state) and
+    # then load/1 each id AGAIN to filter — the second decode was pure
+    # waste (codereview §12).
+    list_entries()
+    |> Enum.filter(&(&1.scope_root && Path.expand(&1.scope_root) == root))
+    |> Enum.map(&Map.take(&1, [:id, :saved_at, :model, :status]))
+  end
+
+  # Decode every session file ONCE: id, mtime, and the loaded state's
+  # summary fields. list/0 and list_in/1 both derive from this pass.
+  defp list_entries do
     case File.ls(dir()) do
       {:ok, files} ->
         files
@@ -239,7 +266,8 @@ defmodule CodingAgent.Core.Session.Store do
                   id: id,
                   saved_at: DateTime.from_unix!(mtime),
                   model: state.model,
-                  status: state.status
+                  status: state.status,
+                  scope_root: state.scope_root
                 }
               end
 
@@ -253,26 +281,6 @@ defmodule CodingAgent.Core.Session.Store do
       {:error, _} ->
         []
     end
-  end
-
-  @doc """
-  Sessions for one working directory, newest first (the session
-  picker: `mix tui` shows this when the cwd has previous sessions).
-  Filters on the persisted scope_root.
-  """
-  @spec list_in(String.t()) :: [
-          %{id: String.t(), saved_at: DateTime.t(), model: String.t() | nil, status: atom()}
-        ]
-  def list_in(root) do
-    root = Path.expand(root)
-
-    list()
-    |> Enum.filter(fn %{id: id} ->
-      case load(id) do
-        {:ok, state} -> state.scope_root && Path.expand(state.scope_root) == root
-        _ -> false
-      end
-    end)
   end
 
   # Corrupt bytes must error, never crash (rescue). Note on [:safe]:

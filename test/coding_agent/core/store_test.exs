@@ -193,6 +193,43 @@ defmodule CodingAgent.Core.Session.StoreTest do
     test "empty dir yields empty list" do
       assert Store.list() == []
     end
+
+    test "list_in/1 filters by scope_root with the same summary fields" do
+      root_a = Path.join(System.tmp_dir!(), "store-in-a-#{System.unique_integer()}")
+      root_b = Path.join(System.tmp_dir!(), "store-in-b-#{System.unique_integer()}")
+      File.mkdir_p!(root_a)
+      File.mkdir_p!(root_b)
+
+      a =
+        State.new(
+          id: "in-a-#{System.unique_integer()}",
+          context: Context.new(),
+          model: "m-a",
+          status: :idle,
+          scope_root: root_a
+        )
+
+      b =
+        State.new(
+          id: "in-b-#{System.unique_integer()}",
+          context: Context.new(),
+          model: "m-b",
+          status: :idle,
+          scope_root: root_b
+        )
+
+      :ok = Store.save(a)
+      :ok = Store.save(b)
+
+      in_a = Store.list_in(root_a)
+      assert Enum.map(in_a, & &1.id) == [a.id]
+      # same shape as list/0 (no scope_root leaks into the summary)
+      assert %{id: _, saved_at: %DateTime{}, model: "m-a", status: :idle} = hd(in_a)
+      refute Map.has_key?(hd(in_a), :scope_root)
+
+      assert Enum.map(Store.list_in(root_b), & &1.id) == [b.id]
+      assert Store.list_in(Path.join(System.tmp_dir!(), "nope-#{System.unique_integer()}")) == []
+    end
   end
 
   describe "live session persistence" do
