@@ -232,6 +232,57 @@ defmodule CodingAgent.Core.PermissionsTest do
       assert Permissions.effective(policy, "write_file", "src/a.ex") == :allow
       assert Permissions.effective(policy, "read_file", "src/a.ex") == :allow
     end
+
+    test "** matches zero directories (codereview §10)" do
+      path =
+        write_policy("double-star.toml", """
+        [permissions.write_file]
+        "docs/**/*.ex" = "deny"
+        "lib/**/secret.txt" = "deny"
+        """)
+
+      policy = Permissions.load(path, nil)
+
+      # the fix: a file DIRECTLY under docs/ must match docs/**/*.ex,
+      # not just docs/<subdir>/x.ex — the old per-segment builder
+      # wedged "**" between slashes and missed the zero-dir case
+      assert Permissions.effective(policy, "write_file", "docs/a.ex") == :deny
+      assert Permissions.effective(policy, "write_file", "docs/x/a.ex") == :deny
+
+      # and the same for a literal trailing segment
+      assert Permissions.effective(policy, "write_file", "lib/secret.txt") == :deny
+      assert Permissions.effective(policy, "write_file", "lib/deep/secret.txt") == :deny
+    end
+
+    test "a policy glob and the glob tool agree (one dialect, codereview §10)" do
+      alias CodingAgent.Core.GlobMatch
+
+      for {pattern, path} <- [
+            {"docs/**/*.ex", "docs/a.ex"},
+            {"docs/**/*.ex", "docs/x/a.ex"},
+            {"**/*.exs", "a.exs"},
+            {"**/*.exs", "x/a.exs"},
+            {"a/**/b", "a/b"},
+            {"a/**/b", "a/x/b"},
+            {"lib/**", "lib/a.ex"}
+          ] do
+        assert GlobMatch.match?(pattern, path),
+               "expected #{pattern} to match #{path}"
+
+        # permission lookup uses the very same matcher
+        policy =
+          Permissions.load(
+            write_policy("g-#{System.unique_integer()}.toml", """
+            [permissions.write_file]
+            "#{pattern}" = "deny"
+            """),
+            nil
+          )
+
+        assert Permissions.effective(policy, "write_file", path) == :deny,
+               "policy and glob must agree on #{pattern} vs #{path}"
+      end
+    end
   end
 
   describe "effective/4 role parameter" do

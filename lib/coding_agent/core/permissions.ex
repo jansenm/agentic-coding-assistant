@@ -50,6 +50,8 @@ defmodule CodingAgent.Core.Permissions do
 
   @decisions ~w(allow ask deny)
 
+  alias CodingAgent.Core.GlobMatch
+
   # -- Loading -----------------------------------------------------------------
 
   @doc """
@@ -249,48 +251,12 @@ defmodule CodingAgent.Core.Permissions do
   defp specificity(pattern), do: pattern |> String.split("/") |> length()
 
   # -- Glob matching ---------------------------------------------------------------
+  # ONE matcher (Core.GlobMatch), shared with the glob tool so a policy
+  # pattern and a search pattern cannot drift (codereview §10: the old
+  # local builder made "**" unable to match zero directories, so
+  # "docs/**/*.ex" silently missed files directly under docs/).
 
-  defp glob_match?(pattern, path) do
-    Regex.match?(glob_regex(pattern), path)
-  end
-
-  defp glob_regex(pattern) do
-    pattern
-    |> split_segments()
-    |> Enum.map_join("/", &segment_regex/1)
-    |> then(&Regex.compile!("^" <> &1 <> "$"))
-  end
-
-  defp split_segments(pattern), do: String.split(pattern, "/", trim: false)
-
-  defp segment_regex("**"), do: "(?:.*)"
-
-  defp segment_regex(segment) do
-    segment
-    |> escape_glob()
-    |> String.replace("\\*", "[^/]*")
-    |> String.replace("\\?", "[^/]")
-  end
-
-  # Escape regex metacharacters except the glob characters we translate.
-  # Glob chars (* and ?) are escaped too, then re-translated above.
-  defp escape_glob(segment) do
-    segment
-    |> String.replace("\\", "\\\\")
-    |> String.replace("*", "\\*")
-    |> String.replace("?", "\\?")
-    |> String.replace("+", "\\+")
-    |> String.replace(".", "\\.")
-    |> String.replace("(", "\\(")
-    |> String.replace(")", "\\)")
-    |> String.replace("[", "\\[")
-    |> String.replace("]", "\\]")
-    |> String.replace("{", "\\{")
-    |> String.replace("}", "\\}")
-    |> String.replace("^", "\\^")
-    |> String.replace("$", "\\$")
-    |> String.replace("|", "\\|")
-  end
+  defp glob_match?(pattern, path), do: GlobMatch.match?(pattern, path)
 
   # -- Tool list ------------------------------------------------------------------
 

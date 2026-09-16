@@ -72,16 +72,22 @@ defmodule CodingAgent.Core.Tools.Glob do
   end
 
   # -- Pure-string glob matching (Elixir 1.20 has no Path.match/2) -------
+  # The matcher itself lives in Core.GlobMatch (the one dialect shared
+  # with the permission layer, codereview §10). Glob adds brace
+  # expansion on top, a search-time convenience the policy loader does
+  # not offer.
+
+  alias CodingAgent.Core.GlobMatch
 
   @doc """
-  Glob match against a path string: `**` spans segments, `*`/`?` are
-  per-segment, `{a,b}` braces expand. Same dialect as the permission
-  layer, plus braces.
+  Glob match against a path string: `**` spans segments (including
+  zero), `*`/`?` are per-segment, `{a,b}` braces expand. Same dialect
+  as the permission layer, plus braces.
   """
   def glob_match?(pattern, path) do
     pattern
     |> expand_braces()
-    |> Enum.any?(&Regex.match?(glob_regex(&1), path))
+    |> Enum.any?(&GlobMatch.match?(&1, path))
   end
 
   defp expand_braces(pattern) do
@@ -94,37 +100,5 @@ defmodule CodingAgent.Core.Tools.Glob do
       nil ->
         [pattern]
     end
-  end
-
-  # Build the regex by consuming a segment list, so that "**" can merge
-  # with the following slash instead of being joined by one:
-  #   ["lib", "**", "*.ex"] -> lib/((?:[^/]+/)+)?[^/]*\.ex
-  # i.e. "lib/", then optionally any number of full segments, then the
-  # file. Semantics: a "**" segment matches ZERO or more whole
-  # directories.
-  defp glob_regex(pattern) do
-    segments = String.split(pattern, "/", trim: false)
-    Regex.compile!("^" <> build(segments) <> "$")
-  end
-
-  defp build(["**"]), do: "(?:.*)?"
-
-  defp build(["**" | rest]) do
-    inner = build(rest)
-    "(?:" <> inner <> "|" <> "(?:[^/]+/)+" <> inner <> ")"
-  end
-
-  defp build([seg | rest]) do
-    tail = if(rest == [], do: "", else: "/" <> build(rest))
-    segment_regex(seg) <> tail
-  end
-
-  defp build([]), do: ""
-
-  defp segment_regex(seg) do
-    seg
-    |> Regex.escape()
-    |> String.replace("\\*", "[^/]*")
-    |> String.replace("\\?", "[^/]")
   end
 end
