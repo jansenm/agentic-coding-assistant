@@ -38,6 +38,10 @@ defmodule CodingAgent.UI.Tui do
   @tool_cap 30
   # how long an armed esc-to-quit stays armed (ms)
   @quit_confirm_window 3_000
+  # how long an armed esc-to-stop stays armed (ms): esc is pressed out of
+  # habit in text fields (vim muscle memory), so a lone esc must never
+  # stop a running turn — a second esc within this window does
+  @stop_confirm_window 1_500
   @thinking_cap 12
 
   # rows the transcript pane loses to chrome: app margin top+bottom (2)
@@ -142,6 +146,10 @@ defmodule CodingAgent.UI.Tui do
       # @quit_confirm_window) quits, any other key disarms
       quit_confirm?: false,
       quit_armed_at: 0,
+      # esc-to-stop confirm: while a turn runs, first esc arms, second esc
+      # (within @stop_confirm_window) stops, any other key disarms
+      stop_confirm?: false,
+      stop_armed_at: 0,
       deltas: "",
       textarea: ExRatatui.textarea_new(),
       history: [],
@@ -271,6 +279,10 @@ defmodule CodingAgent.UI.Tui do
         # @quit_confirm_window) quits, any other key disarms
         quit_confirm?: false,
         quit_armed_at: 0,
+        # esc-to-stop confirm: while a turn runs, first esc arms, second
+        # esc (within @stop_confirm_window) stops, any other key disarms
+        stop_confirm?: false,
+        stop_armed_at: 0,
         deltas: "",
         textarea: ExRatatui.textarea_new(),
         history: recall,
@@ -758,8 +770,8 @@ defmodule CodingAgent.UI.Tui do
 
     case Bridge.translate(ev, bound) do
       {:text, code} ->
-        # text input disarms the quit confirm (only esc drives it)
-        state = %{state | quit_confirm?: false}
+        # text input disarms the esc confirms (only esc drives them)
+        state = %{state | quit_confirm?: false, stop_confirm?: false}
         {:noreply, put_in_textarea(state, code)}
 
       {:key, km_event} ->
@@ -1157,21 +1169,16 @@ defmodule CodingAgent.UI.Tui do
 
       :interrupt ->
         # esc while a turn is in flight (running OR already stopping):
-        # (re)request the stop — idempotent, and it must NEVER arm the
-        # quit confirm. The old cascade was found live: esc #1 set
-        # :interrupting, esc #2 fell through (status no longer :running)
-        # and ARMED quit, esc #3 killed the app. Esc-to-quit is only
-        # reachable while idle; to quit a busy app use ctrl-c.
+        # DOUBLE press to stop. A lone esc must never stop — esc is
+        # pressed out of habit in text fields (vim muscle memory: "I
+        # sometimes press esc out of habit"). First esc arms and shows a
+        # hint; a second esc within @stop_confirm_window actually stops
+        # (idempotent, and it must NEVER arm the quit confirm — the old
+        # cascade was found live: esc #1 set :interrupting, esc #2 fell
+        # through and ARMED quit, esc #3 killed the app). Esc-to-quit is
+        # only reachable while idle; to quit a busy app use ctrl-c.
         if state.status in [:running, :interrupting] do
-          Session.interrupt(state.session_id)
-
-          {:noreply,
-           %{
-             state
-             | status: :interrupting,
-               quit_confirm?: false,
-               transcript: state.transcript ++ [{:info, "interrupting… (esc pressed)"}]
-           }}
+          esc_stop(state)
         else
           interrupt_idle(state)
         end
@@ -1180,9 +1187,35 @@ defmodule CodingAgent.UI.Tui do
         {:stop, state}
 
       _ ->
-        # any other key disarms the quit confirm (only esc drives it)
-        state = %{state | quit_confirm?: false}
+        # any other key disarms the esc confirms (only esc drives them)
+        state = %{state | quit_confirm?: false, stop_confirm?: false}
         forward_to_textarea(state, ev)
+    end
+  end
+
+  # esc while busy, double-press to stop. First esc arms (status stays
+  # put; the status line shows the hint), second esc within the window
+  # requests the stop. A stale arm counts as a fresh first press.
+  defp esc_stop(state) do
+    armed? =
+      state.stop_confirm? and
+        System.monotonic_time(:millisecond) - Map.get(state, :stop_armed_at, 0) <=
+          @stop_confirm_window
+
+    if armed? do
+      Session.interrupt(state.session_id)
+
+      {:noreply,
+       %{
+         state
+         | status: :interrupting,
+           stop_confirm?: false,
+           quit_confirm?: false,
+           transcript: state.transcript ++ [{:info, "interrupting…"}]
+       }}
+    else
+      now = System.monotonic_time(:millisecond)
+      {:noreply, %{state | stop_confirm?: true, stop_armed_at: now}}
     end
   end
 
@@ -1218,6 +1251,8 @@ defmodule CodingAgent.UI.Tui do
           history_index: nil,
           transcript: state.transcript ++ [{:user, value}],
           status: :running,
+          # a fresh turn: no stale esc arm from the previous one
+          stop_confirm?: false,
           scroll_offset: 0
       }
     end
@@ -1351,6 +1386,11 @@ defmodule CodingAgent.UI.Tui do
   end
 
   def handle_info({:agent, {:status_changed, status}}, state) do
+    # every status broadcast means the turn moved on: a pending esc-stop
+    # arm is stale once the agent is no longer busy
+    state =
+      if status in [:idle, :error, :interrupted], do: %{state | stop_confirm?: false}, else: state
+
     {:noreply, %{state | status: status}}
   end
 
@@ -1358,7 +1398,7 @@ defmodule CodingAgent.UI.Tui do
   # TUI learns WHAT to render in the approval dialog (a live interrupt
   # during a run; attaching mid-session pulls state on mount instead).
   def handle_info({:agent, {:status_changed, :interrupted, pending}}, state) do
-    {:noreply, %{state | status: :interrupted, pending: pending}}
+    {:noreply, %{state | status: :interrupted, pending: pending, stop_confirm?: false}}
   end
 
   def handle_info({:agent, {:status_changed, :error, reason}}, state) do
@@ -1367,7 +1407,13 @@ defmodule CodingAgent.UI.Tui do
     msg =
       "✖ turn failed: #{error_text(reason)} — the session is idle again; check the provider (ollama up? key set?) and retry"
 
-    {:noreply, %{state | status: :error, transcript: state.transcript ++ [{:info, msg}]}}
+    {:noreply,
+     %{
+       state
+       | status: :error,
+         stop_confirm?: false,
+         transcript: state.transcript ++ [{:info, msg}]
+     }}
   end
 
   def handle_info({:agent, {:status_changed, status, _detail}}, state) do
@@ -2068,9 +2114,11 @@ defmodule CodingAgent.UI.Tui do
       end
 
     status_text =
-      if Map.get(state, :quit_confirm?, false),
-        do: label <> "  — esc again to quit",
-        else: label
+      cond do
+        Map.get(state, :quit_confirm?, false) -> label <> "  — esc again to quit"
+        Map.get(state, :stop_confirm?, false) -> label <> "  — esc again to stop"
+        true -> label
+      end
 
     line =
       Text.Line.new([

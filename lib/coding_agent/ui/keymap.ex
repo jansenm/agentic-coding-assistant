@@ -69,10 +69,12 @@ defmodule CodingAgent.UI.Keymap do
       # found live — the owner types t in messages). The bridge emits
       # termbox names for ctrl chords: :ctrl_t, mod :none.
       toggle_tool_output: [key(:ctrl_t)],
-      # interrupt the running turn (opencode's esc): only meaningful
-      # while the model streams; at all other times esc closes popups
-      # (handled before keymap resolution in the TUI). Crossterm decodes
-      # Esc as "esc" (events.rs:78); accept both spellings.
+      # interrupt the running turn: while a turn is in flight esc is a
+      # DOUBLE press (a lone esc is pressed out of habit in text fields —
+      # vim muscle memory); while idle esc is the double-press quit
+      # confirm. Esc closes popups first (handled before keymap
+      # resolution in the TUI). Crossterm decodes Esc as "esc"
+      # (events.rs:78); accept both spellings.
       interrupt: [key(:esc)],
       abort: [key(:ctrl_c)]
     }
