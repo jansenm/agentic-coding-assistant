@@ -719,6 +719,14 @@ defmodule CodingAgent.Core.Session do
   # The policy matches against the tool's path argument, relative to the
   # scope root. The gate consults the call's OWN arguments — this is the
   # security boundary, so the path always comes from the call itself.
+  #
+  # This is TEXTUAL (Path.expand, no filesystem); the tools resolve
+  # PHYSICALLY (symlinks followed) via Containment. Net effect is safe:
+  # an allow pattern can never be BYPASSED by a symlink, because
+  # execution still rejects a physically-escaping path — but it means an
+  # allow-pattern is not a capability. A "tmp/** = allow" pattern next
+  # to a symlink tmp -> /etc matches the CALL and then fails at
+  # execution with "path escapes the session scope" (codereview §9).
   defp call_rel_path(state, args) when is_map(args) do
     path = Map.get(args, "path") || Map.get(args, :path)
 

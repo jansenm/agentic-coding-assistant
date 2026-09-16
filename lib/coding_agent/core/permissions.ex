@@ -19,6 +19,15 @@ defmodule CodingAgent.Core.Permissions do
   Among matching patterns, the most specific wins (by segment count);
   ties resolve to the more restrictive decision — which keeps the
   multi-layer merge order-independent.
+
+  **`allow` is not a capability.** Matching is TEXTUAL
+  (`Path.expand`); execution resolves physically (symlinks followed).
+  The direction is safe — a deny can never be bypassed, because a
+  physically-escaping path is rejected by Containment before it runs —
+  but a `"tmp/**" = "allow"` pattern beside a `tmp -> /etc` symlink
+  matches the call and then fails at execution with "path escapes the
+  session scope". Read allow-patterns as "do not prompt", not "this
+  path is writable".
   """
 
   @typedoc "A policy decision."
