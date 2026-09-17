@@ -104,6 +104,25 @@ defmodule CodingAgent.Core.Tools.ShellTest do
       assert Shell.escalated?(%{"command" => "curl x", "network" => true})
     end
 
+    test "reason/1 reads and trims the stated reason" do
+      assert Shell.reason(%{"reason" => "why"}) == "why"
+      assert Shell.reason(%{reason: "why"}) == "why"
+      assert Shell.reason(%{"reason" => "  "}) == nil
+      assert Shell.reason(%{}) == nil
+      assert Shell.reason("nope") == nil
+    end
+
+    test "escalation_verdict/1 requires a reason for an escalation" do
+      assert :ok = Shell.escalation_verdict(%{"command" => "echo hi"})
+      assert :ok = Shell.escalation_verdict(%{"network" => true, "reason" => "why"})
+
+      assert {:error, msg} = Shell.escalation_verdict(%{"network" => true})
+      assert msg =~ "reason"
+
+      assert {:error, _} = Shell.escalation_verdict(%{"git_write" => true})
+      assert {:error, _} = Shell.escalation_verdict(%{"network" => true, "reason" => "  "})
+    end
+
     test "profile/2 carries the scope mounts and the escalations" do
       scope = %{root: @tmp_root, mounts: %{rw: ["/rw"], ro: ["/ro"], hide: ["/hide"]}}
 

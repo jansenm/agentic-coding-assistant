@@ -598,13 +598,18 @@ defmodule CodingAgent.Core.Session do
           %{id: id, name: "shell", content: "error: #{guidance}"}
         end)
 
-      # Policy split. :deny is answered in this same round (ADR 010:
-      # "never even ask") — it must NOT park at the gate, because a
-      # parked call is an approve prompt, and approving it would run a
-      # call the policy forbade (found live: approving a denied
-      # write_file created the file).
-      {auto, pending, policy_denied} =
-        Enum.reduce(rest, {[], [], []}, fn call, {auto, pending, denied} ->
+      # Escalations must carry a reason (ADR 015): a bare `network: true`
+      # tells the human nothing. Handled where a call actually reaches
+      # :ask — an explicit policy allow/deny still wins and needs no
+      # reason, because there is no prompt to answer.
+      #
+      # :deny is answered in this same round (ADR 010: "never even
+      # ask") — it must NOT park at the gate, because a parked call is an
+      # approve prompt, and approving it would run a call the policy
+      # forbade (found live: approving a denied write_file created the
+      # file).
+      {auto, pending, policy_denied, no_reason} =
+        Enum.reduce(rest, {[], [], [], []}, fn call, {auto, pending, denied, no_reason} ->
           {_id, name, args} = call_parts(call)
 
           decision = effective_decision(state, name, args)
@@ -612,20 +617,33 @@ defmodule CodingAgent.Core.Session do
           {id, _, _} = call_parts(call)
           decisions_log(state, id, decision)
 
-          case decision do
-            :allow -> {[call | auto], pending, denied}
-            :ask -> {auto, [call | pending], denied}
-            :deny -> {auto, pending, [call | denied]}
+          case {decision, unanswerable_escalation?(name, args)} do
+            {:allow, _} -> {[call | auto], pending, denied, no_reason}
+            {:ask, true} -> {auto, pending, denied, [call | no_reason]}
+            {:ask, false} -> {auto, [call | pending], denied, no_reason}
+            {:deny, _} -> {auto, pending, [call | denied], no_reason}
           end
         end)
 
       auto = Enum.reverse(auto)
       pending = Enum.reverse(pending)
       policy_denied = Enum.reverse(policy_denied)
+      no_reason = Enum.reverse(no_reason)
+
+      no_reason_results =
+        Enum.map(no_reason, fn call ->
+          {id, _name, args} = call_parts(call)
+          {:error, guidance} = Shell.escalation_verdict(args)
+          Logger.warning("gate: shell escalation without reason refused: #{inspect(id)}")
+          decisions_log(state, id, :deny)
+          %{id: id, name: "shell", content: "error: #{guidance}"}
+        end)
 
       # Results already decided for this round, before any human input.
-      known_calls = blacklisted ++ policy_denied
-      known_results = blacklist_results ++ Enum.map(policy_denied, &denied_result/1)
+      known_calls = blacklisted ++ no_reason ++ policy_denied
+
+      known_results =
+        blacklist_results ++ no_reason_results ++ Enum.map(policy_denied, &denied_result/1)
 
       if pending == [] do
         auto_results = execute_tools(state, auto)
@@ -787,6 +805,14 @@ defmodule CodingAgent.Core.Session do
   end
 
   defp confinement_allows?(_tool, _args), do: false
+
+  # An escalation the human would have to approve without a stated reason
+  # (ADR 015). Only `shell` escalates; other tools never do.
+  defp unanswerable_escalation?("shell", args) do
+    match?({:error, _}, Shell.escalation_verdict(args))
+  end
+
+  defp unanswerable_escalation?(_name, _args), do: false
 
   defp execute_tools(state, calls) do
     tools = current_tools(state)

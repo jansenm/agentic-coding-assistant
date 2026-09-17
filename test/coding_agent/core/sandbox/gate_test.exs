@@ -1,6 +1,8 @@
 defmodule CodingAgent.Core.Sandbox.GateTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias CodingAgent.Core.Permissions
   alias CodingAgent.Core.Sandbox
   alias CodingAgent.Core.Session
@@ -97,12 +99,40 @@ defmodule CodingAgent.Core.Sandbox.GateTest do
           %{
             id: "c1",
             name: "shell",
-            arguments: %{"command" => "curl example.com", "network" => true}
+            arguments: %{
+              "command" => "curl example.com",
+              "network" => true,
+              "reason" => "install the missing dependency"
+            }
           }
         ])
 
       {:ok, state} = Session.state(id)
       assert state.status == :interrupted
+    end
+
+    test "an escalation without a reason is refused without a pause" do
+      id = "conf-net-noreason-#{System.unique_integer()}"
+      start_session(id)
+
+      log =
+        capture_log(fn ->
+          :ok =
+            gate(id, [
+              %{
+                id: "c1",
+                name: "shell",
+                arguments: %{"command" => "curl example.com", "network" => true}
+              }
+            ])
+        end)
+
+      {:ok, state} = Session.state(id)
+      refute state.status == :interrupted
+      last = ReqLLM.Context.to_list(state.context) |> List.last()
+      assert last.role == :tool
+      assert last.content |> text() =~ "reason"
+      assert log =~ "escalation without reason"
     end
 
     test "a git_write escalation interrupts" do
@@ -114,7 +144,11 @@ defmodule CodingAgent.Core.Sandbox.GateTest do
           %{
             id: "c1",
             name: "shell",
-            arguments: %{"command" => "./release.sh", "git_write" => true}
+            arguments: %{
+              "command" => "./release.sh",
+              "git_write" => true,
+              "reason" => "release script commits the version bump"
+            }
           }
         ])
 
@@ -172,5 +206,13 @@ defmodule CodingAgent.Core.Sandbox.GateTest do
   end
 
   defp text(content) when is_binary(content), do: content
+
+  defp text(content) when is_list(content) do
+    Enum.map_join(content, "", fn
+      %ReqLLM.Message.ContentPart{text: t} -> t || ""
+      _ -> ""
+    end)
+  end
+
   defp text(content), do: inspect(content)
 end

@@ -68,6 +68,14 @@ defmodule CodingAgent.Core.Tools.Shell do
           type: :boolean,
           required: false,
           doc: "Escalation: allow writing .git for this call (default false)"
+        ],
+        reason: [
+          type: :string,
+          required: false,
+          doc:
+            "REQUIRED when you set network or git_write: one short sentence, " <>
+              "shown to the human in the approval prompt, explaining why this " <>
+              "call needs the escalation. A request without a reason is refused."
         ]
       ],
       callback: fn args -> execute(scope, args) end
@@ -123,6 +131,46 @@ defmodule CodingAgent.Core.Tools.Shell do
   """
   @spec escalated?(term()) :: boolean()
   def escalated?(args), do: escalations(args) != []
+
+  @doc """
+  The agent's stated reason for an escalation, or `nil`. Every escalation
+  must carry one (ADR 015): the human sees *why* before approving, not
+  just a bare boolean. `reason` may be supplied for any call; it is only
+  required when an escalation is requested.
+  """
+  @spec reason(term()) :: String.t() | nil
+  def reason(args) when is_map(args) do
+    case Map.get(args, :reason) || Map.get(args, "reason") do
+      r when is_binary(r) ->
+        case String.trim(r) do
+          "" -> nil
+          trimmed -> trimmed
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  def reason(_args), do: nil
+
+  @doc """
+  The escalation gate verdict: `:ok`, or `{:error, guidance}` when an
+  escalation was requested without a stated reason. The reason is not
+  security theatre — it is what the human reads in the approval dialog,
+  and refusing a bare boolean keeps the prompt answerable.
+  """
+  @spec escalation_verdict(term()) :: :ok | {:error, String.t()}
+  def escalation_verdict(args) do
+    if escalated?(args) and reason(args) == nil do
+      {:error,
+       "an escalation (network/git_write) must include `reason`: one short " <>
+         "sentence explaining why this call needs it — the human sees it in " <>
+         "the approval prompt and a bare request is refused"}
+    else
+      :ok
+    end
+  end
 
   @doc """
   Builds the sandbox profile for a call from the scope and the

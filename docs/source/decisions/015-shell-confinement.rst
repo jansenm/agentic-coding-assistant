@@ -286,6 +286,29 @@ stubbable.
 3. ``shell`` stays ``deny``-able per policy as before.
 4. The ``git`` tool has its own profile (``.git`` read-write), as does a
    ``shell`` call approved for git write.
+5. **The ``git`` tool is allow-by-default too** under confinement — git's
+   subcommand space is bounded, but classifying read vs write subcommands
+   was **rejected**: the goal is to protect against dumb mistakes, not to
+   re-review every git call, and a user who finds git too risky can write
+   ``[permissions.git] "*" = "ask"`` (or use another VCS). An explicit
+   policy entry always wins over the class default, for both tools.
+
+### Implementation notes (as built)
+
+- The command is a **spec**: ``{:shell, command}`` or
+  ``{:exec, file, args}``. The ``git`` tool uses the exec form, so its
+  argument list is handed to git as argv and is **never re-parsed by a
+  shell** — otherwise ``["log", "; touch marker"]`` would inject. Inside
+  bwrap the exec form runs as
+  ``sh -c 'ulimit …; exec "$@"' sh git <args>``; the shell exists only to
+  apply the rlimits, and ``exec`` replaces it without re-parsing.
+- ``Sandbox.confines?/0`` is the gate's question, distinct from "a
+  sandbox is configured": ``None.confines?`` is false (so the unconfined
+  path keeps ask-everything), and a confining implementation that is
+  ``available?/0 == false`` also yields false.
+- The port loop (spawn, deadline, kill, truncate) lives once in
+  ``Core.Exec``, the single ``Sandbox.wrap`` call site shared by ``Shell``
+  and ``Git``.
 
 Residual risks (stated, not hidden)
 -----------------------------------

@@ -2403,12 +2403,26 @@ defmodule CodingAgent.UI.Tui do
     |> Enum.with_index()
     |> Enum.map(fn {call, i} ->
       {_id, name, args} = call_info(call)
+      pretty = pretty_args(args)
+
+      # Escalations carry the agent's stated reason (ADR 015): show it
+      # first, so the human reads WHY before the raw arguments.
+      reason =
+        case escalation_reason(name, args) do
+          nil -> ""
+          r -> "why: #{r}\n\n"
+        end
 
       text =
-        "#{name}(#{pretty_args(args)})\n\n" <>
+        "#{name}(#{pretty})\n\n" <>
+          reason <>
           "y = approve   n = reject   e = edit (soon)"
 
-      h = min(6 + length(String.split(pretty_args(args), "\n")), div(area.height, 2))
+      h =
+        min(
+          6 + length(String.split(pretty, "\n")) + length(String.split(reason, "\n")),
+          div(area.height, 2)
+        )
 
       # NOTE: widget-level bg + Clear variants both failed headless
       # (bg didn't fill; Clear killed the render cycle). The joined
@@ -2454,8 +2468,25 @@ defmodule CodingAgent.UI.Tui do
     {id, name, decoded}
   end
 
+  # The agent's stated reason for an escalation (ADR 015), for display.
+  # Only meaningful for `shell`; other tools have no escalations.
+  defp escalation_reason("shell", args) do
+    case Map.get(args, "reason") || Map.get(args, :reason) do
+      r when is_binary(r) and r != "" -> r
+      _ -> nil
+    end
+  end
+
+  defp escalation_reason(_name, _args), do: nil
+
+  # `reason` is rendered separately as "why:", and the escalation booleans
+  # are shown by the reason itself — omit them from the raw argument list
+  # so the dialog does not say the same thing twice.
+  @hidden_args ~w(reason network git_write)
+
   defp pretty_args(args) do
     args
+    |> Enum.reject(fn {k, _} -> to_string(k) in @hidden_args end)
     |> Enum.map(fn {k, v} ->
       v_str = if is_binary(v) and String.contains?(v, "\n"), do: inspect(v), else: to_string(v)
       "#{k}: #{String.slice(v_str, 0, 160)}"
