@@ -5,15 +5,16 @@ Read tools delegate to ripgrep/fd when available, fall back to Elixir
 
 .. adr::
    :id: 016
-   :status: Proposed
+   :status: Accepted
    :date: 2026-09-17
    :tags: tools, grep, glob, dependencies
 
 .. note::
-   Proposed 2026-09-17 — no code yet. Records a decision made while
-   designing ADR 015: once ``shell`` runs confined and allow-by-default,
-   the native ``grep``/``glob`` tools are no longer the only way to search
-   without a prompt, so their justification changes.
+   Accepted 2026-09-17. Records a decision made while designing ADR 015:
+   once ``shell`` runs confined and allow-by-default, the native
+   ``grep``/``glob`` tools are no longer the only way to search without a
+   prompt, so their justification changes. Implemented in
+   ``Core.External`` + the two tools.
 
 Context
 -------
@@ -60,17 +61,31 @@ optional external binary, exactly like ``git``.
 Containment under delegation
 ----------------------------
 
-The native tools currently guarantee containment themselves (scope
-checks, skipping ``_build``/``deps``/``.git``, result and byte caps). A
-delegated run must preserve that guarantee, so the tool:
+The native tools guarantee containment themselves (scope checks, skipping
+``_build``/``deps``/``.git``, result and byte caps). A delegated run
+preserves that:
 
-- passes an explicit path scope and re-checks every returned path against
-  it (never trusts the external tool's traversal),
-- disables the external tool's own ignore/walk behaviour where it would
-  escape the scope (e.g. ``--no-config``/``--no-ignore`` handling, a
-  fixed ``--max-count`` and output cap),
-- keeps the existing result cap and byte cap applied to the external
-  output as well.
+- the requested ``path`` is scope-checked *before* the external tool runs,
+  and **every returned path is re-checked physically** against the scope —
+  never trust the external tool's traversal;
+- **``--no-config`` is mandatory for ``rg``.** ``RIPGREP_CONFIG_PATH`` can
+  carry ``--pre=<command>``, which executes an arbitrary program on every
+  file — measured, it ran. The environment must not be able to influence
+  the invocation. ``--no-ignore`` is also set so our skip rules (not the
+  repo's ``.gitignore``) decide what is searched;
+- excludes use ``!**/<dir>/**`` (``rg``) and ``--exclude <dir>`` (``fd``)
+  so a *nested* ``src/_build`` is pruned the way the Elixir walk prunes it;
+- for ``rg``, an **include glob precedes the excludes**: a later include
+  re-adds what an earlier exclude removed (measured), so excludes go last;
+- ``rg`` does not follow symlinks in traversal (measured), and its
+  explicit-file case is caught by the pre-check above; ``fd`` output is
+  re-checked the same way;
+- the ``rg`` probe requires the ``pcre2`` feature, because the tool's
+  patterns come from Elixir's ``Regex`` (PCRE) — a Rust-regex-only build
+  could reject or reinterpret a valid pattern, so we fall back instead;
+- any non-``0``/``1`` exit (including a pattern Elixir accepts but PCRE2
+  rejects) triggers the Elixir fallback rather than an engine-specific
+  error.
 
 The security argument is layered: in confined mode the sandbox is the
 boundary and the native tool is defence in depth; in ``Sandbox.None``
@@ -82,8 +97,9 @@ Consequences
 
 - Best available search when the binaries exist; no regression when they
   do not.
-- Two code paths per tool, both tested; the Elixir path cannot be deleted
-  because it is the fallback.
+- Two code paths per tool, both tested (the fallback is forceable in tests
+  via ``External.put/2``); the Elixir path cannot be deleted because it is
+  the fallback.
 - Amendment 2's shell-grep redirect stays as UX steering but should not
   claim the native tool is *better* — only that a tool call is cleaner
   than shell.

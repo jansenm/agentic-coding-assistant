@@ -1,16 +1,33 @@
 defmodule CodingAgent.Core.Tools.Grep do
   @moduledoc """
   Read-only content search tool (slice 2d), per the ROADMAP 2d design:
-  line-numbered matches, capped results, pure Elixir (no ripgrep
-  dependency, ADR 002).
+  line-numbered matches, capped results.
 
-  Containment is enforced by `CodingAgent.Core.Containment` (the ONE
-  walk implementation — dir and file scope checks included). Binary
-  files are skipped; hidden dirs and `_build`/`deps`/`.git` are
-  skipped (never useful to search, always wasteful to walk).
+  **Delegates to ripgrep when available** (ADR 016): `rg` is a materially
+  better engine (PCRE2, speed, built-in binary skipping), so when it is
+  present and produces a clean result the tool uses it; otherwise the
+  pure-Elixir walk runs unchanged (portability: a machine with no `rg` and
+  no network to install one, and the fallback is always the reference
+  behaviour).
+
+  Containment is preserved under delegation:
+
+    * the requested `path` is scope-checked *before* `rg` runs;
+    * every returned path is re-checked physically against the scope, so
+      no symlinked escape can be listed;
+    * `--no-config` is mandatory — `RIPGREP_CONFIG_PATH` can carry a
+      `--pre` command, i.e. arbitrary execution, so the environment must
+      never be allowed to influence the invocation;
+    * `rg` does not follow symlinks in traversal (verified), and the
+      explicit-path case is caught by the pre-check.
+
+  The Elixir path enforces containment via `CodingAgent.Core.Containment`
+  (the ONE walk implementation). Binary files are skipped; hidden dirs and
+  `_build`/`deps`/`.git` are skipped in both paths.
   """
 
   alias CodingAgent.Core.Containment
+  alias CodingAgent.Core.External
   alias CodingAgent.Core.Tools
   alias CodingAgent.Core.Tools.Glob
 
@@ -87,7 +104,90 @@ defmodule CodingAgent.Core.Tools.Grep do
     Containment.check_scope!(scope, path)
   end
 
+  # -- Engine selection (ADR 016) ---------------------------------------------
+
   defp do_search(scope, pattern, path, glob) do
+    case External.probe(:rg) do
+      {:ok, rg} ->
+        case rg_search(rg, scope, pattern, path, glob) do
+          {:ok, _} = ok -> ok
+          # rg failed for a reason that is not "no matches" (e.g. a
+          # pattern Elixir's regex accepts but its PCRE2 rejects): fall
+          # back to the reference implementation rather than report an
+          # engine-specific error.
+          :fallback -> elixir_search(scope, pattern, path, glob)
+        end
+
+      :error ->
+        elixir_search(scope, pattern, path, glob)
+    end
+  end
+
+  # -- ripgrep delegation ------------------------------------------------------
+
+  defp rg_search(rg, scope, pattern, path, glob) do
+    root = Path.expand(scope.root)
+    target = rel_target(root, path)
+
+    args =
+      ["--json", "--no-config", "--no-ignore", "--color=never", "--max-filesize", "1M"] ++
+        include_args(glob) ++
+        exclude_args() ++
+        ["-e", pattern, "--", target]
+
+    case System.cmd(rg, args, cd: root, stderr_to_stdout: true) do
+      {out, 0} -> format_rg_matches(out, root)
+      {out, 1} -> format_rg_matches(out, root)
+      {_out, _code} -> :fallback
+    end
+  rescue
+    _ -> :fallback
+  end
+
+  # An include glob must precede the excludes: rg lets a later include
+  # re-add what an earlier exclude removed (verified), so exclusions go
+  # last to stay authoritative.
+  defp include_args(nil), do: []
+
+  defp include_args(glob) when is_binary(glob) and glob != "",
+    do: ["--glob", glob]
+
+  defp include_args(_), do: []
+
+  # Skip the same build/vendor trees the Elixir walk skips. `**/` so a
+  # nested `src/_build` is pruned too (a bare name would leak it — the
+  # walk prunes at any depth).
+  defp exclude_args do
+    Enum.flat_map(External.skip_dirs(), fn dir -> ["--glob", "!**/#{dir}/**"] end)
+  end
+
+  defp format_rg_matches(out, root) do
+    out
+    |> String.split("\n", trim: true)
+    |> Enum.flat_map(&rg_match_line(&1, root))
+    |> Enum.take(@max_results)
+    |> format_results()
+  end
+
+  defp rg_match_line(line, root) do
+    with {:ok, %{"type" => "match", "data" => data}} <- Jason.decode(line),
+         %{"path" => %{"text" => path}, "line_number" => n, "lines" => %{"text" => text}} <- data,
+         abs = Path.expand(path, root),
+         true <- Tools.in_scope?(%{root: root}, abs) do
+      [{Path.relative_to(abs, root), n, clip(String.trim_trailing(text, "\n"))}]
+    else
+      _ -> []
+    end
+  end
+
+  defp rel_target(root, path) do
+    abs = abs_path(%{root: root}, path)
+    Path.relative_to(abs, root)
+  end
+
+  # -- pure-Elixir reference implementation ------------------------------------
+
+  defp elixir_search(scope, pattern, path, glob) do
     re = Regex.compile!(pattern)
     root = Path.expand(scope.root)
 
@@ -113,6 +213,10 @@ defmodule CodingAgent.Core.Tools.Grep do
       end)
       |> Enum.take(@max_results)
 
+    format_results(results)
+  end
+
+  defp format_results(results) do
     total = length(results)
 
     truncated =
