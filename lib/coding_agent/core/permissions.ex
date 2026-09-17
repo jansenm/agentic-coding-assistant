@@ -42,11 +42,12 @@ defmodule CodingAgent.Core.Permissions do
   @typedoc "A complete policy: merged layers + enablement."
   @type t :: %__MODULE__{
           entries: %{String.t() => entries()},
-          enabled: [String.t()]
+          enabled: [String.t()],
+          disabled: [String.t()]
         }
 
   @enforce_keys [:entries, :enabled]
-  defstruct entries: %{}, enabled: []
+  defstruct entries: %{}, enabled: [], disabled: []
 
   # Class defaults when no policy entry matches. Read-only tools
   # allow-by-policy (slice 2a); every addition must be safe by
@@ -78,6 +79,97 @@ defmodule CodingAgent.Core.Permissions do
       enabled: enabled_tools([user_layer, repo_layer])
     }
   end
+
+  @doc """
+  Applies an agent definition (ADR 017 layer 4) on top of a loaded
+  policy — **restrictive only**, exactly like the other layers:
+
+  * its `permission` table is merged with most-restrictive-wins;
+  * its `tools` allow-list and `disallowedTools` deny-list narrow the
+    enabled set. When the definition names tools, the effective enabled
+    set is the *intersection* with whatever the policy already allowed,
+    so a definition can never re-enable a tool the user or repo denied.
+  """
+  @spec apply_agent(t() | nil, map() | nil) :: t() | nil
+  def apply_agent(policy, nil), do: policy
+
+  def apply_agent(%__MODULE__{} = policy, %CodingAgent.Core.Agent{} = agent) do
+    apply_agent(policy, %{
+      permission: agent.permission,
+      tools: agent.tools,
+      disallowed_tools: agent.disallowed_tools
+    })
+  end
+
+  def apply_agent(%__MODULE__{} = policy, agent) when is_map(agent) do
+    %__MODULE__{
+      entries: merge_layers([%{"__entries" => policy.entries}, agent_layer(agent)]),
+      enabled: narrow_enabled(enabled(policy), agent),
+      disabled: (policy.disabled ++ agent_disabled(agent)) |> Enum.uniq() |> Enum.sort()
+    }
+  end
+
+  def apply_agent(policy, _agent), do: policy
+
+  defp agent_layer(agent) do
+    entries =
+      (agent[:permission] || agent["permission"] || %{})
+      |> Map.new(fn {tool, rules} ->
+        tool = CodingAgent.Core.Agent.canonical_tool(to_string(tool))
+        {tool, normalize_agent_rules(rules)}
+      end)
+
+    enabled = agent_enabled(agent)
+    %{"__entries" => entries, "__enabled" => enabled}
+  end
+
+  # A definition's permission entry is either a bare decision string or a
+  # glob table. Both map onto our entries shape; unknown decisions are
+  # rejected at load (Agent.validate/2), so here we only accept the three.
+  defp normalize_agent_rules(decision) when decision in ["allow", "ask", "deny"],
+    do: %{"*" => String.to_existing_atom(decision)}
+
+  defp normalize_agent_rules(rules) when is_map(rules) do
+    Map.new(rules, fn {pattern, decision} ->
+      {to_string(pattern), String.to_existing_atom(decision)}
+    end)
+  end
+
+  defp normalize_agent_rules(_), do: %{}
+
+  # The definition's tool set: `tools` is an allow-list, `disallowedTools`
+  # a deny-list applied first (Claude Code semantics).
+  defp agent_enabled(agent) do
+    tools = agent[:tools] || agent["tools"]
+
+    if is_list(tools) do
+      tools |> Enum.map(&CodingAgent.Core.Agent.canonical_tool/1) |> Enum.uniq()
+    else
+      []
+    end
+  end
+
+  defp agent_disabled(agent) do
+    (agent[:disallowed_tools] || agent["disallowed_tools"] || [])
+    |> Enum.map(&CodingAgent.Core.Agent.canonical_tool/1)
+  end
+
+  # Intersection, never union: a definition narrows, it does not extend.
+  # Stored back as a list (`[]` means "no narrowing" and reads as
+  # `:default` via enabled/1).
+  defp narrow_enabled(existing, agent) do
+    case agent_enabled(agent) -- agent_disabled(agent) do
+      [] -> existing
+      names -> intersect_enabled(existing, names)
+    end
+    |> store_enabled()
+  end
+
+  defp store_enabled(:default), do: []
+  defp store_enabled(list), do: list
+
+  defp intersect_enabled(:default, names), do: names
+  defp intersect_enabled(existing, names), do: Enum.filter(existing, &(&1 in names))
 
   @doc "Loads one layer from a TOML file; nil or missing file => empty layer."
   @spec load_layer(String.t() | nil) :: layer()
@@ -291,4 +383,12 @@ defmodule CodingAgent.Core.Permissions do
   @spec enabled(t()) :: [String.t()] | :default
   def enabled(%__MODULE__{enabled: []}), do: :default
   def enabled(%__MODULE__{enabled: list}), do: list
+
+  @doc """
+  Tools removed by an agent's `disallowedTools` (ADR 017). Applied after
+  `enabled/1`: the session drops these names from the registry, so the
+  model cannot even see them.
+  """
+  @spec disabled(t()) :: [String.t()]
+  def disabled(%__MODULE__{disabled: list}), do: list
 end

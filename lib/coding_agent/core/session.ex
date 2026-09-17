@@ -167,6 +167,14 @@ defmodule CodingAgent.Core.Session do
     test_mode = Keyword.get(opts, :test_mode, false)
     policy = Keyword.get(opts, :policy) || load_policy(scope_root)
 
+    # Agent definition (ADR 017). `:agent` names a definition; when given,
+    # its prompt is composed onto the framework prompt and its permission
+    # layer is applied to the policy (restrictive only). Absent => the
+    # framework prompt and the plain policy, i.e. the behaviour before
+    # agents existed (tests and headless callers stay unchanged).
+    {agent, policy, system_prompt} =
+      resolve_agent(Keyword.get(opts, :agent), policy, system_prompt, scope_root)
+
     # Resume support (4a): a resumed session must carry the persisted
     # usage forward. last_input_tokens is the ONLY sound compaction
     # measure; without it decide/2 takes the chars fallback and compacts
@@ -229,6 +237,10 @@ defmodule CodingAgent.Core.Session do
        # layers. `rw` may only come from shipped + global, so a repo
        # cannot widen its own sandbox.
        mounts: CodingAgent.Core.Sandbox.Mounts.resolve(UserConfig.layers(scope_root, "config")),
+       # the resolved agent definition (ADR 017), or nil. The UI reads its
+       # name/model for the two slots (ADR 018); the gate uses its policy
+       # layer via state.policy.
+       agent: agent,
        # resumed state carried forward: usage drives the compaction
        # trigger (see above), warned/backoff avoid re-warning and
        # re-retrying a summarize that already failed before the restart
@@ -237,6 +249,43 @@ defmodule CodingAgent.Core.Session do
        compaction_backoff: compaction_backoff,
        test_mode: test_mode
      )}
+  end
+
+  # Resolves the named agent definition and applies it. Returns
+  # `{agent_or_nil, policy, system_prompt}`.
+  #
+  # A named agent that cannot be found is a hard error (the caller asked
+  # for something specific); an absent `:agent` is the no-agent path.
+  defp resolve_agent(nil, policy, system_prompt, _scope_root) do
+    {nil, policy, system_prompt}
+  end
+
+  defp resolve_agent(name, policy, system_prompt, scope_root) when is_binary(name) do
+    case CodingAgent.Core.Agent.load(scope_root) do
+      {:ok, agents} ->
+        case Enum.find(agents, &(&1.name == name)) do
+          nil ->
+            available = Enum.map_join(agents, ", ", & &1.name)
+
+            raise ArgumentError,
+                  "unknown agent #{inspect(name)}; available: #{available}"
+
+          agent ->
+            composed = compose_agent_prompt(system_prompt, agent)
+            {agent, Permissions.apply_agent(policy, agent), composed}
+        end
+
+      {:error, errors} ->
+        raise ArgumentError,
+              "cannot load agent definitions:\n  " <> Enum.join(errors, "\n  ")
+    end
+  end
+
+  defp compose_agent_prompt(framework_prompt, agent) do
+    case String.trim(agent.prompt) do
+      "" -> framework_prompt
+      prompt -> framework_prompt <> "\n\n" <> prompt
+    end
   end
 
   # AGENTS.md at the scope root: project conventions for the agent
@@ -899,15 +948,20 @@ defmodule CodingAgent.Core.Session do
 
     # [tools] enabled is a REAL whitelist (ADR 010): an empty section is
     # "registry default" (every tool); a non-empty list narrows the
-    # registry to exactly those names. Previously parsed, validated and
-    # tested — and then ignored, so a security knob read like it worked
-    # while every tool stayed available. A disabled tool
-    # is simply absent from the list the provider sees; a model that
-    # calls it anyway gets the gate's "unknown tool — available tools:
-    # …" error and self-corrects.
-    case Permissions.enabled(state.policy) do
-      :default -> tools
-      names -> Enum.filter(tools, &(&1.name in names))
+    # registry to exactly those names. A disabled tool is simply absent
+    # from the list the provider sees; a model that calls it anyway gets
+    # the gate's "unknown tool — available tools: …" error and
+    # self-corrects. An agent definition (ADR 017) narrows further with
+    # `disallowedTools` (Permissions.disabled/1).
+    tools =
+      case Permissions.enabled(state.policy) do
+        :default -> tools
+        names -> Enum.filter(tools, &(&1.name in names))
+      end
+
+    case Permissions.disabled(state.policy) do
+      [] -> tools
+      disabled -> Enum.reject(tools, &(&1.name in disabled))
     end
   end
 

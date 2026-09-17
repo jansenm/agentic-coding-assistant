@@ -30,7 +30,10 @@ defmodule CodingAgent.MixProject do
     [
       {:req_llm, "~> 1.21"},
       {:dotenvy, "~> 1.1"},
-      {:ex_ratatui, "~> 0.13"}
+      {:ex_ratatui, "~> 0.13"},
+      # YAML frontmatter for agent definitions (ADR 017/019). Pure Erlang,
+      # no NIF; used directly (not via yaml_elixir, which only wraps it).
+      {:yamerl, "~> 0.10"}
     ]
   end
 end

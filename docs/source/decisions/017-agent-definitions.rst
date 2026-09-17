@@ -143,21 +143,29 @@ Consequences
 - Trusting one agent does not mean trusting all: each definition carries
   its own reviewable row.
 
-Open questions for the implementation slice
--------------------------------------------
+Implementation decisions (2026-09-17)
+-------------------------------------
 
-1. **``plan`` denial strength:** ``deny`` (the tool is absent, the model
-   cannot even try) versus ``ask`` (the model may propose, the human
-   confirms). ``deny`` is cleaner for "plan mode"; ``ask`` is friendlier
-   for a user who wants to promote a plan to action in place. Leaning
-   ``deny`` for the write/exec tools.
-2. **Frontmatter parse failures:** fail closed (session refuses to start,
-   like a bad policy file) versus skip the file with a warning. The
-   policy precedent is fail-closed; agent files are more numerous and
-   user-edited, so this needs a decision.
-3. **Name authority:** file name versus an explicit ``name`` field when
-   they disagree. Follow Claude Code (``name`` wins, collision checked)
-   unless a reason appears.
-4. **Model precedence:** definition ``model`` vs. session model vs. an
-   inherited default for subagents. Claude Code's order is a good
-   starting point (per-invocation > definition > env > session).
+1. **``plan`` denial strength:** ``deny``. The write/exec tools
+   (``edit``, ``write_file``, ``shell``, ``git``) are removed from the
+   ``plan`` agent's tool set entirely, so it cannot even attempt a
+   change. Revisit only if this proves inconvenient in use.
+2. **Frontmatter parse failures:** fail closed, but **aggregate** — the
+   loader parses *every* definition file, collects all errors (file,
+   line, reason), prints them as one numbered list, and then refuses to
+   start. This deliberately differs from the policy loader (which aborts
+   on the first error): agent files are numerous and user-edited, so
+   fixing them one restart at a time is the unpleasant loop we avoid.
+3. **Name authority:** the ``name`` field wins; the file name is the
+   fallback when it is absent. Two definitions in the same layer
+   resolving to the same name is an error, reported in the aggregated
+   list (not a silent filesystem-order pick).
+4. **YAML parser:** see :doc:`019-yaml-dependency` — ``yamerl`` directly,
+   one dependency, with a hard size limit and the core schema.
+
+Still open (subagent slice)
+
+5. **Model precedence** for subagents: definition ``model`` vs. session
+   model vs. an inherited default. Claude Code's order (per-invocation >
+   definition > env > session) is a good starting point, but it only
+   matters once the ``task`` seam exists.

@@ -39,6 +39,7 @@ defmodule Mix.Tasks.Agent do
         strict: [
           chat: :boolean,
           resume: :string,
+          agent: :string,
           sessions: :boolean,
           session_delete: :string,
           session_prune: :integer
@@ -48,6 +49,7 @@ defmodule Mix.Tasks.Agent do
 
     chat? = opts[:chat] == true
     resume_id = opts[:resume]
+    agent = opts[:agent]
     list? = opts[:sessions] == true
     delete_id = opts[:session_delete]
     prune_days = opts[:session_prune]
@@ -63,23 +65,24 @@ defmodule Mix.Tasks.Agent do
         prune_sessions(prune_days)
 
       is_binary(resume_id) and args == [] ->
-        chat_loop(resume_id)
+        chat_loop(resume_id, agent)
 
       is_binary(resume_id) ->
         Mix.raise("usage: mix agent --resume <id> (no prompt arguments)")
 
       chat? and args == [] ->
-        chat_loop(nil)
+        chat_loop(nil, agent)
 
       chat? ->
         Mix.raise("usage: mix agent --chat (no prompt arguments)")
 
       is_list(args) and length(args) == 1 ->
-        one_shot(hd(args))
+        one_shot(hd(args), agent)
 
       true ->
         Mix.raise(
           "usage: mix agent \"prompt\" | mix agent --chat | " <>
+            "mix agent --agent <name> | " <>
             "mix agent --sessions | mix agent --resume <id> | " <>
             "mix agent --session-delete <id> | mix agent --session-prune <days>"
         )
@@ -142,9 +145,9 @@ defmodule Mix.Tasks.Agent do
     IO.puts("#{length(deleted)} pruned, #{length(kept)} kept.")
   end
 
-  defp one_shot(prompt) do
+  defp one_shot(prompt, agent) do
     id = session_id()
-    {:ok, _pid} = CodingAgent.Core.Session.Supervisor.start_session(id: id)
+    {:ok, _pid} = CodingAgent.Core.Session.Supervisor.start_session(id: id, agent: agent)
     CodingAgent.Core.Session.subscribe(id)
 
     # Streamed deltas already arrive in this process' mailbox while
@@ -156,9 +159,9 @@ defmodule Mix.Tasks.Agent do
     finish_turn(id, result)
   end
 
-  defp chat_loop(nil) do
+  defp chat_loop(nil, agent) do
     id = session_id()
-    {:ok, _pid} = CodingAgent.Core.Session.Supervisor.start_session(id: id)
+    {:ok, _pid} = CodingAgent.Core.Session.Supervisor.start_session(id: id, agent: agent)
     CodingAgent.Core.Session.subscribe(id)
 
     IO.puts("""
@@ -175,7 +178,7 @@ defmodule Mix.Tasks.Agent do
   end
 
   # Resume: load the persisted state and continue the conversation.
-  defp chat_loop(resume_id) when is_binary(resume_id) do
+  defp chat_loop(resume_id, agent) when is_binary(resume_id) do
     resolved =
       case CodingAgent.Core.Session.Store.resolve_id(resume_id) do
         {:ok, full_id} ->
@@ -198,6 +201,9 @@ defmodule Mix.Tasks.Agent do
           model: persisted.model,
           scope_root: persisted.scope_root,
           policy: persisted.policy,
+          # restore the agent name for the UI/carried policy; an explicit
+          # --agent overrides the persisted one (a deliberate switch)
+          agent: agent || (persisted.agent && persisted.agent.name),
           # carry the persisted usage forward or the session takes the
           # chars fallback and compacts on the first command
           usage: persisted.usage,

@@ -14,6 +14,10 @@ defmodule CodingAgent.Core.Session.State do
     :scope_root,
     :policy,
     provider_config: %{},
+    # The resolved agent definition (ADR 017), or nil when the session
+    # runs without one. The UI reads name/model for the two slots (ADR
+    # 018); the policy already carries the definition's permission layer.
+    agent: nil,
     # Sandbox mount schema (ADR 015): %{rw: [...], ro: [...], hide: [...]}.
     # Read from UserConfig layers at start (rw only from shipped+global,
     # never the project layer). Empty means "no extra mounts".
@@ -57,6 +61,7 @@ defmodule CodingAgent.Core.Session.State do
           policy: CodingAgent.Core.Permissions.t() | nil,
           provider_config: %{String.t() => term()} | nil,
           mounts: CodingAgent.Core.Sandbox.Mounts.t(),
+          agent: CodingAgent.Core.Agent.t() | nil,
           pending_tool_calls: [map()],
           pending_round_calls: [map()],
           pending_round_results: [map()],

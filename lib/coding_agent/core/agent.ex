@@ -1,0 +1,268 @@
+defmodule CodingAgent.Core.Agent do
+  @moduledoc """
+  Agent definitions (ADR 017): user-authored presets discovered from
+  Markdown + YAML frontmatter files, layered like every other
+  configuration (ADR 014).
+
+  A definition is `{name, description, prompt, mode, model, tools,
+  permissions, scope}` — the data ADR 003 runs through the standard loop.
+  This module owns **discovery, layering and validation**; the permission
+  merge lives in `CodingAgent.Core.Permissions` (layer 4 of ADR 010).
+
+  Locations, weakest to strongest:
+
+    1. shipped (`priv/coding-agent/agents/*.md`)
+    2. user (`~/.config/coding-agent/agents/*.md`)
+    3. project (`<scope_root>/.coding-agent/agents/*.md`)
+
+  A higher layer with the same name **replaces** the lower one. Within
+  one layer a duplicate name is an error.
+
+  **Loading fails closed, but aggregates.** Every file is parsed and
+  validated; all problems (file, line, reason) are collected and
+  returned together, so a user fixes them in one edit instead of five
+  restarts (ADR 017 decision 2). A non-empty error list means no session
+  starts.
+  """
+
+  alias CodingAgent.Core.Agent.Frontmatter
+
+  @type t :: %__MODULE__{
+          name: String.t(),
+          description: String.t() | nil,
+          prompt: String.t(),
+          mode: :primary | :subagent | :all,
+          model: String.t() | nil,
+          tools: [String.t()] | nil,
+          disallowed_tools: [String.t()] | nil,
+          permission: map(),
+          temperature: number() | nil,
+          max_turns: pos_integer() | nil,
+          hidden: boolean(),
+          source: String.t()
+        }
+
+  @enforce_keys [:name, :prompt, :source]
+  defstruct name: nil,
+            description: nil,
+            prompt: "",
+            mode: :all,
+            model: nil,
+            tools: nil,
+            disallowed_tools: nil,
+            permission: %{},
+            temperature: nil,
+            max_turns: nil,
+            hidden: false,
+            source: nil
+
+  @modes ~w(primary subagent all)
+
+  # Standard tool names (the agents convention: opencode/Claude Code) to
+  # our canonical tool names. A definition written for another tool can
+  # therefore name its tools the way that tool does.
+  @tool_aliases %{
+    "read" => "read_file",
+    "list" => "list_dir",
+    "write" => "write_file",
+    "edit" => "edit",
+    "glob" => "glob",
+    "grep" => "grep",
+    "bash" => "shell",
+    "webfetch" => "webfetch",
+    "git" => "git",
+    "task" => "task"
+  }
+
+  @doc "Maps a standard tool name to ours (unknown names pass through)."
+  @spec canonical_tool(String.t()) :: String.t()
+  def canonical_tool(name) when is_binary(name), do: Map.get(@tool_aliases, name, name)
+
+  @doc "The tool-name aliases, for documentation and tests."
+  def tool_aliases, do: @tool_aliases
+
+  # -- Loading -----------------------------------------------------------------
+
+  @doc """
+  Loads all agent definitions for a scope root, layered.
+
+  Returns `{:ok, [t()]}` (sorted by name) or `{:error, [String.t()]}`
+  with **every** problem found. Callers refuse to start on error.
+  """
+  @spec load(String.t() | nil) :: {:ok, [t()]} | {:error, [String.t()]}
+  def load(scope_root \\ nil) do
+    layers = [shipped_dir(), user_dir(), project_dir(scope_root)]
+
+    {defs, errors} =
+      Enum.reduce(layers, {%{}, []}, fn dir, {acc, errs} ->
+        {found, layer_errs} = load_layer(dir)
+        {Map.merge(acc, found), errs ++ layer_errs}
+      end)
+
+    if errors == [] do
+      {:ok, defs |> Map.values() |> Enum.sort_by(& &1.name)}
+    else
+      {:error, errors}
+    end
+  end
+
+  @doc """
+  Loads a single layer directory: `{%{name => def}, errors}`. A missing
+  directory is fine (no agents from this layer).
+  """
+  @spec load_layer(String.t() | nil) :: {%{String.t() => t()}, [String.t()]}
+  def load_layer(nil), do: {%{}, []}
+
+  def load_layer(dir) do
+    case File.ls(dir) do
+      {:ok, entries} ->
+        entries
+        |> Enum.filter(&String.ends_with?(&1, [".md", ".markdown"]))
+        |> Enum.sort()
+        |> Enum.reduce({%{}, []}, fn file, {acc, errs} ->
+          path = Path.join(dir, file)
+
+          case parse_one(path) do
+            {:ok, def} ->
+              case Map.get(acc, def.name) do
+                nil ->
+                  {Map.put(acc, def.name, def), errs}
+
+                existing ->
+                  {acc,
+                   errs ++
+                     [
+                       "#{path}: duplicate agent name #{inspect(def.name)} " <>
+                         "(already defined by #{existing.source} in the same layer)"
+                     ]}
+              end
+
+            {:error, err} ->
+              {acc, errs ++ [err]}
+          end
+        end)
+
+      {:error, :enoent} ->
+        {%{}, []}
+
+      {:error, reason} ->
+        {%{}, ["#{dir}: #{:file.format_error(reason)}"]}
+    end
+  end
+
+  defp parse_one(path) do
+    with {:ok, fm} <- Frontmatter.parse_file(path),
+         :ok <- validate(fm, path),
+         {:ok, name} <- resolve_name(fm, path) do
+      {:ok,
+       %__MODULE__{
+         name: name,
+         description: fm.description,
+         prompt: String.trim(fm.body),
+         mode: mode(fm.mode),
+         model: fm.model,
+         tools: fm.tools,
+         disallowed_tools: fm.disallowed_tools,
+         permission: fm.permission,
+         temperature: fm.temperature,
+         max_turns: fm.max_turns,
+         hidden: fm.hidden,
+         source: path
+       }}
+    end
+  end
+
+  # -- Validation --------------------------------------------------------------
+
+  @doc """
+  Validates a parsed definition: description required, mode known,
+  permission decisions in `allow | ask | deny`. Returns `:ok` or
+  `{:error, message}`.
+  """
+  @spec validate(Frontmatter.t(), String.t()) :: :ok | {:error, String.t()}
+  def validate(fm, path) do
+    cond do
+      blank?(fm.description) ->
+        {:error, "#{path}: `description` is required (the delegation hint)"}
+
+      fm.mode != nil and fm.mode not in @modes ->
+        {:error,
+         "#{path}: invalid `mode` #{inspect(fm.mode)} " <>
+           "(must be one of #{Enum.join(@modes, ", ")})"}
+
+      true ->
+        validate_permission(fm.permission, path)
+    end
+  end
+
+  defp validate_permission(perm, path) when is_map(perm) do
+    Enum.reduce_while(perm, :ok, fn {_tool, entries}, :ok ->
+      case validate_entries(entries) do
+        :ok -> {:cont, :ok}
+        {:error, msg} -> {:halt, {:error, "#{path}: permission #{msg}"}}
+      end
+    end)
+  end
+
+  defp validate_permission(_other, path) do
+    {:error, "#{path}: `permission` must be a mapping of tool -> decision"}
+  end
+
+  defp validate_entries(decision) when decision in ["allow", "ask", "deny"], do: :ok
+
+  defp validate_entries(entries) when is_map(entries) do
+    Enum.reduce_while(entries, :ok, fn {pattern, decision}, :ok ->
+      if decision in ["allow", "ask", "deny"] do
+        {:cont, :ok}
+      else
+        {:halt,
+         {:error, "#{inspect(pattern)} = #{inspect(decision)} (must be allow, ask or deny)"}}
+      end
+    end)
+  end
+
+  defp validate_entries(other) do
+    {:error, "must be allow, ask or deny (or a glob table of those), got #{inspect(other)}"}
+  end
+
+  # name field wins; the file name (without extension) is the fallback.
+  defp resolve_name(fm, path) do
+    cond do
+      is_binary(fm.name) and fm.name != "" ->
+        {:ok, fm.name}
+
+      true ->
+        base = path |> Path.basename() |> Path.rootname()
+        {:ok, base}
+    end
+  end
+
+  defp mode(nil), do: :all
+  defp mode("primary"), do: :primary
+  defp mode("subagent"), do: :subagent
+  defp mode("all"), do: :all
+  defp mode(_), do: :all
+
+  defp blank?(nil), do: true
+  defp blank?(s) when is_binary(s), do: String.trim(s) == ""
+  defp blank?(_), do: true
+
+  # -- Paths -------------------------------------------------------------------
+
+  @doc "Shipped agent definitions directory."
+  def shipped_dir do
+    Path.join([Application.app_dir(:coding_agent), "priv", "coding-agent", "agents"])
+  end
+
+  @doc "User agent definitions directory (~/.config/coding-agent/agents)."
+  def user_dir do
+    Path.join(CodingAgent.Core.UserConfig.global_dir(), "agents")
+  end
+
+  @doc "Project agent definitions directory (<scope_root>/.coding-agent/agents)."
+  def project_dir(nil), do: nil
+
+  def project_dir(scope_root) do
+    Path.join(CodingAgent.Core.UserConfig.project_dir_for_test(scope_root), "agents")
+  end
+end

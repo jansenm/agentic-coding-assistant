@@ -419,7 +419,8 @@ defmodule CodingAgent.UI.Tui do
                    Supervisor.start_session(
                      id: id,
                      scope_root: Keyword.get(opts, :scope_root) || File.cwd!(),
-                     model: model
+                     model: model,
+                     agent: Keyword.get(opts, :agent)
                    ) do
               {:ok, pid, nil}
             end
