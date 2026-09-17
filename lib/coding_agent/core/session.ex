@@ -1103,8 +1103,20 @@ defmodule CodingAgent.Core.Session do
 
   defp sanitize_message(msg), do: msg
 
+  # The model a turn actually uses: the agent definition's model when it
+  # sets one, otherwise the session's model (config / model menu /
+  # resume). ADR 017 allows a definition to pin its own model; this is
+  # where that becomes real (the field was parsed but unused).
+  @doc false
+  @spec effective_model(State.t()) :: String.t() | nil
+  def effective_model(%State{agent: %{model: model}}) when is_binary(model) and model != "",
+    do: model
+
+  def effective_model(%State{model: model}), do: model
+
   defp call_llm(state) do
-    with {:ok, model_input, base_opts} <- Request.build(state.model, state.provider_config) do
+    with {:ok, model_input, base_opts} <-
+           Request.build(effective_model(state), state.provider_config) do
       opts = Keyword.put(base_opts, :tools, current_tools(state))
 
       with {:ok, stream_response} <-

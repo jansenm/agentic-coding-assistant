@@ -139,6 +139,49 @@ defmodule CodingAgent.Core.Session.AgentWiringTest do
     end
   end
 
+  describe "effective_model/1 (ADR 017 model field)" do
+    test "an agent without a model uses the session model" do
+      start("model-none", agent: "build")
+      {:ok, s} = Session.state("model-none")
+
+      refute s.agent.model
+      assert Session.effective_model(s) == s.model
+    end
+
+    test "an agent with its own model wins over the session model" do
+      # build a state directly: the loader only reads files, so this is
+      # the unit-level check of the precedence
+      agent = %CodingAgent.Core.Agent{
+        name: "cheap",
+        prompt: "p",
+        source: "test",
+        model: "ollama:tiny"
+      }
+
+      state = %CodingAgent.Core.Session.State{
+        id: "m",
+        context: ReqLLM.Context.new(),
+        model: "ollama_cloud:glm",
+        status: :idle,
+        agent: agent
+      }
+
+      assert Session.effective_model(state) == "ollama:tiny"
+    end
+
+    test "no agent at all uses the session model" do
+      state = %CodingAgent.Core.Session.State{
+        id: "m",
+        context: ReqLLM.Context.new(),
+        model: "ollama_cloud:glm",
+        status: :idle,
+        agent: nil
+      }
+
+      assert Session.effective_model(state) == "ollama_cloud:glm"
+    end
+  end
+
   defp system_text_of(state) do
     state.context
     |> ReqLLM.Context.to_list()

@@ -293,7 +293,12 @@ defmodule CodingAgent.UI.Tui do
         #                    own agent, so the two can differ.
         running_agent: session_agent(effective_id),
         next_agent: session_agent(effective_id),
-        primary_agents: primary_agent_names(),
+        primary_agents: primary_agent_names(session_scope(effective_id)),
+        # models per slot, resolved once per mount (not per frame — the
+        # sidebar runs at poll cadence and must not hit the disk)
+        running_agent_model:
+          agent_model(session_scope(effective_id), session_agent(effective_id)),
+        next_agent_model: agent_model(session_scope(effective_id), session_agent(effective_id)),
         session_usage:
           (restored && Map.get(restored, :usage)) ||
             %{input_tokens: 0, output_tokens: 0, cost: nil},
@@ -393,7 +398,14 @@ defmodule CodingAgent.UI.Tui do
                  context: state.context,
                  model: state.model,
                  scope_root: state.scope_root,
-                 policy: state.policy,
+                 # The BASE policy, not the narrowed one: a resumed plan
+                 # session passing its agent-narrowed policy would make
+                 # those restrictions permanent (set_agent recomputes from
+                 # base, so a narrowed base means Tab to build never
+                 # restores the tools — found live).
+                 policy: base_policy_of(state),
+                 # restore the agent for the UI slots and the policy layer
+                 agent: agent_name_of(state),
                  # carry the persisted usage forward or the session takes
                  # the chars fallback and compacts on the first command
                  usage: state.usage,
@@ -2216,11 +2228,11 @@ defmodule CodingAgent.UI.Tui do
       Text.Line.new([Text.Span.new("agent", style: %Style{fg: :dark_gray})]),
       Text.Line.new([
         Text.Span.new("running: ", style: %Style{fg: :dark_gray}),
-        Text.Span.new(Map.get(state, :running_agent) || "default", style: %Style{fg: :white})
+        Text.Span.new(slot_agent_label(state, :running), style: %Style{fg: :white})
       ]),
       Text.Line.new([
         Text.Span.new("next:    ", style: %Style{fg: :dark_gray}),
-        Text.Span.new(Map.get(state, :next_agent) || "default", style: %Style{fg: :cyan}),
+        Text.Span.new(slot_agent_label(state, :next), style: %Style{fg: :cyan}),
         Text.Span.new("  (tab)", style: %Style{fg: :dark_gray})
       ]),
       Text.Line.new([Text.Span.new("", style: %Style{})]),
@@ -2305,12 +2317,41 @@ defmodule CodingAgent.UI.Tui do
     end
   end
 
-  # The primary agents available to switch between (Tab). Sourced from the
-  # definitions; on any load error we fall back to no switching rather
-  # than crashing the UI (the session itself raises on a bad definition,
-  # so a broken set never reaches here).
-  defp primary_agent_names do
-    case CodingAgent.Core.Agent.load(File.cwd!()) do
+  # The session's scope root (agents can be project-scoped). Falls back to
+  # the process cwd for the picker, where no session exists yet.
+  defp session_scope(id) do
+    case Session.state(id) do
+      {:ok, %{scope_root: root}} when is_binary(root) -> root
+      _ -> File.cwd!()
+    end
+  end
+
+  # A resumed session carries the persisted agent name on its state. If
+  # that definition is gone (deleted/renamed since), resume WITHOUT an
+  # agent rather than raising: losing the preset must not brick the
+  # session. The check uses the SESSION's scope, not the process cwd —
+  # agents can be project-scoped.
+  defp agent_name_of(state) do
+    name = state.agent && state.agent.name
+
+    cond do
+      name == nil -> nil
+      name in primary_agent_names(state.scope_root) -> name
+      true -> nil
+    end
+  end
+
+  # The policy BEFORE the agent layer, so Session.init re-applies the
+  # definition onto a clean base. Snapshots from before base_policy
+  # existed stored only the (base) policy, so their `policy` is the base.
+  defp base_policy_of(state), do: state.base_policy || state.policy
+
+  # The primary agents available to switch between (Tab), for a scope.
+  # Sourced from the definitions; on any load error we fall back to no
+  # switching rather than crashing the UI (the session itself raises on a
+  # bad definition, so a broken set never reaches here).
+  defp primary_agent_names(scope_root) do
+    case CodingAgent.Core.Agent.load(scope_root) do
       {:ok, agents} ->
         agents |> Enum.filter(&(&1.mode == :primary)) |> Enum.map(& &1.name)
 
@@ -2319,6 +2360,46 @@ defmodule CodingAgent.UI.Tui do
     end
   rescue
     _ -> []
+  end
+
+  # The agent's own model, or nil (the definition left it unset).
+  defp agent_model(_scope_root, nil), do: nil
+
+  defp agent_model(scope_root, name) do
+    case CodingAgent.Core.Agent.load(scope_root) do
+      {:ok, agents} ->
+        case Enum.find(agents, &(&1.name == name)) do
+          %{model: m} when is_binary(m) and m != "" -> m
+          _ -> nil
+        end
+
+      _ ->
+        nil
+    end
+  rescue
+    _ -> nil
+  end
+
+  # One sidebar slot line: "name · model". The model shown is the one a
+  # turn with that agent WOULD actually use (the definition's model when
+  # set, else the session model), so the two slots can differ. With no
+  # agent the name reads "(none)" — "default" was ambiguous (it also
+  # labelled the effort line).
+  defp slot_agent_label(state, slot) do
+    {name, model} =
+      case slot do
+        :running ->
+          {Map.get(state, :running_agent), Map.get(state, :running_agent_model)}
+
+        :next ->
+          {Map.get(state, :next_agent), Map.get(state, :next_agent_model)}
+      end
+
+    session_model = Map.get(state, :model) || "?"
+    model = model || session_model
+    label = name || "(none)"
+
+    "#{label} · #{String.slice(model, 0, 20)}"
   end
 
   # Tab: cycle next_agent through the primary agents (and, at the end,
@@ -2338,8 +2419,17 @@ defmodule CodingAgent.UI.Tui do
             # the session is idle here (Tab is an input-area key), so the
             # running slot follows the switch; when a turn later starts,
             # the status handler refreshes running_agent from the session.
+            scope = session_scope(state.session_id)
+            next_model = agent_model(scope, next)
+
             status_note(
-              %{state | next_agent: next, running_agent: next},
+              %{
+                state
+                | next_agent: next,
+                  running_agent: next,
+                  next_agent_model: next_model,
+                  running_agent_model: next_model
+              },
               "agent → #{next || "default"}"
             )
 
