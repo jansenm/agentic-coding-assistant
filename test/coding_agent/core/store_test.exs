@@ -126,6 +126,33 @@ defmodule CodingAgent.Core.Session.StoreTest do
       assert {:error, _} = Store.load(id)
     end
 
+    test "an OLDER snapshot missing new struct fields loads with defaults" do
+      # regression: `struct!/1` (map form) stopped applying struct
+      # defaults in Elixir 1.20, so a snapshot written before a field
+      # existed raised "key :base_policy not found" on load. Loading
+      # must fill missing fields with their defaults.
+      id = "older-#{System.unique_integer()}"
+      state = build_state(id)
+
+      # simulate a snapshot from before base_policy/base_prompt/agent:
+      # drop those keys entirely
+      older =
+        state
+        |> Map.drop([:base_policy, :base_prompt, :agent])
+
+      payload = :erlang.term_to_binary({1, older})
+      File.mkdir_p!(@test_dir)
+      File.write!(Store.path(id), payload)
+
+      assert {:ok, loaded} = Store.load(id)
+      assert loaded.base_policy == nil
+      assert loaded.base_prompt == nil
+      assert loaded.agent == nil
+      # and every other field is present (struct, not a bare map)
+      assert %CodingAgent.Core.Session.State{} = loaded
+      assert Map.keys(loaded) |> Enum.sort() == Map.keys(state) |> Enum.sort()
+    end
+
     test "wrong version errors" do
       id = "wrongver-#{System.unique_integer()}"
       state = build_state(id)

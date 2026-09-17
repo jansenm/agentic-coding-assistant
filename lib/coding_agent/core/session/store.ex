@@ -108,37 +108,44 @@ defmodule CodingAgent.Core.Session.Store do
         case safe_binary_to_term(bytes) do
           {:ok, {@format_version, %State{} = state}} ->
             # runtime-only fields must not resurrect. Snapshots saved
-            # before a struct field existed decode WITHOUT that key,
-            # and %State{state | new_key: ...} raises KeyError against
-            # such maps (the update validates against the runtime map,
-            # not the compiled definition — found live resuming
-            # tui-1730). Rebuild functionally instead.
+            # before a struct field existed decode WITHOUT that key, and
+            # `%State{state | new_key: ...}` raises KeyError against such
+            # maps. Rebuild functionally instead.
             #
             # Drop keys this build does not know FIRST: a NEWER snapshot
             # (same format_version 1, written by a later app version)
-            # carries extra struct keys and struct!/1 raises KeyError on
-            # them — an old binary must fail closed, not crash.
-            restored =
+            # carries extra struct keys, so a blind rebuild must fail
+            # closed, not crash.
+            #
+            # IMPORTANT: `struct!/1` (map form) no longer applies struct
+            # defaults in Elixir 1.20 — a missing key stays missing and
+            # any field access raises KeyError. Use `struct!/2`
+            # (module + map), which fills every field the snapshot lacks
+            # with its default. This is what made "key base_policy not
+            # found" crash on every pre-agents snapshot.
+            overrides = %{
+              subscribers: [],
+              status: idle_or_interrupted(state),
+              usage: Map.get(state, :usage) || %{input_tokens: 0, output_tokens: 0, cost: nil},
+              compaction_warned: Map.get(state, :compaction_warned, false),
+              # runtime guard counter: must never resurrect (found
+              # live: a snapshot saved with tool_rounds 25 — the old
+              # never-reset bug — resurrected as 25, so resuming and
+              # approving a pending call died instantly at the gate)
+              tool_rounds: 0,
+              # round carry: a snapshot from before the atomic-exchange
+              # change has neither key; default both
+              pending_round_calls: Map.get(state, :pending_round_calls, []),
+              pending_round_results: Map.get(state, :pending_round_results, []),
+              compaction_backoff: Map.get(state, :compaction_backoff, 0)
+            }
+
+            known =
               state
               |> Map.take(Map.keys(State.__struct__()))
-              |> Map.merge(%{
-                subscribers: [],
-                status: idle_or_interrupted(state),
-                usage: Map.get(state, :usage) || %{input_tokens: 0, output_tokens: 0, cost: nil},
-                compaction_warned: Map.get(state, :compaction_warned, false),
-                # runtime guard counter: must never resurrect (found
-                # live: a snapshot saved with tool_rounds 25 — the old
-                # never-reset bug — resurrected as 25, so resuming and
-                # approving a pending call died instantly at the gate)
-                tool_rounds: 0,
-                # round carry: a snapshot from before the atomic-exchange
-                # change has neither key; default both so struct!/1 does
-                # not raise on an older binary
-                pending_round_calls: Map.get(state, :pending_round_calls, []),
-                pending_round_results: Map.get(state, :pending_round_results, []),
-                compaction_backoff: Map.get(state, :compaction_backoff, 0)
-              })
-              |> struct!()
+              |> Map.drop([:__struct__])
+
+            restored = struct!(State, Map.merge(known, overrides))
 
             {:ok, restored}
 
