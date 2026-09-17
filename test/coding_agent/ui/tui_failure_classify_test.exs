@@ -34,7 +34,10 @@ defmodule CodingAgent.UI.TuiFailureClassifyTest do
   end
 
   test "the provider_build_failed wrapper is unwrapped and classified" do
-    err = %ReqLLM.Error.API.Request{reason: "Failed to build streaming request: invalid byte 0x83"}
+    err = %ReqLLM.Error.API.Request{
+      reason: "Failed to build streaming request: invalid byte 0x83"
+    }
+
     assert {:local, _} = Tui.classify_failure({:provider_build_failed, err})
   end
 

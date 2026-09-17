@@ -2535,7 +2535,7 @@ defmodule CodingAgent.UI.Tui do
                   next_agent_model: next_model,
                   running_agent_model: next_model
               },
-              "agent → #{next || "default"}"
+              "agent → #{next || "(none)"}"
             )
 
           {:error, reason} ->

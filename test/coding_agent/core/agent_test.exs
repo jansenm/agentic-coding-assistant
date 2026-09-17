@@ -181,7 +181,12 @@ defmodule CodingAgent.Core.AgentTest do
       dir = Path.join(@tmp_root, "broken")
       write_agent(dir, "one.md", "no frontmatter\n")
       write_agent(dir, "two.md", "---\ndescription: [bad\n---\nbody\n")
-      write_agent(dir, "three.md", "---\nname: nod\ndescription: d\npermission:\n  edit: maybe\n---\nbody\n")
+
+      write_agent(
+        dir,
+        "three.md",
+        "---\nname: nod\ndescription: d\npermission:\n  edit: maybe\n---\nbody\n"
+      )
 
       {_found, errors} = Agent.load_layer(dir)
       assert length(errors) == 3

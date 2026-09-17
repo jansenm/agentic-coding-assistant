@@ -110,6 +110,7 @@ defmodule CodingAgent.Core.Session.Store do
         case safe_binary_to_term(bytes) do
           {:ok, {@format_version, %State{} = state}} ->
             restore(state)
+
           {:ok, other} ->
             # wrong version or foreign payload — same fail-closed verdict
             {:error, {:not_a_session_file, elem(other, 0)}}
