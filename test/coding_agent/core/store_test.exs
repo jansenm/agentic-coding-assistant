@@ -153,6 +153,29 @@ defmodule CodingAgent.Core.Session.StoreTest do
       assert Map.keys(loaded) |> Enum.sort() == Map.keys(state) |> Enum.sort()
     end
 
+    test "an OLDER nested policy missing :disabled is healed (Tab crash)" do
+      # regression: the same Elixir 1.20 trap one level down. An old
+      # snapshot carries a %Permissions{} from before `:disabled`
+      # existed; apply_agent/2 (Tab) reads policy.disabled and crashed
+      # with "key :disabled not found". Loading must heal nested
+      # structs too.
+      id = "nested-#{System.unique_integer()}"
+      state = build_state(id)
+
+      old_policy = %{enabled: [], entries: %{}} |> Map.put(:__struct__, Permissions)
+      older = %{state | policy: old_policy}
+
+      payload = :erlang.term_to_binary({1, older})
+      File.mkdir_p!(@test_dir)
+      File.write!(Store.path(id), payload)
+
+      assert {:ok, loaded} = Store.load(id)
+      assert %Permissions{} = loaded.policy
+      assert loaded.policy.disabled == []
+      # the healed policy is usable: apply_agent does not raise
+      assert %Permissions{} = Permissions.apply_agent(loaded.policy, %{tools: ["read_file"]})
+    end
+
     test "wrong version errors" do
       id = "wrongver-#{System.unique_integer()}"
       state = build_state(id)

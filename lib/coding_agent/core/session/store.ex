@@ -19,6 +19,8 @@ defmodule CodingAgent.Core.Session.Store do
   Nothing in the repo; sessions are user-local artifacts.
   """
 
+  alias CodingAgent.Core.Agent
+  alias CodingAgent.Core.Permissions
   alias CodingAgent.Core.Session.State
 
   @format_version 1
@@ -107,48 +109,7 @@ defmodule CodingAgent.Core.Session.Store do
       {:ok, bytes} ->
         case safe_binary_to_term(bytes) do
           {:ok, {@format_version, %State{} = state}} ->
-            # runtime-only fields must not resurrect. Snapshots saved
-            # before a struct field existed decode WITHOUT that key, and
-            # `%State{state | new_key: ...}` raises KeyError against such
-            # maps. Rebuild functionally instead.
-            #
-            # Drop keys this build does not know FIRST: a NEWER snapshot
-            # (same format_version 1, written by a later app version)
-            # carries extra struct keys, so a blind rebuild must fail
-            # closed, not crash.
-            #
-            # IMPORTANT: `struct!/1` (map form) no longer applies struct
-            # defaults in Elixir 1.20 — a missing key stays missing and
-            # any field access raises KeyError. Use `struct!/2`
-            # (module + map), which fills every field the snapshot lacks
-            # with its default. This is what made "key base_policy not
-            # found" crash on every pre-agents snapshot.
-            overrides = %{
-              subscribers: [],
-              status: idle_or_interrupted(state),
-              usage: Map.get(state, :usage) || %{input_tokens: 0, output_tokens: 0, cost: nil},
-              compaction_warned: Map.get(state, :compaction_warned, false),
-              # runtime guard counter: must never resurrect (found
-              # live: a snapshot saved with tool_rounds 25 — the old
-              # never-reset bug — resurrected as 25, so resuming and
-              # approving a pending call died instantly at the gate)
-              tool_rounds: 0,
-              # round carry: a snapshot from before the atomic-exchange
-              # change has neither key; default both
-              pending_round_calls: Map.get(state, :pending_round_calls, []),
-              pending_round_results: Map.get(state, :pending_round_results, []),
-              compaction_backoff: Map.get(state, :compaction_backoff, 0)
-            }
-
-            known =
-              state
-              |> Map.take(Map.keys(State.__struct__()))
-              |> Map.drop([:__struct__])
-
-            restored = struct!(State, Map.merge(known, overrides))
-
-            {:ok, restored}
-
+            restore(state)
           {:ok, other} ->
             # wrong version or foreign payload — same fail-closed verdict
             {:error, {:not_a_session_file, elem(other, 0)}}
@@ -161,6 +122,85 @@ defmodule CodingAgent.Core.Session.Store do
         {:error, reason}
     end
   end
+
+  # Rebuilds a decoded snapshot into a complete %State{}.
+  #
+  # Two hazards this guards against, both found live:
+  #
+  # 1. `struct!/1` (map form) stopped applying struct defaults in
+  #    Elixir 1.20 — a key the snapshot lacks stays missing and any
+  #    access raises KeyError ("key :base_policy not found"). Use
+  #    `struct!/2` (module + map) so every field the snapshot predates
+  #    gets its default.
+  # 2. Nested structs are the SAME trap one level down: an old snapshot
+  #    carries a %Permissions{} without the later `:disabled` field, so
+  #    Tab (apply_agent/2 reading policy.disabled) crashed on load. Give
+  #    every known nested struct its defaults too.
+  #
+  # Unknown keys are dropped FIRST: a NEWER snapshot (same
+  # format_version 1, written by a later app version) carries fields
+  # this build does not know, and `struct!/2` raises KeyError on them.
+  # An old binary must fail closed, not crash.
+  defp restore(%State{} = state) do
+    overrides = %{
+      # runtime-only fields must not resurrect
+      subscribers: [],
+      status: idle_or_interrupted(state),
+      # runtime guard counter: a snapshot saved with tool_rounds 25 (the
+      # old never-reset bug) resurrected as 25, so resuming and
+      # approving a pending call died instantly at the gate
+      tool_rounds: 0,
+      usage: Map.get(state, :usage) || %{input_tokens: 0, output_tokens: 0, cost: nil},
+      compaction_warned: Map.get(state, :compaction_warned, false),
+      compaction_backoff: Map.get(state, :compaction_backoff, 0),
+      pending_round_calls: Map.get(state, :pending_round_calls, []),
+      pending_round_results: Map.get(state, :pending_round_results, []),
+      # nested structs: heal the Elixir 1.20 missing-default trap one
+      # level down (see above)
+      policy: heal(state.policy, Permissions),
+      base_policy: heal(Map.get(state, :base_policy), Permissions),
+      agent: heal(Map.get(state, :agent), Agent),
+      mounts: heal_mounts(Map.get(state, :mounts)),
+      provider_config: Map.get(state, :provider_config) || %{}
+    }
+
+    known =
+      state
+      |> Map.take(Map.keys(State.__struct__()))
+      |> Map.drop([:__struct__])
+
+    {:ok, struct!(State, Map.merge(known, overrides))}
+  rescue
+    # A snapshot whose shape we cannot reconcile (e.g. a required key is
+    # a foreign struct) is a load failure, not a crash: the caller shows
+    # it and offers a fresh start.
+    e -> {:error, {:bad_session_state, Exception.message(e)}}
+  end
+
+  # Fill a nested struct's defaults when it lacks later fields. nil
+  # stays nil (no agent / no base policy is a legitimate state).
+  defp heal(nil, _mod), do: nil
+
+  defp heal(%mod{} = nested, mod) do
+    fields =
+      nested
+      |> Map.take(Map.keys(mod.__struct__()))
+      |> Map.drop([:__struct__])
+
+    struct!(mod, fields)
+  end
+
+  defp heal(other, _mod), do: other
+
+  # mounts is a plain map (not a struct); a key added later must not
+  # crash the sandbox resolver.
+  defp heal_mounts(nil), do: %{rw: [], ro: [], hide: []}
+
+  defp heal_mounts(m) when is_map(m) do
+    %{rw: Map.get(m, :rw, []), ro: Map.get(m, :ro, []), hide: Map.get(m, :hide, [])}
+  end
+
+  defp heal_mounts(_), do: %{rw: [], ro: [], hide: []}
 
   @doc "Deletes a persisted session (best effort)."
   @spec delete(String.t()) :: :ok

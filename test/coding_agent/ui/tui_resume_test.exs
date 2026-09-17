@@ -196,4 +196,50 @@ defmodule CodingAgent.UI.TuiResumeTest do
       assert sync(pid).open_tool_id == nil
     end
   end
+
+  describe "orderly fallback on an unloadable resume" do
+    # User request: a corrupt/invalid session file should produce a
+    # friendly message and an orderly retreat — not a crash and not a
+    # silent fresh start.
+
+    test "a corrupt session file reports why and starts a fresh session" do
+      sid = "resume-corrupt-#{System.unique_integer()}"
+      File.mkdir_p!(Path.dirname(Store.path(sid)))
+      File.write!(Store.path(sid), <<1, 2, 3, "not a term">>)
+
+      pid =
+        start_supervised!(
+          {Tui, [name: nil, test_mode: {80, 24}, resume_id: sid, scope_root: File.cwd!()]}
+        )
+
+      st = sync(pid)
+      # a friendly info line names the id and the reason
+      info = Enum.find(st.transcript, fn {role, _} -> role == :info end)
+      assert info != nil
+      assert elem(info, 1) =~ "could not resume #{sid}"
+      assert elem(info, 1) =~ "fresh session"
+      # and the session is usable (fresh, not the broken id's state)
+      assert st.session_id != sid
+      assert st.status == :idle
+    end
+
+    test "an unknown session id reports no such session and starts fresh" do
+      pid =
+        start_supervised!(
+          {Tui,
+           [
+             name: nil,
+             test_mode: {80, 24},
+             resume_id: "definitely-missing-#{System.unique_integer()}",
+             scope_root: File.cwd!()
+           ]}
+        )
+
+      st = sync(pid)
+      info = Enum.find(st.transcript, fn {role, _} -> role == :info end)
+      assert info != nil
+      assert elem(info, 1) =~ "no such session"
+      assert st.status == :idle
+    end
+  end
 end

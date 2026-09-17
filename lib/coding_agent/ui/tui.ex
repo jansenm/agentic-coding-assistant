@@ -200,7 +200,7 @@ defmodule CodingAgent.UI.Tui do
   defp mount_session(id, opts, prompt) do
     id = id || Keyword.get(opts, :session_id) || "tui-#{System.unique_integer([:positive])}"
 
-    with {:ok, _pid, restored} <- start_session(id, opts) do
+    with {:ok, _pid, restored, notice} <- start_session(id, opts) do
       # real terminal dimensions: captured at mount, kept fresh by a
       # resize poller (the local transport never dispatches Resize
       # events — nothing sends them, found live). In test_mode the
@@ -263,8 +263,11 @@ defmodule CodingAgent.UI.Tui do
       end
 
       # resumed sessions render their history: the persisted context
-      # becomes transcript lines (system prompts stay hidden)
+      # becomes transcript lines (system prompts stay hidden). A failed
+      # resume fell back to a fresh session; its notice goes on top so
+      # the user knows why the old conversation is not there.
       history = (restored && restored_history(restored)) || []
+      history = if notice, do: [{:info, notice} | history], else: history
 
       # ctrl-p recall seeds from the restored context's user prompts
       # (compaction summaries excluded) so an attached old session can
@@ -373,82 +376,101 @@ defmodule CodingAgent.UI.Tui do
     end
   end
 
-  # Returns {:ok, pid, restored_state | nil} — the restored state (when
-  # resuming) is what seeds the transcript so old messages are visible.
+  # Returns {:ok, pid, restored_state | nil, notice | nil} — the restored
+  # state (when resuming) seeds the transcript so old messages are
+  # visible; the notice is a human line to show at the top (a failed
+  # resume that fell back to a fresh session).
   defp start_session(id, opts) do
-    persisted =
-      case Keyword.get(opts, :resume_id) do
-        nil ->
-          nil
+    case Keyword.get(opts, :resume_id) do
+      nil ->
+        start_fresh(id, opts, nil)
 
-        resume_id ->
-          # prefix resolution ("1730" -> "tui-1730..."); a failed resume
-          # must ABORT, not silently start a fresh session
-          case Store.resolve_id(resume_id) do
-            {:ok, full_id} -> Store.load(full_id)
-            {:error, reason} -> {:error, reason}
-          end
-      end
-
-    case persisted do
-      {:ok, state} ->
-        with {:ok, pid} <-
-               Supervisor.start_session(
-                 id: state.id,
-                 context: state.context,
-                 model: state.model,
-                 scope_root: state.scope_root,
-                 # The BASE policy, not the narrowed one: a resumed plan
-                 # session passing its agent-narrowed policy would make
-                 # those restrictions permanent (set_agent recomputes from
-                 # base, so a narrowed base means Tab to build never
-                 # restores the tools — found live).
-                 policy: base_policy_of(state),
-                 # restore the agent for the UI slots and the policy layer
-                 agent: agent_name_of(state),
-                 # carry the persisted usage forward or the session takes
-                 # the chars fallback and compacts on the first command
-                 usage: state.usage,
-                 compaction_warned: state.compaction_warned,
-                 compaction_backoff: state.compaction_backoff,
-                 # a session parked at the gate resumes PARKED (see
-                 # Session.init/1): pending calls and the round half
-                 # already decided come back so decide/2 can finish it
-                 status: state.status,
-                 pending_tool_calls: state.pending_tool_calls,
-                 pending_round_calls: state.pending_round_calls,
-                 pending_round_results: state.pending_round_results
-               ) do
-          {:ok, pid, state}
-        end
-
-      _ ->
-        # fresh session: the configured default (config.toml or
-        # AGENT_MODEL). No default in code (user decision) — a missing
-        # one is a hard error naming the config file, until the model
-        # menu replaces it with warning + in-session pick
-        case CodingAgent.model() do
-          nil ->
-            {:error,
-             {:no_model,
-              "no model configured. Set model = \"provider:model\" in " <>
-                CodingAgent.Core.UserConfig.global_dir() <>
-                "/config.toml (or a project .coding-agent/config.toml), " <>
-                "or override per run with AGENT_MODEL"}}
-
-          model ->
-            with {:ok, pid} <-
-                   Supervisor.start_session(
-                     id: id,
-                     scope_root: Keyword.get(opts, :scope_root) || File.cwd!(),
-                     model: model,
-                     agent: Keyword.get(opts, :agent)
-                   ) do
-              {:ok, pid, nil}
-            end
+      resume_id ->
+        # prefix resolution ("1730" -> "tui-1730..."). A resume that
+        # cannot load does NOT crash the app and does NOT stay silent:
+        # it reports why and starts a fresh session (orderly fallback).
+        case Store.resolve_id(resume_id) do
+          {:ok, full_id} -> start_resumed(Store.load(full_id), id, opts, resume_id)
+          {:error, reason} -> start_fresh(id, opts, resume_failure_notice(resume_id, reason))
         end
     end
   end
+
+  defp start_resumed({:ok, state}, _id, _opts, _resume_id) do
+    with {:ok, pid} <-
+           Supervisor.start_session(
+             id: state.id,
+             context: state.context,
+             model: state.model,
+             scope_root: state.scope_root,
+             # The BASE policy, not the narrowed one: a resumed plan
+             # session passing its agent-narrowed policy would make
+             # those restrictions permanent (set_agent recomputes from
+             # base, so a narrowed base means Tab to build never
+             # restores the tools — found live).
+             policy: base_policy_of(state),
+             # restore the agent for the UI slots and the policy layer
+             agent: agent_name_of(state),
+             # carry the persisted usage forward or the session takes
+             # the chars fallback and compacts on the first command
+             usage: state.usage,
+             compaction_warned: state.compaction_warned,
+             compaction_backoff: state.compaction_backoff,
+             # a session parked at the gate resumes PARKED (see
+             # Session.init/1): pending calls and the round half
+             # already decided come back so decide/2 can finish it
+             status: state.status,
+             pending_tool_calls: state.pending_tool_calls,
+             pending_round_calls: state.pending_round_calls,
+             pending_round_results: state.pending_round_results
+           ) do
+      {:ok, pid, state, nil}
+    end
+  end
+
+  defp start_resumed({:error, reason}, id, opts, resume_id) do
+    start_fresh(id, opts, resume_failure_notice(resume_id, reason))
+  end
+
+  # A fresh session: the configured default (config.toml or
+  # AGENT_MODEL). No default in code (user decision) — a missing one is
+  # a hard error naming the config file, until the model menu replaces
+  # it with warning + in-session pick. `notice` (a failed resume) is
+  # carried up to render as an info line.
+  defp start_fresh(id, opts, notice) do
+    case CodingAgent.model() do
+      nil ->
+        {:error,
+         {:no_model,
+          "no model configured. Set model = \"provider:model\" in " <>
+            CodingAgent.Core.UserConfig.global_dir() <>
+            "/config.toml (or a project .coding-agent/config.toml), " <>
+            "or override per run with AGENT_MODEL"}}
+
+      model ->
+        with {:ok, pid} <-
+               Supervisor.start_session(
+                 id: id,
+                 scope_root: Keyword.get(opts, :scope_root) || File.cwd!(),
+                 model: model,
+                 agent: Keyword.get(opts, :agent)
+               ) do
+          {:ok, pid, nil, notice}
+        end
+    end
+  end
+
+  # A friendly, jargon-free line for the transcript when a resume fails.
+  defp resume_failure_notice(resume_id, reason) do
+    "· could not resume #{resume_id} — #{human_load_error(reason)}; started a fresh session"
+  end
+
+  defp human_load_error(:enoent), do: "no such session"
+  defp human_load_error({:ambiguous_id, many}), do: "ambiguous id (#{length(many)} match)"
+  defp human_load_error({:not_a_session_file, v}), do: "not a session file (format #{inspect(v)})"
+  defp human_load_error({:bad_session_state, msg}), do: "unreadable session (#{msg})"
+  defp human_load_error(:eacces), do: "permission denied"
+  defp human_load_error(other), do: inspect(other)
 
   # user prompts from the restored context, oldest first — the recall
   # list ctrl-p walks (newest-first recall, so oldest-first storage).
@@ -569,7 +591,6 @@ defmodule CodingAgent.UI.Tui do
 
   def classify_failure(_), do: {:other, "the session is idle again; retry"}
 
-
   @local_markers [
     "Failed to build streaming request",
     "invalid byte",
@@ -594,7 +615,8 @@ defmodule CodingAgent.UI.Tui do
     "504"
   ]
 
-  defp classify_reason(reason) do    down = String.downcase(reason)
+  defp classify_reason(reason) do
+    down = String.downcase(reason)
 
     cond do
       contains_any?(down, @local_markers) ->
