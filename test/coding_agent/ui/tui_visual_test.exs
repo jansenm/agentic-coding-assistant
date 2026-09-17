@@ -205,7 +205,7 @@ defmodule CodingAgent.UI.TuiVisualTest do
     st = sync(pid)
     {:info, msg} = Enum.find(st.transcript, &match?({:info, _}, &1))
 
-    assert msg =~ "✖ turn failed"
+    assert msg =~ "✖ provider failed"
     # the inspect dump is cut, the human part kept
     assert msg =~ "Stream failed:"
     refute msg =~ "%Finch.TransportError"

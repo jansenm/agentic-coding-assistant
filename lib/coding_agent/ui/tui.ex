@@ -539,6 +539,77 @@ defmodule CodingAgent.UI.Tui do
   defp error_text(reason) when is_atom(reason), do: inspect(reason)
   defp error_text(_), do: "check the provider (ollama up? key set?)"
 
+  # Classify a turn failure so the hint is honest. The categories:
+  #
+  #   :local    — the request never left the machine correctly: a
+  #               build/encoding failure on OUR side (e.g. an invalid
+  #               UTF-8 byte in the context). Naming the provider here is
+  #               actively misleading.
+  #   :provider — the request reached the wire and the provider/transport
+  #               answered badly (connection refused, 401/403, 429, 5xx).
+  #   :other    — anything we cannot place; keep the reason, no claim.
+  #
+  # `reason` arrives wrapped: {:stream_error, %ReqLLM.Error.API.Stream{}},
+  # {:provider_build_failed, %ReqLLM.Error.API.Request{}}, plain structs,
+  # atoms, or tool-loop limits.
+  @doc false
+  # Public for tests only (like the session's other @doc false helpers).
+  def classify_failure({:tool_loop_limit, _}),
+    do: {:other, "raise the tool-round budget and retry"}
+
+  def classify_failure({:stream_error, err}), do: classify_failure(err)
+  def classify_failure({:provider_build_failed, err}), do: classify_failure(err)
+  def classify_failure({:http_streaming_failed, inner}), do: classify_failure(inner)
+
+  def classify_failure(%{reason: reason}) when is_binary(reason), do: classify_reason(reason)
+  def classify_failure(reason) when is_binary(reason), do: classify_reason(reason)
+
+  def classify_failure(%{reason: reason}) when is_atom(reason) and not is_nil(reason),
+    do: classify_failure(to_string(reason))
+
+  def classify_failure(_), do: {:other, "the session is idle again; retry"}
+
+
+  @local_markers [
+    "Failed to build streaming request",
+    "invalid byte",
+    "invalid utf-8",
+    "cannot encode",
+    "Jason.EncodeError"
+  ]
+
+  @provider_markers [
+    "econnrefused",
+    "connection refused",
+    "nxdomain",
+    "name not known",
+    "timeout",
+    "timed out",
+    "401",
+    "403",
+    "429",
+    "500",
+    "502",
+    "503",
+    "504"
+  ]
+
+  defp classify_reason(reason) do    down = String.downcase(reason)
+
+    cond do
+      contains_any?(down, @local_markers) ->
+        {:local, "this is a local request-build failure; retry or start a new session"}
+
+      contains_any?(down, @provider_markers) ->
+        {:provider, "the session is idle again; check the provider and retry"}
+
+      true ->
+        {:other, "the session is idle again; retry"}
+    end
+  end
+
+  defp contains_any?(haystack, needles), do: Enum.any?(needles, &String.contains?(haystack, &1))
+
   # reason strings embed full inspect dumps (%Finch.TransportError{...});
   # keep the human part
   defp shorten(reason) do
@@ -1496,12 +1567,24 @@ defmodule CodingAgent.UI.Tui do
   end
 
   def handle_info({:agent, {:status_changed, :error, reason}}, state) do
-    # a failed turn (e.g. provider down) becomes a visible transcript
-    # line, not a raw logger dump over the alternate screen. Partial
-    # streamed output is flushed first so it is not lost when the error
-    # line lands, then the buffer clears.
+    # A failed turn becomes a visible transcript line, not a raw logger
+    # dump over the alternate screen. Partial streamed output is flushed
+    # first so it is not lost when the error line lands, then the buffer
+    # clears.
+    #
+    # The hint is CLASSIFIED, not blanket: a build/encoding failure is
+    # local (our bug) and says so, while a transport/auth failure names
+    # the provider. The old blanket "check the provider (ollama up?)"
+    # misled a real debugging session — a poisoned context read as
+    # "provider down" and sent the user chasing ollama.
+    {kind, hint} = classify_failure(reason)
+
     msg =
-      "✖ turn failed: #{error_text(reason)} — the session is idle again; check the provider (ollama up? key set?) and retry"
+      case kind do
+        :provider -> "✖ provider failed: #{error_text(reason)} — #{hint}"
+        :local -> "✖ turn failed (not the provider): #{error_text(reason)} — #{hint}"
+        :other -> "✖ turn failed: #{error_text(reason)} — #{hint}"
+      end
 
     transcript = state.transcript ++ persist_stream(state.stream, nil) ++ [{:info, msg}]
 
