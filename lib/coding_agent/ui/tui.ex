@@ -2507,9 +2507,12 @@ defmodule CodingAgent.UI.Tui do
     "#{label} · #{String.slice(model, 0, 20)}"
   end
 
-  # Tab: cycle next_agent through the primary agents (and, at the end,
-  # back to the session default = nil). A running turn keeps its own
-  # agent; only the next input changes, via Session.set_agent/2.
+  # Tab: cycle next_agent through the primary agents, wrapping at both
+  # ends (build -> plan -> build -> …). Never selects the no-agent
+  # default — "(none)" is not a usable target (user feedback: Tab must
+  # not land on it). A session started agent-less still cycles INTO a
+  # primary (nil -> first); a running turn keeps its own agent; only the
+  # next input changes, via Session.set_agent/2.
   defp switch_agent(state) do
     case state.primary_agents do
       [] ->
@@ -2544,13 +2547,15 @@ defmodule CodingAgent.UI.Tui do
     end
   end
 
-  # nil -> first, name -> next, last -> nil (so the default is reachable).
+  # nil -> first; name -> next; last (of the primary list) -> first, so
+  # the agent-less default is never a selectable target (user feedback:
+  # Tab must not land on "(none)").
   defp next_agent_name(names, nil), do: hd(names)
 
   defp next_agent_name(names, current) do
     case Enum.find_index(names, &(&1 == current)) do
       nil -> hd(names)
-      i when i == length(names) - 1 -> nil
+      i when i == length(names) - 1 -> hd(names)
       i -> Enum.at(names, i + 1)
     end
   end

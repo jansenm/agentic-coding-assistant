@@ -45,13 +45,15 @@ defmodule CodingAgent.UI.TuiAgentTest do
     assert state.running_agent == "plan"
   end
 
-  test "Tab cycles back to default after the last primary" do
+  test "Tab cycles back to build after the last primary (never (none))" do
     pid = start_app(agent: "build")
 
+    # plan is the last primary; Tab wraps to the FIRST primary again,
+    # never to the no-agent default.
     TuiAgentTest.press(pid, "tab")
     TuiAgentTest.press(pid, "tab")
 
-    assert sync(pid).next_agent == nil
+    assert sync(pid).next_agent == "build"
   end
 
   test "the switch takes effect in the session (tools change)" do
@@ -139,7 +141,7 @@ defmodule CodingAgent.UI.TuiAgentTest do
       assert state.next_agent == "plan"
     end
 
-    test "Tab from a resumed plan restores the tools (no sticky narrowing)", %{resume_id: id} do
+    test "Tab from a resumed plan switches to build (no sticky narrowing)", %{resume_id: id} do
       pid =
         start_supervised!(
           {Tui,
@@ -152,12 +154,14 @@ defmodule CodingAgent.UI.TuiAgentTest do
            ]}
         )
 
-      # plan is the last primary, so Tab cycles to the no-agent default
+      # plan is the last primary, so Tab wraps to build — the full-tool
+      # agent — proving the switch recomputes from base (no sticky
+      # narrowing), instead of cycling to a no-agent default.
       TuiAgentTest.press(pid, "tab")
       sid = sync(pid).session_id
 
       {:ok, st} = CodingAgent.Core.Session.state(sid)
-      assert st.agent == nil
+      assert st.agent.name == "build"
       assert CodingAgent.Core.Permissions.disabled(st.policy) == []
     end
   end
