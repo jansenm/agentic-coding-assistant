@@ -12,9 +12,12 @@ defmodule CodingAgent.Application do
 
   use Application
 
+  require Logger
+
   @impl true
   def start(_type, _args) do
     publish_keys()
+    check_sandbox()
 
     children = [
       {Registry, keys: :unique, name: CodingAgent.Registry},
@@ -26,6 +29,26 @@ defmodule CodingAgent.Application do
     ]
 
     Supervisor.start_link(children, strategy: :one_for_one, name: CodingAgent.Supervisor)
+  end
+
+  # Startup sandbox check (ADR 015). The configured implementation may be
+  # confining (bwrap) but unusable on this machine — no binary, or
+  # unprivileged user namespaces disabled by host hardening. We do not
+  # abort: the effective implementation falls back to Sandbox.None, and
+  # because `Sandbox.confines?/0` is then false the gate keeps asking for
+  # every shell/git call, i.e. the pre-ADR-015 behaviour. The check is
+  # purely so the condition is not silent.
+  defp check_sandbox do
+    case CodingAgent.Core.Sandbox.diagnose() do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "sandbox: confinement requested but unavailable — running unconfined " <>
+            "(shell/git will ask for approval). Reason: #{reason}"
+        )
+    end
   end
 
   # Push auth.toml credentials into req_llm's app env so req_llm's own

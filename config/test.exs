@@ -14,3 +14,8 @@ config :logger, level: :warning
 # starts more than one TUI. Tests inject events directly, so the handoff
 # is pure dead time here.
 config :ex_ratatui, detach_local_input: false
+
+# Tests must not depend on the host: the shipped default is bwrap (ADR
+# 015), but a test run must behave identically on a machine without it.
+# Tests that exercise confinement set the implementation explicitly.
+config :coding_agent, sandbox: CodingAgent.Core.Sandbox.None

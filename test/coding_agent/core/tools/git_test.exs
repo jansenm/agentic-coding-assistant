@@ -15,7 +15,7 @@ defmodule CodingAgent.Core.Tools.GitTest do
   setup do
     File.rm_rf!(@tmp_root)
     File.mkdir_p!(@tmp_root)
-    on_exit(fn -> Application.delete_env(:coding_agent, :sandbox) end)
+    Application.put_env(:coding_agent, :sandbox, CodingAgent.Core.Sandbox.None)
     {:ok, root: @tmp_root}
   end
 

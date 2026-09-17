@@ -262,7 +262,9 @@ A behaviour with swappable implementations, selected like
    defmodule CodingAgent.Core.Sandbox do
      @callback id() :: atom()
      @callback available?() :: boolean()
-     @callback wrap(command :: String.t(), profile :: profile()) ::
+     @callback confines?() :: boolean()
+     @callback check() :: :ok | {:error, reason}   # optional
+     @callback wrap(spec(), profile()) ::
                  {:ok, executable :: String.t(), argv :: [String.t()]} | {:error, term()}
    end
 
@@ -271,9 +273,30 @@ A behaviour with swappable implementations, selected like
   today's behaviour exactly. This makes macOS, Windows, CI without
   userns, and hardened hosts a **no-op fallback**, not a special case.
 
-The Shell tool change is then a single call site at the ``Port.open``
-construction; ``wrap/2`` is pure and unit-testable, ``available?/0`` is
-stubbable.
+``confines?/0`` is distinct from "a sandbox is configured": it is the
+gate's question (``None.confines?`` is false). ``configured/0`` returns
+what was asked for, ``impl/0`` what will actually run — a confining
+implementation that is unavailable resolves to ``None``.
+
+**Bwrap is the shipped default.** ``config/config.exs`` sets
+``sandbox: Sandbox.Bwrap``; tests pin ``Sandbox.None`` so a run behaves
+identically on a machine without bwrap. Where a confining sandbox is
+requested but cannot run, ``Application.start/2`` logs one warning with
+the reason (missing binary, disabled unprivileged user namespaces) and
+continues on the fallback: ``confines?/0`` is false, so shell/git keep
+asking — the pre-ADR-015 behaviour. The check is a *functional probe*
+(``Bwrap.check/0`` launches a trivial bwrap command from the BEAM), not a
+version string, because bwrap < 0.11.1 has the SIGCHLD bug that only
+manifests when the parent ignores SIGCHLD — which the Erlang VM does.
+
+The command is a **spec**: ``{:shell, command}`` or
+``{:exec, file, args}``. The ``git`` tool uses the exec form, so its
+argument list is handed to git as argv and is **never re-parsed by a
+shell** — otherwise ``["log", "; touch marker"]`` would inject. Inside
+bwrap the exec form runs as ``sh -c 'ulimit …; exec "$@"' sh git <args>``;
+the shell exists only to apply the rlimits, and ``exec`` replaces it
+without re-parsing. The port loop (spawn, deadline, kill, truncate) lives
+once in ``Core.Exec``, the single ``Sandbox.wrap`` call site.
 
 ### Gate rule
 

@@ -4,32 +4,11 @@ defmodule CodingAgent.Core.Sandbox.GateTest do
   import ExUnit.CaptureLog
 
   alias CodingAgent.Core.Permissions
-  alias CodingAgent.Core.Sandbox
   alias CodingAgent.Core.Session
+  alias CodingAgent.TestSandbox.Stub
 
   @tmp_root System.tmp_dir!()
             |> Path.join("agent-sandbox-gate-#{System.unique_integer([:positive])}")
-
-  # A confining sandbox that still runs (wraps as /bin/sh) so the gate's
-  # auto-run path can be exercised without a real bwrap. This is what
-  # `Sandbox.Bwrap` looks like to the gate, minus the confinement.
-  defmodule ConfiningShim do
-    @behaviour Sandbox
-
-    @impl true
-    def id, do: :confining_shim
-
-    @impl true
-    def available?, do: true
-
-    @impl true
-    def confines?, do: true
-
-    @impl true
-    def wrap({:shell, command}, _profile), do: {:ok, "/bin/sh", ["-c", command]}
-
-    def wrap({:exec, file, args}, _profile), do: {:ok, file, args}
-  end
 
   setup_all do
     File.mkdir_p!(@tmp_root)
@@ -40,8 +19,7 @@ defmodule CodingAgent.Core.Sandbox.GateTest do
   setup do
     File.rm_rf!(@tmp_root)
     File.mkdir_p!(@tmp_root)
-    Application.delete_env(:coding_agent, :sandbox)
-    on_exit(fn -> Application.delete_env(:coding_agent, :sandbox) end)
+    Application.put_env(:coding_agent, :sandbox, CodingAgent.Core.Sandbox.None)
     :ok
   end
 
@@ -70,7 +48,7 @@ defmodule CodingAgent.Core.Sandbox.GateTest do
 
   describe "with confinement" do
     setup do
-      Application.put_env(:coding_agent, :sandbox, ConfiningShim)
+      Application.put_env(:coding_agent, :sandbox, Stub)
       :ok
     end
 

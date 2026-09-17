@@ -23,6 +23,17 @@ config :coding_agent,
   # override, so heavyweight tasks can turn it up.
   max_tool_rounds: 100
 
+# Process confinement (ADR 015). Bwrap is the intended default on Linux:
+# shell/git run inside a bubblewrap profile and are allow-by-default,
+# with only network and git-write escalations prompting. Where bwrap
+# cannot run (no binary, or unprivileged user namespaces disabled by host
+# hardening) the app logs a warning at startup and falls back to
+# Sandbox.None — unconfined, so the gate asks for every shell/git call,
+# exactly the pre-ADR-015 behaviour. Set `sandbox: CodingAgent.Core.Sandbox.None`
+# here (or via application env) to disable confinement deliberately; the
+# tests do exactly that.
+config :coding_agent, sandbox: CodingAgent.Core.Sandbox.Bwrap
+
 # Credentials are NOT configured here: secrets come from the environment
 # (ADR 008), and Request resolves them per provider as `<NAME>_API_KEY`
 # via UserConfig.credential/1, then auth.toml. Do not add an

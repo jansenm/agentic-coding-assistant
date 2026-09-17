@@ -57,38 +57,48 @@ defmodule CodingAgent.Core.Sandbox.Bwrap do
   """
   @spec probe() :: boolean()
   def probe do
-    case :persistent_term.get({__MODULE__, :probe}, :unset) do
+    match?(:ok, check())
+  end
+
+  @doc """
+  The functional probe with a **reason**: `:ok`, or `{:error, reason}` where
+  reason is a human-readable sentence for the startup log. Memoised.
+  """
+  @impl true
+  @spec check() :: :ok | {:error, String.t()}
+  def check do
+    case :persistent_term.get({__MODULE__, :check}, :unset) do
       :unset ->
-        result = do_probe()
-        :persistent_term.put({__MODULE__, :probe}, result)
+        result = do_check()
+        :persistent_term.put({__MODULE__, :check}, result)
         result
 
-      result when is_boolean(result) ->
+      result ->
         result
     end
   end
 
-  defp do_probe do
-    argv = [
-      "--ro-bind",
-      "/",
-      "/",
-      "--dev",
-      "/dev",
-      "--proc",
-      "/proc",
-      "--unshare-all",
-      "--die-with-parent",
-      "/bin/sh",
-      "-c",
-      "exit 0"
-    ]
-
+  defp do_check do
     case System.find_executable(@bwrap) do
       nil ->
-        false
+        {:error, "bubblewrap (bwrap) was not found on PATH"}
 
       exe ->
+        argv = [
+          "--ro-bind",
+          "/",
+          "/",
+          "--dev",
+          "/dev",
+          "--proc",
+          "/proc",
+          "--unshare-all",
+          "--die-with-parent",
+          "/bin/sh",
+          "-c",
+          "exit 0"
+        ]
+
         port =
           Port.open({:spawn_executable, exe}, [
             :binary,
@@ -98,21 +108,63 @@ defmodule CodingAgent.Core.Sandbox.Bwrap do
             {:args, argv}
           ])
 
-        await_probe(port, System.monotonic_time(:millisecond) + 5_000)
+        await_check(port, System.monotonic_time(:millisecond) + 5_000)
     end
   rescue
-    _ -> false
+    e -> {:error, "bwrap probe failed: #{Exception.message(e)}"}
   end
 
-  defp await_probe(port, deadline) do
+  defp await_check(port, deadline) do
     receive do
-      {^port, {:data, _}} -> await_probe(port, deadline)
-      {^port, {:exit_status, 0}} -> true
-      {^port, {:exit_status, _}} -> false
-      {^port, :closed} -> false
+      {^port, {:data, data}} -> await_check(port, deadline, data)
+      {^port, {:exit_status, 0}} -> :ok
+      {^port, {:exit_status, code}} -> {:error, "bwrap exited #{code}: bwrap probe setup"}
+      {^port, :closed} -> {:error, "bwrap exited without a status: bwrap probe setup"}
     after
       max(deadline - System.monotonic_time(:millisecond), 0) ->
-        false
+        {:error, "bwrap probe timed out after 5s"}
+    end
+  end
+
+  defp await_check(port, deadline, acc) do
+    receive do
+      {^port, {:data, data}} ->
+        await_check(port, deadline, acc <> data)
+
+      {^port, {:exit_status, 0}} ->
+        :ok
+
+      {^port, {:exit_status, code}} ->
+        {:error, "bwrap exited #{code}: #{probe_detail(acc)}"}
+
+      {^port, :closed} ->
+        {:error, "bwrap exited without a status: #{probe_detail(acc)}"}
+    after
+      max(deadline - System.monotonic_time(:millisecond), 0) ->
+        {:error, "bwrap probe timed out after 5s"}
+    end
+  end
+
+  # Turn bwrap's stderr into a hint a user can act on. The common case on
+  # hardened hosts is a disabled unprivileged user namespace.
+  defp probe_detail(output) do
+    output = output |> to_string() |> String.trim()
+
+    cond do
+      output == "" ->
+        "no output (see `bwrap --version`)"
+
+      String.contains?(output, [
+        "Operation not permitted",
+        "permission denied",
+        "Permission denied"
+      ]) ->
+        output <>
+          " — unprivileged user namespaces are likely disabled " <>
+          "(sysctl user.max_user_namespaces=0 on hardened hosts)"
+
+      true ->
+        output
     end
   end
 
