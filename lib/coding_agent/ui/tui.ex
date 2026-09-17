@@ -2274,10 +2274,18 @@ defmodule CodingAgent.UI.Tui do
             {acc ++ [{:user, t, agent}], turn + 1, agent}
 
           {:assistant, t} ->
-            {acc ++ [{:assistant, t, last}], turn, last}
+            # attribute to the CURRENT turn's agent; when the turn_agents
+            # seed hasn't been extended locally yet (a fresh session, or an
+            # agent-less one where the local send never recorded a name),
+            # fall back to the live turn's agent from {:turn_started, ...}
+            # so the assistant box footer shows the real agent, not the
+            # neutral "agent" label.
+            agent = last || Map.get(state, :active_agent)
+            {acc ++ [{:assistant, t, agent}], turn, last}
 
           {:info, t} when is_binary(t) ->
-            {acc ++ [{:info, t, last}], turn, last}
+            agent = last || Map.get(state, :active_agent)
+            {acc ++ [{:info, t, agent}], turn, last}
 
           {kind, _} when kind in [:reasoning, :tool] ->
             # persisted reasoning is trimmed too (the window math must
@@ -2295,6 +2303,10 @@ defmodule CodingAgent.UI.Tui do
         end
       end)
 
+    # The live (streaming) entries carry the CURRENT turn's agent: the
+    # last recorded turn agent when there is one, else the active_agent
+    # (from {:turn_started, ...}) — the same fallback the transcript
+    # path uses, so a streamed answer and its persisted form agree.
     live_agent =
       case List.last(agents) do
         a when a != nil -> a

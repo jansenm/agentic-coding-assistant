@@ -102,6 +102,19 @@ defmodule CodingAgent.UI.TuiVisualTest do
     refute Enum.any?(st.transcript, &match?({:reasoning, _}, &1))
   end
 
+  test "assistant box footer shows the turn's agent name, not the neutral label", %{pid: pid} do
+    # A fresh session's turn_agents is empty until the local send path
+    # records a name; the box footer must still show the agent the session
+    # resolved for this turn ({:turn_started, ...}), not fall back to the
+    # neutral "agent" label.
+    agent(pid, {:turn_started, "build"})
+    agent(pid, {:llm_message, "the answer"})
+
+    buffer = Enum.join(buffer(pid), "\n")
+    assert buffer =~ "build"
+    refute buffer =~ "agent╯"
+  end
+
   test "assistant entries breathe: blank line after headings", %{pid: pid} do
     agent(pid, {:llm_message, "# Title\nbody line"})
 
