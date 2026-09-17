@@ -116,6 +116,13 @@ every pending call and resumes only when every call has a decision.
    for shell may come later as its own ADR with a tested parser — not
    a regex string-match we would pretend is meaningful.
 
+   **Superseded by ADR 015** (2026-09-17). The allow-list insight
+   stands; the "every shell call is ``ask``" consequence does not.
+   ADR 015 bounds the process with OS-level confinement instead, so
+   ``shell`` is allow-by-default inside the profile and only genuine
+   escalations (network, ``.git`` write) remain ``:ask``. Retained here
+   for the record.
+
 **6. Approval surface in 2b is a stub.** ``mix agent`` prints the
 pending call and reads a line (``y`` / ``e`` / ``n``); edit prompts for
 new arguments. The real TUI approval flow is phase 4. The contract
