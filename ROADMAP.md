@@ -8,13 +8,15 @@ SPDX-License-Identifier: MPL-2.0
 An agentic coding assistant for Elixir/BEAM — trustworthy, lightweight,
 compilable from source, terminal-first.
 
-Status: **phase 5 in progress** — phases 1-2 (core loop, tool subsystem)
-and 4 (sessions & memory) are done; the dogfood milestone is
-conditionally met, and the terminal experience (5a-5c, 5f-5h) has
-shipped its core. The Mix app `coding_agent` is live
-(single app, supervision tree, req_llm wired): streaming agent loop,
-multi-turn chat, scoped file tools, permission gate (HITL). The
-architecture and technology decisions are recorded as ADRs in
+Status: **phase 6 in progress** — phases 1-2 (core loop, tool subsystem)
+and 4 (sessions & memory) are done; phase 5 (terminal experience) shipped
+5a-5c, 5f-5h, and the phase-6 agent work has started (definitions +
+build/plan, ADR 017-019). The dogfood milestone was met and ADR 015 shell
+confinement shipped — shell/git run allow-by-default inside the
+bubblewrap profile, with network/git-write escalations prompting. The Mix
+app `coding_agent` is live (single app, supervision tree, req_llm wired):
+streaming agent loop, multi-turn chat, scoped file tools, permission gate
+(HITL). The architecture and technology decisions are recorded as ADRs in
 [docs/source/decisions/](docs/source/decisions/index.rst);
 the readable stack overview lives in
 [docs/source/explanation/stack.rst](docs/source/explanation/stack.rst).
@@ -247,6 +249,29 @@ since shipped anyway, ADR 013 — dogfood showed doc work needed it.)
 6. **Multi-agent** — agent definitions as data, orchestration roles
    (plan/execute/analyze), the specialist/repository matrix (ADR 007).
    Cross-repo change atomicity gets its own ADR first.
+
+   Slices:
+
+   - **6a. Agent definitions + build/plan** ✅ — Markdown + YAML
+     frontmatter (the agents standard, opencode/Claude-Code compatible),
+     layered shipped < user < project, fail-closed with error
+     aggregation (ADR 017). Authority is ADR 010 layer 4, finally
+     populated: the definition's `permission` merges most-restrictive-wins
+     and its tool set narrows by intersection, so a definition can never
+     grant. `build` (full) and `plan` (edit/write/shell/git removed) ship
+     as data. `yamerl` adopted directly (ADR 019, one dependency; the
+     dangerous erlang_fun/atom node modules stay unregistered). UI (ADR
+     018): sidebar shows two slots — `running` and `next` — with models;
+     **Tab** switches the primary via `Session.set_agent/2`, recomputed
+     from the session's base values so switching never compounds.
+   - **6b. Subagent seam (`task` tool)** — the next slice: a child
+     session with an isolated context, returning only a summary (ADR 007
+     rule 3), depth 1 (subagents spawn no children), and per-subagent
+     tabs in the UI (ADR 018). Escalations are part of the definition,
+     never requested at runtime by a subagent (which has no human
+     channel).
+   - **6c. Matrix / orchestration** — vertical and horizontal
+     specialists, cross-repo atomicity (needs its own ADR).
 7. **Extensibility** — skills as per-specialist knowledge packages;
    ACP/MCP client so external tools arrive through the permission
    system like any other tool.
@@ -339,6 +364,7 @@ TUI wish-list (user's own list, keyboard-first, from the live sessions):
 | `websearch` | one day | search-API dependency; low value for a coding agent |
 | `lsp` | unlikely | language-server surface is huge; compile/test loop covers most agent needs |
 | `skill` | ADR 007 territory | frontmatter loading documented in configuration-landscape; execution later |
+| `task` (subagent) | slice 6b | defined in ADR 017/018: isolated child context, summary-only return, depth 1, per-subagent UI tabs. Not built yet |
 | `todowrite` | one day | session scratchpad, pure state, cheap — after dogfood |
 | background shell runs | one day | the real escape hatch for very long jobs: tool returns "started, job id", agent polls / gets notified, user keeps working; needs session+TUI machinery (phases 3-4) — v1 answer is generous `timeout_secs` |
 | mid-tool hard cancel | one day | `Core.Interrupt` stops a running turn between tools/at loop boundaries, but a single long `shell` still runs to its timeout (up to 1800 s). Needs `Shell` to expose a registered port-kill handle (same `Interrupt.register/2` seam) so esc kills the in-flight command |
