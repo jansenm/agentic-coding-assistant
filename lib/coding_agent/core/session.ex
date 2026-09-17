@@ -229,6 +229,11 @@ defmodule CodingAgent.Core.Session do
     # Resume support (4a): a caller may pass a persisted :context (and
     # then model/policy come from the snapshot too); otherwise a fresh
     # context with the framework system prompt is created.
+    #
+    # A restored context is sanitized on the way in: a session persisted
+    # by a build before the `scrub/1` guard can carry an invalid UTF-8
+    # byte in a tool result, which would make every request fail to
+    # encode ("provider down"). Healing here also persists the fix.
     context =
       case Keyword.get(opts, :context) do
         nil ->
@@ -236,7 +241,7 @@ defmodule CodingAgent.Core.Session do
           |> Context.append(ReqLLM.Context.system(system_prompt))
 
         %Context{} = restored ->
-          restored
+          sanitize_context(restored)
       end
 
     {:ok,
@@ -1030,14 +1035,80 @@ defmodule CodingAgent.Core.Session do
     %{root: root, mounts: state.mounts || %{rw: [], ro: [], hide: []}}
   end
 
-  defp to_text(output) when is_binary(output), do: output
-  defp to_text(output), do: inspect(output, pretty: true, limit: 100)
+  defp to_text(output) when is_binary(output), do: scrub(output)
+  defp to_text(output), do: inspect(output, pretty: true, limit: 100) |> scrub()
+
+  # Tool output is arbitrary bytes: a shell command reading a binary file
+  # (`cat`, `head`, a `.session` term dump) yields invalid UTF-8. One such
+  # byte in the context makes EVERY later request fail to JSON-encode —
+  # "invalid byte 0x83" — which the UI then reports as "provider down".
+  # That is a poisoned context, not a provider problem, and it is
+  # permanent unless the byte is replaced. `String.replace_invalid/1`
+  # swaps each invalid byte for U+FFFD, preserving the readable parts.
+  #
+  # This is the PREVENT side; `sanitize_context/1` is the HEAL side,
+  # for sessions persisted before this guard existed.
+  defp scrub(text) when is_binary(text) do
+    if String.valid?(text), do: text, else: String.replace_invalid(text)
+  end
+
+  # HEAL side of the poisoned-context guard: sessions persisted before
+  # `scrub/1` existed (or written by an older build) can carry an invalid
+  # byte in a tool result, which makes every request fail to encode. We
+  # sanitize the context on the way OUT to the provider, so an already
+  # broken session recovers on its next turn without hand-editing the
+  # stored file. The stored context is also rewritten in place when a
+  # difference is found, so the fix persists.
+  defp sanitize_context(%Context{} = context) do
+    messages = Context.to_list(context)
+
+    case Enum.any?(messages, &message_invalid?/1) do
+      false ->
+        context
+
+      true ->
+        Context.new(Enum.map(messages, &sanitize_message/1))
+    end
+  end
+
+  defp message_invalid?(%ReqLLM.Message{content: content}), do: content_invalid?(content)
+
+  defp content_invalid?(content) when is_binary(content), do: not String.valid?(content)
+
+  defp content_invalid?(content) when is_list(content) do
+    Enum.any?(content, fn
+      %ReqLLM.Message.ContentPart{text: t} when is_binary(t) -> not String.valid?(t)
+      _ -> false
+    end)
+  end
+
+  defp content_invalid?(_), do: false
+
+  defp sanitize_message(%ReqLLM.Message{content: content} = msg) when is_binary(content) do
+    %{msg | content: scrub(content)}
+  end
+
+  defp sanitize_message(%ReqLLM.Message{content: content} = msg) when is_list(content) do
+    parts =
+      Enum.map(content, fn
+        %ReqLLM.Message.ContentPart{text: t} = part when is_binary(t) ->
+          %{part | text: scrub(t)}
+
+        other ->
+          other
+      end)
+
+    %{msg | content: parts}
+  end
+
+  defp sanitize_message(msg), do: msg
 
   defp call_llm(state) do
     with {:ok, model_input, base_opts} <- Request.build(state.model, state.provider_config) do
       opts = Keyword.put(base_opts, :tools, current_tools(state))
 
-      with {:ok, stream_response} <- ReqLLM.stream_text(model_input, state.context, opts) do
+      with {:ok, stream_response} <-
+             ReqLLM.stream_text(model_input, sanitize_context(state.context), opts) do
         events = ReqLLM.StreamResponse.events(stream_response)
 
         # Hand the active stream's hard-cancel to the interrupt
