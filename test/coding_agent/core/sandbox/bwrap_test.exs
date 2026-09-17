@@ -1,0 +1,177 @@
+defmodule CodingAgent.Core.Sandbox.BwrapTest do
+  use ExUnit.Case, async: false
+
+  alias CodingAgent.Core.Sandbox.Bwrap
+  alias CodingAgent.Core.Tools.Shell
+
+  @tmp_root System.tmp_dir!() |> Path.join("agent-bwrap-#{System.unique_integer([:positive])}")
+
+  setup_all do
+    File.mkdir_p!(@tmp_root)
+    on_exit(fn -> File.rm_rf!(@tmp_root) end)
+    :ok
+  end
+
+  setup do
+    File.rm_rf!(@tmp_root)
+    File.mkdir_p!(@tmp_root)
+    on_exit(fn -> Application.delete_env(:coding_agent, :sandbox) end)
+    {:ok, root: @tmp_root}
+  end
+
+  describe "argv/3 (pure)" do
+    test "always mounts the root read-only first", %{root: root} do
+      argv = Bwrap.argv(root, "echo hi", %{root: root})
+
+      assert Enum.take(argv, 3) == ["--ro-bind", "/", "/"]
+      assert triple_in(argv, {"--bind", root, root})
+    end
+
+    test "unshares all namespaces and keeps the network off by default", %{root: root} do
+      argv = Bwrap.argv(root, "echo hi", %{root: root})
+
+      assert "--unshare-all" in argv
+      refute "--share-net" in argv
+    end
+
+    test "grants the network only when the profile says so", %{root: root} do
+      argv = Bwrap.argv(root, "echo hi", %{root: root, network: true})
+
+      assert "--share-net" in argv
+    end
+
+    test "re-binds an existing .git read-only for plain shell", %{root: root} do
+      init_git!(root)
+      argv = Bwrap.argv(root, "echo hi", %{root: root})
+      git = Path.join(root, ".git")
+
+      assert triple_in(argv, {"--ro-bind", git, git})
+    end
+
+    test "leaves .git writable when git_write is granted", %{root: root} do
+      init_git!(root)
+      argv = Bwrap.argv(root, "echo hi", %{root: root, git_write: true})
+      git = Path.join(root, ".git")
+
+      refute triple_in(argv, {"--ro-bind", git, git})
+    end
+
+    test "hides a directory with an empty tmpfs and a file with /dev/null", %{root: root} do
+      dir = Path.join(root, "secret-dir")
+      file = Path.join(root, "secret-file")
+      File.mkdir_p!(dir)
+      File.write!(file, "secret")
+
+      argv = Bwrap.argv(root, "echo hi", %{root: root, hide: [dir, file]})
+
+      assert triple_in(argv, {"--tmpfs", dir})
+      assert triple_in(argv, {"--ro-bind", "/dev/null", file})
+    end
+
+    test "sets resource caps in the shell prelude", %{root: root} do
+      argv = Bwrap.argv(root, "echo hi", %{root: root})
+      command = List.last(argv)
+
+      assert command =~ "ulimit -u 512"
+      assert command =~ "ulimit -f 4194304"
+      assert command =~ "ulimit -t 1800"
+      assert command =~ "echo hi"
+    end
+
+    test "refuses a missing scope root" do
+      missing = Path.join(@tmp_root, "does-not-exist")
+
+      assert {:error, {:no_scope_root, _}} = Bwrap.wrap("echo hi", %{root: missing})
+    end
+  end
+
+  describe "availability" do
+    test "id is :bwrap" do
+      assert Bwrap.id() == :bwrap
+    end
+
+    test "probe is a boolean and is memoised" do
+      first = Bwrap.probe()
+      assert is_boolean(first)
+      assert Bwrap.probe() == first
+    end
+  end
+
+  describe "integration (real bwrap)" do
+    setup do
+      if Bwrap.available?() do
+        :ok
+      else
+        # Missing binary or no unprivileged userns (hardened host): this is
+        # the Sandbox.None fallback path, not a failure. Skip.
+        {:ok, skip: true}
+      end
+    end
+
+    test "runs a command confined and sees the scope root", %{root: root} = ctx do
+      if ctx[:skip] do
+        :ok
+      else
+        Application.put_env(:coding_agent, :sandbox, Bwrap)
+        tool = Shell.tool(%{root: root})
+
+        assert {:ok, out} = ReqLLM.Tool.execute(tool, %{"command" => "pwd"})
+        assert out =~ root
+      end
+    end
+
+    test "writes reach the real tree, commits do not", %{root: root} = ctx do
+      if ctx[:skip] do
+        :ok
+      else
+        init_git!(root)
+        File.write!(Path.join(root, "app.txt"), "v1\n")
+        git!(root, ~w(add app.txt))
+        git!(root, ~w(commit -m init))
+
+        Application.put_env(:coding_agent, :sandbox, Bwrap)
+        tool = Shell.tool(%{root: root})
+
+        assert {:ok, out} =
+                 ReqLLM.Tool.execute(tool, %{
+                   "command" => "echo v2 > app.txt && git commit -am x 2>&1 | tail -1"
+                 })
+
+        assert out =~ "Read-only file system"
+        assert File.read!(Path.join(root, "app.txt")) == "v2\n"
+      end
+    end
+
+    test "root and .git cannot be deleted", %{root: root} = ctx do
+      if ctx[:skip] do
+        :ok
+      else
+        init_git!(root)
+        Application.put_env(:coding_agent, :sandbox, Bwrap)
+        tool = Shell.tool(%{root: root})
+
+        assert {:ok, _out} = ReqLLM.Tool.execute(tool, %{"command" => "rm -rf .git"})
+        assert File.dir?(Path.join(root, ".git"))
+      end
+    end
+  end
+
+  defp triple_in(argv, triple), do: sublist?(argv, Tuple.to_list(triple))
+
+  defp sublist?(_list, []), do: true
+  defp sublist?([], _), do: false
+
+  defp sublist?([h | t], [h | t2]), do: sublist?(t, t2)
+
+  defp sublist?([_ | t], needle), do: sublist?(t, needle)
+
+  defp init_git!(root) do
+    git!(root, ~w(init -q -b main))
+    git!(root, ~w(config user.email test@example.com))
+    git!(root, ~w(config user.name test))
+  end
+
+  defp git!(root, args) do
+    {_, 0} = System.cmd("git", args, cd: root, stderr_to_stdout: true)
+  end
+end
