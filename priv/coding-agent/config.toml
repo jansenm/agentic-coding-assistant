@@ -39,3 +39,32 @@ discover = "openai"
 # provider = "openai"
 # base_url = "http://localhost:4000/v1"
 # discover = "openai"
+
+# Sandbox mount schema (ADR 015). Applies only when a confining sandbox
+# is active (Linux with bubblewrap); with no sandbox these are ignored.
+#
+#   rw   = [...]   bind read-write, shared with the host
+#   ro   = [...]   bind read-only
+#   hide = [...]   a dir becomes an empty tmpfs, a file becomes /dev/null
+#
+# `rw` ADDS reach, so it is honoured only from this shipped file and your
+# own ~/.config/coding-agent/config.toml — never from a project's
+# .coding-agent/config.toml (a checked-out repo must not widen its own
+# sandbox). `ro`/`hide` may come from any layer because they only tighten.
+#
+# Toolchain caches are shared read-write by default so builds do not
+# re-download in every session; add your own paths as needed.
+
+[sandbox]
+rw = [
+  "~/.cache",
+  "~/.hex",
+  "~/.mix",
+  "~/.m2",
+  "~/.gradle",
+  "~/.cargo",
+  "~/.npm",
+  "~/.config/git",
+]
+ro = []
+hide = []

@@ -225,6 +225,10 @@ defmodule CodingAgent.Core.Session do
        # with :bad_entry and the model menu showed only the current
        # model.
        provider_config: UserConfig.load(scope_root).config["providers"] || %{},
+       # Sandbox mount schema (ADR 015): rw/ro/hide from the config
+       # layers. `rw` may only come from shipped + global, so a repo
+       # cannot widen its own sandbox.
+       mounts: CodingAgent.Core.Sandbox.Mounts.resolve(UserConfig.layers(scope_root, "config")),
        # resumed state carried forward: usage drives the compaction
        # trigger (see above), warned/backoff avoid re-warning and
        # re-retrying a summarize that already failed before the restart
@@ -875,7 +879,7 @@ defmodule CodingAgent.Core.Session do
 
   defp tool_scope(state) do
     root = state.scope_root || File.cwd!()
-    %{root: root}
+    %{root: root, mounts: state.mounts || %{rw: [], ro: [], hide: []}}
   end
 
   defp to_text(output) when is_binary(output), do: output

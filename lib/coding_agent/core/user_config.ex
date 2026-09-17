@@ -103,6 +103,22 @@ defmodule CodingAgent.Core.UserConfig do
   def model(%__MODULE__{config: c}),
     do: Map.get(c, "model") || Application.get_env(:coding_agent, :model)
 
+  @doc """
+  The three layers of one config file *separately*, weakest first:
+  `[shipped, global, project]`. Unlike `load/1` these are not merged —
+  the sandbox mount schema needs them apart, because `rw` may only come
+  from the shipped defaults and the user layer, never from a repo config
+  (ADR 015 non-elevation). A missing file yields `%{}`.
+  """
+  @spec layers(String.t() | nil, String.t()) :: [map()]
+  def layers(scope_root, name) do
+    [
+      read_toml(shipped_path(name)),
+      read_toml(global_path(name)),
+      read_toml(project_path(scope_root, name))
+    ]
+  end
+
   # layer 0: shipped defaults, versioned with the app
   defp shipped_path(name),
     do: Path.join([Application.app_dir(:coding_agent), "priv", "coding-agent", "#{name}.toml"])

@@ -89,6 +89,41 @@ defmodule CodingAgent.Core.Tools.ShellTest do
     test "soft cap export matches the default" do
       assert Shell.soft_cap() == 300
     end
+
+    test "escalations/1 reads the coarse booleans the agent states" do
+      assert Shell.escalations(%{}) == []
+      assert Shell.escalations(%{"network" => true}) == [:network]
+      assert Shell.escalations(%{"git_write" => true}) == [:git_write]
+      assert Shell.escalations(%{network: true, git_write: true}) == [:network, :git_write]
+      assert Shell.escalations(%{"network" => false}) == []
+      assert Shell.escalations("nope") == []
+    end
+
+    test "escalated?/1" do
+      refute Shell.escalated?(%{"command" => "echo hi"})
+      assert Shell.escalated?(%{"command" => "curl x", "network" => true})
+    end
+
+    test "profile/2 carries the scope mounts and the escalations" do
+      scope = %{root: @tmp_root, mounts: %{rw: ["/rw"], ro: ["/ro"], hide: ["/hide"]}}
+
+      profile = Shell.profile(scope, %{"network" => true})
+
+      assert profile.root == @tmp_root
+      assert profile.network == true
+      assert profile.git_write == false
+      assert profile.rw == ["/rw"]
+      assert profile.ro == ["/ro"]
+      assert profile.hide == ["/hide"]
+    end
+
+    test "profile/2 tolerates a bare root and no mounts" do
+      profile = Shell.profile(%{root: @tmp_root}, %{})
+
+      assert profile.rw == []
+      assert profile.ro == []
+      assert profile.hide == []
+    end
   end
 
   describe "gate integration (ADR 010, LLM-free)" do

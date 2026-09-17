@@ -14,6 +14,10 @@ defmodule CodingAgent.Core.Session.State do
     :scope_root,
     :policy,
     provider_config: %{},
+    # Sandbox mount schema (ADR 015): %{rw: [...], ro: [...], hide: [...]}.
+    # Read from UserConfig layers at start (rw only from shipped+global,
+    # never the project layer). Empty means "no extra mounts".
+    mounts: %{rw: [], ro: [], hide: []},
     pending_tool_calls: [],
     # The current round's tool exchange is appended ATOMICALLY: while any
     # call of the round waits at the gate, nothing goes on the wire yet.
@@ -52,6 +56,7 @@ defmodule CodingAgent.Core.Session.State do
           scope_root: String.t() | nil,
           policy: CodingAgent.Core.Permissions.t() | nil,
           provider_config: %{String.t() => term()} | nil,
+          mounts: CodingAgent.Core.Sandbox.Mounts.t(),
           pending_tool_calls: [map()],
           pending_round_calls: [map()],
           pending_round_results: [map()],

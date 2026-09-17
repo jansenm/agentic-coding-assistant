@@ -128,18 +128,30 @@ defmodule CodingAgent.Core.Tools.Shell do
   def escalated?(args), do: escalations(args) != []
 
   @doc """
-  Builds the sandbox profile for a call from the scope root and the
+  Builds the sandbox profile for a call from the scope and the
   escalations the agent requested. Public so the gate and tests share one
-  source of truth.
+  source of truth. `scope` may carry the mount schema (`:mounts`); absent
+  or nil mounts add nothing.
   """
-  @spec profile(String.t(), term()) :: CodingAgent.Core.Sandbox.profile()
-  def profile(root, args) do
+  @spec profile(map() | String.t(), term()) :: CodingAgent.Core.Sandbox.profile()
+  def profile(scope, args) do
+    {root, mounts} =
+      case scope do
+        %{root: root} = s -> {root, Map.get(s, :mounts) || empty_mounts()}
+        root when is_binary(root) -> {root, empty_mounts()}
+      end
+
     %{
       root: root,
       network: truthy?(Map.get(args, :network) || Map.get(args, "network")),
-      git_write: truthy?(Map.get(args, :git_write) || Map.get(args, "git_write"))
+      git_write: truthy?(Map.get(args, :git_write) || Map.get(args, "git_write")),
+      rw: Map.get(mounts, :rw, []),
+      ro: Map.get(mounts, :ro, []),
+      hide: Map.get(mounts, :hide, [])
     }
   end
+
+  defp empty_mounts, do: %{rw: [], ro: [], hide: []}
 
   defp truthy?(true), do: true
   defp truthy?("true"), do: true
@@ -157,7 +169,7 @@ defmodule CodingAgent.Core.Tools.Shell do
 
       true ->
         with {:ok, secs} <- effective_timeout(args) do
-          run(command, Path.expand(scope.root), secs, args)
+          run(scope, command, Path.expand(scope.root), secs, args)
         end
     end
   end
@@ -221,10 +233,10 @@ defmodule CodingAgent.Core.Tools.Shell do
 
   defp leading_program(_), do: :error
 
-  defp run(command, cwd, secs, args) do
+  defp run(scope, command, cwd, secs, args) do
     started = System.monotonic_time(:millisecond)
 
-    case exec(command, cwd, secs, args) do
+    case exec(scope, command, cwd, secs, args) do
       {:ok, output, status} ->
         elapsed = System.monotonic_time(:millisecond) - started
         {:ok, format(command, output, {:exit, status}, elapsed, secs)}
@@ -252,8 +264,8 @@ defmodule CodingAgent.Core.Tools.Shell do
   # exactly as before; with `Sandbox.Bwrap` it is bwrap wrapping the
   # command. `{:cd, cwd}` still applies to whatever process we spawn;
   # a sandbox that needs the scope root takes it from the profile.
-  defp exec(command, cwd, secs, args) do
-    profile = profile(cwd, args)
+  defp exec(scope, command, cwd, secs, args) do
+    profile = profile(scope, args)
 
     case Sandbox.wrap(command, profile) do
       {:ok, executable, argv} ->

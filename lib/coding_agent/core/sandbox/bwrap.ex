@@ -31,9 +31,6 @@ defmodule CodingAgent.Core.Sandbox.Bwrap do
 
   @bwrap "bwrap"
 
-  # Toolchain/cache dirs shared read-write by default (ADR 015 decision 3).
-  @default_rw ~w(.cache .hex .mix .m2 .gradle .cargo .npm .config/git)
-
   # Caps (ADR 015 decision 4): processes, file size (blocks), CPU seconds,
   # and the scratch tmpfs size (bytes).
   @ulimit_procs 512
@@ -169,17 +166,16 @@ defmodule CodingAgent.Core.Sandbox.Bwrap do
       ["/bin/sh", "-c", prelude() <> command]
   end
 
-  # Extra read-write mounts: the user-configured set, plus the built-in
-  # cache defaults (only when they exist, so a bare container does not
-  # fail on a missing ~/.m2).
+  # Extra read-write mounts (ADR 015 decision 3): the resolved mount
+  # schema. Only existing paths are mounted, so a bare container does not
+  # fail on a missing ~/.m2.
   defp rw_args(profile) do
-    dirs =
-      (@default_rw ++ Map.get(profile, :rw, []))
-      |> Enum.map(&Path.expand/1)
-      |> Enum.uniq()
-      |> Enum.filter(&File.exists?/1)
-
-    Enum.flat_map(dirs, fn dir -> ["--bind", dir, dir] end)
+    profile
+    |> Map.get(:rw, [])
+    |> Enum.map(&Path.expand/1)
+    |> Enum.uniq()
+    |> Enum.filter(&File.exists?/1)
+    |> Enum.flat_map(fn dir -> ["--bind", dir, dir] end)
   end
 
   # `.git` read-only over the rw scope bind, unless git write is granted.

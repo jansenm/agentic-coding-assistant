@@ -78,6 +78,35 @@ defmodule CodingAgent.Core.Sandbox.BwrapTest do
       assert command =~ "echo hi"
     end
 
+    test "mounts configured rw paths that exist, skips missing ones", %{root: root} do
+      cache = Path.join(root, "cache")
+      File.mkdir_p!(cache)
+      missing = Path.join(root, "nope")
+
+      argv = Bwrap.argv(root, "echo hi", %{root: root, rw: [cache, missing]})
+
+      assert triple_in(argv, {"--bind", cache, cache})
+      refute triple_in(argv, {"--bind", missing, missing})
+    end
+
+    test "mounts configured ro paths that exist", %{root: root} do
+      ro = Path.join(root, "readonly")
+      File.mkdir_p!(ro)
+
+      argv = Bwrap.argv(root, "echo hi", %{root: root, ro: [ro]})
+
+      assert triple_in(argv, {"--ro-bind", ro, ro})
+    end
+
+    test "scratch tmpfs comes before the scope bind so a scope under /tmp survives", %{root: root} do
+      argv = Bwrap.argv(root, "echo hi", %{root: root})
+
+      tmpfs_at = Enum.find_index(argv, &(&1 == "/tmp"))
+      bind_at = Enum.find_index(argv, &(&1 == root))
+
+      assert tmpfs_at < bind_at
+    end
+
     test "refuses a missing scope root" do
       missing = Path.join(@tmp_root, "does-not-exist")
 
