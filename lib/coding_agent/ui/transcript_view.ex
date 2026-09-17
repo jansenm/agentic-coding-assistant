@@ -42,9 +42,6 @@ defmodule CodingAgent.UI.TranscriptView do
   pays one probe per frame — bounded by the pane width, microseconds.
   """
 
-  # border rows (2) + inner padding rows (2) of the user frame
-  @user_frame_allowance 4
-
   # empty rows after every NON-user block (answers, tools, info,
   # reasoning): the user frame stands out BY contrast — everything
   # around it breathes more than it does
@@ -52,39 +49,50 @@ defmodule CodingAgent.UI.TranscriptView do
 
   @typedoc "A transcript entry (shape mirrors UI.Tui state)."
   @type entry ::
-          {:user, String.t()}
-          | {:assistant, String.t()}
+          {:user, String.t(), String.t() | nil}
+          | {:assistant, String.t(), String.t() | nil}
+          | {:reasoning, String.t()}
           | {:tool, String.t(), String.t(), String.t()}
           | {:info, String.t()}
-
-  @doc """
-  Rendered height of one entry at the given width, given which tool
-  block (if any) is open. `open_id` matches a `{:tool, id, _, _}`
-  entry; nil means every tool block is collapsed.
-
-  Measured by rendering the EXACT widget Tui draws (see the
-  moduledoc); `@air` rows are added by this module, not the widget.
-  """
+          | {:info, String.t(), String.t() | nil}
   @spec height(entry(), pos_integer(), open_id()) :: pos_integer()
   def height(entry, width, open_id) do
-    case entry do
-      # the user frame's Block paints border+padding glyphs across its
-      # whole rect, so the probe must cover the CONTENT only —
-      # chrome (borders + padding) is added arithmetically
-      {:user, text} ->
-        inner_width = max(width - 4, 10)
+    case normalize(entry) do
+      # The shared agent box (user frame, assistant box) paints its
+      # border glyphs across the whole probe rect, so the content must
+      # be probed BARE (no block) and the shared chrome added
+      # arithmetically. The box has no padding: 2 border rows only.
+      {:user, text, _agent} ->
+        inner_width = max(width - 2, 10)
+        painted_height(%ExRatatui.Widgets.Paragraph{text: text}, inner_width) + 2
 
-        content =
-          painted_height(%ExRatatui.Widgets.Paragraph{text: text}, inner_width)
+      # Same shared box + @air after the answer block.
+      {:assistant, text, _agent} ->
+        inner_width = max(width - 2, 10)
+        content = painted_height(%ExRatatui.Widgets.Markdown{content: text, wrap: true}, inner_width)
+        content + 2 + @air
 
-        # user frames get no @air (the border chrome IS the spacing)
-        content + @user_frame_allowance
-
-      _ ->
-        {widget, chrome} = widget_for(entry, width, open_id)
+      # The boxless widgets (reasoning, info, collapsed/expanded tools):
+      # probe the exact drawn widget; per-widget chrome already in it.
+      normalized ->
+        {widget, chrome} = widget_for(normalized, width, open_id)
         painted_height(widget, width) + chrome + @air
     end
   end
+
+  # Entries arrive as 2-tuples ({:user, text}, {:assistant, text},
+  # {:info, text}) from the TUI before attribution is resolved, and as
+  # 3-tuples carrying the agent name. Normalizing at the single entry
+  # boundary lets height/viewport render both forms (callers need not
+  # special-case), while the agent-bearing shape carries the footer.
+  # Reasoning and tool entries are untouched — they never carry a footer.
+  defp normalize({:user, text, agent}), do: {:user, text, agent}
+  defp normalize({:user, text}), do: {:user, text, nil}
+  defp normalize({:assistant, text, agent}), do: {:assistant, text, agent}
+  defp normalize({:assistant, text}), do: {:assistant, text, nil}
+  defp normalize({:info, text, agent}), do: {:info, text, agent}
+  defp normalize({:info, text}), do: {:info, text, nil}
+  defp normalize(other), do: other
 
   # The widget Tui renders for this entry + extra chrome rows the
   # layout must count beyond painted content (borders around the open
@@ -100,20 +108,8 @@ defmodule CodingAgent.UI.TranscriptView do
      }, 0}
   end
 
-  defp widget_for({:info, text}, _width, _open_id) do
+  defp widget_for({:info, text, _agent}, _width, _open_id) do
     {%ExRatatui.Widgets.Paragraph{text: "  " <> text}, 0}
-  end
-
-  # (the user frame is measured specially in height/3 — its Block
-  # paints border+padding glyphs across the whole probe rect, so its
-  # content is probed bare and the chrome added arithmetically)
-
-  defp widget_for({:assistant, text}, _width, _open_id) do
-    {%ExRatatui.Widgets.Markdown{
-       content: text,
-       style: %ExRatatui.Style{fg: :white},
-       wrap: true
-     }, 0}
   end
 
   defp widget_for({:tool, id, name, content}, _width, open_id) do
@@ -133,6 +129,19 @@ defmodule CodingAgent.UI.TranscriptView do
        }, 0}
     end
   end
+
+  # The footer for an agent-carrying entry: `agent` is the name or nil
+  # (no agent). Shared by the assistant box (this module's footers) and
+  # the TUI's rendering — ONE definition of the footer strings.
+  @doc "Footer for a user message: names the agent it was handed to."
+  @spec user_footer(String.t() | nil) :: String.t()
+  def user_footer(nil), do: "you"
+  def user_footer(agent), do: "you → #{agent}"
+
+  @doc "Footer for an assistant reply: the name of the agent that answered."
+  @spec agent_footer(String.t() | nil) :: String.t()
+  def agent_footer(nil), do: "agent"
+  def agent_footer(agent), do: "#{agent}"
 
   @doc "Rows of air after a block (the TUI clips rects to content and leaves these blank)."
   def air, do: @air
@@ -181,6 +190,28 @@ defmodule CodingAgent.UI.TranscriptView do
       end)
 
     {top, selected}
+  end
+
+  # -- shared "agent box" ------------------------------------------------------
+
+  @doc """
+  ONE bordered frame used by the input box, each user message and each
+  assistant reply (user feedback: reuse the layout, never three copies).
+  The title sits on the BOTTOM-RIGHT border carrying the footer
+  ("plan · model", "you → plan"). Measuring and painting both build this
+  from this single function, so the layout can never drift.
+  """
+  @spec agent_block(String.t(), ExRatatui.Style.t()) :: ExRatatui.Widgets.Block.t()
+  def agent_block(footer, border_style) do
+    %ExRatatui.Widgets.Block{
+      title: footer,
+      borders: [:all],
+      border_type: :rounded,
+      title_position: :bottom,
+      title_alignment: :right,
+      title_style: %ExRatatui.Style{fg: :dark_gray},
+      border_style: border_style
+    }
   end
 
   # -- measured heights (render-into-buffer probe) ----------------------------

@@ -156,6 +156,8 @@ defmodule CodingAgent.Core.Session.Store do
       compaction_backoff: Map.get(state, :compaction_backoff, 0),
       pending_round_calls: Map.get(state, :pending_round_calls, []),
       pending_round_results: Map.get(state, :pending_round_results, []),
+      # per-turn agent attribution (old snapshots lack it)
+      turn_agents: Map.get(state, :turn_agents, []),
       # nested structs: heal the Elixir 1.20 missing-default trap one
       # level down (see above)
       policy: heal(state.policy, Permissions),

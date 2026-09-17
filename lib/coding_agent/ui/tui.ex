@@ -296,6 +296,16 @@ defmodule CodingAgent.UI.Tui do
         #                    own agent, so the two can differ.
         running_agent: session_agent(effective_id),
         next_agent: session_agent(effective_id),
+        # the agent executing the CURRENT turn (unknown until the
+        # session broadcasts {:turn_started, agent}); used to attribute
+        # live assistant/tool/compaction lines while a turn streams.
+        active_agent: session_agent(effective_id),
+        # per-turn attribution: one agent name (or nil) per USER turn,
+        # in execution order. Seeded from the persisted session on
+        # resume; extended locally when a prompt is sent (before the
+        # session broadcasts its own turn_started) so the just-typed
+        # "you" footer can show the target agent immediately.
+        turn_agents: session_turn_agents(effective_id),
         primary_agents: primary_agent_names(session_scope(effective_id)),
         # models per slot, resolved once per mount (not per frame — the
         # sidebar runs at poll cadence and must not hit the disk)
@@ -1393,6 +1403,12 @@ defmodule CodingAgent.UI.Tui do
     if value == "" do
       state
     else
+      # attribute THIS turn to the agent the input was prepared for: the
+      # `next` slot. It stays in sync with what Session.run resolves
+      # (the next_agent at send time), so the "you → agent" footer is
+      # correct even while a prior turn streams.
+      next_agent = Map.get(state, :next_agent)
+
       run_prompt(state, value)
 
       %{
@@ -1405,7 +1421,8 @@ defmodule CodingAgent.UI.Tui do
           # a fresh turn: no stale esc arm or stream from the previous one
           stop_confirm?: false,
           stream: [],
-          scroll_offset: 0
+          scroll_offset: 0,
+          turn_agents: Map.get(state, :turn_agents, []) ++ [next_agent]
       }
     end
   end
@@ -1697,15 +1714,24 @@ defmodule CodingAgent.UI.Tui do
     {:noreply, %{state | transcript: state.transcript ++ [{:info, "· context compacted"}]}}
   end
 
+  def handle_info({:agent, {:turn_started, agent}}, state) do
+    # the session resolved the agent this turn is running as; refresh the
+    # live attribution used by streaming lines and the running slot.
+    {:noreply, %{state | active_agent: agent, running_agent: agent}}
+  end
+
   def handle_info({:__run__, prompt}, state) do
     run_prompt(state, prompt)
+
+    next_agent = Map.get(state, :next_agent)
 
     {:noreply,
      %{
        state
        | status: :running,
          transcript: state.transcript ++ [{:user, prompt}],
-         stream: []
+         stream: [],
+         turn_agents: Map.get(state, :turn_agents, []) ++ [next_agent]
      }}
   end
 
@@ -1841,9 +1867,7 @@ defmodule CodingAgent.UI.Tui do
   defp transcript_widgets(state, pane) do
     w = content_width(max(pane.width - 2, 10))
 
-    entries =
-      (state.transcript ++ streaming_entries(state))
-      |> Enum.map(&normalize_entry/1)
+    entries = display_entries(state)
 
     # view-side clamp for THIS frame (persistence happens in the
     # resize handler — render cannot mutate state)
@@ -1939,9 +1963,7 @@ defmodule CodingAgent.UI.Tui do
   # extent below the current scroll offset; without this, pgdown has to
   # burn through the stale offset before the view moves (found live).
   defp clamp_scroll_now(state) do
-    entries =
-      (state.transcript ++ streaming_entries(state))
-      |> Enum.map(&normalize_entry/1)
+    entries = display_entries(state)
 
     pane_height =
       if is_integer(state.last_pane_height), do: state.last_pane_height, else: 24
@@ -1969,26 +1991,49 @@ defmodule CodingAgent.UI.Tui do
   defp apply_scroll(w, _n), do: w
 
   # One widget per entry (v1): heights are single-widget, computed via
-  # TranscriptView.height.
-  defp entry_widgets({:user, text}, w, _te) do
-    h = TranscriptView.height({:user, text}, w, nil)
+  # TranscriptView.height. The user AND assistant messages share the
+  # same bordered frame (TranscriptView.agent_block — one definition
+  # of the box, per the "reuse, always reuse" design): the only thing
+  # that differs is the content widget (Paragraph vs Markdown) and the
+  # footer label. Both 2-tuples (no attribution) and 3-tuples (carrying
+  # the agent name) render — the 2-tuple form shows a neutral footer.
+  defp entry_widgets({:user, text, agent}, w, _te) do
+    h = TranscriptView.height({:user, text, agent}, w, nil)
 
     widget = %Paragraph{
       text: text,
       style: %Style{fg: :white},
-      block: %Block{
-        title: " you ",
-        borders: [:all],
-        border_type: :rounded,
-        # signaling color: blue receded into the transcript noise —
-        # magenta reads as "the user's voice" and separates from the
-        # status colors (green running / yellow approval / red error)
-        border_style: %Style{fg: :magenta, modifiers: [:bold]},
-        padding: {1, 1, 1, 1}
-      }
+      block:
+        TranscriptView.agent_block(
+          TranscriptView.user_footer(agent),
+          # signaling color: magenta reads as "the user's voice" and
+          # separates from the status colors (green running / yellow
+          # approval / red error)
+          %Style{fg: :magenta, modifiers: [:bold]}
+        )
     }
 
     [{widget, h}]
+  end
+
+  defp entry_widgets({:assistant, text, agent}, w, _te) do
+    # placement height includes the air rows; the widget rect covers
+    # the content + border rows only, so the air rows below stay
+    # background (same convention as the old assistant entries)
+    h = TranscriptView.height({:assistant, text, agent}, w, nil) - TranscriptView.air()
+
+    [
+      {%Markdown{
+         content: text,
+         style: %Style{fg: :white},
+         wrap: true,
+         block:
+           TranscriptView.agent_block(
+             TranscriptView.agent_footer(agent),
+             %Style{fg: :dark_gray}
+           )
+       }, max(h, 1)}
+    ]
   end
 
   # Thinking is rendered as MARKDOWN like the answer (opencode parity):
@@ -2045,7 +2090,9 @@ defmodule CodingAgent.UI.Tui do
     [{widget, h}]
   end
 
-  defp entry_widgets({:info, text}, _w, _te) do
+  # Compaction/notice lines carry the agent that triggered them; a bare
+  # info (no agent, e.g. resumed notices) renders the same dim line.
+  defp entry_widgets({:info, text, _agent}, _w, _te) do
     [{%Paragraph{text: "  " <> text, style: %Style{fg: :dark_gray}}, 1}]
   end
 
@@ -2209,17 +2256,60 @@ defmodule CodingAgent.UI.Tui do
 
   defp first_line(text), do: text |> String.split("\n") |> List.first() |> String.slice(0, 80)
 
-  defp normalize_entry({:tool, id, name, content}), do: {:tool, id, name, content}
-  defp normalize_entry({:user, t}), do: {:user, t}
-  defp normalize_entry({:assistant, t}), do: {:assistant, t}
-  # persisted reasoning (restored snapshots, old session files) is
-  # trimmed too: the window math must see the same string the widget
-  # renders, or the phantom trailing-newline row re-enters through the
-  # transcript path (streaming_entries is already trimmed — this is
-  # the other route in)
-  defp normalize_entry({:reasoning, t}), do: {:reasoning, render_reasoning(t)}
-  defp normalize_entry({:info, t}), do: {:info, t}
-  defp normalize_entry({:tool, line}) when is_binary(line), do: {:info, line}
+  # The full display list, each entry carrying the agent of the turn it
+  # belongs to. turn_agents[i] attributes the i-th USER turn (seeded on
+  # mount from the session, extended at send time with the next agent);
+  # every entry up to the next user belongs to that turn. Compaction and
+  # other info lines are attributed to the agent that triggered them (the
+  # turn's agent). Reasoning stays unattributed by design. Streaming
+  # entries (not yet in transcript) carry the active (live) turn's agent.
+  defp display_entries(state) do
+    agents = Map.get(state, :turn_agents) || []
+
+    {transcript, _turn, _last} =
+      Enum.reduce(state.transcript || [], {[], 0, nil}, fn entry, {acc, turn, last} ->
+        case entry do
+          {:user, t} ->
+            agent = Enum.at(agents, turn)
+            {acc ++ [{:user, t, agent}], turn + 1, agent}
+
+          {:assistant, t} ->
+            {acc ++ [{:assistant, t, last}], turn, last}
+
+          {:info, t} when is_binary(t) ->
+            {acc ++ [{:info, t, last}], turn, last}
+
+          {kind, _} when kind in [:reasoning, :tool] ->
+            # persisted reasoning is trimmed too (the window math must
+            # see the same string the widget paints)
+            entry =
+              case entry do
+                {:reasoning, t} -> {:reasoning, render_reasoning(t)}
+                other -> other
+              end
+
+            {acc ++ [entry], turn, last}
+
+          other ->
+            {acc ++ [other], turn, last}
+        end
+      end)
+
+    live_agent =
+      case List.last(agents) do
+        a when a != nil -> a
+        _ -> Map.get(state, :active_agent)
+      end
+
+    streaming =
+      streaming_entries(state)
+      |> Enum.map(fn
+        {:assistant, t} -> {:assistant, t, live_agent}
+        other -> other
+      end)
+
+    transcript ++ streaming
+  end
 
   # The transcript pane shows a WINDOW of the lines: the last
   # `pane_height` lines when scroll_offset is 0 (auto-follow), else a
@@ -2228,12 +2318,31 @@ defmodule CodingAgent.UI.Tui do
   # screen" report — Paragraphs clip at their area, so we pre-window.
 
   defp input_widget(state) do
+    # The input box reuses the same "agent box" frame as the messages
+    # (design: one box for composer + messages). Its bottom footer shows
+    # the target agent (the NEXT input's agent) and the EFFECTIVE model
+    # (the agent's definition model when set, else the session model),
+    # next to the reading measure.
+    agent = Map.get(state, :next_agent)
+    definition_model = Map.get(state, :next_agent_model)
+    session_model = Map.get(state, :model)
+    eff_model = definition_model || session_model || "?"
+
+    footer =
+      if(agent, do: "you → #{agent}", else: "you") <>
+        " · #{String.slice(eff_model, 0, 24)}"
+
     %Textarea{
       state: state.textarea,
       placeholder:
         "Message the agent… (enter=newline, alt-enter=send, ctrl-t opens last tool, click to toggle)",
       line_number_style: nil,
-      block: %Block{borders: [:all], border_type: :rounded}
+      block:
+        TranscriptView.agent_block(footer, %Style{
+          fg: :cyan,
+          modifiers: [:bold],
+          bg: :dark_gray
+        })
     }
   end
 
@@ -2245,9 +2354,7 @@ defmodule CodingAgent.UI.Tui do
   # Which entry covers screen row `y` (transcript-pane-relative)?
   # Recomputes the same placement the renderer produces this frame.
   defp block_at_row(state, y) do
-    entries =
-      (state.transcript ++ streaming_entries(state))
-      |> Enum.map(&normalize_entry/1)
+    entries = display_entries(state)
 
     w = content_width(if is_integer(state.last_pane_width), do: state.last_pane_width, else: 78)
     ph = transcript_visible_height(state)
@@ -2308,10 +2415,6 @@ defmodule CodingAgent.UI.Tui do
         _ -> %{}
       end
 
-    model =
-      state.model || cfg.config["model"] ||
-        Application.get_env(:coding_agent, :model)
-
     effort =
       cfg.config["reasoning_effort"] || Application.get_env(:coding_agent, :reasoning_effort)
 
@@ -2330,21 +2433,9 @@ defmodule CodingAgent.UI.Tui do
         Text.Span.new(String.slice(state.session_id, 0, 22), style: %Style{fg: :white})
       ]),
       Text.Line.new([Text.Span.new("", style: %Style{})]),
-      Text.Line.new([Text.Span.new("agent", style: %Style{fg: :dark_gray})]),
-      Text.Line.new([
-        Text.Span.new("running: ", style: %Style{fg: :dark_gray}),
-        Text.Span.new(slot_agent_label(state, :running), style: %Style{fg: :white})
-      ]),
-      Text.Line.new([
-        Text.Span.new("next:    ", style: %Style{fg: :dark_gray}),
-        Text.Span.new(slot_agent_label(state, :next), style: %Style{fg: :cyan}),
-        Text.Span.new("  (tab)", style: %Style{fg: :dark_gray})
-      ]),
-      Text.Line.new([Text.Span.new("", style: %Style{})]),
-      Text.Line.new([Text.Span.new("model", style: %Style{fg: :dark_gray})]),
-      Text.Line.new([
-        Text.Span.new(String.slice(model || "?", 0, 22), style: %Style{fg: :white})
-      ]),
+      # the agent is attributed per message (box footers) and shown on
+      # the input footer, so the panel no longer needs running/next
+      # slots (user redesign). Only the effort hint survives here.
       Text.Line.new([
         Text.Span.new(
           "effort: #{effort || "default"}",
@@ -2422,6 +2513,15 @@ defmodule CodingAgent.UI.Tui do
     end
   end
 
+  # The persisted per-turn attribution (empty for a fresh session, and
+  # always safe for older snapshots that predate the field).
+  defp session_turn_agents(id) do
+    case Session.state(id) do
+      {:ok, %{turn_agents: agents}} when is_list(agents) -> agents
+      _ -> []
+    end
+  end
+
   # The session's scope root (agents can be project-scoped). Falls back to
   # the process cwd for the picker, where no session exists yet.
   defp session_scope(id) do
@@ -2485,34 +2585,20 @@ defmodule CodingAgent.UI.Tui do
     _ -> nil
   end
 
-  # One sidebar slot line: "name · model". The model shown is the one a
-  # turn with that agent WOULD actually use (the definition's model when
-  # set, else the session model), so the two slots can differ. With no
-  # agent the name reads "(none)" — "default" was ambiguous (it also
-  # labelled the effort line).
-  defp slot_agent_label(state, slot) do
-    {name, model} =
-      case slot do
-        :running ->
-          {Map.get(state, :running_agent), Map.get(state, :running_agent_model)}
-
-        :next ->
-          {Map.get(state, :next_agent), Map.get(state, :next_agent_model)}
-      end
-
-    session_model = Map.get(state, :model) || "?"
-    model = model || session_model
-    label = name || "(none)"
-
-    "#{label} · #{String.slice(model, 0, 20)}"
-  end
-
   # Tab: cycle next_agent through the primary agents, wrapping at both
   # ends (build -> plan -> build -> …). Never selects the no-agent
   # default — "(none)" is not a usable target (user feedback: Tab must
   # not land on it). A session started agent-less still cycles INTO a
   # primary (nil -> first); a running turn keeps its own agent; only the
   # next input changes, via Session.set_agent/2.
+  #
+  # The switch must NEVER block the TUI. Session.set_agent is a
+  # synchronous GenServer.call; while a turn is streaming the session is
+  # busy inside call_llm, so that call would freeze the UI until the turn
+  # ends (found live: "i pressed tab and the ui hung"). While busy we
+  # only update the local `next` slot and apply to the session
+  # asynchronously — the running turn keeps its own agent and the switch
+  # lands for the NEXT input, which is exactly the ADR 018 semantics.
   defp switch_agent(state) do
     case state.primary_agents do
       [] ->
@@ -2521,28 +2607,38 @@ defmodule CodingAgent.UI.Tui do
       names ->
         current = state.next_agent
         next = next_agent_name(names, current)
+        scope = session_scope(state.session_id)
+        next_model = agent_model(scope, next)
 
-        case Session.set_agent(state.session_id, next) do
-          {:ok, _} ->
-            # the session is idle here (Tab is an input-area key), so the
-            # running slot follows the switch; when a turn later starts,
-            # the status handler refreshes running_agent from the session.
-            scope = session_scope(state.session_id)
-            next_model = agent_model(scope, next)
+        if state.status in [:running, :interrupting] do
+          # the session is busy: apply later (it serializes behind the
+          # running turn) and never block this key handler
+          Task.start(fn -> Session.set_agent(state.session_id, next) end)
 
-            status_note(
-              %{
-                state
-                | next_agent: next,
-                  running_agent: next,
-                  next_agent_model: next_model,
-                  running_agent_model: next_model
-              },
-              "agent → #{next || "(none)"}"
-            )
+          status_note(
+            %{state | next_agent: next, next_agent_model: next_model},
+            "agent → #{next || "(none)"} (takes effect on the next input)"
+          )
+        else
+          case Session.set_agent(state.session_id, next) do
+            {:ok, _} ->
+              # the session is idle here (Tab is an input-area key), so the
+              # running slot follows the switch; when a turn later starts,
+              # the status handler refreshes running_agent from the session.
+              status_note(
+                %{
+                  state
+                  | next_agent: next,
+                    running_agent: next,
+                    next_agent_model: next_model,
+                    running_agent_model: next_model
+                },
+                "agent → #{next || "(none)"}"
+              )
 
-          {:error, reason} ->
-            status_note(state, "agent switch failed: #{inspect(reason)}")
+            {:error, reason} ->
+              status_note(state, "agent switch failed: #{inspect(reason)}")
+          end
         end
     end
   end
@@ -2574,9 +2670,7 @@ defmodule CodingAgent.UI.Tui do
   defp status_widget_plain(state) do
     # scroll diagnostics (live debugging): entries / measured total /
     # offset / expand state — visible in the status line
-    entries =
-      (state.transcript ++ streaming_entries(state))
-      |> Enum.map(&normalize_entry/1)
+    entries = display_entries(state)
 
     w = content_width(if is_integer(state.last_pane_width), do: state.last_pane_width, else: 78)
     ph = if is_integer(state.last_pane_height), do: state.last_pane_height, else: 24

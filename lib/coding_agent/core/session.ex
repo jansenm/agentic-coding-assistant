@@ -605,11 +605,28 @@ defmodule CodingAgent.Core.Session do
       state.context
       |> Context.append(ReqLLM.Context.user(prompt))
 
+    # Record WHICH agent answers this user turn (ADR 018 attribution):
+    # the per-turn agent the loop is about to resolve. Synthetic user
+    # messages (compaction summaries) never reach run_turn — they are
+    # added by the Compactor, not by the user — so turn_agents stays
+    # aligned with real turns, one entry per user prompt.
+    agent = if state.agent, do: state.agent.name, else: nil
+
     # the loop guard is PER TURN: the counter previously only reset in
     # the debug path, so it accumulated across a session's lifetime —
     # found live: the review session died at the 25-round limit after
     # several healthy turns (each turn's rounds stack on the old count)
-    state = %{state | context: context, status: :running, last_error: nil, tool_rounds: 0}
+    state =
+      %{
+        state
+        | context: context,
+          status: :running,
+          last_error: nil,
+          tool_rounds: 0,
+          turn_agents: state.turn_agents ++ [agent]
+      }
+
+    broadcast(state, {:turn_started, agent})
     broadcast(state, {:status_changed, :running})
 
     case continue_loop(state) do

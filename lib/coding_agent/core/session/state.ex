@@ -48,6 +48,13 @@ defmodule CodingAgent.Core.Session.State do
     # set once the 80%-of-trigger warning has been broadcast (once,
     # not every turn)
     compaction_warned: false,
+    # ONE agent name (or nil) per USER turn, in execution order — the
+    # agent that answered that turn. Persisted with the session so a
+    # resumed/old session can attribute every user message and its
+    # assistant reply to the agent that handled it (the UI's footer).
+    # Synthetic user messages (compaction summaries) are NOT turns and
+    # are never recorded here.
+    turn_agents: [],
     # consecutive compaction failures: with 0..backoff_left, compaction
     # is SKIPPED (found live: GLM cloud needs minutes for an 80K-char
     # summary call and fails with reason:"timeout" — retrying every
@@ -75,7 +82,11 @@ defmodule CodingAgent.Core.Session.State do
           pending_round_results: [map()],
           subscribers: [reference()],
           tool_rounds: non_neg_integer(),
-          test_mode: boolean()
+          test_mode: boolean(),
+          turn_agents: [String.t() | nil],
+          usage: map(),
+          compaction_warned: boolean(),
+          compaction_backoff: non_neg_integer()
         }
 
   @doc "Builds a new session state."

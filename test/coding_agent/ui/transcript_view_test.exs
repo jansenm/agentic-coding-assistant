@@ -12,14 +12,14 @@ defmodule CodingAgent.UI.TranscriptViewTest do
     end
 
     test "user has a border allowance" do
-      # 1 text row + 2 border rows + 2 padding rows
-      assert TranscriptView.height({:user, "hello"}, 80, nil) == 5
+      # the shared agent box has no padding: 1 text row + 2 border rows
+      assert TranscriptView.height({:user, "hello"}, 80, nil) == 3
     end
 
     test "long lines wrap by width" do
-      # 200 chars at width 80 -> 3 lines
-      # 3 wrap lines + 3 air rows after the answer
-      assert TranscriptView.height({:assistant, String.duplicate("x", 200)}, 80, nil) == 6
+      # 200 chars at width 80 -> 3 lines inside the shared agent box
+      # 3 wrap lines + 2 border rows + 3 air rows after the answer
+      assert TranscriptView.height({:assistant, String.duplicate("x", 200)}, 80, nil) == 8
     end
 
     test "collapsed tool is one line" do

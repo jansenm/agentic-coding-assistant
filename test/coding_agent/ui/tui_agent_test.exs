@@ -66,33 +66,38 @@ defmodule CodingAgent.UI.TuiAgentTest do
     assert "edit" in CodingAgent.Core.Permissions.disabled(st.policy)
   end
 
-  test "the sidebar renders both slots" do
+  # Attribution lives at the message-box footers and the input footer
+  # (the shared "agent box" design): the sidebar no longer carries
+  # running/next/model slots. The input footer shows the target of the
+  # NEXT input ("you → agent") plus the effective model.
+  test "the agent surfaces on the input footer, not the sidebar" do
     pid = start_app(agent: "build")
     buffer = Enum.join(buffer(pid), "\n")
 
-    assert buffer =~ "running:"
-    assert buffer =~ "next:"
-    assert buffer =~ "build"
+    assert buffer =~ "you → build"
+    # the sidebar no longer renders running/next slots (removed in the
+    # shared agent-box redesign)
+    refute buffer =~ "running:"
+    refute buffer =~ "next:"
   end
 
-  test "each slot shows the agent and the model it would use" do
+  test "the input footer shows the agent and the model it would use" do
     pid = start_app(agent: "build")
     buffer = Enum.join(buffer(pid), "\n")
 
-    # both slots carry "name · model"; no agent-less "default" label
-    assert buffer =~ "running: build · "
-    assert buffer =~ "next:    build · "
-    refute buffer =~ "running: default"
-    refute buffer =~ "next:    default"
+    # the footer carries "you → agent · model"; no agent-less "default"
+    assert buffer =~ "you → build · "
+    refute buffer =~ "you → default"
   end
 
-  test "with no agent the slots say (none), not the ambiguous 'default'" do
+  test "with no agent the input footer shows just 'you', not a (none) label" do
     pid = start_app(agent: nil)
     buffer = Enum.join(buffer(pid), "\n")
 
-    assert buffer =~ "(none)"
-    # 'default' is still used for effort, but not as an agent label
-    refute buffer =~ "running: default"
+    # no agent target: the footer reads "you · model" with no "→ (none)"
+    assert buffer =~ "you · "
+    refute buffer =~ "you → (none)"
+    refute buffer =~ "you → default"
   end
 
   describe "resume restores the agent (regression)" do
