@@ -255,6 +255,32 @@ since shipped anyway, ADR 013 — dogfood showed doc work needed it.)
 
 Not planned, not forgotten — recorded so re-evaluation is cheap:
 
+**bwrap layers as agent isolation** (distant future; evaluated
+2026-09-17). The multi-agent problem: Agent 1 implements a feature
+while Agent 2 reviews, and they collide on the working tree. Git
+worktrees are today's answer but IDE support is poor (a second
+worktree is seen as a separate project). Proposal: give each agent an
+**overlay layer** over the same repo — its own writable delta, its own
+`.git` delta, so it commits in isolation, publishes deliberately, and
+the layer is thrown away. **Measured, and the core works:** two agents
+each ran with their own `--overlay` for the worktree *and* their own
+`--overlay` for `.git`; both committed independently
+(`5e69be3`/`835bd9f`), the real repo stayed byte-identical. Publish
+works as a deliberate step (bind `origin` rw for one invocation):
+`d31edb4..07c189e main -> main`. Non-conflicting concurrent work
+composes normally through `fetch` + `rebase` inside the layer, and a
+conflict surfaces as a normal push rejection. The isolation boundary
+is what makes publish explicit: with `--ro-bind / /` the remote is
+invisible and unwritable, so an agent *cannot* push by accident — a
+property plain worktrees do not give you. Open questions before this
+is more than a note: layer lifetime/GC, whether `.git` truly needs an
+overlay (vs. reusing the real object store read-only with refs in the
+layer), IDE story (the whole reason to prefer this over worktrees),
+and how the harness addresses per-agent layers. Note this is a
+*different* use of overlays than ADR 015 rejected: there the overlay
+was per-single-agent protection (superseded by "Git is the undo"); here
+it is isolation *between* agents.
+
 TUI wish-list (user's own list, keyboard-first, from the live sessions):
 
 - **Navigator**: Go To Questions / Go To Blocks popup (ctrl-g style,
