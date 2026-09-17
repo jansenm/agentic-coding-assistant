@@ -36,6 +36,7 @@ defmodule CodingAgent.Core.Tools.Shell do
   was captured so far is returned together with a timeout note.
   """
 
+  alias CodingAgent.Core.Sandbox
   alias CodingAgent.Core.Tools
 
   @max_bytes 256 * 1024
@@ -182,6 +183,9 @@ defmodule CodingAgent.Core.Tools.Shell do
 
       {:error, reason} ->
         Tools.error("cannot run #{inspect(command)}: #{:file.format_error(reason)}")
+
+      {:sandbox_error, reason} ->
+        Tools.error("cannot confine #{inspect(command)}: #{inspect(reason)}")
     end
   end
 
@@ -190,19 +194,33 @@ defmodule CodingAgent.Core.Tools.Shell do
   # the sh process itself (sh -c execs its last command), so killing the
   # port's os_pid kills the command; process groups are deliberately out
   # of scope for v1 (documented in about-tools).
+  #
+  # The executable and argv come from `CodingAgent.Core.Sandbox` (ADR
+  # 015): with the default `Sandbox.None` this is `/bin/sh -c <command>`
+  # exactly as before; with `Sandbox.Bwrap` it is bwrap wrapping the
+  # command. `{:cd, cwd}` still applies to whatever process we spawn;
+  # a sandbox that needs the scope root takes it from the profile.
   defp exec(command, cwd, secs) do
-    port =
-      Port.open({:spawn_executable, "/bin/sh"}, [
-        :binary,
-        :exit_status,
-        :stderr_to_stdout,
-        :hide,
-        {:args, ["-c", command]},
-        {:cd, cwd}
-      ])
+    profile = %{root: cwd}
 
-    deadline = System.monotonic_time(:millisecond) + secs * 1000
-    collect(port, deadline, "")
+    case Sandbox.wrap(command, profile) do
+      {:ok, executable, argv} ->
+        port =
+          Port.open({:spawn_executable, executable}, [
+            :binary,
+            :exit_status,
+            :stderr_to_stdout,
+            :hide,
+            {:args, argv},
+            {:cd, cwd}
+          ])
+
+        deadline = System.monotonic_time(:millisecond) + secs * 1000
+        collect(port, deadline, "")
+
+      {:error, reason} ->
+        {:sandbox_error, reason}
+    end
   end
 
   # Ports deliver :exit_status then :closed. We never Port.close/1 by
