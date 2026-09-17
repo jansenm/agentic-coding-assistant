@@ -91,6 +91,20 @@ defmodule CodingAgent.Core.Session do
   end
 
   @doc """
+  Switches the agent for the NEXT turn (ADR 017/018: the "next" slot).
+  A turn already in flight keeps the agent it started with.
+
+  Recomputes the policy and system prompt from the session's base values,
+  so switching A -> B never compounds A's restrictions onto B (the
+  permission merge is narrowing, not idempotent). Passing `nil` clears
+  the agent back to the base policy and framework prompt.
+  """
+  @spec set_agent(String.t(), String.t() | nil) :: {:ok, State.t()} | {:error, term()}
+  def set_agent(id, name) do
+    GenServer.call(via(id), {:set_agent, name}, @call_timeout)
+  end
+
+  @doc """
   Subscribes the CALLER to session events (streaming deltas, status
   changes). Events arrive as `{:agent, event}` messages.
 
@@ -167,14 +181,6 @@ defmodule CodingAgent.Core.Session do
     test_mode = Keyword.get(opts, :test_mode, false)
     policy = Keyword.get(opts, :policy) || load_policy(scope_root)
 
-    # Agent definition (ADR 017). `:agent` names a definition; when given,
-    # its prompt is composed onto the framework prompt and its permission
-    # layer is applied to the policy (restrictive only). Absent => the
-    # framework prompt and the plain policy, i.e. the behaviour before
-    # agents existed (tests and headless callers stay unchanged).
-    {agent, policy, system_prompt} =
-      resolve_agent(Keyword.get(opts, :agent), policy, system_prompt, scope_root)
-
     # Resume support (4a): a resumed session must carry the persisted
     # usage forward. last_input_tokens is the ONLY sound compaction
     # measure; without it decide/2 takes the chars fallback and compacts
@@ -200,6 +206,25 @@ defmodule CodingAgent.Core.Session do
     # Missing file is the normal case; unreadable/corrupt content
     # degrades to a warning, never an error.
     system_prompt = append_project_memory(system_prompt, scope_root)
+
+    # Agent definition (ADR 017). `:agent` names a definition; when given,
+    # its prompt is composed onto the (already memory-augmented) framework
+    # prompt and its permission layer is applied to the policy
+    # (restrictive only). Absent => the pre-agent behaviour, so tests and
+    # headless callers are unchanged.
+    #
+    # base_policy/base_prompt are the values BEFORE the agent layer, kept
+    # so a later set_agent/2 (Tab switch) recomputes from scratch:
+    # apply_agent narrows, so stacking a second definition would compound
+    # the first's restrictions.
+    base_policy = policy
+    base_prompt = system_prompt
+
+    {agent, policy, system_prompt} =
+      case resolve_agent(Keyword.get(opts, :agent), policy, system_prompt, scope_root) do
+        {:ok, agent, policy, prompt} -> {agent, policy, prompt}
+        {:error, reason} -> raise ArgumentError, format_agent_error(reason)
+      end
 
     # Resume support (4a): a caller may pass a persisted :context (and
     # then model/policy come from the snapshot too); otherwise a fresh
@@ -241,6 +266,8 @@ defmodule CodingAgent.Core.Session do
        # name/model for the two slots (ADR 018); the gate uses its policy
        # layer via state.policy.
        agent: agent,
+       base_policy: base_policy,
+       base_prompt: base_prompt,
        # resumed state carried forward: usage drives the compaction
        # trigger (see above), warned/backoff avoid re-warning and
        # re-retrying a summarize that already failed before the restart
@@ -252,12 +279,13 @@ defmodule CodingAgent.Core.Session do
   end
 
   # Resolves the named agent definition and applies it. Returns
-  # `{agent_or_nil, policy, system_prompt}`.
+  # `{:ok, agent_or_nil, policy, system_prompt}` or `{:error, reason}`.
   #
-  # A named agent that cannot be found is a hard error (the caller asked
-  # for something specific); an absent `:agent` is the no-agent path.
+  # A named agent that cannot be found (or a definition set that does not
+  # load) is an error; the caller at init raises, the caller at set_agent
+  # returns it. An absent name is the no-agent path.
   defp resolve_agent(nil, policy, system_prompt, _scope_root) do
-    {nil, policy, system_prompt}
+    {:ok, nil, policy, system_prompt}
   end
 
   defp resolve_agent(name, policy, system_prompt, scope_root) when is_binary(name) do
@@ -265,20 +293,25 @@ defmodule CodingAgent.Core.Session do
       {:ok, agents} ->
         case Enum.find(agents, &(&1.name == name)) do
           nil ->
-            available = Enum.map_join(agents, ", ", & &1.name)
-
-            raise ArgumentError,
-                  "unknown agent #{inspect(name)}; available: #{available}"
+            {:error, {:unknown_agent, name, Enum.map(agents, & &1.name)}}
 
           agent ->
             composed = compose_agent_prompt(system_prompt, agent)
-            {agent, Permissions.apply_agent(policy, agent), composed}
+            {:ok, agent, Permissions.apply_agent(policy, agent), composed}
         end
 
       {:error, errors} ->
-        raise ArgumentError,
-              "cannot load agent definitions:\n  " <> Enum.join(errors, "\n  ")
+        {:error, {:bad_definitions, errors}}
     end
+  end
+
+  # A human-readable message for a resolve_agent error.
+  defp format_agent_error({:unknown_agent, name, available}) do
+    "unknown agent #{inspect(name)}; available: #{Enum.join(available, ", ")}"
+  end
+
+  defp format_agent_error({:bad_definitions, errors}) do
+    "cannot load agent definitions:\n  " <> Enum.join(errors, "\n  ")
   end
 
   defp compose_agent_prompt(framework_prompt, agent) do
@@ -341,6 +374,18 @@ defmodule CodingAgent.Core.Session do
     CodingAgent.Core.UserConfig.load(scope_root).permissions
   end
 
+  defp replace_system_prompt(context, prompt) do
+    messages = ReqLLM.Context.to_list(context)
+
+    case messages do
+      [%ReqLLM.Message{role: :system} | rest] ->
+        ReqLLM.Context.new([ReqLLM.Context.system(prompt) | rest])
+
+      _ ->
+        ReqLLM.Context.new([ReqLLM.Context.system(prompt) | messages])
+    end
+  end
+
   @impl true
   def handle_call(:state, _from, state), do: {:reply, {:ok, state}, state}
 
@@ -353,6 +398,21 @@ defmodule CodingAgent.Core.Session do
   # running session changes models at the boundary, not mid-stream.
   def handle_call({:set_model, model}, _from, state) do
     {:reply, :ok, struct!(state, model: model)}
+  end
+
+  def handle_call({:set_agent, name}, _from, state) do
+    # Recompute from the base values so switching does not compound; the
+    # system message is replaced in place (index 0) when present.
+    case resolve_agent(name, state.base_policy, state.base_prompt, state.scope_root) do
+      {:ok, agent, policy, prompt} ->
+        context = replace_system_prompt(state.context, prompt)
+        new_state = %{state | agent: agent, policy: policy, context: context}
+        persist(new_state)
+        {:reply, {:ok, new_state}, new_state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
   end
 
   def handle_call(:subscribe, {pid, _}, state) do

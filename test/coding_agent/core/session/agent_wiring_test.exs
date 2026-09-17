@@ -95,6 +95,57 @@ defmodule CodingAgent.Core.Session.AgentWiringTest do
              )
   end
 
+  describe "set_agent/2 (ADR 018 next-slot switch)" do
+    test "switches the agent and its tool restrictions" do
+      start("switch-a", agent: "build")
+      assert {:ok, s} = Session.set_agent("switch-a", "plan")
+
+      assert s.agent.name == "plan"
+      assert "edit" in Permissions.disabled(s.policy)
+      assert "shell" in Permissions.disabled(s.policy)
+    end
+
+    test "switching back does not compound restrictions" do
+      start("switch-b", agent: "plan")
+      {:ok, _} = Session.set_agent("switch-b", "build")
+      {:ok, s} = Session.set_agent("switch-b", "plan")
+
+      # exactly plan's four tools, not plan-on-plan accumulation
+      assert Enum.sort(Permissions.disabled(s.policy)) ==
+               ["edit", "git", "shell", "write_file"]
+    end
+
+    test "clearing the agent restores the base policy" do
+      start("switch-c", agent: "plan")
+      {:ok, s} = Session.set_agent("switch-c", nil)
+
+      assert s.agent == nil
+      assert Permissions.disabled(s.policy) == []
+    end
+
+    test "the system prompt follows the agent" do
+      start("switch-d", agent: "build")
+      {:ok, s} = Session.set_agent("switch-d", "plan")
+
+      assert system_text_of(s) =~ "planning agent"
+    end
+
+    test "an unknown agent returns an error and leaves the state alone" do
+      start("switch-e", agent: "build")
+      assert {:error, {:unknown_agent, "nope", _}} = Session.set_agent("switch-e", "nope")
+
+      {:ok, s} = Session.state("switch-e")
+      assert s.agent.name == "build"
+    end
+  end
+
+  defp system_text_of(state) do
+    state.context
+    |> ReqLLM.Context.to_list()
+    |> Enum.find(&(&1.role == :system))
+    |> system_text()
+  end
+
   defp system_text(%ReqLLM.Message{content: parts}) when is_list(parts) do
     Enum.map_join(parts, "", fn
       %ReqLLM.Message.ContentPart{text: t} -> t || ""

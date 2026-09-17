@@ -36,6 +36,7 @@ defmodule CodingAgent.UI.Keymap do
           | :scroll_up
           | :scroll_down
           | :toggle_tool_output
+          | :switch_agent
           | :approve
           | :edit
           | :reject
@@ -69,6 +70,10 @@ defmodule CodingAgent.UI.Keymap do
       # found live — the owner types t in messages). The bridge emits
       # termbox names for ctrl chords: :ctrl_t, mod :none.
       toggle_tool_output: [key(:ctrl_t)],
+      # switch the primary agent for the NEXT turn (ADR 018): Tab. A turn
+      # in flight keeps its agent; Tab only changes what the next input
+      # starts with.
+      switch_agent: [key(:tab)],
       # interrupt the running turn: while a turn is in flight esc is a
       # DOUBLE press (a lone esc is pressed out of habit in text fields —
       # vim muscle memory); while idle esc is the double-press quit

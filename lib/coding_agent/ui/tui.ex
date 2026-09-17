@@ -284,6 +284,16 @@ defmodule CodingAgent.UI.Tui do
       initial = %{
         session_id: effective_id,
         model: session_model,
+        # ADR 018 two slots:
+        #   running_agent  — what is executing the ACTIVE turn (the
+        #                    session's resolved definition; a subagent
+        #                    later). nil = no agent.
+        #   next_agent     — what the NEXT input starts with. Tab cycles
+        #                    the primary agents; a running turn keeps its
+        #                    own agent, so the two can differ.
+        running_agent: session_agent(effective_id),
+        next_agent: session_agent(effective_id),
+        primary_agents: primary_agent_names(),
         session_usage:
           (restored && Map.get(restored, :usage)) ||
             %{input_tokens: 0, output_tokens: 0, cost: nil},
@@ -1174,6 +1184,9 @@ defmodule CodingAgent.UI.Tui do
         state = toggle_last_tool(state)
         state = clamp_scroll_now(state)
         {:noreply, state}
+
+      :switch_agent ->
+        {:noreply, switch_agent(state)}
 
       :scroll_up ->
         # clamp at the top: an offset past the max inflates silently
@@ -2200,6 +2213,17 @@ defmodule CodingAgent.UI.Tui do
         Text.Span.new(String.slice(state.session_id, 0, 22), style: %Style{fg: :white})
       ]),
       Text.Line.new([Text.Span.new("", style: %Style{})]),
+      Text.Line.new([Text.Span.new("agent", style: %Style{fg: :dark_gray})]),
+      Text.Line.new([
+        Text.Span.new("running: ", style: %Style{fg: :dark_gray}),
+        Text.Span.new(Map.get(state, :running_agent) || "default", style: %Style{fg: :white})
+      ]),
+      Text.Line.new([
+        Text.Span.new("next:    ", style: %Style{fg: :dark_gray}),
+        Text.Span.new(Map.get(state, :next_agent) || "default", style: %Style{fg: :cyan}),
+        Text.Span.new("  (tab)", style: %Style{fg: :dark_gray})
+      ]),
+      Text.Line.new([Text.Span.new("", style: %Style{})]),
       Text.Line.new([Text.Span.new("model", style: %Style{fg: :dark_gray})]),
       Text.Line.new([
         Text.Span.new(String.slice(model || "?", 0, 22), style: %Style{fg: :white})
@@ -2270,6 +2294,71 @@ defmodule CodingAgent.UI.Tui do
 
   defp fmt_k(n) when n < 1000, do: "#{n}"
   defp fmt_k(n), do: "#{trunc(n / 100) / 10}k"
+
+  # -- Agent slots (ADR 018) ---------------------------------------------------
+
+  # The session's current agent name, or nil.
+  defp session_agent(id) do
+    case Session.state(id) do
+      {:ok, %{agent: %{name: name}}} -> name
+      _ -> nil
+    end
+  end
+
+  # The primary agents available to switch between (Tab). Sourced from the
+  # definitions; on any load error we fall back to no switching rather
+  # than crashing the UI (the session itself raises on a bad definition,
+  # so a broken set never reaches here).
+  defp primary_agent_names do
+    case CodingAgent.Core.Agent.load(File.cwd!()) do
+      {:ok, agents} ->
+        agents |> Enum.filter(&(&1.mode == :primary)) |> Enum.map(& &1.name)
+
+      {:error, _} ->
+        []
+    end
+  rescue
+    _ -> []
+  end
+
+  # Tab: cycle next_agent through the primary agents (and, at the end,
+  # back to the session default = nil). A running turn keeps its own
+  # agent; only the next input changes, via Session.set_agent/2.
+  defp switch_agent(state) do
+    case state.primary_agents do
+      [] ->
+        status_note(state, "no primary agents to switch")
+
+      names ->
+        current = state.next_agent
+        next = next_agent_name(names, current)
+
+        case Session.set_agent(state.session_id, next) do
+          {:ok, _} ->
+            # the session is idle here (Tab is an input-area key), so the
+            # running slot follows the switch; when a turn later starts,
+            # the status handler refreshes running_agent from the session.
+            status_note(
+              %{state | next_agent: next, running_agent: next},
+              "agent → #{next || "default"}"
+            )
+
+          {:error, reason} ->
+            status_note(state, "agent switch failed: #{inspect(reason)}")
+        end
+    end
+  end
+
+  # nil -> first, name -> next, last -> nil (so the default is reachable).
+  defp next_agent_name(names, nil), do: hd(names)
+
+  defp next_agent_name(names, current) do
+    case Enum.find_index(names, &(&1 == current)) do
+      nil -> hd(names)
+      i when i == length(names) - 1 -> nil
+      i -> Enum.at(names, i + 1)
+    end
+  end
 
   defp status_widget(state) do
     note = Map.get(state, :menu_note)

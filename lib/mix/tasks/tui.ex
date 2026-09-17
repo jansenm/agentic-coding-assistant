@@ -30,7 +30,10 @@ defmodule Mix.Tasks.Tui do
     Mix.shell().info("logs: #{log_path}")
 
     {opts, args} =
-      OptionParser.parse!(args, strict: [resume: :string], aliases: [r: :resume])
+      OptionParser.parse!(args,
+        strict: [resume: :string, agent: :string],
+        aliases: [r: :resume]
+      )
 
     prompt =
       case args do
@@ -41,6 +44,7 @@ defmodule Mix.Tasks.Tui do
     tui_opts =
       [initial_prompt: prompt, scope_root: File.cwd!(), mouse_capture: true]
       |> maybe_resume(opts[:resume])
+      |> maybe_agent(opts[:agent])
 
     case CodingAgent.model() do
       nil ->
@@ -75,6 +79,9 @@ defmodule Mix.Tasks.Tui do
 
   defp maybe_resume(tui_opts, nil), do: tui_opts
   defp maybe_resume(tui_opts, id), do: Keyword.put(tui_opts, :resume_id, id)
+
+  defp maybe_agent(tui_opts, nil), do: Keyword.put(tui_opts, :agent, "build")
+  defp maybe_agent(tui_opts, name), do: Keyword.put(tui_opts, :agent, name)
 
   # Minimal :logger file handler (OTP logger, not the deprecated
   # Logger backends): one line per event, no truncation games.
