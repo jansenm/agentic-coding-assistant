@@ -26,6 +26,7 @@ defmodule CodingAgent.Core.Session do
   require Logger
 
   alias CodingAgent.Core.Permissions
+  alias CodingAgent.Core.Sandbox
   alias CodingAgent.Core.Tools.Shell
   alias CodingAgent.Core.UserConfig
   alias CodingAgent.Core.Interrupt
@@ -602,13 +603,7 @@ defmodule CodingAgent.Core.Session do
         Enum.reduce(rest, {[], [], []}, fn call, {auto, pending, denied} ->
           {_id, name, args} = call_parts(call)
 
-          decision =
-            Permissions.effective(
-              state.policy,
-              tool_name(name),
-              call_rel_path(state, args),
-              "default"
-            )
+          decision = effective_decision(state, name, args)
 
           {id, _, _} = call_parts(call)
           decisions_log(state, id, decision)
@@ -748,6 +743,38 @@ defmodule CodingAgent.Core.Session do
   end
 
   defp call_rel_path(_state, _args), do: ""
+
+  # The gate decision for one call, with the ADR 015 confinement rule on
+  # top of the plain policy lookup.
+  #
+  # An explicit policy entry (allow/ask/deny) always wins: the user's own
+  # choice is never overridden. Only the CLASS DEFAULT `ask` for `shell`
+  # yields to confinement — when a real sandbox is active, shell is
+  # allow-by-default inside the profile. Two escalations re-enable the
+  # prompt even then: the agent asking for the network, or for git write
+  # (coarse booleans it states, never inferred from command text).
+  defp effective_decision(state, name, args) do
+    tool = tool_name(name)
+    rel_path = call_rel_path(state, args)
+
+    case Permissions.matching(state.policy, tool, rel_path) do
+      {:ok, decision} ->
+        decision
+
+      :no_match ->
+        if confinement_allows?(tool, args) do
+          :allow
+        else
+          Permissions.default_for(tool)
+        end
+    end
+  end
+
+  defp confinement_allows?("shell", args) do
+    Sandbox.confines?() and not Shell.escalated?(args)
+  end
+
+  defp confinement_allows?(_tool, _args), do: false
 
   defp execute_tools(state, calls) do
     tools = current_tools(state)

@@ -241,6 +241,18 @@ defmodule CodingAgent.Core.Permissions do
     if tool in @allow_class, do: :allow, else: :ask
   end
 
+  @doc """
+  The decision from an explicit policy entry for `tool`/`rel_path`, or
+  `:no_match` when only the class default would apply. The gate needs the
+  distinction: an explicit `ask` (or `deny`) is the user's own choice and
+  is never overridden, while the class-default `ask` for `shell` yields to
+  confinement (ADR 015).
+  """
+  @spec matching(t(), String.t(), String.t()) :: {:ok, decision()} | :no_match
+  def matching(policy, tool, rel_path) do
+    matching_entry(policy, tool, rel_path)
+  end
+
   defp matching_entry(policy, tool, rel_path) do
     policy.entries
     |> Map.get(tool, %{})

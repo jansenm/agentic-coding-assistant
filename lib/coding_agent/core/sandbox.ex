@@ -46,6 +46,13 @@ defmodule CodingAgent.Core.Sandbox do
   @callback available?() :: boolean()
 
   @doc """
+  Whether this implementation actually confines the process. `None` is
+  `false`: it is a no-op, so the permission gate must keep asking. Only a
+  real sandbox lets `shell` become allow-by-default (ADR 015).
+  """
+  @callback confines?() :: boolean()
+
+  @doc """
   Turns a command + profile into `{executable, argv}` for `Port.open/2`.
 
   Returns `{:error, reason}` when the profile cannot be honoured; the
@@ -64,6 +71,18 @@ defmodule CodingAgent.Core.Sandbox do
   @spec impl() :: module()
   def impl do
     Application.get_env(:coding_agent, :sandbox, @default)
+  end
+
+  @doc """
+  Whether the *active* implementation confines and is usable. This is the
+  gate's question: `shell` may be allow-by-default only when it is true.
+  """
+  @spec confines?() :: boolean()
+  def confines? do
+    impl = impl()
+
+    function_exported?(impl, :confines?, 0) and impl.confines?() and
+      (not function_exported?(impl, :available?, 0) or impl.available?())
   end
 
   @doc """

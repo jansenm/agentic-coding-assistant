@@ -4,36 +4,37 @@ defmodule CodingAgent.Core.Tools.Shell do
   @max_timeout 1800
 
   @moduledoc """
-  Shell execution tool (slice 2c), per ADR 010: always-ask in v1.
+  Shell execution tool (slice 2c). Under ADR 015 the command runs inside a
+  sandbox (`CodingAgent.Core.Sandbox`); with a confining sandbox active it
+  is allow-by-default *inside the profile*, because its worst-case effect
+  is bounded by construction rather than guessed from command text. With
+  no confining sandbox (`Sandbox.None`, the default) it falls back to the
+  ADR 010 behaviour: every call goes through the permission gate.
 
-  No path containment on purpose — a shell trivially bypasses file-tool
-  checks, which is exactly why every call goes through the permission
-  gate. The gate surfaces the requested timeout at the soft cap
+  Two coarse **escalations** re-enable the prompt even under confinement,
+  and the agent must *state* them — they are never inferred from the
+  command text (ADR 015):
+
+    * `network: true` — may this call use the network (default false);
+    * `git_write: true` — may this call write `.git` (default false; for
+      scripts that commit, e.g. a release script).
+
+  The gate surfaces the requested timeout at the soft cap
   (#{@default_timeout}s) so the user can edit it before approval; the
-  hard cap (#{@max_timeout}s) refuses longer runs and tells the model
-  to split the work.
+  hard cap (#{@max_timeout}s) refuses longer runs and tells the model to
+  split the work.
 
-  Command blacklist (2026-09-15 amendment 2, same day as the
-  allow-class amendment): the gate's real cost in live sessions was not
-  danger but *y-fatigue* — most gated calls were grep-style read
-  duplicates of native tools. So the direction is a DENY-list, checked
-  before the gate: a shell call whose leading program duplicates a
-  native tool denies with steering ("please use the grep tool") — the
-  native grep is allow-by-policy, so this saves the user a keystroke
-  AND tells the model the better tool in the same round. v1 covers the
-  grep family (grep/sg/rg/ag/ack); sed → edit/read_file, cat →
-  read_file, ls → list_dir are one-line follow-ups.
-
-  The check is deliberately shallow (first command word; basename of an
-  absolute path) and honest about scope: guidance at the gate, not
-  containment — `git grep`, `awk`, `find -exec`, `bash -c` pass, and a
-  malicious agent is not stoppable by a word list (the human still sees
-  the full command on every non-denied call).
+  Command blacklist (2026-09-15 amendment 2): the gate's real cost was
+  *y-fatigue* — most gated calls were grep-style read duplicates of
+  native tools. So the direction is a DENY-list, checked before the gate:
+  a shell call whose leading program duplicates a native tool denies with
+  steering ("please use the grep tool"). Under confinement this is UX
+  steering only, never a boundary.
 
   Output: stdout+stderr combined (merged through /bin/sh), exit code,
-  wall time. On truncation head and tail are kept (tail matters for
-  test summaries). On timeout the process is killed, and whatever output
-  was captured so far is returned together with a timeout note.
+  wall time. On truncation head and tail are kept (tail matters for test
+  summaries). On timeout the process is killed, and whatever output was
+  captured so far is returned together with a timeout note.
   """
 
   alias CodingAgent.Core.Sandbox
@@ -51,13 +52,25 @@ defmodule CodingAgent.Core.Tools.Shell do
           "Captures stdout and stderr, and reports the exit code. Give long " <>
           "commands a suitable timeout_secs (seconds); the hard cap is " <>
           "#{@max_timeout}s — split longer work into several commands. " <>
-          "Subject to the permission policy; requires approval.",
+          "The command runs confined (filesystem limited to the scope and " <>
+          "configured caches, no network); it cannot write .git unless you " <>
+          "request git_write. These escalations require approval.",
       parameter_schema: [
         command: [type: :string, required: true, doc: "The shell command to run"],
         timeout_secs: [
           type: :integer,
           required: false,
           doc: "Maximum runtime in seconds (default #{@default_timeout}, max #{@max_timeout})"
+        ],
+        network: [
+          type: :boolean,
+          required: false,
+          doc: "Escalation: allow network access for this call (default false)"
+        ],
+        git_write: [
+          type: :boolean,
+          required: false,
+          doc: "Escalation: allow writing .git for this call (default false)"
         ]
       ],
       callback: fn args -> execute(scope, args) end
@@ -94,6 +107,45 @@ defmodule CodingAgent.Core.Tools.Shell do
   @doc "The soft cap: requested timeouts above this are flagged at the gate."
   def soft_cap, do: @default_timeout
 
+  @doc """
+  The requested escalations for a call (ADR 015): `:network` and
+  `:git_write`, as coarse booleans the agent states. Returns the list of
+  granted escalation names, e.g. `[:network, :git_write]`.
+  """
+  @spec escalations(term()) :: [atom()]
+  def escalations(args) when is_map(args) do
+    [:network, :git_write]
+    |> Enum.filter(fn key -> truthy?(Map.get(args, key) || Map.get(args, to_string(key))) end)
+  end
+
+  def escalations(_args), do: []
+
+  @doc """
+  Whether a call requests any escalation. The gate asks for these even
+  when confinement would otherwise allow the call.
+  """
+  @spec escalated?(term()) :: boolean()
+  def escalated?(args), do: escalations(args) != []
+
+  @doc """
+  Builds the sandbox profile for a call from the scope root and the
+  escalations the agent requested. Public so the gate and tests share one
+  source of truth.
+  """
+  @spec profile(String.t(), term()) :: CodingAgent.Core.Sandbox.profile()
+  def profile(root, args) do
+    %{
+      root: root,
+      network: truthy?(Map.get(args, :network) || Map.get(args, "network")),
+      git_write: truthy?(Map.get(args, :git_write) || Map.get(args, "git_write"))
+    }
+  end
+
+  defp truthy?(true), do: true
+  defp truthy?("true"), do: true
+  defp truthy?(1), do: true
+  defp truthy?(_), do: false
+
   # -- Execution --------------------------------------------------------------
 
   defp execute(scope, args) do
@@ -105,7 +157,7 @@ defmodule CodingAgent.Core.Tools.Shell do
 
       true ->
         with {:ok, secs} <- effective_timeout(args) do
-          run(command, Path.expand(scope.root), secs)
+          run(command, Path.expand(scope.root), secs, args)
         end
     end
   end
@@ -169,10 +221,10 @@ defmodule CodingAgent.Core.Tools.Shell do
 
   defp leading_program(_), do: :error
 
-  defp run(command, cwd, secs) do
+  defp run(command, cwd, secs, args) do
     started = System.monotonic_time(:millisecond)
 
-    case exec(command, cwd, secs) do
+    case exec(command, cwd, secs, args) do
       {:ok, output, status} ->
         elapsed = System.monotonic_time(:millisecond) - started
         {:ok, format(command, output, {:exit, status}, elapsed, secs)}
@@ -200,8 +252,8 @@ defmodule CodingAgent.Core.Tools.Shell do
   # exactly as before; with `Sandbox.Bwrap` it is bwrap wrapping the
   # command. `{:cd, cwd}` still applies to whatever process we spawn;
   # a sandbox that needs the scope root takes it from the profile.
-  defp exec(command, cwd, secs) do
-    profile = %{root: cwd}
+  defp exec(command, cwd, secs, args) do
+    profile = profile(cwd, args)
 
     case Sandbox.wrap(command, profile) do
       {:ok, executable, argv} ->

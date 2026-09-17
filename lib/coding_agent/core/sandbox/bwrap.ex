@@ -49,6 +49,9 @@ defmodule CodingAgent.Core.Sandbox.Bwrap do
     probe()
   end
 
+  @impl true
+  def confines?, do: true
+
   @doc """
   Functional probe, memoised per OS process: run a trivial command through
   bwrap from this VM and see it succeed. Detects a missing binary, missing

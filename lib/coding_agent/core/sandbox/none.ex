@@ -19,6 +19,9 @@ defmodule CodingAgent.Core.Sandbox.None do
   def available?, do: true
 
   @impl true
+  def confines?, do: false
+
+  @impl true
   def wrap(command, _profile) when is_binary(command) do
     {:ok, "/bin/sh", ["-c", command]}
   end
