@@ -57,7 +57,7 @@ defmodule CodingAgent.Core.SandboxTest do
 
     test "wraps the command as /bin/sh -c, ignoring the profile" do
       assert {:ok, "/bin/sh", ["-c", "rm -rf /"]} =
-               None.wrap("rm -rf /", %{root: "/repo", network: true, git_write: true})
+               None.wrap({:shell, "rm -rf /"}, %{root: "/repo", network: true, git_write: true})
     end
 
     test "id is :none" do

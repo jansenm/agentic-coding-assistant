@@ -5,7 +5,8 @@ defmodule CodingAgent.Core.Sandbox.GateTest do
   alias CodingAgent.Core.Sandbox
   alias CodingAgent.Core.Session
 
-  @tmp_root System.tmp_dir!() |> Path.join("agent-sandbox-gate-#{System.unique_integer([:positive])}")
+  @tmp_root System.tmp_dir!()
+            |> Path.join("agent-sandbox-gate-#{System.unique_integer([:positive])}")
 
   # A confining sandbox that still runs (wraps as /bin/sh) so the gate's
   # auto-run path can be exercised without a real bwrap. This is what
@@ -23,7 +24,9 @@ defmodule CodingAgent.Core.Sandbox.GateTest do
     def confines?, do: true
 
     @impl true
-    def wrap(command, _profile), do: {:ok, "/bin/sh", ["-c", command]}
+    def wrap({:shell, command}, _profile), do: {:ok, "/bin/sh", ["-c", command]}
+
+    def wrap({:exec, file, args}, _profile), do: {:ok, file, args}
   end
 
   setup_all do

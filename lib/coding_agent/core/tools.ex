@@ -19,6 +19,7 @@ defmodule CodingAgent.Core.Tools do
   """
 
   alias CodingAgent.Core.Tools.Edit
+  alias CodingAgent.Core.Tools.Git
   alias CodingAgent.Core.Tools.Glob
   alias CodingAgent.Core.Tools.Grep
   alias CodingAgent.Core.Tools.ListDir
@@ -48,14 +49,23 @@ defmodule CodingAgent.Core.Tools do
   @doc """
   State-changing tools; always executed behind the permission gate.
 
-  `shell` has no path containment by design (ADR 010): a shell
-  trivially bypasses file checks, so it is gated on *every* call —
-  there is no policy way to allow it in v1.
+  `shell` has no path containment by design (ADR 010): a shell trivially
+  bypasses file checks, so it is gated — though under ADR 015 confinement
+  the gate allows it by default. `git` runs with `.git` writable through
+  its own sandbox profile; it is allow-by-default only under confinement,
+  and policy-configurable either way.
   """
   @spec gated(scope() | nil) :: [ReqLLM.Tool.t()]
   def gated(scope \\ nil) do
     scope = scope || default_scope()
-    [WriteFile.tool(scope), Edit.tool(scope), Shell.tool(scope), WebFetch.tool(scope)]
+
+    [
+      WriteFile.tool(scope),
+      Edit.tool(scope),
+      Shell.tool(scope),
+      Git.tool(scope),
+      WebFetch.tool(scope)
+    ]
   end
 
   @doc "All tools a session carries (read-only + gated)."

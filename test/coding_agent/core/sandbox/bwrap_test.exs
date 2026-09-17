@@ -21,28 +21,28 @@ defmodule CodingAgent.Core.Sandbox.BwrapTest do
 
   describe "argv/3 (pure)" do
     test "always mounts the root read-only first", %{root: root} do
-      argv = Bwrap.argv(root, "echo hi", %{root: root})
+      argv = Bwrap.argv(root, {:shell, "echo hi"}, %{root: root})
 
       assert Enum.take(argv, 3) == ["--ro-bind", "/", "/"]
       assert triple_in(argv, {"--bind", root, root})
     end
 
     test "unshares all namespaces and keeps the network off by default", %{root: root} do
-      argv = Bwrap.argv(root, "echo hi", %{root: root})
+      argv = Bwrap.argv(root, {:shell, "echo hi"}, %{root: root})
 
       assert "--unshare-all" in argv
       refute "--share-net" in argv
     end
 
     test "grants the network only when the profile says so", %{root: root} do
-      argv = Bwrap.argv(root, "echo hi", %{root: root, network: true})
+      argv = Bwrap.argv(root, {:shell, "echo hi"}, %{root: root, network: true})
 
       assert "--share-net" in argv
     end
 
     test "re-binds an existing .git read-only for plain shell", %{root: root} do
       init_git!(root)
-      argv = Bwrap.argv(root, "echo hi", %{root: root})
+      argv = Bwrap.argv(root, {:shell, "echo hi"}, %{root: root})
       git = Path.join(root, ".git")
 
       assert triple_in(argv, {"--ro-bind", git, git})
@@ -50,7 +50,7 @@ defmodule CodingAgent.Core.Sandbox.BwrapTest do
 
     test "leaves .git writable when git_write is granted", %{root: root} do
       init_git!(root)
-      argv = Bwrap.argv(root, "echo hi", %{root: root, git_write: true})
+      argv = Bwrap.argv(root, {:shell, "echo hi"}, %{root: root, git_write: true})
       git = Path.join(root, ".git")
 
       refute triple_in(argv, {"--ro-bind", git, git})
@@ -62,14 +62,14 @@ defmodule CodingAgent.Core.Sandbox.BwrapTest do
       File.mkdir_p!(dir)
       File.write!(file, "secret")
 
-      argv = Bwrap.argv(root, "echo hi", %{root: root, hide: [dir, file]})
+      argv = Bwrap.argv(root, {:shell, "echo hi"}, %{root: root, hide: [dir, file]})
 
       assert triple_in(argv, {"--tmpfs", dir})
       assert triple_in(argv, {"--ro-bind", "/dev/null", file})
     end
 
     test "sets resource caps in the shell prelude", %{root: root} do
-      argv = Bwrap.argv(root, "echo hi", %{root: root})
+      argv = Bwrap.argv(root, {:shell, "echo hi"}, %{root: root})
       command = List.last(argv)
 
       assert command =~ "ulimit -u 512"
@@ -83,7 +83,7 @@ defmodule CodingAgent.Core.Sandbox.BwrapTest do
       File.mkdir_p!(cache)
       missing = Path.join(root, "nope")
 
-      argv = Bwrap.argv(root, "echo hi", %{root: root, rw: [cache, missing]})
+      argv = Bwrap.argv(root, {:shell, "echo hi"}, %{root: root, rw: [cache, missing]})
 
       assert triple_in(argv, {"--bind", cache, cache})
       refute triple_in(argv, {"--bind", missing, missing})
@@ -93,13 +93,13 @@ defmodule CodingAgent.Core.Sandbox.BwrapTest do
       ro = Path.join(root, "readonly")
       File.mkdir_p!(ro)
 
-      argv = Bwrap.argv(root, "echo hi", %{root: root, ro: [ro]})
+      argv = Bwrap.argv(root, {:shell, "echo hi"}, %{root: root, ro: [ro]})
 
       assert triple_in(argv, {"--ro-bind", ro, ro})
     end
 
     test "scratch tmpfs comes before the scope bind so a scope under /tmp survives", %{root: root} do
-      argv = Bwrap.argv(root, "echo hi", %{root: root})
+      argv = Bwrap.argv(root, {:shell, "echo hi"}, %{root: root})
 
       tmpfs_at = Enum.find_index(argv, &(&1 == "/tmp"))
       bind_at = Enum.find_index(argv, &(&1 == root))
@@ -181,6 +181,52 @@ defmodule CodingAgent.Core.Sandbox.BwrapTest do
 
         assert {:ok, _out} = ReqLLM.Tool.execute(tool, %{"command" => "rm -rf .git"})
         assert File.dir?(Path.join(root, ".git"))
+      end
+    end
+
+    test "the git tool commits under bwrap (git_write profile)", %{root: root} = ctx do
+      if ctx[:skip] do
+        :ok
+      else
+        init_git!(root)
+        File.write!(Path.join(root, "app.txt"), "v1\n")
+
+        Application.put_env(:coding_agent, :sandbox, Bwrap)
+        tool = CodingAgent.Core.Tools.Git.tool(%{root: root})
+
+        assert {:ok, out} =
+                 ReqLLM.Tool.execute(tool, %{
+                   "args" => ["add", "app.txt"]
+                 })
+
+        assert out =~ "exit 0"
+
+        assert {:ok, out} =
+                 ReqLLM.Tool.execute(tool, %{
+                   "args" => ["commit", "-m", "by git tool"]
+                 })
+
+        assert out =~ "exit 0"
+        {log, 0} = System.cmd("git", ~w(log --oneline), cd: root, stderr_to_stdout: true)
+        assert log =~ "by git tool"
+      end
+    end
+
+    test "git argv is not re-parsed by a shell inside the sandbox", %{root: root} = ctx do
+      if ctx[:skip] do
+        :ok
+      else
+        init_git!(root)
+        marker = Path.join(root, "injected-#{System.unique_integer()}")
+        Application.put_env(:coding_agent, :sandbox, Bwrap)
+        tool = CodingAgent.Core.Tools.Git.tool(%{root: root})
+
+        assert {:ok, _out} =
+                 ReqLLM.Tool.execute(tool, %{
+                   "args" => ["log", "--oneline", "; touch #{marker}"]
+                 })
+
+        refute File.exists?(marker)
       end
     end
   end

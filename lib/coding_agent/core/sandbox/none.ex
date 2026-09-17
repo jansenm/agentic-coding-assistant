@@ -22,7 +22,15 @@ defmodule CodingAgent.Core.Sandbox.None do
   def confines?, do: false
 
   @impl true
-  def wrap(command, _profile) when is_binary(command) do
+  def wrap({:shell, command}, _profile) when is_binary(command) do
     {:ok, "/bin/sh", ["-c", command]}
+  end
+
+  def wrap({:exec, file, args}, _profile) when is_binary(file) and is_list(args) do
+    # Port.open needs an absolute path; resolve via PATH like a shell would.
+    case System.find_executable(file) do
+      nil -> {:error, {:executable_not_found, file}}
+      exe -> {:ok, exe, args}
+    end
   end
 end

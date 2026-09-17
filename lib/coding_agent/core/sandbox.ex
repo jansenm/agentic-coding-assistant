@@ -39,6 +39,16 @@ defmodule CodingAgent.Core.Sandbox do
           optional(:hide) => [String.t()]
         }
 
+  # A command spec the sandbox knows how to launch.
+  #
+  #   * {:shell, command}   — run `command` through a shell (`shell` tool).
+  #   * {:exec, file, args} — run `file` with `args` directly, no shell
+  #     (the `git` tool). This matters: joining a list of agent arguments
+  #     into a shell string would make them injectable (`["-m", "x; rm
+  #     -rf /"]`), so the sandbox must not introduce a shell around a
+  #     list that was never one.
+  @type spec :: {:shell, String.t()} | {:exec, String.t(), [String.t()]}
+
   @doc "Stable identifier for the implementation."
   @callback id() :: atom()
 
@@ -48,18 +58,19 @@ defmodule CodingAgent.Core.Sandbox do
   @doc """
   Whether this implementation actually confines the process. `None` is
   `false`: it is a no-op, so the permission gate must keep asking. Only a
-  real sandbox lets `shell` become allow-by-default (ADR 015).
+  real sandbox lets `shell`/`git` become allow-by-default (ADR 015).
   """
   @callback confines?() :: boolean()
 
   @doc """
-  Turns a command + profile into `{executable, argv}` for `Port.open/2`.
+  Turns a command spec + profile into `{executable, argv}` for
+  `Port.open/2`.
 
   Returns `{:error, reason}` when the profile cannot be honoured; the
   caller must treat that as a refused call, never fall back to an
   unconfined run.
   """
-  @callback wrap(command :: String.t(), profile :: profile()) ::
+  @callback wrap(spec(), profile()) ::
               {:ok, executable :: String.t(), argv :: [String.t()]} | {:error, term()}
 
   @default CodingAgent.Core.Sandbox.None
@@ -86,12 +97,21 @@ defmodule CodingAgent.Core.Sandbox do
   end
 
   @doc """
-  Wraps `command` with the active implementation. Convenience over
-  `impl/0` + `wrap/2` for the Shell call site.
+  Wraps `command` as a shell command with the active implementation.
   """
-  @spec wrap(String.t(), profile()) ::
+  @spec wrap(spec(), profile()) ::
           {:ok, String.t(), [String.t()]} | {:error, term()}
-  def wrap(command, profile) when is_binary(command) and is_map(profile) do
-    impl().wrap(command, profile)
+  def wrap(spec, profile) do
+    impl().wrap(spec, profile)
   end
+
+  @doc "Convenience: wrap a shell command string."
+  @spec shell(String.t(), profile()) :: {:ok, String.t(), [String.t()]} | {:error, term()}
+  def shell(command, profile) when is_binary(command), do: wrap({:shell, command}, profile)
+
+  @doc "Convenience: wrap a direct executable + argv (no shell)."
+  @spec exec(String.t(), [String.t()], profile()) ::
+          {:ok, String.t(), [String.t()]} | {:error, term()}
+  def exec(file, args, profile) when is_binary(file) and is_list(args),
+    do: wrap({:exec, file, args}, profile)
 end

@@ -778,6 +778,14 @@ defmodule CodingAgent.Core.Session do
     Sandbox.confines?() and not Shell.escalated?(args)
   end
 
+  # git always runs with `.git` writable and confines the process, so it
+  # is allow-by-default under a real sandbox. No escalations: the network
+  # stays off and the scope is the only writable tree. A user who wants
+  # every git call reviewed writes `[permissions.git] "*" = "ask"`.
+  defp confinement_allows?("git", _args) do
+    Sandbox.confines?()
+  end
+
   defp confinement_allows?(_tool, _args), do: false
 
   defp execute_tools(state, calls) do

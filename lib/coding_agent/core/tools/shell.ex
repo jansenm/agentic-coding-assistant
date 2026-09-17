@@ -37,11 +37,8 @@ defmodule CodingAgent.Core.Tools.Shell do
   captured so far is returned together with a timeout note.
   """
 
-  alias CodingAgent.Core.Sandbox
+  alias CodingAgent.Core.Exec
   alias CodingAgent.Core.Tools
-
-  @max_bytes 256 * 1024
-  @tail_bytes 128 * 1024
 
   @spec tool(Tools.scope()) :: ReqLLM.Tool.t()
   def tool(scope) do
@@ -235,15 +232,16 @@ defmodule CodingAgent.Core.Tools.Shell do
 
   defp run(scope, command, cwd, secs, args) do
     started = System.monotonic_time(:millisecond)
+    profile = profile(scope, args)
 
-    case exec(scope, command, cwd, secs, args) do
+    case Exec.run({:shell, command}, cwd, secs, profile) do
       {:ok, output, status} ->
         elapsed = System.monotonic_time(:millisecond) - started
-        {:ok, format(command, output, {:exit, status}, elapsed, secs)}
+        {:ok, Exec.format(command, output, {:exit, status}, elapsed, secs)}
 
       {:timeout, partial} ->
         elapsed = System.monotonic_time(:millisecond) - started
-        {:ok, format(command, partial, :timeout, elapsed, secs)}
+        {:ok, Exec.format(command, partial, :timeout, elapsed, secs)}
 
       {:error, reason} ->
         Tools.error("cannot run #{inspect(command)}: #{:file.format_error(reason)}")
@@ -251,142 +249,6 @@ defmodule CodingAgent.Core.Tools.Shell do
       {:sandbox_error, reason} ->
         Tools.error("cannot confine #{inspect(command)}: #{inspect(reason)}")
     end
-  end
-
-  # Port loop: /bin/sh merges stderr into stdout; `exit_status` delivers
-  # the code, then the port sends :closed. A command usually ends up as
-  # the sh process itself (sh -c execs its last command), so killing the
-  # port's os_pid kills the command; process groups are deliberately out
-  # of scope for v1 (documented in about-tools).
-  #
-  # The executable and argv come from `CodingAgent.Core.Sandbox` (ADR
-  # 015): with the default `Sandbox.None` this is `/bin/sh -c <command>`
-  # exactly as before; with `Sandbox.Bwrap` it is bwrap wrapping the
-  # command. `{:cd, cwd}` still applies to whatever process we spawn;
-  # a sandbox that needs the scope root takes it from the profile.
-  defp exec(scope, command, cwd, secs, args) do
-    profile = profile(scope, args)
-
-    case Sandbox.wrap(command, profile) do
-      {:ok, executable, argv} ->
-        port =
-          Port.open({:spawn_executable, executable}, [
-            :binary,
-            :exit_status,
-            :stderr_to_stdout,
-            :hide,
-            {:args, argv},
-            {:cd, cwd}
-          ])
-
-        deadline = System.monotonic_time(:millisecond) + secs * 1000
-        collect(port, deadline, "")
-
-      {:error, reason} ->
-        {:sandbox_error, reason}
-    end
-  end
-
-  # Ports deliver :exit_status then :closed. We never Port.close/1 by
-  # hand on a live port: once the os process ends, the port closes
-  # itself, and closing an already-closed port raises :badarg.
-  defp collect(port, deadline, buf) do
-    receive do
-      {^port, {:data, data}} ->
-        collect(port, deadline, [buf | data])
-
-      {^port, {:exit_status, code}} ->
-        wait_closed(port)
-        {:ok, truncate(buf), code}
-
-      {^port, :closed} ->
-        # os process died without a status delivery (e.g. killed by us
-        # earlier or exec failure) — treat as failure signal
-        {:ok, truncate(buf), 1}
-    after
-      remaining = remaining(deadline) ->
-        if remaining <= 0 do
-          kill(port)
-          {:timeout, truncate(buf)}
-        else
-          collect(port, deadline, buf)
-        end
-    end
-  end
-
-  # After :exit_status the port sends :closed on its own; give it a
-  # moment so the next collect iteration doesn't see a dead port, but
-  # never block indefinitely.
-  defp wait_closed(port) do
-    receive do
-      {^port, :closed} ->
-        :ok
-
-      {^port, {:data, _data}} ->
-        wait_closed(port)
-    after
-      50 ->
-        :ok
-    end
-  end
-
-  defp remaining(deadline), do: max(deadline - System.monotonic_time(:millisecond), 0)
-
-  defp kill(port) do
-    case Port.info(port) do
-      nil ->
-        :ok
-
-      info ->
-        os_pid = Keyword.get(info, :os_pid)
-
-        if os_pid do
-          System.cmd("kill", ["-9", to_string(os_pid)], stderr_to_stdout: true)
-        end
-
-        receive do
-          {^port, {:exit_status, _code}} ->
-            wait_closed(port)
-
-          {^port, :closed} ->
-            :ok
-        after
-          250 ->
-            :ok
-        end
-    end
-  end
-
-  defp truncate(chunks) do
-    data = IO.iodata_to_binary(chunks)
-    size = byte_size(data)
-
-    if size <= @max_bytes do
-      data
-    else
-      head = binary_part(data, 0, @max_bytes - @tail_bytes)
-      tail = binary_part(data, size - @tail_bytes, @tail_bytes)
-
-      head <>
-        "\n\n[... output truncated: #{size} bytes total; showing first " <>
-        "#{byte_size(head)} and last #{@tail_bytes} ...]\n\n" <> tail
-    end
-  end
-
-  defp format(command, output, status, elapsed_ms, secs_requested) do
-    status_line =
-      case status do
-        {:exit, 0} -> "exit 0"
-        {:exit, code} -> "exit #{code} (non-zero — the command failed)"
-        :timeout -> "TIMED OUT after #{secs_requested}s (output below is partial)"
-      end
-
-    """
-    $ #{command}
-    #{status_line}, took #{div(elapsed_ms, 1000)}s
-    --- output ---
-    #{if output == "", do: "(no output)", else: output}\
-    """
   end
 
   defp coerce(secs) when is_integer(secs), do: {:ok, secs}

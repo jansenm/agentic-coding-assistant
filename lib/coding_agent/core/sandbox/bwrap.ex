@@ -117,28 +117,29 @@ defmodule CodingAgent.Core.Sandbox.Bwrap do
   end
 
   @impl true
-  def wrap(command, %{root: root} = profile) when is_binary(command) and is_binary(root) do
+  def wrap(spec, %{root: root} = profile) when is_binary(root) do
     root = Path.expand(root)
 
     if File.dir?(root) do
-      {:ok, executable(), argv(root, command, profile)}
+      {:ok, executable(), argv(root, spec, profile)}
     else
       {:error, {:no_scope_root, root}}
     end
   end
 
-  def wrap(_command, _profile), do: {:error, :bad_profile}
+  def wrap(_spec, _profile), do: {:error, :bad_profile}
 
   defp executable do
     System.find_executable(@bwrap) || @bwrap
   end
 
   @doc """
-  Builds the bwrap argv for a command and profile. Public and pure so it
-  can be asserted in tests without running bwrap.
+  Builds the bwrap argv for a command spec and profile. Public and pure so
+  it can be asserted in tests without running bwrap.
   """
-  @spec argv(String.t(), String.t(), CodingAgent.Core.Sandbox.profile()) :: [String.t()]
-  def argv(root, command, profile) do
+  @spec argv(String.t(), CodingAgent.Core.Sandbox.spec(), CodingAgent.Core.Sandbox.profile()) ::
+          [String.t()]
+  def argv(root, spec, profile) do
     root = Path.expand(root)
 
     base = [
@@ -163,7 +164,17 @@ defmodule CodingAgent.Core.Sandbox.Bwrap do
       ["--dev", "/dev", "--proc", "/proc"] ++
       namespace_args(network) ++
       ["--new-session", "--die-with-parent", "--chdir", root] ++
-      ["/bin/sh", "-c", prelude() <> command]
+      inner(spec)
+  end
+
+  # The command launched inside the namespace. Both forms go through
+  # /bin/sh only to apply the rlimits; the exec form then `exec`s the
+  # real program with its argv, so an agent-supplied argument list is
+  # never re-parsed by a shell (no injection from the git tool's args).
+  defp inner({:shell, command}), do: ["/bin/sh", "-c", prelude() <> command]
+
+  defp inner({:exec, file, args}) do
+    ["/bin/sh", "-c", prelude() <> ~s(exec "$@"), "sh", file | args]
   end
 
   # Extra read-write mounts (ADR 015 decision 3): the resolved mount
