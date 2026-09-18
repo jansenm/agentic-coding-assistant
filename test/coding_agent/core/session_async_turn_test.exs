@@ -95,6 +95,10 @@ defmodule CodingAgent.Core.Session.AsyncTurnTest do
     assert {:ok, %State{status: :idle}} = Task.await(second, 2_000)
   end
 
+  # the crash path logs by design (`turn worker crashed` + the Task
+  # report) — capture it so the intentional boom does not look like a
+  # test failure in the run output
+  @tag capture_log: true
   test "a crashing worker fails the turn instead of hanging the caller" do
     id = "async-crash-#{System.unique_integer()}"
 

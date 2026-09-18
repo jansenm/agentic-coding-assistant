@@ -45,6 +45,16 @@ defmodule CodingAgent.UI.Tui do
   @stop_confirm_window 1_500
   @thinking_cap 12
 
+  # Streaming deltas DEFER their render and a timer coalesces them: the
+  # provider emits hundreds of tiny deltas, so painting per delta buried
+  # keys behind a render train (the interaction hang). A delta folds the
+  # text and returns `render?: false`; a separate tick paints at most one
+  # frame per window, so input is handled in the normal loop between
+  # frames instead of waiting behind a render. 60ms reads as live (~16fps)
+  # without letting per-frame cost dominate a long stream.
+  @stream_render_ms 60
+  @stream_render_tick :__stream_render__
+
   # rows the transcript pane loses to chrome: app margin top+bottom (2)
   # + spacing above/below it (2) + input area + status line. Kept in
   # one place so the manual dimension math (mount/poller/resize/clamp)
@@ -161,6 +171,9 @@ defmodule CodingAgent.UI.Tui do
       # (opencode-style) instead of two buffers that force reasoning
       # first; cleared/persisted when the turn's message lands.
       stream: [],
+      # true while a delta landed but its frame has not painted; drives
+      # subscriptions/1 (the stream render throttle)
+      stream_dirty?: false,
       textarea: ExRatatui.textarea_new(),
       history: [],
       history_index: nil,
@@ -330,6 +343,9 @@ defmodule CodingAgent.UI.Tui do
         stop_armed_at: 0,
         # in-flight stream, IN ARRIVAL ORDER (see mount_picker)
         stream: [],
+        # true while a delta has landed but its frame has not been painted;
+        # drives subscriptions/1 (the stream render throttle)
+        stream_dirty?: false,
         textarea: ExRatatui.textarea_new(),
         history: recall,
         history_index: nil,
@@ -1338,6 +1354,7 @@ defmodule CodingAgent.UI.Tui do
           # a fresh turn: no stale esc arm or stream from the previous one
           stop_confirm?: false,
           stream: [],
+          stream_dirty?: false,
           scroll_offset: 0,
           turn_agents: Map.get(state, :turn_agents, []) ++ [next_agent]
       }
@@ -1492,18 +1509,23 @@ defmodule CodingAgent.UI.Tui do
      }}
   end
 
-  # Streaming deltas are COALESCED: fold this delta plus every delta
-  # already queued behind it, then return — the runtime renders once for
-  # the whole burst.
+  # Streaming deltas DEFER their render: fold the delta and return
+  # `render?: false`, so the server processes the next message instead of
+  # painting the growing markdown transcript per delta. A subscription
+  # (subscriptions/1) ticks every @stream_render_ms while a stream is
+  # live and is the ONLY thing that paints it.
   #
-  # Found live: a long reasoning stream emits hundreds of tiny deltas,
-  # and rendering the full markdown transcript per delta froze the UI —
-  # typed keys and ESC sat in the mailbox behind the render train (a
-  # 500-delta burst blocked `:sys.get_state` past 5s). The selective
-  # receive below drains only delta messages; key/terminal events are
-  # left in order and handled next.
+  # Found live: a long reasoning stream emits hundreds of tiny deltas;
+  # rendering per delta buried typed keys and ESC behind a render train
+  # (a 500-delta burst blocked `:sys.get_state` past 5s). The earlier
+  # `drain_deltas` fix peeked the mailbox with `receive … after 0`, which
+  # STILL starved input on a steady trickle (the `after 0` rarely fires
+  # when deltas keep arriving). Deferring the render removes the mailbox
+  # peek entirely: input is handled in the normal loop, and one frame per
+  # window keeps the stream visibly live.
   def handle_info({:agent, {:llm_deltas, delta}}, state) do
-    {:noreply, %{state | stream: drain_deltas(append_stream(state.stream, :assistant, delta), 1)}}
+    state = %{state | stream: append_stream(state.stream, :assistant, delta), stream_dirty?: true}
+    {:noreply, state, %{render?: false}}
   end
 
   def handle_info({:agent, {:status_changed, status}}, state) do
@@ -1555,7 +1577,14 @@ defmodule CodingAgent.UI.Tui do
     transcript = state.transcript ++ persist_stream(state.stream, nil) ++ [{:info, msg}]
 
     {:noreply,
-     %{state | status: :error, stop_confirm?: false, transcript: transcript, stream: []}}
+     %{
+       state
+       | status: :error,
+         stop_confirm?: false,
+         transcript: transcript,
+         stream: [],
+         stream_dirty?: false
+     }}
   end
 
   def handle_info({:agent, {:status_changed, status, _detail}}, state) do
@@ -1606,21 +1635,18 @@ defmodule CodingAgent.UI.Tui do
     # `text` is the authoritative full answer; it is used only when no
     # assistant deltas streamed (non-streamed / resumed turns).
     transcript = state.transcript ++ persist_stream(state.stream, text)
-    {:noreply, %{state | transcript: transcript, stream: []}}
+    {:noreply, %{state | transcript: transcript, stream: [], stream_dirty?: false}}
   end
 
-  # agent thinking: a dim block that interleaves with the answer text in
-  # the order the provider streamed them (see append_stream/3).
-  #
-  # Live report (clarified): the LINES rendered fine, but every delta
-  # appended an empty line at the END — the box filled with blank rows
-  # as the thinking streamed. Squeezing the DELTA misses the case where
-  # GLM sends "\n" and "" deltas separately (l1\n + \n = l1\n\n ACROSS
-  # deltas). Squeeze the ACCUMULATED block instead, and strip the
-  # trailing newline(s): the @air row owns the spacing after the block,
-  # so trailing blanks only grow the box toward a screen of empty lines.
+  # Agent thinking: a dim block that interleaves with the answer text in
+  # the order the provider streamed them (see append_stream/3). The
+  # buffer is kept VERBATIM (markdown; CommonMark collapses blank runs),
+  # and the display shape trims trailing newlines so the box never grows
+  # a phantom row (see render_reasoning/1). The delta DEFERS its render:
+  # the stream throttle (subscriptions/1) paints it on a fixed cadence.
   def handle_info({:agent, {:reasoning_deltas, delta}}, state) do
-    {:noreply, %{state | stream: drain_deltas(append_stream(state.stream, :reasoning, delta), 1)}}
+    state = %{state | stream: append_stream(state.stream, :reasoning, delta), stream_dirty?: true}
+    {:noreply, state, %{render?: false}}
   end
 
   def handle_info({:agent, {:tool_executed, name, content}}, state) do
@@ -1634,7 +1660,7 @@ defmodule CodingAgent.UI.Tui do
     transcript =
       state.transcript ++ persist_stream(state.stream, nil) ++ [{:tool, id, name, content}]
 
-    {:noreply, %{state | transcript: transcript, stream: []}}
+    {:noreply, %{state | transcript: transcript, stream: [], stream_dirty?: false}}
   end
 
   def handle_info({:agent, {:context_compacted, _keep}}, state) do
@@ -1658,6 +1684,7 @@ defmodule CodingAgent.UI.Tui do
        | status: :running,
          transcript: state.transcript ++ [{:user, prompt}],
          stream: [],
+         stream_dirty?: false,
          turn_agents: Map.get(state, :turn_agents, []) ++ [next_agent]
      }}
   end
@@ -1702,29 +1729,37 @@ defmodule CodingAgent.UI.Tui do
     end
   end
 
+  # The throttle that paints a live stream. Deltas only mark the buffer
+  # dirty and defer (`render?: false`); this tick is the single render
+  # source. It clears the dirty flag, which cancels the subscription
+  # (subscriptions/1) until the next delta arrives — at most one frame per
+  # @stream_render_ms, and none while the stream is quiet.
+  def handle_info(@stream_render_tick, state) do
+    {:noreply, %{state | stream_dirty?: false}}
+  end
+
   def handle_info(_msg, state), do: {:noreply, state}
 
-  # Fold every delta already queued in the mailbox into `stream` (see the
-  # llm_deltas/reasoning_deltas clauses): a burst then costs ONE render
-  # instead of one per delta. Only delta messages are consumed; a
-  # selective receive leaves key/terminal events in order, so input stays
-  # responsive during a long stream. The cap bounds a single batch so a
-  # very fast producer cannot starve input indefinitely.
-  @delta_batch_max 2_000
+  # Paint the in-flight stream on a fixed cadence instead of per delta.
+  # Declared only while a stream has unrendered text: after each tick the
+  # dirty flag clears and the subscription is reconciled away, so a quiet
+  # stream costs nothing and the next delta re-arms it.
+  #
+  # Under test_mode no timer is armed (like :__resize_poll__): tests drive
+  # the tick with `fire(pid, :__stream_render__)` so buffer assertions are
+  # deterministic instead of racing a wall clock.
+  @impl true
+  def subscriptions(%{stream_dirty?: true, stream: [_ | _], test_mode?: false}),
+    do: [
+      %ExRatatui.Subscription{
+        id: :stream_render,
+        kind: :interval,
+        interval_ms: @stream_render_ms,
+        message: @stream_render_tick
+      }
+    ]
 
-  defp drain_deltas(stream, n) when n >= @delta_batch_max, do: stream
-
-  defp drain_deltas(stream, n) do
-    receive do
-      {:agent, {:llm_deltas, delta}} ->
-        drain_deltas(append_stream(stream, :assistant, delta), n + 1)
-
-      {:agent, {:reasoning_deltas, delta}} ->
-        drain_deltas(append_stream(stream, :reasoning, delta), n + 1)
-    after
-      0 -> stream
-    end
-  end
+  def subscriptions(_state), do: []
 
   # Test mode reports its declared virtual size; production reads the tty.
   defp pane_size(%{test_mode?: true} = state) do
@@ -1992,8 +2027,13 @@ defmodule CodingAgent.UI.Tui do
   # base style is the only signal that this block is the model's
   # reasoning, not its answer. The widget struct is built by
   # TranscriptView (measure = paint contract), never here.
+  #
+  # `text` is already in DISPLAY shape: display_entries/1 runs
+  # render_reasoning/1 over every entry before the viewport hands it
+  # here, so re-normalising would re-harden the whole trace a second
+  # time per frame (the stream render throttle bounds how often, but the
+  # work is pure duplication).
   defp entry_widgets({:reasoning, text}, w, _te) do
-    text = render_reasoning(text)
     h = TranscriptView.height({:reasoning, text}, w, nil) - TranscriptView.air()
 
     [
@@ -2046,15 +2086,26 @@ defmodule CodingAgent.UI.Tui do
   end
 
   # Display shape of the thinking buffer, shared by measure, paint and
-  # persistence so all three see the same string. Reasoning is Markdown
-  # now, but its line structure must survive: CommonMark treats a lone
-  # "\n" as a SOFT break that joins lines ("line one line two"), and a
-  # reasoning trace is line-structured. So each non-blank line followed
-  # by another becomes a HARD break (two trailing spaces) — markdown
-  # still parses headings/bold/code, but lines stay lines. Blank lines
-  # remain paragraph breaks and CommonMark collapses runs of them, so
-  # GLM's runaway blanks cannot return. The trailing "\n" is trimmed
-  # (Paragraph-era phantom-row fix; keeps the buffer canonical).
+  # persistence so all three see the same string. Two independent jobs,
+  # kept separate because they have different reasons to exist:
+  #
+  # 1. `harden_line_breaks/1` — VISUAL line structure, load-bearing.
+  #    CommonMark treats a lone "\n" as a SOFT break that joins lines
+  #    ("line one line two"), but a reasoning trace is line-structured,
+  #    so each non-blank line that has a following line gets a HARD break
+  #    (two trailing spaces). Markdown still parses headings/bold/code;
+  #    the lines just stay lines. It also skips fenced code so literal
+  #    text is not corrupted.
+  #
+  # 2. The trailing "\n" trim — a BUFFER/WINDOW consistency invariant,
+  #    not a markdown concern. A trailing newline is a phantom empty row
+  #    in the window math (the "scroll up three screens of blanks" bug),
+  #    so the displayed string must never end in "\n"; the consumers that
+  #    append "\n" (window math, persistence) rely on that.
+  #
+  # Runs of blank lines need no handling: CommonMark collapses them to a
+  # single paragraph break on its own. The old Paragraph-era "runaway
+  # blanks" squeeze is obsolete.
   defp render_reasoning(text) do
     text
     |> String.replace_trailing("\n", "")
@@ -2065,8 +2116,9 @@ defmodule CodingAgent.UI.Tui do
   # non-blank line that has a following line. Lines inside a ``` fence
   # and the fence markers themselves are skipped: code blocks preserve
   # their own newlines and injected spaces corrupt the literal text.
-  # Idempotent (a line already ending in "  " is left alone) because the
-  # transform runs every frame and again when an entry is restored.
+  # Idempotent (a line already ending in "  " is left alone) because it
+  # runs again when an entry is restored and whenever display shape is
+  # rebuilt.
   defp harden_line_breaks(text) do
     lines = String.split(text, "\n")
     last = length(lines) - 1
@@ -2113,8 +2165,9 @@ defmodule CodingAgent.UI.Tui do
   # stripped): blank lines are paragraph breaks and CommonMark collapses
   # runs of them to one, so the GLM-split-delta runaway ("l1\n" + "\n"
   # across deltas) cannot grow the box the way it did under Paragraph.
-  # `render_reasoning/1` still trims trailing newlines at display so the
-  # buffer never ends on a separator.
+  # The RAW buffer keeps trailing newlines; only the DISPLAY shape
+  # (`render_reasoning/1`) trims them, because the window math must never
+  # see a phantom trailing row.
   defp normalize_block(:assistant, text), do: text
   defp normalize_block(:reasoning, text), do: String.replace(text, "\r", "")
 

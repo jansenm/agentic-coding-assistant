@@ -107,10 +107,24 @@ defmodule CodingAgent.TuiCase do
     sync(pid)
   end
 
-  @doc "Fires the agent event directly (equivalent to a session broadcast)."
+  @doc """
+  Fires the agent event directly (equivalent to a session broadcast).
+
+  Streaming deltas DEFER their render (the stream throttle paints them on
+  a timer), so a delta event also fires the render tick: tests assert on
+  `buffer/1` immediately after `agent/2` and must see the painted frame.
+  The tick is a plain `handle_info` clause, so this is deterministic, not
+  a sleep.
+  """
   @spec agent(pid(), tuple()) :: map()
   def agent(pid, event) do
     send(pid, {:agent, event})
-    sync(pid)
+    state = sync(pid)
+
+    case event do
+      {:llm_deltas, _} -> fire(pid, :__stream_render__)
+      {:reasoning_deltas, _} -> fire(pid, :__stream_render__)
+      _ -> state
+    end
   end
 end

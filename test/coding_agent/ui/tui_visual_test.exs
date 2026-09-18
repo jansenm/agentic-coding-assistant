@@ -460,7 +460,7 @@ defmodule CodingAgent.UI.TuiVisualTest do
 
     # GLM-style split deltas: text, newline, blank line as separate events
     Enum.each(["line one", "\n", "\n", "line two", "\n", "\n", "line three", "\n"], fn d ->
-      send(pid, {:agent, {:reasoning_deltas, d}})
+      agent(pid, {:reasoning_deltas, d})
     end)
 
     st = sync(pid)

@@ -166,6 +166,49 @@ session's `call_parts/1`" — the duplication is known.
 
 ---
 
+## 4b. Session storage — findings (not a defect list; a decision to make)
+
+The store is deliberate and, for local single-user work, correct: one
+session = one file = one `:erlang.term_to_binary({version, %State{}})`
+blob, atomic tmp+rename, fail-closed load (`docs/source/explanation/
+memory.rst`, "Session storage principles"). Measured on the dev machine:
+19 sessions / 531 KB total; biggest 497 KB / 135 messages /
+`last_input_tokens` 131k; `Store.load` ~1 ms, `Store.list` ~13 ms.
+
+These are the pressure points to settle **before** the store grows, each
+a candidate for its own ADR (principle 5: "revisit only with a new ADR"):
+
+1. **Listing decodes every full state.** `list/0` / `list_in/1` call
+   `load/1` per file (including `State.restore/1` healing) to read four
+   summary fields each (`store.ex:205-245`). Cost scales with TOTAL
+   bytes, not session count — at 500 sessions × ~500 KB this is the
+   picker-mount frame again. A sidecar `meta` (or a fixed header read)
+   would reduce listing to a stat/prefix read without changing the state
+   format.
+
+2. **Opaque binary ⇒ shape fragility.** Every `State`/nested-struct
+   change needs healing in `State.restore/1`; that mechanism has already
+   caused resume bugs (`base_policy`, `disabled`, `mounts`). A readable
+   format (JSONL event log + `meta.json`) would be self-healing,
+   `cat`/`grep`/diff-friendly, and gives `--export` for free — at the
+   cost of custom encoders for the ReqLLM structs.
+
+3. **Full rewrite per boundary.** Each `persist` re-serializes the whole
+   context (`session.ex:1474`). Fine at 500 KB / multi-second turns, but
+   there is no incremental path for 1M-token windows or more frequent
+   writes.
+
+4. **`binary_to_term` without `[:safe]`** (`store.ex:255`) is a conscious
+   choice for user-local files (same trust domain as `.env`). It stops
+   being safe the moment sessions are *shared or imported* — an export
+   feature turns a foreign session file into an atom-exhaustion /
+   code-exec vector. Fix the trust boundary before shipping export.
+
+Retention is also unowned: `--session-prune <days>` exists, but there is
+no size cap and no documented policy (principle 5).
+
+---
+
 ## 5. Two god modules
 
 `session.ex` (1668) holds turn lifecycle, gate policy, tool execution,
@@ -202,6 +245,19 @@ twice (`mount_picker` `tui.ex:141-195`, `mount_session` `tui.ex:287-381`).
 Ordered by leverage. Items 1–2 are contained and remove real bugs; do those
 first.
 
+- [x] **P1 — Streaming interactivity: defer the render, throttle the
+      stream.** Deltas no longer paint (they return `render?: false`); a
+      fixed-cadence `subscriptions/1` tick (`:stream_render`, 60ms) is the
+      only stream render source and retires itself while the stream is
+      quiet. Deleted `drain_deltas/2` (the mailbox `receive … after 0`
+      starved input on a steady trickle). Also removed the duplicate
+      per-frame `render_reasoning/1` in `entry_widgets/3` (display entries
+      are already normalized) and corrected the `render_reasoning` /
+      `harden_line_breaks` / `normalize_block` comments to separate
+      markdown line-structure from the buffer/window trailing-newline
+      invariant. Measured: 500 deltas used to cause up to 500 renders; now
+      **0** — each throttle tick causes exactly one. New mid-stream
+      interactivity test. (`UI_STREAMING_HANG_REPORT.md`.)
 - [x] **P1 — `Config.snapshot/1`.** New `CodingAgent.Core.Config`:
       one typed read of merged config, permissions, mounts, providers,
       agents; typed runtime-knob accessors with the single defaults
@@ -251,6 +307,11 @@ first.
       prompt composition out of the loop.
 - [ ] **P3 — `Session.Usage` struct + defaults.** One home for
       `last_input_tokens` semantics.
+- [ ] **P3 — Session storage decision (Section 4b).** Pick one: (a) a
+      sidecar `meta` so `list/0` stops decoding every full state, or
+      (b) an ADR settling format (binary vs JSONL+meta), trust
+      (`binary_to_term`), retention and the export vector. Recommendation:
+      (a) now as a contained win, (b) as the ADR before export/share.
 - [ ] **P4 — Split `tui.ex` along its own comment sections**; single state
       struct definition.
 - [ ] **P4 — `TranscriptView.metrics/…`.** One home for pane geometry; render,
