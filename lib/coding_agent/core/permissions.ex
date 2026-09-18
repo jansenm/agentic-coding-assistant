@@ -317,13 +317,24 @@ defmodule CodingAgent.Core.Permissions do
 
   @doc """
   Effective decision for `tool` on `rel_path` (relative to the scope
-  root) running under `role`.
+  root). This is THE production policy path: an explicit entry always
+  wins, otherwise the fallback applies.
+
+  The fourth argument is either a keyword list with `:fallback` (the
+  gate supplies its confinement-aware fallback, ADR 015) or the legacy
+  `role` string, which is ignored — the parameter was never used and is
+  kept only so existing callers/tests keep compiling.
   """
-  @spec effective(t(), String.t(), String.t() | nil, String.t()) :: decision()
-  def effective(policy, tool, rel_path, _role \\ "default") do
+  @spec effective(t(), String.t(), String.t() | nil, keyword() | String.t()) :: decision()
+  def effective(policy, tool, rel_path, opts_or_role \\ [])
+
+  def effective(policy, tool, rel_path, role) when is_binary(role),
+    do: effective(policy, tool, rel_path, [])
+
+  def effective(policy, tool, rel_path, opts) when is_list(opts) do
     case matching_entry(policy, tool, rel_path) do
       {:ok, decision} -> decision
-      :no_match -> default_for(tool)
+      :no_match -> Keyword.get(opts, :fallback, default_for(tool))
     end
   end
 
@@ -333,18 +344,9 @@ defmodule CodingAgent.Core.Permissions do
     if tool in @allow_class, do: :allow, else: :ask
   end
 
-  @doc """
-  The decision from an explicit policy entry for `tool`/`rel_path`, or
-  `:no_match` when only the class default would apply. The gate needs the
-  distinction: an explicit `ask` (or `deny`) is the user's own choice and
-  is never overridden, while the class-default `ask` for `shell` yields to
-  confinement (ADR 015).
-  """
-  @spec matching(t(), String.t(), String.t()) :: {:ok, decision()} | :no_match
-  def matching(policy, tool, rel_path) do
-    matching_entry(policy, tool, rel_path)
-  end
-
+  # The explicit-entry lookup for effective/4: an explicit entry always
+  # wins over the fallback, including an explicit `ask`/`deny` the gate
+  # must never let confinement override (ADR 015).
   defp matching_entry(policy, tool, rel_path) do
     policy.entries
     |> Map.get(tool, %{})

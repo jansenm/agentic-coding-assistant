@@ -89,46 +89,11 @@ defmodule CodingAgent.UI.ProviderHealth do
 
     case ReqLLM.generate_text(model, context, @probe_opts ++ extra_opts) do
       {:ok, _response} -> :ok
-      {:error, %ReqLLM.Error.API{} = err} -> {:error, classify(err)}
-      {:error, %ReqLLM.Error.API.Request{} = err} -> {:error, classify(err)}
-      {:error, %ReqLLM.Error.API.Response{} = err} -> {:error, classify(err)}
-      {:error, err} -> {:error, "provider error: #{inspect(err)}"}
+      {:error, err} -> {:error, CodingAgent.Core.Failure.provider_reason(err)}
     end
   catch
     kind, value -> {:error, "probe crashed (#{inspect(kind)}): #{inspect(value)}"}
   end
 
-  # Transport/auth/quota -> human sentences. req_llm error structs
-  # carry :reason and often :status — classify on both, fall through
-  # to the raw reason so NOTHING reads as a generic 'unknown error'.
-  defp classify(%{status: 401}), do: "provider rejected the credentials (401) — check the API key"
-  defp classify(%{status: 403}), do: "provider rejected the credentials (403) — check the API key"
-  defp classify(%{status: 429}), do: "provider quota exceeded (429)"
-  defp classify(%{reason: reason}) when is_binary(reason), do: humanize(reason)
-  defp classify(other), do: "provider error: #{inspect(other)}"
-
-  defp humanize(reason) do
-    cond do
-      reason =~ "econnrefused" or reason =~ "connection refused" ->
-        "could not reach the provider (connection refused)"
-
-      reason =~ "timeout" or reason =~ "timed out" ->
-        "provider did not answer in time"
-
-      reason =~ "nxdomain" ->
-        "provider host not found (DNS)"
-
-      reason =~ "refused" or reason =~ "unreachable" ->
-        "could not reach the provider"
-
-      true ->
-        String.split(reason, "%") |> List.first() |> String.trim()
-    end
-  end
-
-  defp broadcast(session_id, event) do
-    Registry.dispatch(CodingAgent.EventRegistry, {:session_events, session_id}, fn entries ->
-      for {pid, _} <- entries, do: send(pid, {:agent, event})
-    end)
-  end
+  defp broadcast(session_id, event), do: CodingAgent.Core.Events.publish(session_id, event)
 end

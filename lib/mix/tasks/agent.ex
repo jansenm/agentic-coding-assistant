@@ -13,6 +13,8 @@ defmodule Mix.Tasks.Agent do
 
   use Mix.Task
 
+  alias CodingAgent.Core.ToolCall
+
   @shortdoc "Run one coding-agent turn from the command line"
 
   @impl Mix.Task
@@ -195,29 +197,11 @@ defmodule Mix.Tasks.Agent do
 
     case resolved do
       {:ok, persisted} ->
-        opts = [
-          id: persisted.id,
-          context: persisted.context,
-          model: persisted.model,
-          scope_root: persisted.scope_root,
-          policy: persisted.policy,
-          # restore the agent name for the UI/carried policy; an explicit
-          # --agent overrides the persisted one (a deliberate switch)
-          agent: agent || (persisted.agent && persisted.agent.name),
-          # carry the persisted usage forward or the session takes the
-          # chars fallback and compacts on the first command
-          usage: persisted.usage,
-          compaction_warned: persisted.compaction_warned,
-          compaction_backoff: persisted.compaction_backoff,
-          # resume a gate-parked session parked (pending calls + the
-          # round half already decided survive the restart)
-          status: persisted.status,
-          pending_tool_calls: persisted.pending_tool_calls,
-          pending_round_calls: persisted.pending_round_calls,
-          pending_round_results: persisted.pending_round_results
-        ]
-
-        {:ok, _pid} = CodingAgent.Core.Session.Supervisor.start_session(opts)
+        # The resume mapping lives in Core.Session.resume_opts/2; an
+        # explicit --agent overrides the persisted one (a deliberate
+        # switch).
+        overrides = if agent, do: [agent: agent], else: []
+        {:ok, _pid} = CodingAgent.Core.Session.resume(persisted, overrides)
         CodingAgent.Core.Session.subscribe(persisted.id)
 
         IO.puts("""
@@ -300,7 +284,7 @@ defmodule Mix.Tasks.Agent do
   end
 
   defp ask_decision(call) do
-    {id, name, args} = call_info(call)
+    {id, name, args} = ToolCall.normalize(call)
     args_str = Jason.encode!(args)
 
     IO.puts("""
@@ -437,26 +421,4 @@ defmodule Mix.Tasks.Agent do
     end)
     |> Enum.join("")
   end
-
-  # Tool calls arrive in two shapes (ReqLLM.ToolCall struct with JSON
-  # arguments, or plain map from stream events) — normalize like the
-  # session's call_parts/1.
-  defp call_info(%ReqLLM.ToolCall{id: id, function: %{name: name, arguments: args}}) do
-    {id, name, decode_args(args)}
-  end
-
-  defp call_info(%{id: id, name: name, arguments: args}) when is_map(args) do
-    {id, name, args}
-  end
-
-  defp call_info(%{id: id, name: name}), do: {id, name, %{}}
-
-  defp decode_args(args) when is_binary(args) do
-    case Jason.decode(args) do
-      {:ok, decoded} -> decoded
-      {:error, _} -> %{}
-    end
-  end
-
-  defp decode_args(args) when is_map(args), do: args
 end

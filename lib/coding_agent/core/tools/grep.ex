@@ -27,6 +27,7 @@ defmodule CodingAgent.Core.Tools.Grep do
   """
 
   alias CodingAgent.Core.Containment
+  alias CodingAgent.Core.Exec
   alias CodingAgent.Core.External
   alias CodingAgent.Core.Tools
   alias CodingAgent.Core.Tools.Glob
@@ -34,6 +35,11 @@ defmodule CodingAgent.Core.Tools.Grep do
   @max_results 200
   @max_line_length 500
   @max_bytes 1024 * 1024
+
+  # rg runs through the one executor (Exec + Sandbox), so the process is
+  # confined like shell/git are. A search that outlives this bound falls
+  # back to the reference engine rather than hanging the turn.
+  @exec_timeout 60
 
   @spec tool(Tools.scope()) :: ReqLLM.Tool.t()
   def tool(scope) do
@@ -135,13 +141,17 @@ defmodule CodingAgent.Core.Tools.Grep do
         exclude_args() ++
         ["-e", pattern, "--", target]
 
-    case System.cmd(rg, args, cd: root, stderr_to_stdout: true) do
-      {out, 0} -> format_rg_matches(out, root)
-      {out, 1} -> format_rg_matches(out, root)
-      {_out, _code} -> :fallback
+    # The command runs through Exec under the sandbox profile, exactly
+    # like shell/git. read_only/1 builds the profile; a confining
+    # sandbox bounds the process (no writes, no network), and the scope
+    # is already mountable, so delegation needs nothing else.
+    profile = scope |> Tools.profile() |> Map.put(:root, root)
+
+    case Exec.run({:exec, rg, args}, root, @exec_timeout, profile) do
+      {:ok, out, 0} -> format_rg_matches(out, root)
+      {:ok, out, 1} -> format_rg_matches(out, root)
+      _ -> :fallback
     end
-  rescue
-    _ -> :fallback
   end
 
   # An include glob must precede the excludes: rg lets a later include

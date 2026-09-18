@@ -46,15 +46,13 @@ defmodule CodingAgent.Core.Session.Compactor do
   # covers INACTIVITY, and a slow cloud model can hold the summary
   # call open indefinitely (found live — compaction hung past 2
   # minutes mid-turn). After the wall: give up, keep the full
-  # context, back off. Env-overridable so tests can exercise the
-  # budget branch in milliseconds.
-  @wall_clock_ms 90_000
-
-  # Inactivity bound INSIDE the summarize call — shorter than the wall
-  # clock so a HUNG provider ends the task with a proper {:error, _}
-  # long before the wall; a slow-but-alive model stays under it and
-  # hits the wall instead (that is the budget's job).
-  @inactivity_ms 60_000
+  # context, back off. The defaults live in Core.Config; env-overridable
+  # so tests can exercise the budget branch in milliseconds.
+  #
+  # The inactivity bound is shorter than the wall clock so a HUNG
+  # provider ends the task with a proper {:error, _} long before the
+  # wall; a slow-but-alive model stays under it and hits the wall
+  # instead (that is the budget's job).
 
   # Consecutive turn-skips after a failed summarize (the summary call
   # is minutes of cloud time; a per-turn retry is 2+ min of dead
@@ -249,9 +247,14 @@ defmodule CodingAgent.Core.Session.Compactor do
   @doc false
   @spec summarize(State.t(), String.t()) :: {:ok, String.t()} | {:error, term()}
   def summarize(state, old_span_text) do
-    with {:ok, model_input, _base_opts} <- Request.build(state.model, state.provider_config),
+    with {:ok, model_input, base_opts} <-
+           Request.build(State.effective_model(state), state.provider_config),
          {:ok, response} <-
-           ReqLLM.generate_text(model_input, summary_context(old_span_text), summarize_opts()) do
+           ReqLLM.generate_text(
+             model_input,
+             summary_context(old_span_text),
+             summarize_opts(base_opts)
+           ) do
       case ReqLLM.Response.text(response) do
         text when is_binary(text) and text != "" -> {:ok, text}
         _ -> {:error, :empty_summary}
@@ -269,8 +272,13 @@ defmodule CodingAgent.Core.Session.Compactor do
   # GLM on an 80K-char context takes minutes; without an inactivity cap
   # a hung summary stalls every turn's start (found live). Shorter than
   # the wall clock so a hung provider becomes a proper error result.
-  defp summarize_opts do
-    [receive_timeout: inactivity()]
+  #
+  # `Request.build/2`'s opts (base_url for indirected providers — the
+  # ollama-cloud case) MUST be kept: the old code discarded them, so a
+  # summary call went to the wrong (default) endpoint while the turn
+  # loop used the configured one.
+  defp summarize_opts(base_opts) do
+    Keyword.put(base_opts, :receive_timeout, inactivity())
   end
 
   defp summary_context(old_span_text) do
@@ -294,13 +302,7 @@ defmodule CodingAgent.Core.Session.Compactor do
   # silent %-of-window surprise). Public: the sidebar renders the same
   # number, and there must be ONE reader of the config key.
   @spec trigger() :: pos_integer()
-  def trigger do
-    Application.get_env(
-      :coding_agent,
-      :compaction_trigger_tokens,
-      Compaction.default_trigger_tokens()
-    )
-  end
+  def trigger, do: CodingAgent.Core.Config.compaction_trigger_tokens()
 
   @doc """
   The token count at which the approaching-compaction warning fires
@@ -310,11 +312,8 @@ defmodule CodingAgent.Core.Session.Compactor do
   @spec warn_threshold() :: non_neg_integer()
   def warn_threshold, do: trunc(trigger() * @warn_fraction)
 
-  defp wall_clock,
-    do: Application.get_env(:coding_agent, :compaction_wall_clock_ms, @wall_clock_ms)
-
-  defp inactivity,
-    do: Application.get_env(:coding_agent, :compaction_inactivity_ms, @inactivity_ms)
+  defp wall_clock, do: CodingAgent.Core.Config.compaction_wall_clock_ms()
+  defp inactivity, do: CodingAgent.Core.Config.compaction_inactivity_ms()
 
   # The summarize task must never be linked to the session (see
   # compact/3): the supervisor is a permanent child of the application
@@ -334,9 +333,5 @@ defmodule CodingAgent.Core.Session.Compactor do
 
   # Broadcast to the session's event subscribers — same channel as the
   # session loop; compaction progress must be visible while it runs.
-  defp broadcast(state, event) do
-    Registry.dispatch(CodingAgent.EventRegistry, {:session_events, state.id}, fn entries ->
-      for {pid, _} <- entries, do: send(pid, {:agent, event})
-    end)
-  end
+  defp broadcast(state, event), do: CodingAgent.Core.Events.publish(state.id, event)
 end

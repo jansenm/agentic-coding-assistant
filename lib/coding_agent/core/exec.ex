@@ -64,13 +64,21 @@ defmodule CodingAgent.Core.Exec do
         # earlier or exec failure) — treat as failure signal
         {:ok, truncate(buf), 1}
     after
-      remaining = remaining(deadline) ->
-        if remaining <= 0 do
-          kill(port)
-          {:timeout, truncate(buf)}
-        else
-          collect(port, deadline, buf)
-        end
+      remaining(deadline) ->
+        on_deadline(port, deadline, buf)
+    end
+  end
+
+  # The receive `after` clause takes a literal timeout expression in
+  # modern Elixir; assigning inside it trips cover's instrumenter, so the
+  # decision lives here. `remaining(deadline)` above already blocked for
+  # the time left; recompute — it is cheap and always <= 0 on this path.
+  defp on_deadline(port, deadline, buf) do
+    if remaining(deadline) <= 0 do
+      kill(port)
+      {:timeout, truncate(buf)}
+    else
+      collect(port, deadline, buf)
     end
   end
 

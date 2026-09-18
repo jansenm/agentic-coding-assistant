@@ -26,16 +26,19 @@ defmodule CodingAgent.Core.UserConfig do
   @data_dir "coding-agent"
   @project_dir ".coding-agent"
 
-  @files ~w(config ui permissions)
+  # Files whose layers are merged (permissions.toml has its own loader —
+  # its schema is not a plain overlay).
+  @files ~w(config ui)
 
   @typedoc "Merged, layered config for one scope."
   @type t :: %__MODULE__{
           config: %{String.t() => term()},
           ui: %{String.t() => term()},
-          permissions: CodingAgent.Core.Permissions.t()
+          permissions: CodingAgent.Core.Permissions.t(),
+          layers: %{String.t() => [map()]}
         }
 
-  defstruct config: %{}, ui: %{}, permissions: nil
+  defstruct config: %{}, ui: %{}, permissions: nil, layers: %{}
 
   # -- Paths -------------------------------------------------------------------
 
@@ -51,12 +54,13 @@ defmodule CodingAgent.Core.UserConfig do
     Path.join(base, @data_dir)
   end
 
-  defp project_dir(scope_root) when is_binary(scope_root),
-    do: Path.join(scope_root, @project_dir)
-
-  @doc false
-  # test visibility helper: the project config dir for a scope root
-  def project_dir_for_test(scope_root), do: project_dir(scope_root)
+  @doc """
+  The project config directory for a scope root
+  (`<scope_root>/.coding-agent`).
+  """
+  @spec project_dir(String.t() | nil) :: String.t() | nil
+  def project_dir(nil), do: nil
+  def project_dir(scope_root) when is_binary(scope_root), do: Path.join(scope_root, @project_dir)
 
   defp home do
     System.get_env("HOME") || raise("HOME not set; cannot resolve config paths")
@@ -71,20 +75,16 @@ defmodule CodingAgent.Core.UserConfig do
   """
   @spec load(String.t() | nil) :: t()
   def load(scope_root) do
-    config =
-      for name <- @files, into: %{} do
-        {name,
-         merged_map(
-           shipped_path(name),
-           global_path(name),
-           project_path(scope_root, name)
-         )}
-      end
+    # Read each file's three layers ONCE: the merged view and the
+    # per-layer view (needed by the sandbox mount schema, which must
+    # keep `rw` out of the project layer) come from the same read.
+    layers = Map.new(@files, &{&1, layers(scope_root, &1)})
 
     %__MODULE__{
-      config: config["config"],
-      ui: config["ui"],
-      permissions: load_permissions(scope_root)
+      config: merged(layers["config"]),
+      ui: merged(layers["ui"]),
+      permissions: load_permissions(scope_root),
+      layers: layers
     }
   end
 
@@ -99,9 +99,8 @@ defmodule CodingAgent.Core.UserConfig do
     e -> {:error, Exception.message(e)}
   end
 
-  @doc "Default model: config `model` (project over global) as a string."
-  def model(%__MODULE__{config: c}),
-    do: Map.get(c, "model") || Application.get_env(:coding_agent, :model)
+  # (The old `model/1` accessor was dead code — `CodingAgent.model/0`
+  # is the single model resolver; see Core.Config.)
 
   @doc """
   The three layers of one config file *separately*, weakest first:
@@ -128,15 +127,16 @@ defmodule CodingAgent.Core.UserConfig do
   defp project_path(nil, _name), do: nil
   defp project_path(root, name), do: Path.join(project_dir(root), "#{name}.toml")
 
-  # shallow merge, weakest to strongest: shipped defaults (layer 0,
+  # Shallow merge, weakest to strongest: shipped defaults (layer 0,
   # versioned with the app) < global config < project config. Deep
   # merge for the [providers.*] table so a project can override ONE
   # provider without shadowing the shipped defaults for the rest.
-  defp merged_map(shipped, global, project) do
-    shipped
-    |> read_toml()
-    |> Map.merge(read_toml(global), &deep_merge/3)
-    |> Map.merge(read_toml(project), &deep_merge/3)
+  defp merged([]), do: %{}
+
+  defp merged([first | rest]) do
+    Enum.reduce(rest, first, fn layer, acc ->
+      Map.merge(acc, layer, fn k, base, override -> deep_merge(k, base, override) end)
+    end)
   end
 
   defp deep_merge(_k, base, override) when is_map(base) and is_map(override),

@@ -8,8 +8,17 @@ defmodule CodingAgent.MixProject do
       elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
-      deps: deps()
+      deps: deps(),
+      test_coverage: test_coverage()
     ]
+  end
+
+  # `mix test --cover` gate. The live-LLM seams (Request/ProviderHealth)
+  # and the CLI entry points (Mix.Tasks.*) run only against a provider or
+  # a tty and stay near 0% by design; 75% guards against broad regression
+  # without pretending those modules are unit-testable.
+  defp test_coverage do
+    [summary: [threshold: 75]]
   end
 
   # Test-only support modules (test/support) compile into the test env:

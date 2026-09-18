@@ -25,6 +25,7 @@ defmodule CodingAgent.Application do
        keys: :duplicate, name: CodingAgent.EventRegistry, partitions: System.schedulers_online()},
       CodingAgent.Core.Interrupt,
       CodingAgent.Core.Session.Compactor.TaskSupervisor,
+      CodingAgent.Core.Session.TurnTaskSupervisor,
       CodingAgent.Core.Session.Supervisor
     ]
 
@@ -60,7 +61,7 @@ defmodule CodingAgent.Application do
   # (cloud models ride that provider — req_llm's :ollama never sends
   # auth).
   defp publish_keys do
-    cfg = CodingAgent.Core.UserConfig.load(nil).config
+    cfg = CodingAgent.Core.Config.snapshot(nil).config
 
     for provider <- CodingAgent.Core.Providers.list(cfg) do
       env_name = String.upcase(provider) <> "_API_KEY"

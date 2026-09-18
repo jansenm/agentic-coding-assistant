@@ -263,6 +263,6 @@ defmodule CodingAgent.Core.Agent do
   def project_dir(nil), do: nil
 
   def project_dir(scope_root) do
-    Path.join(CodingAgent.Core.UserConfig.project_dir_for_test(scope_root), "agents")
+    Path.join(CodingAgent.Core.UserConfig.project_dir(scope_root), "agents")
   end
 end

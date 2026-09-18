@@ -19,6 +19,7 @@ defmodule CodingAgent.UI.Tui do
 
   alias CodingAgent.Core.Session
   alias CodingAgent.Core.Providers.Discovery
+  alias CodingAgent.Core.ToolCall
   alias CodingAgent.Core.Session.Compactor
   alias CodingAgent.Core.Session.Supervisor
   alias CodingAgent.Core.Session.Store
@@ -406,34 +407,11 @@ defmodule CodingAgent.UI.Tui do
     end
   end
 
+  # The resume mapping (base policy, restored agent, usage, parked round)
+  # lives in Core.Session.resume_opts/2 — the view does not reconstruct
+  # State field-by-field.
   defp start_resumed({:ok, state}, _id, _opts, _resume_id) do
-    with {:ok, pid} <-
-           Supervisor.start_session(
-             id: state.id,
-             context: state.context,
-             model: state.model,
-             scope_root: state.scope_root,
-             # The BASE policy, not the narrowed one: a resumed plan
-             # session passing its agent-narrowed policy would make
-             # those restrictions permanent (set_agent recomputes from
-             # base, so a narrowed base means Tab to build never
-             # restores the tools — found live).
-             policy: base_policy_of(state),
-             # restore the agent for the UI slots and the policy layer
-             agent: agent_name_of(state),
-             # carry the persisted usage forward or the session takes
-             # the chars fallback and compacts on the first command
-             usage: state.usage,
-             compaction_warned: state.compaction_warned,
-             compaction_backoff: state.compaction_backoff,
-             # a session parked at the gate resumes PARKED (see
-             # Session.init/1): pending calls and the round half
-             # already decided come back so decide/2 can finish it
-             status: state.status,
-             pending_tool_calls: state.pending_tool_calls,
-             pending_round_calls: state.pending_round_calls,
-             pending_round_results: state.pending_round_results
-           ) do
+    with {:ok, pid} <- Session.resume(state) do
       {:ok, pid, state, nil}
     end
   end
@@ -450,12 +428,7 @@ defmodule CodingAgent.UI.Tui do
   defp start_fresh(id, opts, notice) do
     case CodingAgent.model() do
       nil ->
-        {:error,
-         {:no_model,
-          "no model configured. Set model = \"provider:model\" in " <>
-            CodingAgent.Core.UserConfig.global_dir() <>
-            "/config.toml (or a project .coding-agent/config.toml), " <>
-            "or override per run with AGENT_MODEL"}}
+        {:error, {:no_model, CodingAgent.Core.Config.no_model_message()}}
 
       model ->
         with {:ok, pid} <-
@@ -571,7 +544,9 @@ defmodule CodingAgent.UI.Tui do
   defp error_text(reason) when is_atom(reason), do: inspect(reason)
   defp error_text(_), do: "check the provider (ollama up? key set?)"
 
-  # Classify a turn failure so the hint is honest. The categories:
+  # Classify a turn failure so the hint is honest (the one classifier
+  # lives in Core.Failure; the TUI and ProviderHealth both consume it).
+  # The categories:
   #
   #   :local    — the request never left the machine correctly: a
   #               build/encoding failure on OUR side (e.g. an invalid
@@ -580,67 +555,9 @@ defmodule CodingAgent.UI.Tui do
   #   :provider — the request reached the wire and the provider/transport
   #               answered badly (connection refused, 401/403, 429, 5xx).
   #   :other    — anything we cannot place; keep the reason, no claim.
-  #
-  # `reason` arrives wrapped: {:stream_error, %ReqLLM.Error.API.Stream{}},
-  # {:provider_build_failed, %ReqLLM.Error.API.Request{}}, plain structs,
-  # atoms, or tool-loop limits.
   @doc false
   # Public for tests only (like the session's other @doc false helpers).
-  def classify_failure({:tool_loop_limit, _}),
-    do: {:other, "raise the tool-round budget and retry"}
-
-  def classify_failure({:stream_error, err}), do: classify_failure(err)
-  def classify_failure({:provider_build_failed, err}), do: classify_failure(err)
-  def classify_failure({:http_streaming_failed, inner}), do: classify_failure(inner)
-
-  def classify_failure(%{reason: reason}) when is_binary(reason), do: classify_reason(reason)
-  def classify_failure(reason) when is_binary(reason), do: classify_reason(reason)
-
-  def classify_failure(%{reason: reason}) when is_atom(reason) and not is_nil(reason),
-    do: classify_failure(to_string(reason))
-
-  def classify_failure(_), do: {:other, "the session is idle again; retry"}
-
-  @local_markers [
-    "Failed to build streaming request",
-    "invalid byte",
-    "invalid utf-8",
-    "cannot encode",
-    "Jason.EncodeError"
-  ]
-
-  @provider_markers [
-    "econnrefused",
-    "connection refused",
-    "nxdomain",
-    "name not known",
-    "timeout",
-    "timed out",
-    "401",
-    "403",
-    "429",
-    "500",
-    "502",
-    "503",
-    "504"
-  ]
-
-  defp classify_reason(reason) do
-    down = String.downcase(reason)
-
-    cond do
-      contains_any?(down, @local_markers) ->
-        {:local, "this is a local request-build failure; retry or start a new session"}
-
-      contains_any?(down, @provider_markers) ->
-        {:provider, "the session is idle again; check the provider and retry"}
-
-      true ->
-        {:other, "the session is idle again; retry"}
-    end
-  end
-
-  defp contains_any?(haystack, needles), do: Enum.any?(needles, &String.contains?(haystack, &1))
+  def classify_failure(reason), do: CodingAgent.Core.Failure.classify(reason)
 
   # reason strings embed full inspect dumps (%Finch.TransportError{...});
   # keep the human part
@@ -1575,8 +1492,18 @@ defmodule CodingAgent.UI.Tui do
      }}
   end
 
+  # Streaming deltas are COALESCED: fold this delta plus every delta
+  # already queued behind it, then return — the runtime renders once for
+  # the whole burst.
+  #
+  # Found live: a long reasoning stream emits hundreds of tiny deltas,
+  # and rendering the full markdown transcript per delta froze the UI —
+  # typed keys and ESC sat in the mailbox behind the render train (a
+  # 500-delta burst blocked `:sys.get_state` past 5s). The selective
+  # receive below drains only delta messages; key/terminal events are
+  # left in order and handled next.
   def handle_info({:agent, {:llm_deltas, delta}}, state) do
-    {:noreply, %{state | stream: append_stream(state.stream, :assistant, delta)}}
+    {:noreply, %{state | stream: drain_deltas(append_stream(state.stream, :assistant, delta), 1)}}
   end
 
   def handle_info({:agent, {:status_changed, status}}, state) do
@@ -1693,7 +1620,7 @@ defmodule CodingAgent.UI.Tui do
   # trailing newline(s): the @air row owns the spacing after the block,
   # so trailing blanks only grow the box toward a screen of empty lines.
   def handle_info({:agent, {:reasoning_deltas, delta}}, state) do
-    {:noreply, %{state | stream: append_stream(state.stream, :reasoning, delta)}}
+    {:noreply, %{state | stream: drain_deltas(append_stream(state.stream, :reasoning, delta), 1)}}
   end
 
   def handle_info({:agent, {:tool_executed, name, content}}, state) do
@@ -1776,6 +1703,28 @@ defmodule CodingAgent.UI.Tui do
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
+
+  # Fold every delta already queued in the mailbox into `stream` (see the
+  # llm_deltas/reasoning_deltas clauses): a burst then costs ONE render
+  # instead of one per delta. Only delta messages are consumed; a
+  # selective receive leaves key/terminal events in order, so input stays
+  # responsive during a long stream. The cap bounds a single batch so a
+  # very fast producer cannot starve input indefinitely.
+  @delta_batch_max 2_000
+
+  defp drain_deltas(stream, n) when n >= @delta_batch_max, do: stream
+
+  defp drain_deltas(stream, n) do
+    receive do
+      {:agent, {:llm_deltas, delta}} ->
+        drain_deltas(append_stream(stream, :assistant, delta), n + 1)
+
+      {:agent, {:reasoning_deltas, delta}} ->
+        drain_deltas(append_stream(stream, :reasoning, delta), n + 1)
+    after
+      0 -> stream
+    end
+  end
 
   # Test mode reports its declared virtual size; production reads the tty.
   defp pane_size(%{test_mode?: true} = state) do
@@ -2411,7 +2360,7 @@ defmodule CodingAgent.UI.Tui do
 
   defp sidebar_widget(state) do
     usage = Map.get(state, :session_usage) || %{input_tokens: 0, output_tokens: 0, cost: nil}
-    window = Application.get_env(:coding_agent, :context_window_tokens, 500_000)
+    window = CodingAgent.Core.Config.context_window_tokens()
 
     # ONE reader of the compaction policy: the sidebar renders the same
     # trigger/warn numbers the Compactor decides on (the old copies
@@ -2428,7 +2377,7 @@ defmodule CodingAgent.UI.Tui do
       end
 
     effort =
-      cfg.config["reasoning_effort"] || Application.get_env(:coding_agent, :reasoning_effort)
+      cfg.config["reasoning_effort"] || CodingAgent.Core.Config.reasoning_effort()
 
     # last turn's context size (ground truth from the provider) drives
     # the % line; cumulative totals are separate
@@ -2543,26 +2492,6 @@ defmodule CodingAgent.UI.Tui do
     end
   end
 
-  # A resumed session carries the persisted agent name on its state. If
-  # that definition is gone (deleted/renamed since), resume WITHOUT an
-  # agent rather than raising: losing the preset must not brick the
-  # session. The check uses the SESSION's scope, not the process cwd —
-  # agents can be project-scoped.
-  defp agent_name_of(state) do
-    name = state.agent && state.agent.name
-
-    cond do
-      name == nil -> nil
-      name in primary_agent_names(state.scope_root) -> name
-      true -> nil
-    end
-  end
-
-  # The policy BEFORE the agent layer, so Session.init re-applies the
-  # definition onto a clean base. Snapshots from before base_policy
-  # existed stored only the (base) policy, so their `policy` is the base.
-  defp base_policy_of(state), do: state.base_policy || state.policy
-
   # The primary agents available to switch between (Tab), for a scope.
   # Sourced from the definitions; on any load error we fall back to no
   # switching rather than crashing the UI (the session itself raises on a
@@ -2604,13 +2533,10 @@ defmodule CodingAgent.UI.Tui do
   # primary (nil -> first); a running turn keeps its own agent; only the
   # next input changes, via Session.set_agent/2.
   #
-  # The switch must NEVER block the TUI. Session.set_agent is a
-  # synchronous GenServer.call; while a turn is streaming the session is
-  # busy inside call_llm, so that call would freeze the UI until the turn
-  # ends (found live: "i pressed tab and the ui hung"). While busy we
-  # only update the local `next` slot and apply to the session
-  # asynchronously — the running turn keeps its own agent and the switch
-  # lands for the NEXT input, which is exactly the ADR 018 semantics.
+  # The session no longer blocks while a turn streams (the turn runs in
+  # a worker; see Session.TurnTaskSupervisor), so this is a plain call.
+  # A running turn keeps its agent: the session applies the switch at
+  # the turn boundary, which is exactly the ADR 018 semantics.
   defp switch_agent(state) do
     case state.primary_agents do
       [] ->
@@ -2622,35 +2548,27 @@ defmodule CodingAgent.UI.Tui do
         scope = session_scope(state.session_id)
         next_model = agent_model(scope, next)
 
-        if state.status in [:running, :interrupting] do
-          # the session is busy: apply later (it serializes behind the
-          # running turn) and never block this key handler
-          Task.start(fn -> Session.set_agent(state.session_id, next) end)
-
-          status_note(
-            %{state | next_agent: next, next_agent_model: next_model},
-            "agent → #{next || "(none)"} (takes effect on the next input)"
-          )
-        else
-          case Session.set_agent(state.session_id, next) do
-            {:ok, _} ->
-              # the session is idle here (Tab is an input-area key), so the
-              # running slot follows the switch; when a turn later starts,
-              # the status handler refreshes running_agent from the session.
-              status_note(
+        case Session.set_agent(state.session_id, next) do
+          {:ok, _} ->
+            # while a turn streams the running slot stays the turn's own
+            # agent; idle, it follows the switch
+            state =
+              if state.status in [:running, :interrupting] do
+                %{state | next_agent: next, next_agent_model: next_model}
+              else
                 %{
                   state
                   | next_agent: next,
                     running_agent: next,
                     next_agent_model: next_model,
                     running_agent_model: next_model
-                },
-                "agent → #{next || "(none)"}"
-              )
+                }
+              end
 
-            {:error, reason} ->
-              status_note(state, "agent switch failed: #{inspect(reason)}")
-          end
+            status_note(state, "agent → #{next || "(none)"}")
+
+          {:error, reason} ->
+            status_note(state, "agent switch failed: #{inspect(reason)}")
         end
     end
   end
@@ -2798,7 +2716,7 @@ defmodule CodingAgent.UI.Tui do
     pending
     |> Enum.with_index()
     |> Enum.map(fn {call, i} ->
-      {_id, name, args} = call_info(call)
+      {_id, name, args} = ToolCall.normalize(call)
       pretty = pretty_args(args)
 
       # Escalations carry the agent's stated reason (ADR 015): show it
@@ -2849,19 +2767,6 @@ defmodule CodingAgent.UI.Tui do
       [{%Clear{}, rect}, {widget, rect}]
     end)
     |> List.flatten()
-  end
-
-  defp call_info(%{id: id, name: name, arguments: args}) when is_map(args),
-    do: {id, name, args}
-
-  defp call_info(%ReqLLM.ToolCall{id: id, function: %{name: name, arguments: args_json}}) do
-    decoded =
-      case Jason.decode(args_json) do
-        {:ok, m} -> m
-        _ -> %{}
-      end
-
-    {id, name, decoded}
   end
 
   # The agent's stated reason for an escalation (ADR 015), for display.

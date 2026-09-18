@@ -3,6 +3,7 @@ defmodule CodingAgent.Core.Tools.ListDir do
   Read-only directory listing tool (slice 2a).
   """
 
+  alias CodingAgent.Core.Containment
   alias CodingAgent.Core.Tools
 
   @spec tool(Tools.scope()) :: ReqLLM.Tool.t()
@@ -27,17 +28,9 @@ defmodule CodingAgent.Core.Tools.ListDir do
   defp execute(scope, args) do
     path = Map.get(args, :path) || Map.get(args, "path") || "."
 
-    with :ok <- check_scope(scope, path),
+    with :ok <- Containment.check_scope!(scope, path),
          {:ok, entries} <- do_list(scope, path) do
       {:ok, entries}
-    end
-  end
-
-  defp check_scope(scope, path) do
-    if Tools.in_scope?(scope, path) do
-      :ok
-    else
-      Tools.error("path escapes the session scope: #{inspect(path)}")
     end
   end
 

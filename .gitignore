@@ -6,6 +6,9 @@
 .erl_crash.dump
 erl_crash.dump
 
+# Coverage HTML (mix test --cover)
+/cover/
+
 # Environment / local config
 /.env
 /.env.local

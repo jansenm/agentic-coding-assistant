@@ -55,6 +55,10 @@ defmodule CodingAgent.Core.Sandbox.Mounts do
   @spec default() :: t()
   def default, do: resolve([%{}, %{}, %{}])
 
+  @doc "The empty mount schema — no extra binds. The one literal."
+  @spec empty() :: t()
+  def empty, do: %{rw: [], ro: [], hide: []}
+
   @doc """
   Whether a path is eligible for a directive: it must be absolute or
   `~`-rooted (a relative path would resolve against a varying CWD, which

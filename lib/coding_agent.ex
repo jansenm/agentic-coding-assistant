@@ -20,8 +20,5 @@ defmodule CodingAgent do
   warning + in-session pick once the model menu exists).
   """
   @spec model() :: String.t() | nil
-  def model do
-    System.get_env("AGENT_MODEL") ||
-      CodingAgent.Core.UserConfig.load(nil).config["model"]
-  end
+  def model, do: CodingAgent.Core.Config.model()
 end

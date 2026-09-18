@@ -69,7 +69,10 @@ defmodule CodingAgent.UI.TranscriptView do
       # Same shared box + @air after the answer block.
       {:assistant, text, _agent} ->
         inner_width = max(width - 2, 10)
-        content = painted_height(%ExRatatui.Widgets.Markdown{content: text, wrap: true}, inner_width)
+
+        content =
+          painted_height(%ExRatatui.Widgets.Markdown{content: text, wrap: true}, inner_width)
+
         content + 2 + @air
 
       # The boxless widgets (reasoning, info, collapsed/expanded tools):

@@ -46,17 +46,8 @@ defmodule Mix.Tasks.Tui do
       |> maybe_resume(opts[:resume])
       |> maybe_agent(opts[:agent])
 
-    case CodingAgent.model() do
-      nil ->
-        Mix.raise(
-          "no model configured. Set model = \"provider:model\" in " <>
-            CodingAgent.Core.UserConfig.global_dir() <>
-            "/config.toml (or a project .coding-agent/config.toml), " <>
-            "or override per run with AGENT_MODEL"
-        )
-
-      _ ->
-        :ok
+    if CodingAgent.model() == nil do
+      Mix.raise(CodingAgent.Core.Config.no_model_message())
     end
 
     {:ok, _} = CodingAgent.UI.Tui.start_link(tui_opts)
@@ -104,8 +95,7 @@ defmodule Mix.Tasks.Tui do
   end
 
   defp log_path do
-    dir = Application.get_env(:coding_agent, :store_dir, "~/.local/state/coding_agent")
-    dir = Path.expand(dir)
+    dir = CodingAgent.Core.Config.state_dir()
     File.mkdir_p!(dir)
     Path.join(dir, "tui.log")
   end

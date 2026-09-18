@@ -135,7 +135,7 @@ defmodule CodingAgent.Core.Tools.Git do
   """
   @spec profile(map()) :: CodingAgent.Core.Sandbox.profile()
   def profile(scope) do
-    mounts = Map.get(scope, :mounts) || %{rw: [], ro: [], hide: []}
+    mounts = Map.get(scope, :mounts) || CodingAgent.Core.Sandbox.Mounts.empty()
 
     %{
       root: scope.root,

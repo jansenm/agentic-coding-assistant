@@ -182,8 +182,11 @@ defmodule CodingAgent.Core.Tools.Shell do
   def profile(scope, args) do
     {root, mounts} =
       case scope do
-        %{root: root} = s -> {root, Map.get(s, :mounts) || empty_mounts()}
-        root when is_binary(root) -> {root, empty_mounts()}
+        %{root: root} = s ->
+          {root, Map.get(s, :mounts) || CodingAgent.Core.Sandbox.Mounts.empty()}
+
+        root when is_binary(root) ->
+          {root, CodingAgent.Core.Sandbox.Mounts.empty()}
       end
 
     %{
@@ -195,8 +198,6 @@ defmodule CodingAgent.Core.Tools.Shell do
       hide: Map.get(mounts, :hide, [])
     }
   end
-
-  defp empty_mounts, do: %{rw: [], ro: [], hide: []}
 
   defp truthy?(true), do: true
   defp truthy?("true"), do: true

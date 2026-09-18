@@ -3,36 +3,26 @@ import Config
 # CodingAgent configuration (ADR 008): collect knobs here while the
 # application grows; secrets come from the environment, never this file.
 
-config :coding_agent,
-  # No default model in code (user decision: models are dynamic; the
-  # default comes from ~/.config/coding-agent/config.toml `model =`
-  # or the AGENT_MODEL env override). Missing default fails with a
-  # message naming the config file.
-  # context window of the configured model, in tokens (sidebar %).
-  context_window_tokens: 500_000,
-  # Compaction trigger in ABSOLUTE tokens (default 180k, learned from
-  # opencode: its users trust an auto-compact around ~180k; a big
-  # window makes %-of-window compaction far too late — the user's
-  # GLM sessions grew past 300k before compaction and burned quota at
-  # unheard speeds). Visible in the sidebar; predictable by design.
-  compaction_trigger_tokens: 180_000,
-  # Tool-round guard PER TURN (catches a single runaway loop, not
-  # normal work). GLM does one small grep per round — a review turn
-  # burned 25 rounds live and died mid-work; the default is now 100.
-  # Configurable: :max_tool_rounds in config.exs or a user config
-  # override, so heavyweight tasks can turn it up.
-  max_tool_rounds: 100
-
-# Process confinement (ADR 015). Bwrap is the intended default on Linux:
-# shell/git run inside a bubblewrap profile and are allow-by-default,
-# with only network and git-write escalations prompting. Where bwrap
-# cannot run (no binary, or unprivileged user namespaces disabled by host
-# hardening) the app logs a warning at startup and falls back to
-# Sandbox.None — unconfined, so the gate asks for every shell/git call,
-# exactly the pre-ADR-015 behaviour. Set `sandbox: CodingAgent.Core.Sandbox.None`
-# here (or via application env) to disable confinement deliberately; the
-# tests do exactly that.
-config :coding_agent, sandbox: CodingAgent.Core.Sandbox.Bwrap
+# Runtime knobs (context window, compaction trigger/budgets, tool-round
+# guard, sandbox, state dir) have their SINGLE default in
+# `CodingAgent.Core.Config` (and `Sandbox` for the sandbox choice) — do
+# not repeat the literals here. Override a key here only when a build
+# genuinely needs a different value; the module default applies when the
+# key is absent.
+#
+# No default model in code (user decision: models are dynamic; the
+# default comes from ~/.config/coding-agent/config.toml `model =`
+# or the AGENT_MODEL env override). Missing default fails with a
+# message naming the config file.
+#
+# Process confinement (ADR 015): Bwrap is the default. shell/git run
+# inside a bubblewrap profile and are allow-by-default, with only network
+# and git-write escalations prompting. Where bwrap cannot run (no binary,
+# or unprivileged user namespaces disabled by host hardening) the app
+# logs a warning at startup and falls back to Sandbox.None — unconfined,
+# so the gate asks for every shell/git call, exactly the pre-ADR-015
+# behaviour. Set `sandbox: CodingAgent.Core.Sandbox.None` to disable
+# confinement deliberately; the tests do exactly that.
 
 # Credentials are NOT configured here: secrets come from the environment
 # (ADR 008), and Request resolves them per provider as `<NAME>_API_KEY`

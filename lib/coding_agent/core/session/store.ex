@@ -19,31 +19,18 @@ defmodule CodingAgent.Core.Session.Store do
   Nothing in the repo; sessions are user-local artifacts.
   """
 
-  alias CodingAgent.Core.Agent
-  alias CodingAgent.Core.Permissions
   alias CodingAgent.Core.Session.State
 
   @format_version 1
 
-  # Directory where session files live (created on demand). The
-  # :coding_agent, :store_dir app-env override exists for tests — they
-  # must NEVER wipe the user's real session dir (this exact mistake
-  # deleted a live session once; tests now isolate by default).
+  # Directory where session files live (created on demand). The path and
+  # the :store_dir test override are decided in Core.Config (one reader);
+  # this is just the typed accessor. The override exists so tests never
+  # wipe the user's real session dir (this exact mistake deleted a live
+  # session once; tests now isolate by default).
   @doc "Directory where session files live (created on demand)."
   @spec dir() :: String.t()
-  def dir do
-    case Application.get_env(:coding_agent, :store_dir) do
-      dir when is_binary(dir) ->
-        dir
-
-      _ ->
-        base =
-          System.get_env("XDG_STATE_HOME") ||
-            Path.join(System.user_home!(), ".local/state")
-
-        Path.join([base, "coding_agent", "sessions"])
-    end
-  end
+  def dir, do: CodingAgent.Core.Config.store_dir()
 
   @doc "File path for a session id."
   @spec path(String.t()) :: String.t()
@@ -109,7 +96,7 @@ defmodule CodingAgent.Core.Session.Store do
       {:ok, bytes} ->
         case safe_binary_to_term(bytes) do
           {:ok, {@format_version, %State{} = state}} ->
-            restore(state)
+            State.restore(state)
 
           {:ok, other} ->
             # wrong version or foreign payload — same fail-closed verdict
@@ -124,86 +111,9 @@ defmodule CodingAgent.Core.Session.Store do
     end
   end
 
-  # Rebuilds a decoded snapshot into a complete %State{}.
-  #
-  # Two hazards this guards against, both found live:
-  #
-  # 1. `struct!/1` (map form) stopped applying struct defaults in
-  #    Elixir 1.20 — a key the snapshot lacks stays missing and any
-  #    access raises KeyError ("key :base_policy not found"). Use
-  #    `struct!/2` (module + map) so every field the snapshot predates
-  #    gets its default.
-  # 2. Nested structs are the SAME trap one level down: an old snapshot
-  #    carries a %Permissions{} without the later `:disabled` field, so
-  #    Tab (apply_agent/2 reading policy.disabled) crashed on load. Give
-  #    every known nested struct its defaults too.
-  #
-  # Unknown keys are dropped FIRST: a NEWER snapshot (same
-  # format_version 1, written by a later app version) carries fields
-  # this build does not know, and `struct!/2` raises KeyError on them.
-  # An old binary must fail closed, not crash.
-  defp restore(%State{} = state) do
-    overrides = %{
-      # runtime-only fields must not resurrect
-      subscribers: [],
-      status: idle_or_interrupted(state),
-      # runtime guard counter: a snapshot saved with tool_rounds 25 (the
-      # old never-reset bug) resurrected as 25, so resuming and
-      # approving a pending call died instantly at the gate
-      tool_rounds: 0,
-      usage: Map.get(state, :usage) || %{input_tokens: 0, output_tokens: 0, cost: nil},
-      compaction_warned: Map.get(state, :compaction_warned, false),
-      compaction_backoff: Map.get(state, :compaction_backoff, 0),
-      pending_round_calls: Map.get(state, :pending_round_calls, []),
-      pending_round_results: Map.get(state, :pending_round_results, []),
-      # per-turn agent attribution (old snapshots lack it)
-      turn_agents: Map.get(state, :turn_agents, []),
-      # nested structs: heal the Elixir 1.20 missing-default trap one
-      # level down (see above)
-      policy: heal(state.policy, Permissions),
-      base_policy: heal(Map.get(state, :base_policy), Permissions),
-      agent: heal(Map.get(state, :agent), Agent),
-      mounts: heal_mounts(Map.get(state, :mounts)),
-      provider_config: Map.get(state, :provider_config) || %{}
-    }
-
-    known =
-      state
-      |> Map.take(Map.keys(State.__struct__()))
-      |> Map.drop([:__struct__])
-
-    {:ok, struct!(State, Map.merge(known, overrides))}
-  rescue
-    # A snapshot whose shape we cannot reconcile (e.g. a required key is
-    # a foreign struct) is a load failure, not a crash: the caller shows
-    # it and offers a fresh start.
-    e -> {:error, {:bad_session_state, Exception.message(e)}}
-  end
-
-  # Fill a nested struct's defaults when it lacks later fields. nil
-  # stays nil (no agent / no base policy is a legitimate state).
-  defp heal(nil, _mod), do: nil
-
-  defp heal(%mod{} = nested, mod) do
-    fields =
-      nested
-      |> Map.take(Map.keys(mod.__struct__()))
-      |> Map.drop([:__struct__])
-
-    struct!(mod, fields)
-  end
-
-  defp heal(other, _mod), do: other
-
-  # mounts is a plain map (not a struct); a key added later must not
-  # crash the sandbox resolver.
-  defp heal_mounts(nil), do: %{rw: [], ro: [], hide: []}
-
-  defp heal_mounts(m) when is_map(m) do
-    %{rw: Map.get(m, :rw, []), ro: Map.get(m, :ro, []), hide: Map.get(m, :hide, [])}
-  end
-
-  defp heal_mounts(_), do: %{rw: [], ro: [], hide: []}
+  # Snapshot healing lives in State.restore/1: the persistence FORMAT is
+  # Store's concern, but the SHAPE of State and its nested structs is
+  # not. Store decodes bytes and hands the state to State.
 
   @doc "Deletes a persisted session (best effort)."
   @spec delete(String.t()) :: :ok
@@ -241,7 +151,10 @@ defmodule CodingAgent.Core.Session.Store do
             new_state = struct!(state, id: new_id)
             save(new_state)
             _ = File.rm(path(id))
-            notify_live(id, new_id)
+            # tell a live process under the old id (if any) so its next
+            # save lands on the renamed file — the session layer owns the
+            # registry lookup, not Store
+            CodingAgent.Core.Session.notify_renamed(id, new_id)
             {:ok, new_id}
 
           err ->
@@ -256,16 +169,6 @@ defmodule CodingAgent.Core.Session.Store do
   @spec safe_id?(String.t()) :: boolean()
   defp safe_id?(id) do
     Regex.match?(~r/^[A-Za-z0-9][A-Za-z0-9._-]*$/, id)
-  end
-
-  # a live session under the old id re-saves with its in-memory (old)
-  # id on the next turn, resurrecting the deleted file — tell it its
-  # new id so subsequent saves land on the renamed file
-  defp notify_live(id, new_id) do
-    case Registry.lookup(CodingAgent.Registry, {:session, id}) do
-      [{_pid, _}] -> CodingAgent.Core.Session.set_id(id, new_id)
-      _ -> :ok
-    end
   end
 
   @doc "Lists persisted sessions, newest first: [{id, saved_at, model}]."
@@ -354,9 +257,4 @@ defmodule CodingAgent.Core.Session.Store do
   rescue
     e -> {:error, Exception.message(e)}
   end
-
-  # A saved :running/:interrupted session resumes as paused work, not a
-  # running process pretending to stream.
-  defp idle_or_interrupted(%{status: s}) when s in [:running, :error], do: :idle
-  defp idle_or_interrupted(%{status: s}), do: s
 end

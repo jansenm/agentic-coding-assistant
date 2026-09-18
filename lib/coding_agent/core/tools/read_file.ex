@@ -3,6 +3,7 @@ defmodule CodingAgent.Core.Tools.ReadFile do
   Read-only file content tool (slice 2a).
   """
 
+  alias CodingAgent.Core.Containment
   alias CodingAgent.Core.Tools
 
   @max_bytes 256 * 1024
@@ -28,17 +29,9 @@ defmodule CodingAgent.Core.Tools.ReadFile do
   defp execute(scope, args) do
     path = Map.get(args, :path) || Map.get(args, "path")
 
-    with :ok <- check_scope(scope, path),
+    with :ok <- Containment.check_scope!(scope, path),
          {:ok, content} <- do_read(scope, path) do
       {:ok, content}
-    end
-  end
-
-  defp check_scope(scope, path) do
-    if Tools.in_scope?(scope, path) do
-      :ok
-    else
-      Tools.error("path escapes the session scope: #{inspect(path)}")
     end
   end
 

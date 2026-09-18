@@ -18,10 +18,15 @@ defmodule CodingAgent.Core.Tools.Glob do
   """
 
   alias CodingAgent.Core.Containment
+  alias CodingAgent.Core.Exec
   alias CodingAgent.Core.External
   alias CodingAgent.Core.Tools
 
   @max_results 500
+
+  # fd runs through the one executor (Exec + Sandbox), like grep's rg. A
+  # search that outlives this bound falls back to the reference walk.
+  @exec_timeout 60
 
   @spec tool(Tools.scope()) :: ReqLLM.Tool.t()
   def tool(scope) do
@@ -79,13 +84,15 @@ defmodule CodingAgent.Core.Tools.Glob do
         exclude_args() ++
         [pattern, "."]
 
-    case System.cmd(fd, args, cd: root, stderr_to_stdout: true) do
-      {out, 0} -> format_fd_matches(out, root)
-      {out, 1} -> format_fd_matches(out, root)
-      {_out, _code} -> :fallback
+    # Same confined-process path as grep: run fd through Exec under the
+    # read-only sandbox profile instead of a bare System.cmd.
+    profile = scope |> Tools.profile() |> Map.put(:root, root)
+
+    case Exec.run({:exec, fd, args}, root, @exec_timeout, profile) do
+      {:ok, out, 0} -> format_fd_matches(out, root)
+      {:ok, out, 1} -> format_fd_matches(out, root)
+      _ -> :fallback
     end
-  rescue
-    _ -> :fallback
   end
 
   # fd's --exclude matches by name at any depth, so a bare name prunes

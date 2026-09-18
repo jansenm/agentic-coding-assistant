@@ -1,0 +1,96 @@
+defmodule CodingAgent.Core.Session.ToolRunner do
+  @moduledoc """
+  Tool execution for one session round, extracted from `Session`.
+
+  Owns the two things that are not policy: which tools the session
+  exposes (the registry narrowed by the policy's enabled/disabled sets)
+  and how each call is executed, sequentially, honoring a user stop
+  between calls. The permission decision itself belongs to
+  `CodingAgent.Core.Session.Gate`.
+  """
+
+  alias CodingAgent.Core.{Interrupt, Permissions, Sandbox}
+  alias CodingAgent.Core.Text
+  alias CodingAgent.Core.ToolCall
+
+  @doc """
+  The tools a session exposes: the full registry, narrowed by
+  `[tools] enabled` (a real whitelist; empty = every tool) and by the
+  agent definition's `disallowedTools` (ADR 017).
+  """
+  @spec tools(Permissions.t(), CodingAgent.Core.Tools.scope()) :: [ReqLLM.Tool.t()]
+  def tools(policy, scope) do
+    all = CodingAgent.Core.Tools.all(scope)
+
+    narrowed =
+      case Permissions.enabled(policy) do
+        :default -> all
+        names -> Enum.filter(all, &(&1.name in names))
+      end
+
+    case Permissions.disabled(policy) do
+      [] -> narrowed
+      disabled -> Enum.reject(narrowed, &(&1.name in disabled))
+    end
+  end
+
+  @doc """
+  Executes `calls` in order under `tools`. A stop requested between two
+  calls is honored: already-run tools keep their real result, everything
+  after gets a synthetic result (the exchange still needs one result per
+  call to stay valid on the wire). Mid-tool cancellation is out of scope
+  — see `CodingAgent.Core.Interrupt`.
+  """
+  @spec execute(String.t(), [ReqLLM.Tool.t()], [term()]) :: [map()]
+  def execute(session_id, tools, calls) do
+    {results, _stopped?} =
+      Enum.reduce(calls, {[], false}, fn call, {acc, stopped?} ->
+        {id, name, args} = ToolCall.normalize(call)
+        executing = %{id: id, name: name}
+
+        cond do
+          stopped? or Interrupt.requested?(session_id) ->
+            {[Map.put(executing, :content, "error: stopped by the user") | acc], true}
+
+          true ->
+            {[run_one(executing, name, args, tools) | acc], false}
+        end
+      end)
+
+    Enum.reverse(results)
+  end
+
+  @doc "Executes one tool call, resolving it against the exposed registry."
+  @spec run_one(map(), String.t(), map(), [ReqLLM.Tool.t()]) :: map()
+  def run_one(executing, name, args, tools) do
+    case Enum.find(tools, &(&1.name == name)) do
+      nil ->
+        # list the valid names: the model can self-correct in one round
+        # (found live: GLM emitted tool calls named "assistant" —
+        # provider-side mislabeling; with the names in the error it
+        # retries with the right tool instead of spiraling)
+        names = tools |> Enum.map(& &1.name) |> Enum.sort()
+
+        Map.put(
+          executing,
+          :content,
+          "error: unknown tool #{inspect(name)} — available tools: #{Enum.join(names, ", ")}"
+        )
+
+      tool ->
+        case ReqLLM.Tool.execute(tool, args) do
+          {:ok, output} -> Map.put(executing, :content, Text.to_text(output))
+          {:error, msg} -> Map.put(executing, :content, "error: #{Text.to_text(msg)}")
+        end
+    end
+  end
+
+  @doc """
+  The sandbox scope for a session: the scope root plus its configured
+  mounts.
+  """
+  @spec scope(String.t() | nil, Sandbox.Mounts.t() | nil) :: CodingAgent.Core.Tools.scope()
+  def scope(scope_root, mounts) do
+    %{root: scope_root || File.cwd!(), mounts: mounts || Sandbox.Mounts.empty()}
+  end
+end

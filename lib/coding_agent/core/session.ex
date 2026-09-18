@@ -10,6 +10,23 @@ defmodule CodingAgent.Core.Session do
   The session state is plain data (ADR 003: everything is data so
   persistence and interruption become states, not exceptions).
 
+  ## The session stays responsive while a turn runs
+
+  A turn is one long stretch of blocking I/O (provider streaming, tool
+  execution, compaction). Running it inline in this GenServer froze the
+  mailbox for the turn's duration — `state/1` and `set_agent/2` queued
+  behind it and the TUI hung on Tab (found live). The blocking loop now
+  runs in a supervised worker task (`Session.TurnTaskSupervisor`): this
+  process owns the durable state, starts the worker, keeps answering
+  calls, and merges the worker's final state when it reports back.
+  `run/2` and `decide/2` still return synchronously TO THE CALLER via
+  `GenServer.reply/2`; only the session process is unblocked.
+
+  Calls that arrive while a turn is in flight (another `run`, a gate
+  `decide`, or an agent/model switch) are queued and applied at the
+  turn boundary, preserving the one-turn-at-a-time semantics without
+  blocking.
+
   Separation of concerns within `CodingAgent.Core.Session.*`:
 
   - this module — the loop: turn lifecycle, tool gating, interrupts,
@@ -25,12 +42,12 @@ defmodule CodingAgent.Core.Session do
 
   require Logger
 
-  alias CodingAgent.Core.Permissions
-  alias CodingAgent.Core.Sandbox
-  alias CodingAgent.Core.Tools.Shell
-  alias CodingAgent.Core.UserConfig
+  alias CodingAgent.Core.Config
+  alias CodingAgent.Core.Events
   alias CodingAgent.Core.Interrupt
-  alias CodingAgent.Core.Session.{Compactor, Request, State, Store}
+  alias CodingAgent.Core.Permissions
+  alias CodingAgent.Core.ToolCall
+  alias CodingAgent.Core.Session.{Compactor, Gate, Request, State, Store, ToolRunner}
   alias ReqLLM.Context
 
   # GenServer call timeout. Gate decisions can take arbitrarily long
@@ -44,14 +61,10 @@ defmodule CodingAgent.Core.Session do
   # complained about "flaky parallel calls". 12 was a phase-2 guess;
   # GLM does one small grep per round: a review turn burned 25 rounds
   # live (7ce59be made the counter per-turn, but 25 still dies on a
-  # legit review). Default now 100, configurable via
-  # :max_tool_rounds — the guard exists to catch a runaway loop, and
-  # its cost is proportional to the work actually requested.
-  @default_max_tool_rounds 100
-
-  defp max_tool_rounds do
-    Application.get_env(:coding_agent, :max_tool_rounds, @default_max_tool_rounds)
-  end
+  # legit review). The default is Core.Config's — the guard exists to
+  # catch a runaway loop, and its cost is proportional to the work
+  # actually requested.
+  defp max_tool_rounds, do: CodingAgent.Core.Config.max_tool_rounds()
 
   # providers whose requests need no api_key option
 
@@ -116,13 +129,99 @@ defmodule CodingAgent.Core.Session do
   """
   @spec subscribe(String.t()) :: :ok
   def subscribe(id) do
-    _ = Registry.register(CodingAgent.EventRegistry, {:session_events, id}, nil)
+    _ = Registry.register(CodingAgent.EventRegistry, {Events.key(), id}, nil)
     GenServer.call(via(id), :subscribe)
   end
 
   @doc """
+  The `start_session/1` options that resume a persisted state.
+
+  This is the canonical resume mapping: callers (CLI, TUI) hand over the
+  loaded `%State{}` and do not reconstruct fields themselves, so adding a
+  state field does not force an edit in every driver. The rules encoded
+  here:
+
+    * the BASE policy is restored, not the agent-narrowed one — resuming
+      a plan session with its narrowed policy would make the restrictions
+      permanent (`set_agent` recomputes from base);
+    * the persisted agent is restored only when its definition still
+      exists (and is a primary); a deleted definition resumes without an
+      agent rather than raising;
+    * usage/warned/backoff and the parked-round fields carry forward.
+
+  `overrides` are merged last: a driver may force a different `:agent`
+  (the CLI's explicit `--agent`).
+  """
+  @spec resume_opts(State.t(), keyword()) :: keyword()
+  def resume_opts(%State{} = state, overrides \\ []) do
+    [
+      id: state.id,
+      context: state.context,
+      model: state.model,
+      scope_root: state.scope_root,
+      policy: state.base_policy || state.policy,
+      agent: resumable_agent_name(state),
+      usage: state.usage,
+      compaction_warned: state.compaction_warned,
+      compaction_backoff: state.compaction_backoff,
+      status: state.status,
+      pending_tool_calls: state.pending_tool_calls,
+      pending_round_calls: state.pending_round_calls,
+      pending_round_results: state.pending_round_results
+    ]
+    |> Keyword.merge(overrides)
+  end
+
+  @doc """
+  Resumes a persisted state under the session supervisor. Returns
+  `{:ok, pid}` or the supervisor's error. The caller subscribes if it
+  wants events.
+  """
+  @spec resume(State.t(), keyword()) :: {:ok, pid()} | {:error, term()}
+  def resume(%State{} = state, overrides \\ []) do
+    CodingAgent.Core.Session.Supervisor.start_session(resume_opts(state, overrides))
+  end
+
+  @doc """
+  Tells a LIVE session (if one is registered under `old_id`) its new id
+  after a `Store.rename/2`, so its next save lands on the renamed file.
+
+  This lives here, not in `Store`: persistence must not depend on the
+  process registry, and only the session layer knows how to reach a live
+  process.
+  """
+  @spec notify_renamed(String.t(), String.t()) :: :ok
+  def notify_renamed(old_id, new_id) do
+    case Registry.lookup(CodingAgent.Registry, {:session, old_id}) do
+      [{_pid, _}] -> set_id(old_id, new_id)
+      _ -> :ok
+    end
+  end
+
+  # The persisted agent name, or nil when the definition is gone /
+  # non-primary. A missing definition must not brick a resume.
+  defp resumable_agent_name(%State{agent: nil}), do: nil
+
+  defp resumable_agent_name(%State{agent: %{name: name}, scope_root: root}) do
+    case Config.agents(root) do
+      {:ok, agents} ->
+        if Enum.any?(agents, &(&1.name == name and &1.mode == :primary)), do: name, else: nil
+
+      _ ->
+        nil
+    end
+  end
+
+  @doc """
   Runs one turn: sends the user prompt to the model and streams the
-  answer to subscribers. Synchronous; returns the resulting state.
+  answer to subscribers. Blocks until the turn finishes and returns the
+  resulting state.
+
+  The RETURN is synchronous for the caller, but the session process is
+  NOT blocked: the turn's blocking loop (provider streaming, tools,
+  compaction) runs in a supervised worker task. The session keeps
+  answering `state/1`, `set_agent/2`, `interrupt/1` and `decide/2`
+  while it streams.
   """
   @spec run(String.t(), String.t()) :: {:ok, State.t()} | {:error, term()}
   def run(id, prompt), do: GenServer.call(via(id), {:run, prompt}, @call_timeout)
@@ -165,21 +264,26 @@ defmodule CodingAgent.Core.Session do
   @impl true
   def init(opts) do
     id = Keyword.fetch!(opts, :id)
+    scope_root = Keyword.get(opts, :scope_root)
+
+    # ONE typed read of the layered file config (Core.Config): merged
+    # config/ui, permissions, mounts, providers and agent definitions.
+    # `load/1` already merged permissions and (with cached layers)
+    # mounts; the old code read the same files three times through
+    # three paths (init and load_policy).
+    snapshot = Config.snapshot(scope_root)
+
     # no model in code (user decision): a fresh session needs the
     # configured default; nil fails loudly here (the TUI guard usually
     # catches this first)
     model =
       Keyword.get(opts, :model) ||
-        CodingAgent.model() ||
-        raise(
-          "no model configured — set model = \"provider:model\" in " <>
-            CodingAgent.Core.UserConfig.global_dir() <> "/config.toml"
-        )
+        Config.model(snapshot) ||
+        raise(Config.no_model_message())
 
     system_prompt = Keyword.get(opts, :system_prompt, @framework_prompt)
-    scope_root = Keyword.get(opts, :scope_root)
     test_mode = Keyword.get(opts, :test_mode, false)
-    policy = Keyword.get(opts, :policy) || load_policy(scope_root)
+    policy = Keyword.get(opts, :policy) || snapshot.permissions
 
     # Resume support (4a): a resumed session must carry the persisted
     # usage forward. last_input_tokens is the ONLY sound compaction
@@ -189,6 +293,10 @@ defmodule CodingAgent.Core.Session do
     usage = Keyword.get(opts, :usage) || %{input_tokens: 0, output_tokens: 0, cost: nil}
     compaction_warned = Keyword.get(opts, :compaction_warned, false)
     compaction_backoff = Keyword.get(opts, :compaction_backoff, 0)
+    # test seam: replace the worker's blocking body. Lets a test hold a
+    # turn "in flight" (and assert the session still answers) without a
+    # provider. Never set in production.
+    turn_runner = Keyword.get(opts, :turn_runner)
 
     # A session that was parked at the gate when it last stopped resumes
     # PARKED, not idle: the pending calls (and the half of the round that
@@ -221,7 +329,7 @@ defmodule CodingAgent.Core.Session do
     base_prompt = system_prompt
 
     {agent, policy, system_prompt} =
-      case resolve_agent(Keyword.get(opts, :agent), policy, system_prompt, scope_root) do
+      case resolve_agent(Keyword.get(opts, :agent), policy, system_prompt, snapshot.agents) do
         {:ok, agent, policy, prompt} -> {agent, policy, prompt}
         {:error, reason} -> raise ArgumentError, format_agent_error(reason)
       end
@@ -262,11 +370,11 @@ defmodule CodingAgent.Core.Session do
        # providers (ollama_cloud via provider = "openai") failed closed
        # with :bad_entry and the model menu showed only the current
        # model.
-       provider_config: UserConfig.load(scope_root).config["providers"] || %{},
+       provider_config: snapshot.providers,
        # Sandbox mount schema (ADR 015): rw/ro/hide from the config
        # layers. `rw` may only come from shipped + global, so a repo
        # cannot widen its own sandbox.
-       mounts: CodingAgent.Core.Sandbox.Mounts.resolve(UserConfig.layers(scope_root, "config")),
+       mounts: snapshot.mounts,
        # the resolved agent definition (ADR 017), or nil. The UI reads its
        # name/model for the two slots (ADR 018); the gate uses its policy
        # layer via state.policy.
@@ -279,7 +387,8 @@ defmodule CodingAgent.Core.Session do
        usage: usage,
        compaction_warned: compaction_warned,
        compaction_backoff: compaction_backoff,
-       test_mode: test_mode
+       test_mode: test_mode,
+       turn_runner: turn_runner
      )}
   end
 
@@ -289,16 +398,21 @@ defmodule CodingAgent.Core.Session do
   # A named agent that cannot be found (or a definition set that does not
   # load) is an error; the caller at init raises, the caller at set_agent
   # returns it. An absent name is the no-agent path.
-  defp resolve_agent(nil, policy, system_prompt, _scope_root) do
+  # Agent switches (Tab) are rare, so a fresh load per switch is fine
+  # and keeps definitions live for the current process. (Only the
+  # definitions are needed — not the whole config snapshot.)
+  defp agents_of(state), do: Config.agents(state.scope_root)
+
+  defp resolve_agent(nil, policy, system_prompt, _agents) do
     {:ok, nil, policy, system_prompt}
   end
 
-  defp resolve_agent(name, policy, system_prompt, scope_root) when is_binary(name) do
-    case CodingAgent.Core.Agent.load(scope_root) do
-      {:ok, agents} ->
-        case Enum.find(agents, &(&1.name == name)) do
+  defp resolve_agent(name, policy, system_prompt, agents) when is_binary(name) do
+    case agents do
+      {:ok, definitions} ->
+        case Enum.find(definitions, &(&1.name == name)) do
           nil ->
-            {:error, {:unknown_agent, name, Enum.map(agents, & &1.name)}}
+            {:error, {:unknown_agent, name, Enum.map(definitions, & &1.name)}}
 
           agent ->
             composed = compose_agent_prompt(system_prompt, agent)
@@ -369,16 +483,6 @@ defmodule CodingAgent.Core.Session do
     """
   end
 
-  # Policy loading at session start (ADR 010: no live reload). The
-  # repo-side file lives at the scope root; the user-side path comes
-  # from config. Fail-closed is inherited from the Permissions loader.
-  defp load_policy(scope_root) do
-    # ADR 014: the user layer is ~/.config/coding-agent/permissions.toml,
-    # the project layer .coding-agent/permissions.toml (legacy
-    # agent-permissions.toml still read for the transition)
-    CodingAgent.Core.UserConfig.load(scope_root).permissions
-  end
-
   defp replace_system_prompt(context, prompt) do
     messages = ReqLLM.Context.to_list(context)
 
@@ -401,14 +505,37 @@ defmodule CodingAgent.Core.Session do
   # model-menu switch: swap the wire model mid-session. The NEXT turn
   # resolves it (request_parts/1 splits state.model per call), so a
   # running session changes models at the boundary, not mid-stream.
+  #
+  # While a turn is in flight the switch is DEFERRED: the worker took a
+  # snapshot at turn start and would otherwise clobber the switch when
+  # its state merges back. It applies at the boundary.
+  def handle_call({:set_model, model}, _from, %{worker_ref: ref} = state)
+      when is_reference(ref) do
+    {:reply, :ok, %{state | pending_model: model}}
+  end
+
   def handle_call({:set_model, model}, _from, state) do
     {:reply, :ok, struct!(state, model: model)}
+  end
+
+  def handle_call({:set_agent, name}, _from, %{worker_ref: ref} = state)
+      when is_reference(ref) do
+    # Resolve NOW so an unknown agent errors promptly (and nothing is
+    # deferred), but apply at the turn boundary: a running turn keeps
+    # the agent it started with (ADR 018).
+    case resolve_agent(name, state.base_policy, state.base_prompt, agents_of(state)) do
+      {:ok, agent, policy, prompt} ->
+        {:reply, {:ok, state}, %{state | pending_agent: {:set, agent, policy, prompt}}}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
   end
 
   def handle_call({:set_agent, name}, _from, state) do
     # Recompute from the base values so switching does not compound; the
     # system message is replaced in place (index 0) when present.
-    case resolve_agent(name, state.base_policy, state.base_prompt, state.scope_root) do
+    case resolve_agent(name, state.base_policy, state.base_prompt, agents_of(state)) do
       {:ok, agent, policy, prompt} ->
         context = replace_system_prompt(state.context, prompt)
         new_state = %{state | agent: agent, policy: policy, context: context}
@@ -427,9 +554,16 @@ defmodule CodingAgent.Core.Session do
     {:reply, :ok, %{state | subscribers: [monitor | state.subscribers]}}
   end
 
-  def handle_call({:run, prompt}, _from, state) do
-    {state, result} = run_turn(prompt, state)
-    {:reply, result, state}
+  # A turn is ALREADY in flight: queue instead of running inline. This
+  # keeps the old mailbox serialization (one turn at a time, in arrival
+  # order) while the session process itself stays responsive.
+  def handle_call({:run, prompt}, from, %{worker_ref: ref} = state)
+      when is_reference(ref) do
+    {:noreply, %{state | queued_calls: state.queued_calls ++ [{:run, from, prompt}]}}
+  end
+
+  def handle_call({:run, prompt}, from, state) do
+    {:noreply, start_run(state, from, prompt)}
   end
 
   def handle_call({:debug_gate, calls}, _from, %{test_mode: true} = state) do
@@ -449,37 +583,66 @@ defmodule CodingAgent.Core.Session do
   # ADR 010: driver decisions for interrupted (pending) tool calls.
   # decisions: list of maps %{id: call-id, decision: :approve | {:edit, args} | :reject}
   # The turn resumes only when every pending call has a decision.
-  def handle_call({:decide, decisions}, _from, %{status: :interrupted} = state) do
-    pending = state.pending_tool_calls
-    by_id = Map.new(decisions, fn d -> {d.id, d.decision} end)
+  #
+  # A turn already in flight (the gate can pause and the next round
+  # stream) queues the decisions rather than blocking.
+  def handle_call({:decide, decisions}, from, %{worker_ref: ref} = state)
+      when is_reference(ref) do
+    {:noreply, %{state | queued_calls: state.queued_calls ++ [{:decide, from, decisions}]}}
+  end
 
-    missing =
-      Enum.reject(pending, fn call ->
-        {id, _, _} = call_parts(call)
-        Map.has_key?(by_id, id)
-      end)
+  def handle_call({:decide, decisions}, from, %{status: :interrupted} = state) do
+    case validate_decisions(state, decisions) do
+      :ok ->
+        if state.test_mode do
+          # gate-mechanics tests stop here: no LLM round-trip
+          {state, result} = run_decide_sync(state, decisions)
+          {:reply, result, state}
+        else
+          {:noreply, start_decide(state, from, decisions)}
+        end
 
-    if missing != [] do
-      {:reply,
-       {:error, {:missing_decisions, Enum.map(missing, fn c -> elem(call_parts(c), 0) end)}},
-       state}
-    else
-      state = resolve_decisions(state, pending, by_id)
-
-      if state.test_mode do
-        # gate-mechanics tests stop here: no LLM round-trip
-        state = %{state | status: :idle}
-        persist(state)
-        {:reply, {:ok, state}, state}
-      else
-        {state, result} = continue_loop(state)
-        {:reply, result, state}
-      end
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
     end
   end
 
   def handle_call({:decide, _decisions}, _from, state) do
     {:reply, {:error, {:not_interrupted, state.status}}, state}
+  end
+
+  # Every pending call needs a decision; partial answers are refused
+  # (same contract as before, now checked before a worker is started so
+  # the error is returned promptly).
+  defp validate_decisions(state, decisions) do
+    pending = state.pending_tool_calls
+    by_id = Map.new(decisions, fn d -> {d.id, d.decision} end)
+
+    missing =
+      Enum.reject(pending, fn call ->
+        {id, _, _} = ToolCall.normalize(call)
+        Map.has_key?(by_id, id)
+      end)
+
+    if missing == [] do
+      :ok
+    else
+      {:error,
+       {:missing_decisions, Enum.map(missing, fn c -> elem(ToolCall.normalize(c), 0) end)}}
+    end
+  end
+
+  defp resolve_decisions_for(state, decisions) do
+    by_id = Map.new(decisions, fn d -> {d.id, d.decision} end)
+    resolve_decisions(state, state.pending_tool_calls, by_id)
+  end
+
+  # test-mode decide: apply the decisions, go idle, no provider round
+  # trip (gate-mechanics tests stop here by design).
+  defp run_decide_sync(state, decisions) do
+    state = state |> resolve_decisions_for(decisions) |> then(&%{&1 | status: :idle})
+    state = persist(state)
+    {state, {:ok, state}}
   end
 
   # Apply approve/edit/reject to every pending call; build tool-result
@@ -493,7 +656,7 @@ defmodule CodingAgent.Core.Session do
   defp resolve_decisions(state, pending, by_id) do
     {to_run, decided_results, decided_calls} =
       Enum.reduce(pending, {[], [], %{}}, fn call, {run, results, calls} ->
-        {id, name, _args} = call_parts(call)
+        {id, name, _args} = ToolCall.normalize(call)
         decision = Map.fetch!(by_id, id)
 
         case decision do
@@ -527,7 +690,7 @@ defmodule CodingAgent.Core.Session do
 
     final_calls =
       Enum.map(round_calls, fn call ->
-        {id, _, _} = call_parts(call)
+        {id, _, _} = ToolCall.normalize(call)
         Map.get(decided_calls, id, call)
       end)
 
@@ -563,7 +726,7 @@ defmodule CodingAgent.Core.Session do
   defp assistant_message_for(calls) do
     tcalls =
       Enum.map(calls, fn call ->
-        {id, name, args} = call_parts(call)
+        {id, name, args} = ToolCall.normalize(call)
 
         %ReqLLM.ToolCall{
           id: id,
@@ -581,9 +744,8 @@ defmodule CodingAgent.Core.Session do
   # model's view — the model then saw its own shell calls as empty and
   # re-emitted empty-args calls (live: 12-round loop of
   # "required :command option not found" — the "dropped command" bug).
-  defp args_json(args) when is_binary(args), do: args
+  # `ToolCall.normalize/1` already decoded any JSON string to a map.
   defp args_json(args) when is_map(args), do: Jason.encode!(args)
-  defp args_json(_args), do: "{}"
 
   defp edit_call(%ReqLLM.ToolCall{} = call, new_args) do
     %{call | function: %{call.function | arguments: Jason.encode!(new_args)}}
@@ -592,6 +754,27 @@ defmodule CodingAgent.Core.Session do
   defp edit_call(%{arguments: _} = call, new_args), do: %{call | arguments: new_args}
 
   @impl true
+  # The turn worker RETURNED (async_nolink sends {ref, result} before the
+  # DOWN): adopt the worker's final state and reply to the caller. This
+  # clause MUST precede the generic DOWN clause below.
+  def handle_info({ref, {new_state, result}}, %{worker_ref: ref} = state)
+      when is_reference(ref) do
+    Process.demonitor(ref, [:flush])
+    {:noreply, finish_worker(state, new_state, result)}
+  end
+
+  # The turn worker CRASHED (provider stack, a bug in the loop, or a
+  # kill): turn it into a failed turn so the :infinity caller is never
+  # left hanging. The worker's in-progress state is lost, but the last
+  # persisted boundary survives; the session just goes to :error.
+  def handle_info({:DOWN, ref, :process, _pid, reason}, %{worker_ref: ref} = state)
+      when is_reference(ref) do
+    Logger.error("turn worker crashed: #{inspect(reason)}")
+    state = fail_turn(state, {:turn_worker_exit, reason})
+    {:noreply, finish_worker(state, state, {:error, {:turn_worker_exit, reason}})}
+  end
+
+  # A subscribed process died: drop its monitor.
   def handle_info({:DOWN, monitor, :process, _pid, _reason}, state) do
     {:noreply, %{state | subscribers: List.delete(state.subscribers, monitor)}}
   end
@@ -600,14 +783,58 @@ defmodule CodingAgent.Core.Session do
 
   # -- The loop ---------------------------------------------------------------
 
-  defp run_turn(prompt, state) do
-    context =
-      state.context
-      |> Context.append(ReqLLM.Context.user(prompt))
+  # -- Turn workers (the session stays responsive while a turn streams) -------
+  #
+  # The blocking loop (provider streaming, tools, compaction) runs in a
+  # supervised `async_nolink` task, NOT in the session process. The
+  # session holds the durable state and only routes: it starts a worker,
+  # keeps answering calls, and merges the worker's final state when it
+  # reports back. See `TurnTaskSupervisor`.
+
+  # Prepare and launch the run worker. Returns the updated session state
+  # with the worker booked (worker_ref/worker_from set).
+  defp start_run(state, from, prompt) do
+    state = begin_run(state, prompt)
+    runner = state.turn_runner
+
+    ref =
+      spawn_turn(state, fn snapshot ->
+        case runner do
+          nil -> continue_loop(snapshot)
+          fun -> fun.(snapshot)
+        end
+      end)
+
+    %{state | worker_ref: ref, worker_from: from}
+  end
+
+  # Resume a parked turn after decisions. The decisions are applied and
+  # the loop continued in the worker (same reasoning as start_run).
+  defp start_decide(state, from, decisions) do
+    runner = state.turn_runner
+
+    ref =
+      spawn_turn(state, fn snapshot ->
+        state = resolve_decisions_for(snapshot, decisions)
+
+        case runner do
+          nil -> continue_loop(state)
+          fun -> fun.(state)
+        end
+      end)
+
+    %{state | worker_ref: ref, worker_from: from}
+  end
+
+  # The blocking prep that must be visible to `state/1` immediately:
+  # append the user message, flip to :running, reset the per-turn guard,
+  # record the turn's agent, announce the turn.
+  defp begin_run(state, prompt) do
+    context = state.context |> Context.append(ReqLLM.Context.user(prompt))
 
     # Record WHICH agent answers this user turn (ADR 018 attribution):
     # the per-turn agent the loop is about to resolve. Synthetic user
-    # messages (compaction summaries) never reach run_turn — they are
+    # messages (compaction summaries) never reach begin_run — they are
     # added by the Compactor, not by the user — so turn_agents stays
     # aligned with real turns, one entry per user prompt.
     agent = if state.agent, do: state.agent.name, else: nil
@@ -628,9 +855,136 @@ defmodule CodingAgent.Core.Session do
 
     broadcast(state, {:turn_started, agent})
     broadcast(state, {:status_changed, :running})
+    state
+  end
 
-    case continue_loop(state) do
-      {state, result} -> {state, result}
+  # Starts the worker under the turn supervisor and returns the monitor
+  # ref. The worker gets a snapshot with the session's runtime
+  # bookkeeping stripped (it must never persist a stale worker ref, and
+  # it must not carry the queue/pending switches the SESSION owns while
+  # the turn runs).
+  defp spawn_turn(state, fun) do
+    snapshot = worker_snapshot(state)
+    task = Task.Supervisor.async_nolink(task_supervisor(), fn -> fun.(snapshot) end)
+    task.ref
+  end
+
+  defp task_supervisor do
+    case Process.whereis(CodingAgent.Core.Session.TurnTaskSupervisor) do
+      nil ->
+        # bare tests without the app tree: lazy, like the compactor's
+        case CodingAgent.Core.Session.TurnTaskSupervisor.start_link() do
+          {:ok, _pid} -> CodingAgent.Core.Session.TurnTaskSupervisor
+          {:error, {:already_started, _pid}} -> CodingAgent.Core.Session.TurnTaskSupervisor
+        end
+
+      pid when is_pid(pid) ->
+        pid
+    end
+  end
+
+  # Runtime fields are process-local to the SESSION; the worker snapshot
+  # carries only durable content plus the test seam. subscribers are
+  # cleared too: they are live monitor refs, not data — the worker must
+  # never persist its stale copy (and it broadcasts via the Registry,
+  # not this list).
+  defp worker_snapshot(state) do
+    %{
+      state
+      | worker_ref: nil,
+        worker_from: nil,
+        queued_calls: [],
+        pending_agent: :none,
+        pending_model: :none,
+        subscribers: [],
+        # the runner is captured in the worker closure, not the snapshot:
+        # a closure must never be persisted
+        turn_runner: nil
+    }
+  end
+
+  # The worker completed (returned or crashed): adopt its final state,
+  # apply any switch the SESSION deferred during the turn, reply to the
+  # original caller, and run the next queued call.
+  defp finish_worker(session, new_state, reply) do
+    switched? = session.pending_agent != :none or session.pending_model != :none
+
+    new_state =
+      %{
+        new_state
+        | # the SESSION owns these while a turn runs: adopt the durable
+          # result but keep the live subscriber list / id and the queue
+          subscribers: session.subscribers,
+          id: session.id,
+          turn_runner: session.turn_runner,
+          worker_ref: nil,
+          worker_from: nil,
+          queued_calls: session.queued_calls,
+          pending_agent: :none,
+          pending_model: :none
+      }
+      |> apply_pending_switches(session)
+
+    # a switch applied at the boundary is part of the durable state, like
+    # the idle set_agent/2 path (otherwise a restart loses it)
+    if switched?, do: persist(new_state)
+
+    if session.worker_from, do: GenServer.reply(session.worker_from, reply)
+    drain_queue(new_state)
+  end
+
+  # A mid-turn set_agent/set_model applied at the turn boundary. Agent
+  # switches recompute from the base values (no compounding) and replace
+  # the system prompt in place.
+  defp apply_pending_switches(state, session) do
+    state =
+      case session.pending_model do
+        :none -> state
+        model -> %{state | model: model}
+      end
+
+    case session.pending_agent do
+      :none ->
+        state
+
+      {:set, agent, policy, prompt} ->
+        context = replace_system_prompt(state.context, prompt)
+        %{state | agent: agent, policy: policy, context: context}
+    end
+  end
+
+  # One turn at a time, in arrival order: after a worker finishes, run
+  # the next call that queued while it streamed.
+  defp drain_queue(%{queued_calls: []} = state), do: state
+
+  defp drain_queue(%{queued_calls: [{:run, from, prompt} | rest]} = state) do
+    state = %{state | queued_calls: rest}
+    start_run(state, from, prompt)
+  end
+
+  defp drain_queue(%{queued_calls: [{:decide, from, decisions} | rest]} = state) do
+    state = %{state | queued_calls: rest}
+
+    # the same gate as the direct handle_call clause: decisions only make
+    # sense while the turn is parked at the approval gate. A queued
+    # decide whose turn already ended idle is refused, not run.
+    with :interrupted <- state.status,
+         :ok <- validate_decisions(state, decisions) do
+      if state.test_mode do
+        {state, result} = run_decide_sync(state, decisions)
+        GenServer.reply(from, result)
+        drain_queue(state)
+      else
+        start_decide(state, from, decisions)
+      end
+    else
+      {:error, reason} ->
+        GenServer.reply(from, {:error, reason})
+        drain_queue(state)
+
+      other_status ->
+        GenServer.reply(from, {:error, {:not_interrupted, other_status}})
+        drain_queue(state)
     end
   end
 
@@ -709,77 +1063,34 @@ defmodule CodingAgent.Core.Session do
     else
       state = %{state | tool_rounds: state.tool_rounds + 1}
 
-      # Command blacklist (2026-09-15 amendment 2, BEFORE the policy
-      # lookup): a shell call whose leading program duplicates a native
-      # tool is denied with a steering message — no keystroke for the
-      # user, and the model gets the better-tool hint as its tool result
-      # in the same round.
-      {blacklisted, rest} =
-        Enum.split_with(calls, fn call ->
-          {_id, name, args} = call_parts(call)
-          name == "shell" and match?({:ok, _}, Shell.blacklisted?(args))
-        end)
+      # All gate policy lives in Session.Gate: it buckets this round's
+      # calls (blacklist / escalation-without-reason / explicit deny /
+      # allow / ask) using the one Permissions.effective/4 path.
+      plan = Gate.classify(state.id, state.policy, state.scope_root, calls)
 
       blacklist_results =
-        Enum.map(blacklisted, fn call ->
-          {id, _name, args} = call_parts(call)
-          {:ok, guidance} = Shell.blacklisted?(args)
-          Logger.warning("gate: shell command denied (blacklist): #{inspect(id)}")
-          decisions_log(state, id, :deny)
-          %{id: id, name: "shell", content: "error: #{guidance}"}
+        Enum.map(plan.blacklisted, fn call ->
+          log_refusal(call, "gate: shell command denied (blacklist)")
+          Gate.blacklist_result(call)
         end)
-
-      # Escalations must carry a reason (ADR 015): a bare `network: true`
-      # tells the human nothing. Handled where a call actually reaches
-      # :ask — an explicit policy allow/deny still wins and needs no
-      # reason, because there is no prompt to answer.
-      #
-      # :deny is answered in this same round (ADR 010: "never even
-      # ask") — it must NOT park at the gate, because a parked call is an
-      # approve prompt, and approving it would run a call the policy
-      # forbade (found live: approving a denied write_file created the
-      # file).
-      {auto, pending, policy_denied, no_reason} =
-        Enum.reduce(rest, {[], [], [], []}, fn call, {auto, pending, denied, no_reason} ->
-          {_id, name, args} = call_parts(call)
-
-          decision = effective_decision(state, name, args)
-
-          {id, _, _} = call_parts(call)
-          decisions_log(state, id, decision)
-
-          case {decision, unanswerable_escalation?(name, args)} do
-            {:allow, _} -> {[call | auto], pending, denied, no_reason}
-            {:ask, true} -> {auto, pending, denied, [call | no_reason]}
-            {:ask, false} -> {auto, [call | pending], denied, no_reason}
-            {:deny, _} -> {auto, pending, [call | denied], no_reason}
-          end
-        end)
-
-      auto = Enum.reverse(auto)
-      pending = Enum.reverse(pending)
-      policy_denied = Enum.reverse(policy_denied)
-      no_reason = Enum.reverse(no_reason)
 
       no_reason_results =
-        Enum.map(no_reason, fn call ->
-          {id, _name, args} = call_parts(call)
-          {:error, guidance} = Shell.escalation_verdict(args)
-          Logger.warning("gate: shell escalation without reason refused: #{inspect(id)}")
-          decisions_log(state, id, :deny)
-          %{id: id, name: "shell", content: "error: #{guidance}"}
+        Enum.map(plan.no_reason, fn call ->
+          log_refusal(call, "gate: shell escalation without reason refused")
+          Gate.no_reason_result(call)
         end)
 
       # Results already decided for this round, before any human input.
-      known_calls = blacklisted ++ no_reason ++ policy_denied
+      known_calls = plan.blacklisted ++ plan.no_reason ++ plan.denied
 
       known_results =
-        blacklist_results ++ no_reason_results ++ Enum.map(policy_denied, &denied_result/1)
+        blacklist_results ++
+          no_reason_results ++ Enum.map(plan.denied, &Gate.denied_result/1)
 
-      if pending == [] do
-        auto_results = execute_tools(state, auto)
+      if plan.pending == [] do
+        auto_results = execute_tools(state, plan.auto)
         results = known_results ++ auto_results
-        broadcast_tools(state, known_calls ++ auto, known_results ++ auto_results)
+        broadcast_tools(state, known_calls ++ plan.auto, known_results ++ auto_results)
         state = complete_round(state, calls, results)
         finish_round(state)
       else
@@ -787,22 +1098,29 @@ defmodule CodingAgent.Core.Session do
         # only once the whole round is decided, so nothing half-formed
         # ever reaches the wire. The auto/denied results computed now
         # are carried in state across the pause (and a resume) instead.
-        auto_results = execute_tools(state, auto)
+        auto_results = execute_tools(state, plan.auto)
 
         state = %{
           state
           | status: :interrupted,
-            pending_tool_calls: pending,
+            pending_tool_calls: plan.pending,
             pending_round_calls: calls,
             pending_round_results: known_results ++ auto_results
         }
 
-        broadcast_tools(state, known_calls ++ auto, known_results ++ auto_results)
-        broadcast(state, {:status_changed, :interrupted, pending})
+        broadcast_tools(state, known_calls ++ plan.auto, known_results ++ auto_results)
+        broadcast(state, {:status_changed, :interrupted, plan.pending})
         persist(state)
         {state, {:ok, state}}
       end
     end
+  end
+
+  # Gate-side refusals are logged with their id and reason so a live
+  # failure is traceable.
+  defp log_refusal(call, message) do
+    {id, _, _} = ToolCall.normalize(call)
+    Logger.warning("#{message}: #{inspect(id)}")
   end
 
   # A tool round is appended as ONE canonical exchange: the assistant
@@ -844,230 +1162,30 @@ defmodule CodingAgent.Core.Session do
     end
   end
 
-  defp denied_result(call) do
-    {id, name, _} = call_parts(call)
-
-    %{
-      id: id,
-      name: name,
-      content: "error: permission denied by policy; the user did not approve this action"
-    }
-  end
-
-  defp decisions_log(_state, _id, :allow), do: :ok
-
-  defp decisions_log(state, id, decision) do
-    Logger.debug("gate: tool call #{inspect(id)} in session #{state.id} -> #{decision}")
-  end
-
-  defp tool_name(name) when is_binary(name), do: name
-  defp tool_name(other), do: to_string(other)
-
-  # The policy matches against the tool's path argument, relative to the
-  # scope root. The gate consults the call's OWN arguments — this is the
-  # security boundary, so the path always comes from the call itself.
-  #
-  # This is TEXTUAL (Path.expand, no filesystem); the tools resolve
-  # PHYSICALLY (symlinks followed) via Containment. Net effect is safe:
-  # an allow pattern can never be BYPASSED by a symlink, because
-  # execution still rejects a physically-escaping path — but it means an
-  # allow-pattern is not a capability. A "tmp/** = allow" pattern next
-  # to a symlink tmp -> /etc matches the CALL and then fails at
-  # execution with "path escapes the session scope".
-  defp call_rel_path(state, args) when is_map(args) do
-    path = Map.get(args, "path") || Map.get(args, :path)
-
-    case path do
-      p when is_binary(p) ->
-        root = Path.expand(state.scope_root || File.cwd!())
-        expanded = Path.expand(p, root)
-
-        if String.starts_with?(expanded <> "/", root <> "/") do
-          Path.relative_to(expanded, root)
-        else
-          # absolute path outside scope: policy matches the raw path; the
-          # tool itself will reject execution anyway
-          p
-        end
-
-      _ ->
-        ""
-    end
-  end
-
-  defp call_rel_path(_state, _args), do: ""
-
-  # The gate decision for one call, with the ADR 015 confinement rule on
-  # top of the plain policy lookup.
-  #
-  # An explicit policy entry (allow/ask/deny) always wins: the user's own
-  # choice is never overridden. Only the CLASS DEFAULT `ask` for `shell`
-  # yields to confinement — when a real sandbox is active, shell is
-  # allow-by-default inside the profile. Two escalations re-enable the
-  # prompt even then: the agent asking for the network, or for git write
-  # (coarse booleans it states, never inferred from command text).
-  defp effective_decision(state, name, args) do
-    tool = tool_name(name)
-    rel_path = call_rel_path(state, args)
-
-    case Permissions.matching(state.policy, tool, rel_path) do
-      {:ok, decision} ->
-        decision
-
-      :no_match ->
-        if confinement_allows?(tool, args) do
-          :allow
-        else
-          Permissions.default_for(tool)
-        end
-    end
-  end
-
-  defp confinement_allows?("shell", args) do
-    Sandbox.confines?() and not Shell.escalated?(args)
-  end
-
-  # git always runs with `.git` writable and confines the process, so it
-  # is allow-by-default under a real sandbox. No escalations: the network
-  # stays off and the scope is the only writable tree. A user who wants
-  # every git call reviewed writes `[permissions.git] "*" = "ask"`.
-  defp confinement_allows?("git", _args) do
-    Sandbox.confines?()
-  end
-
-  defp confinement_allows?(_tool, _args), do: false
-
-  # An escalation the human would have to approve without a stated reason
-  # (ADR 015). Only `shell` escalates; other tools never do.
-  defp unanswerable_escalation?("shell", args) do
-    match?({:error, _}, Shell.escalation_verdict(args))
-  end
-
-  defp unanswerable_escalation?(_name, _args), do: false
-
   defp execute_tools(state, calls) do
-    tools = current_tools(state)
-
-    # A stop requested between sequential tool executions of one round is
-    # honored here: already-run tools keep their real result, everything
-    # after the stop gets a synthetic result (the exchange still needs
-    # one result per tool call to stay valid on the wire). Mid-tool
-    # cancellation (a running shell) is deliberately out of scope — see
-    # CodingAgent.Core.Interrupt.
-    {results, _stopped?} =
-      Enum.reduce(calls, {[], false}, fn call, {acc, stopped?} ->
-        {id, name, args} = call_parts(call)
-        executing = %{id: id, name: name}
-
-        cond do
-          stopped? or Interrupt.requested?(state.id) ->
-            {[Map.put(executing, :content, "error: stopped by the user") | acc], true}
-
-          true ->
-            {[run_one_tool(executing, name, args, tools) | acc], false}
-        end
-      end)
-
-    Enum.reverse(results)
+    tools = ToolRunner.tools(state.policy, tool_scope(state))
+    ToolRunner.execute(state.id, tools, calls)
   end
-
-  defp run_one_tool(executing, name, args, tools) do
-    case Enum.find(tools, &(&1.name == name)) do
-      nil ->
-        # list the valid names: the model can self-correct in one round
-        # (found live: GLM emitted tool calls named "assistant" —
-        # provider-side mislabeling; with the names in the error it
-        # retries with the right tool instead of spiraling)
-        names = tools |> Enum.map(& &1.name) |> Enum.sort()
-
-        Map.put(
-          executing,
-          :content,
-          "error: unknown tool #{inspect(name)} — available tools: #{Enum.join(names, ", ")}"
-        )
-
-      tool ->
-        case ReqLLM.Tool.execute(tool, args) do
-          {:ok, output} -> Map.put(executing, :content, to_text(output))
-          {:error, msg} -> Map.put(executing, :content, "error: #{to_text(msg)}")
-        end
-    end
-  end
-
-  # Tool calls arrive in two shapes: as ReqLLM.ToolCall structs
-  # (function: %{name, arguments}) or as plain maps from stream events
-  # (name/arguments at top level).
-  defp call_parts(%ReqLLM.ToolCall{id: id, function: %{name: name, arguments: args}}),
-    do: {id, name, ensure_args(args)}
-
-  defp call_parts(%{id: id, name: name, arguments: args}) when is_map(args),
-    do: {id, name, args}
-
-  defp call_parts(%{id: id, name: name}), do: {id, name, %{}}
-
-  defp ensure_args(args) when is_binary(args) do
-    case Jason.decode(args) do
-      {:ok, decoded} -> decoded
-      {:error, _} -> %{}
-    end
-  end
-
-  defp ensure_args(args) when is_map(args), do: args
-  defp ensure_args(_), do: %{}
 
   defp broadcast_tools(state, calls, results) do
     by_id = Map.new(results, &{&1.id, &1.content})
 
     Enum.each(calls, fn call ->
-      {id, name, _args} = call_parts(call)
+      {id, name, _args} = ToolCall.normalize(call)
       content = Map.get(by_id, id, "")
       broadcast(state, {:tool_executed, name, content})
     end)
   end
 
-  defp current_tools(state) do
-    tools = CodingAgent.Core.Tools.all(tool_scope(state))
+  # The registry narrowed by the policy (enabled whitelist + agent
+  # disallowedTools) — see Session.ToolRunner.
+  defp current_tools(state), do: ToolRunner.tools(state.policy, tool_scope(state))
 
-    # [tools] enabled is a REAL whitelist (ADR 010): an empty section is
-    # "registry default" (every tool); a non-empty list narrows the
-    # registry to exactly those names. A disabled tool is simply absent
-    # from the list the provider sees; a model that calls it anyway gets
-    # the gate's "unknown tool — available tools: …" error and
-    # self-corrects. An agent definition (ADR 017) narrows further with
-    # `disallowedTools` (Permissions.disabled/1).
-    tools =
-      case Permissions.enabled(state.policy) do
-        :default -> tools
-        names -> Enum.filter(tools, &(&1.name in names))
-      end
+  defp tool_scope(state), do: ToolRunner.scope(state.scope_root, state.mounts)
 
-    case Permissions.disabled(state.policy) do
-      [] -> tools
-      disabled -> Enum.reject(tools, &(&1.name in disabled))
-    end
-  end
-
-  defp tool_scope(state) do
-    root = state.scope_root || File.cwd!()
-    %{root: root, mounts: state.mounts || %{rw: [], ro: [], hide: []}}
-  end
-
-  defp to_text(output) when is_binary(output), do: scrub(output)
-  defp to_text(output), do: inspect(output, pretty: true, limit: 100) |> scrub()
-
-  # Tool output is arbitrary bytes: a shell command reading a binary file
-  # (`cat`, `head`, a `.session` term dump) yields invalid UTF-8. One such
-  # byte in the context makes EVERY later request fail to JSON-encode —
-  # "invalid byte 0x83" — which the UI then reports as "provider down".
-  # That is a poisoned context, not a provider problem, and it is
-  # permanent unless the byte is replaced. `String.replace_invalid/1`
-  # swaps each invalid byte for U+FFFD, preserving the readable parts.
-  #
-  # This is the PREVENT side; `sanitize_context/1` is the HEAL side,
-  # for sessions persisted before this guard existed.
-  defp scrub(text) when is_binary(text) do
-    if String.valid?(text), do: text, else: String.replace_invalid(text)
-  end
+  # Tool output is arbitrary bytes; scrub is the PREVENT side of the
+  # poisoned-context guard (`Core.Text`). `sanitize_context/1` is the
+  # HEAL side, for sessions persisted before this guard existed.
 
   # HEAL side of the poisoned-context guard: sessions persisted before
   # `scrub/1` existed (or written by an older build) can carry an invalid
@@ -1102,14 +1220,14 @@ defmodule CodingAgent.Core.Session do
   defp content_invalid?(_), do: false
 
   defp sanitize_message(%ReqLLM.Message{content: content} = msg) when is_binary(content) do
-    %{msg | content: scrub(content)}
+    %{msg | content: CodingAgent.Core.Text.scrub(content)}
   end
 
   defp sanitize_message(%ReqLLM.Message{content: content} = msg) when is_list(content) do
     parts =
       Enum.map(content, fn
         %ReqLLM.Message.ContentPart{text: t} = part when is_binary(t) ->
-          %{part | text: scrub(t)}
+          %{part | text: CodingAgent.Core.Text.scrub(t)}
 
         other ->
           other
@@ -1120,16 +1238,13 @@ defmodule CodingAgent.Core.Session do
 
   defp sanitize_message(msg), do: msg
 
-  # The model a turn actually uses: the agent definition's model when it
-  # sets one, otherwise the session's model (config / model menu /
-  # resume). ADR 017 allows a definition to pin its own model; this is
-  # where that becomes real (the field was parsed but unused).
+  # The model a turn actually uses (ADR 017): the agent definition's
+  # model when it sets one, otherwise the session's. The decision lives
+  # in State so the compactor's summarize call resolves the SAME model
+  # as the turn loop (Request divergence bug).
   @doc false
   @spec effective_model(State.t()) :: String.t() | nil
-  def effective_model(%State{agent: %{model: model}}) when is_binary(model) and model != "",
-    do: model
-
-  def effective_model(%State{model: model}), do: model
+  defdelegate effective_model(state), to: State
 
   defp call_llm(state) do
     with {:ok, model_input, base_opts} <-
@@ -1351,8 +1466,13 @@ defmodule CodingAgent.Core.Session do
   # mid-turn loses at most the current turn — the previous boundary is
   # on disk. Failures are logged, never raised: an unwritable disk
   # must not kill a working session.
+  #
+  # Runtime-only fields are stripped before the write: worker refs and
+  # the queue are process-local, and the test seam is a closure that
+  # must never be serialized (Store.restore clears them too, belt and
+  # braces for snapshots written by an older build).
   defp persist(state) do
-    case Store.save(state) do
+    case state |> worker_snapshot() |> strip_runner() |> Store.save() do
       :ok -> :ok
       {:error, reason} -> Logger.warning("session persist failed: #{inspect(reason)}")
     end
@@ -1360,23 +1480,15 @@ defmodule CodingAgent.Core.Session do
     state
   end
 
+  defp strip_runner(state), do: %{state | turn_runner: nil}
+
   # -- Infrastructure ---------------------------------------------------------
 
-  defp broadcast_reasoning(session_id, delta) do
-    Registry.dispatch(CodingAgent.EventRegistry, {:session_events, session_id}, fn entries ->
-      for {pid, _} <- entries, do: send(pid, {:agent, {:reasoning_deltas, delta}})
-    end)
-  end
+  defp broadcast_reasoning(session_id, delta),
+    do: Events.publish(session_id, {:reasoning_deltas, delta})
 
-  defp broadcast_text(session_id, delta) do
-    Registry.dispatch(CodingAgent.EventRegistry, {:session_events, session_id}, fn entries ->
-      for {pid, _} <- entries, do: send(pid, {:agent, {:llm_deltas, delta}})
-    end)
-  end
+  defp broadcast_text(session_id, delta),
+    do: Events.publish(session_id, {:llm_deltas, delta})
 
-  defp broadcast(state, event) do
-    Registry.dispatch(CodingAgent.EventRegistry, {:session_events, state.id}, fn entries ->
-      for {pid, _} <- entries, do: send(pid, {:agent, event})
-    end)
-  end
+  defp broadcast(state, event), do: Events.publish(state.id, event)
 end

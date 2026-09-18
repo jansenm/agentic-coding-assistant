@@ -119,7 +119,7 @@ defmodule CodingAgent.Core.UserConfigTest do
   end
 
   defp global_dir, do: UserConfig.global_dir()
-  defp project_dir, do: UserConfig.project_dir_for_test(@tmp_root)
+  defp project_dir, do: UserConfig.project_dir(@tmp_root)
 
   test "layer 0: shipped provider defaults reach the merged config" do
     # no user files written — the shipped defaults alone provide entries

@@ -8,6 +8,7 @@ defmodule CodingAgent.Core.Tools.WriteFile do
   (`[permissions.write_file] "config/**" = "ask"`).
   """
 
+  alias CodingAgent.Core.Containment
   alias CodingAgent.Core.Tools
 
   @spec tool(Tools.scope()) :: ReqLLM.Tool.t()
@@ -34,17 +35,9 @@ defmodule CodingAgent.Core.Tools.WriteFile do
     path = Map.get(args, :path) || Map.get(args, "path")
     content = Map.get(args, :content) || Map.get(args, "content") || ""
 
-    with :ok <- check_scope(scope, path),
+    with :ok <- Containment.check_scope!(scope, path),
          :ok <- do_write(scope, path, content) do
       {:ok, "wrote #{path} (#{String.length(content)} chars)"}
-    end
-  end
-
-  defp check_scope(scope, path) do
-    if Tools.in_scope?(scope, path) do
-      :ok
-    else
-      Tools.error("path escapes the session scope: #{inspect(path)}")
     end
   end
 

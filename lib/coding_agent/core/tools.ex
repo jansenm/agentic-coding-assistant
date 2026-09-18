@@ -81,6 +81,29 @@ defmodule CodingAgent.Core.Tools do
   end
 
   @doc """
+  The sandbox profile for a read-only tool: the scope root plus its
+  configured mounts, no network and no `.git` write.
+
+  Read-only tools that shell out to a runtime binary (`grep`/`glob` via
+  `External`) run that process through `Exec` under this profile, so
+  they are confined like `shell`/`git` instead of using a bare
+  `System.cmd`.
+  """
+  @spec profile(scope()) :: CodingAgent.Core.Sandbox.profile()
+  def profile(scope) do
+    mounts = Map.get(scope, :mounts) || CodingAgent.Core.Sandbox.Mounts.empty()
+
+    %{
+      root: Map.fetch!(scope, :root),
+      network: false,
+      git_write: false,
+      rw: Map.get(mounts, :rw, []),
+      ro: Map.get(mounts, :ro, []),
+      hide: Map.get(mounts, :hide, [])
+    }
+  end
+
+  @doc """
   Resolves a path against the scope root and rejects escapes.
 
   **This is the low-level predicate.** If you are calling it to
