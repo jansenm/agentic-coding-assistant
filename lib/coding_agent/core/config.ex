@@ -33,8 +33,8 @@ defmodule CodingAgent.Core.Config do
 
   @default_max_tool_rounds 100
   @default_context_window_tokens 500_000
-  @default_compaction_wall_clock_ms 90_000
-  @default_compaction_inactivity_ms 60_000
+  @default_compaction_wall_clock_ms 300_000
+  @default_compaction_inactivity_ms 120_000
 
   @typedoc "One typed read of the layered file configuration for a scope."
   @type t :: %__MODULE__{

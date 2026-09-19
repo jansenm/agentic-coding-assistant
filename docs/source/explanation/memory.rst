@@ -177,8 +177,10 @@ executed in a task under
 linked to the session process** (a crash inside the provider stack
 must degrade, not kill the turn) — and bounded twice: a receive
 (inactivity) timeout inside the call and a hard wall-clock budget
-(90 s) around it, because a slow cloud model can hold the call open
-indefinitely (found live — compaction hung past 2 minutes mid-turn).
+(300 s) around it, because a slow cloud model can hold the call open
+indefinitely (found live — compaction hung past 2 minutes mid-turn;
+GLM on an 80K-char context takes minutes, so the budgets must be
+generous or every large compaction is abandoned).
 Every exit is handled — result, error, crash, budget — and failure
 degrades: the full (oversized) context is kept and compaction backs
 off for the next 3 turns instead of retrying every turn (2+ minutes

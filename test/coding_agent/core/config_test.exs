@@ -102,8 +102,8 @@ defmodule CodingAgent.Core.ConfigTest do
       assert Config.max_tool_rounds() == 100
       assert Config.context_window_tokens() == 500_000
       assert Config.compaction_trigger_tokens() == 180_000
-      assert Config.compaction_wall_clock_ms() == 90_000
-      assert Config.compaction_inactivity_ms() == 60_000
+      assert Config.compaction_wall_clock_ms() == 300_000
+      assert Config.compaction_inactivity_ms() == 120_000
     end
 
     test "the no-model message names the user config path" do
