@@ -322,12 +322,26 @@ first.
       objection — missing verbs — which this slice addresses before any
       format change.
 - [ ] **P4 — Split `tui.ex` along its own comment sections**; single state
-      struct definition.
+      struct definition. (Grew to ~3200 lines; the mount state is still
+      defined twice.)
 - [ ] **P4 — `TranscriptView.metrics/…`.** One home for pane geometry; render,
       clamp, hit-test and status all use it.
-- [ ] **P4 — Remove `project_dir_for_test` from the production path.**
+- [x] **P4 — Remove `project_dir_for_test` from the production path.**
+      Done under P1: the function is gone, replaced by a real
+      `UserConfig.project_dir/1`; nothing named `*_for_test` remains in
+      `lib/`.
 - [ ] **P4 — Replace `test_mode?` branches with injected behaviours** where it
       has already let bugs slip.
+- [ ] **P4 (cosmetic, Track B step 6/E) — glyph passes.** The status
+      vocabulary is centralized (`Styles.status_badge/1`), but three
+      surfaces still use plain text or ad-hoc glyphs:
+      - approval dialog (`tui.ex:~3138`) still prints `y = approve …`;
+      - transcript info/warning/error lines (`tui.ex:~1790`) carry a `✖`
+        baked into the message string instead of a role-chosen leading
+        glyph;
+      - picker rows (`tui.ex:~3023`) use `to_string(status)` instead of
+        `Styles.status_badge/1`.
+      Cosmetic; width-safe geometric glyphs only.
 
 ---
 
@@ -443,11 +457,13 @@ B4/B6 are the same question asked twice (agent identity vs. mode). Doing B1+B4
 as a pair with the `Styles` work covers two blockers for the price of one
 refactor; B5 is the only one that is genuinely new machinery.
 
-**Status after the Track A pass:** B1 and B4 are done; B2 is partial and
-introduced a regression (see below); the `Styles` vocabulary and the dead
-`AltDecode` removal are done. B3 (file picker) and B5 (input wrap) remain
-in Track C. B6's direction is settled (plan is a signal to the agent, not
-a sandbox mode) and needs only the plan definition decided.
+**Status (2026-09-19, after Track A/B).** B1, B2 and B4 are **done**; the
+`Styles` vocabulary, the one-authority input executor (ADR 021) and the
+status/activity spinner (Track B) shipped. B5 (input wrap) is **deferred
+by owner decision**; B3 (file picker) is the only B-item still open;
+B6's direction is settled (plan is a signal to the agent, not a sandbox
+mode) and needs only the plan definition decided. The glyph passes (E)
+are the remaining cosmetic work.
 
 ### New backlog from the 2026-09-19 UI review (commit `bbd7f2f`)
 
@@ -479,10 +495,12 @@ pass; the two structural ones are recorded here.
       lattice, including that `:alt`/`:ctrl` do NOT fall back.
 - [x] **P2 — Action-coverage tripwire.** Done:
       `input_action_coverage_test.exs` asserts every declared keymap
-      action is either handled by `dispatch_input_key/3` or explicitly
-      listed in `Tui.delegated_input_actions/0`. The TUI now names its
-      delegation instead of relying on the wildcard, so a new action
-      cannot silently fall through as text.
+      action has exactly one owner — handled by
+      `dispatch_input_key/3` (`Tui.handled_input_actions/0`) or owned by
+      the editor (`Editor.editing_action?/1`) — and that no action is
+      owned twice. (The earlier `delegated_input_actions/0` list was
+      removed when ADR 021 made the editor the single executor.) A new
+      action cannot silently fall through as text.
 - [ ] **P3 — `shift+tab` (crossterm `back_tab`) is unbound.** Pre-existing
       (not a Track A regression), same bug class: a shifted key that the
       terminal reports as a distinct code and the keymap never bound. The
