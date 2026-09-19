@@ -246,10 +246,6 @@ Open items only. Completed work is not kept here (git history and the
 ADRs are the record); this list is the live backlog. Ordered by
 leverage.
 
-- [ ] **P3 — `Session.Prompt` + `ProjectMemory`.** Move AGENTS.md I/O and
-      prompt composition out of the loop.
-- [ ] **P3 — `Session.Usage` struct + defaults.** One home for
-      `last_input_tokens` semantics.
 - [~] **P3 — Session storage decision (Section 4b).** ADR 020
       (`docs/source/decisions/020-session-storage.rst`, *Proposed*)
       settles the direction: per-session SQLite within a selectable
