@@ -353,7 +353,8 @@ of guessed.
 
 - [ ] **B2 — Shift+Enter does something strange; typed text disappears.**
       PARTIAL, and the partial attempt introduced a regression
-      (`UI_TRACK_A_REVIEW.md` §B). What holds: `:shift` is a real event
+      (the 2026-09-19 review, finding B — commit `bbd7f2f`).
+      What holds: `:shift` is a real event
       modifier through `Bridge.translate/2` → `Keymap`, `shift+enter` is
       an `insert_newline` (ADR 011, amended), the wire encodings are
       pinned by `tui_shift_enter_test.exs`, and dead `UI.AltDecode` is
@@ -457,7 +458,7 @@ introduced a regression (see below); the `Styles` vocabulary and the dead
 in Track C. B6's direction is settled (plan is a signal to the agent, not
 a sandbox mode) and needs only the plan definition decided.
 
-### New backlog from `UI_TRACK_A_REVIEW.md` (2026-09-19)
+### New backlog from the 2026-09-19 UI review (commit `bbd7f2f`)
 
 The Track A review found real defects the green suite could not see. The
 mechanical ones (A footer position, E separator, F role aliases, G stale
