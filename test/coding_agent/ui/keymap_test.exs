@@ -52,6 +52,33 @@ defmodule CodingAgent.UI.KeymapTest do
     assert Keymap.resolve(km, %{key: :ctrl_m, mod: :none}) == :send_input
   end
 
+  describe "bounded key vocabulary (review F1)" do
+    test "an unknown key name in a spec is inert, not an atom" do
+      # `zzz_not_a_key` is outside the bridge vocabulary, so its pattern
+      # resolves to :unknown_key and matches nothing. The overridden
+      # action is therefore unbound (its default alt-enter is replaced).
+      {km, _} = Keymap.merge(@defaults, %{"send_input" => "zzz_not_a_key"})
+
+      assert Keymap.resolve(km, %{key: :unknown_key, mod: :none}) == :unbound
+      assert Keymap.resolve(km, %{key: :enter, mod: :alt}) == :unbound
+      # unrelated defaults are untouched
+      assert Keymap.resolve(km, %{key: :enter, mod: :none}) == :insert_newline
+    end
+
+    test "unknown ctrl/alt/shift key names are rejected, known ones survive" do
+      {km, _} =
+        Keymap.merge(@defaults, %{
+          "send_input" => "alt-enter,ctrl-j,shift-enter,ctrl-nope,alt-nope"
+        })
+
+      assert Keymap.resolve(km, %{key: :enter, mod: :alt}) == :send_input
+      assert Keymap.resolve(km, %{key: :ctrl_j, mod: :none}) == :send_input
+      assert Keymap.resolve(km, %{key: :enter, mod: :shift}) == :send_input
+      assert Keymap.resolve(km, %{key: :unknown_key, mod: :none}) == :unbound
+      assert Keymap.resolve(km, %{key: :unknown_key, mod: :alt}) == :unbound
+    end
+  end
+
   describe "modifier fallback lattice (review B)" do
     test "a shifted special with no explicit binding falls back to its plain binding" do
       # Regression: mapping every shifted special to :shift used to

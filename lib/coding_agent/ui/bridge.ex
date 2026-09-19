@@ -77,7 +77,9 @@ defmodule CodingAgent.UI.Bridge do
       alt? and single_lowercase?(code) ->
         {:key, key_event(code, ctrl?, alt?, shift?)}
 
-      single_lowercase?(code) and String.to_atom(code) in bound_letters ->
+      # `key_atom/1` returns :unknown_key for anything outside the bounded
+      # vocabulary, so a non-letter never becomes a new atom here
+      single_lowercase?(code) and key_atom(code) in bound_letters ->
         {:key, key_event(code, ctrl?, alt?, shift?)}
 
       true ->
@@ -120,17 +122,15 @@ defmodule CodingAgent.UI.Bridge do
   defp name(code) do
     cond do
       Map.has_key?(@modmap, code) -> Map.fetch!(@modmap, code)
-      single_lowercase?(code) -> String.to_atom(code)
+      single_lowercase?(code) -> key_atom(code)
       true -> ctrl_name(code)
     end
   end
 
-  defp ctrl_name(code) do
-    case code do
-      "enter" -> :enter
-      other -> String.to_atom("ctrl_" <> other)
-    end
-  end
+  # Only reachable for a non-special code (e.g. a ctrl chord on an
+  # unknown char). `key_atom/1` yields :unknown_key, which fails to match
+  # any keymap pattern — no atom is minted.
+  defp ctrl_name(code), do: key_atom("ctrl_" <> code)
 
   @doc """
   The letters the keymap actually binds as single-character keys
@@ -167,4 +167,26 @@ defmodule CodingAgent.UI.Bridge do
   defp single_lowercase?(code) do
     is_binary(code) and Regex.match?(~r/^[a-z]$/, code)
   end
+
+  # The complete, bounded set of key NAMES this bridge can ever emit from
+  # a config binding: the specials (`@modmap`'s keys), every lowercase
+  # letter, and every `ctrl_<letter>` chord. `@known_key_map` materializes
+  # name => atom exactly once, at compile time, from this closed set (15
+  # specials + 26 letters + 26 ctrl chords) — so `key_atom/1` never mints
+  # an atom from user-authored text (review F1 — the 5b atom lesson).
+  @known_key_map Map.new(
+                   Map.keys(@modmap) ++
+                     Enum.map(?a..?z, &<<&1>>) ++
+                     Enum.map(?a..?z, &("ctrl_" <> <<&1>>)),
+                   &{&1, String.to_atom(&1)}
+                 )
+
+  @doc """
+  The atom for a key `name`, or `:unknown_key` when the name is outside
+  the bounded vocabulary the bridge can emit. An unknown name can never
+  match a real keypress, so callers drop it rather than minting a new
+  atom from `ui.toml` text (review F1).
+  """
+  @spec key_atom(String.t()) :: atom()
+  def key_atom(name), do: Map.get(@known_key_map, name, :unknown_key)
 end

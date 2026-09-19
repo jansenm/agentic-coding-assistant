@@ -53,6 +53,12 @@ defmodule CodingAgent.Core.Session.ToolRunner do
             {[Map.put(executing, :content, "error: stopped by the user") | acc], true}
 
           true ->
+            # Announce THIS call immediately before it runs, so
+            # start/result interleave correctly (started A, executed A,
+            # started B, executed B). Announcing all starts up-front made
+            # the status show the LAST call of the round while an earlier
+            # one ran, and the result of A cleared B's label (review F2).
+            CodingAgent.Core.Events.publish(session_id, {:tool_started, name})
             {[run_one(executing, name, args, tools) | acc], false}
         end
       end)

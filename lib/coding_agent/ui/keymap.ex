@@ -1,5 +1,6 @@
 defmodule CodingAgent.UI.Keymap do
   alias CodingAgent.Core.UserConfig
+  alias CodingAgent.UI.Bridge
 
   @moduledoc """
   Input keymap as DATA (ADR 011): action => [event patterns], defaults
@@ -192,11 +193,13 @@ defmodule CodingAgent.UI.Keymap do
   def merge(keymap, overrides) when is_map(overrides) do
     {merged, unknown} =
       Enum.reduce(overrides, {keymap, []}, fn {action_name, spec}, {acc, unknown} ->
+        # Validate against the existing action vocabulary WITHOUT minting
+        # an atom from user text (review F1): the valid atoms are exactly
+        # the defaults' keys and all exist once this module is loaded, so
+        # to_existing_atom succeeds for them and rescues for the rest.
         action =
           try do
-            # user config may name an action the atom table has never
-            # seen — build the atom, then validate membership below
-            String.to_atom(String.replace(action_name, "-", "_"))
+            String.to_existing_atom(String.replace(action_name, "-", "_"))
           rescue
             ArgumentError -> :unknown_action
           end
@@ -219,19 +222,34 @@ defmodule CodingAgent.UI.Keymap do
   end
 
   # "alt-enter,ctrl-enter" -> [%{key: :enter, mod: :alt}, %{key: :enter, mod: :ctrl}]
-  # (ctrl is accepted in specs even though the terminals rarely deliver it)
+  # (ctrl is accepted in specs even though the terminals rarely deliver it).
+  # Unknown key names resolve to `nil` and are DROPPED: a name the bridge
+  # can never emit has no matching pattern, so it contributes nothing
+  # rather than collapsing every unknown onto one atom (review F1).
   defp parse_spec(spec) do
     spec
     |> String.split(",")
     |> Enum.map(&to_pattern/1)
+    |> Enum.reject(&is_nil/1)
   end
 
-  defp to_pattern("alt-" <> k), do: %{key: String.to_existing_atom(k), mod: :alt}
+  # Every key name in a spec is resolved against the bounded bridge
+  # vocabulary (`Bridge.key_atom/1`), which mints no atom from user text
+  # and yields `:unknown_key` outside the set (review F1). An unknown key
+  # can never match a real keypress, so dropping it is behavior-preserving.
+  defp known_pattern(name, mod) do
+    case Bridge.key_atom(name) do
+      :unknown_key -> nil
+      key -> %{key: key, mod: mod}
+    end
+  end
+
+  defp to_pattern("alt-" <> k), do: known_pattern(k, :alt)
 
   # shift is a real event modifier now (kitty/meta protocol reports it);
   # only special keys keep it — a shifted letter arrives as its uppercase
   # char, not as a modifier.
-  defp to_pattern("shift-" <> k), do: %{key: String.to_existing_atom(k), mod: :shift}
+  defp to_pattern("shift-" <> k), do: known_pattern(k, :shift)
 
   # Termbox names ctrl-chords distinctly (ctrl_a, ctrl_j, ...), so a
   # "ctrl-x" spec becomes the synthesized ctrl_ key name with mod :none —
@@ -240,9 +258,6 @@ defmodule CodingAgent.UI.Keymap do
   # kitty-protocol hook (ADR 011).
   defp to_pattern("ctrl-enter"), do: %{key: :enter, mod: :ctrl}
 
-  # synthetic ctrl_/alt_ atoms match the defaults() convention
-  # (key(:ctrl_j) with mod :none); build safely — user config may
-  # name a chord the atom table has never seen
-  defp to_pattern("ctrl-" <> k), do: %{key: String.to_atom("ctrl_" <> k), mod: :none}
-  defp to_pattern(k), do: %{key: String.to_atom(k), mod: :none}
+  defp to_pattern("ctrl-" <> k), do: known_pattern("ctrl_" <> k, :none)
+  defp to_pattern(k), do: known_pattern(k, :none)
 end

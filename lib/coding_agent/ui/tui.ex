@@ -1993,9 +1993,12 @@ defmodule CodingAgent.UI.Tui do
   defp now_ms, do: System.monotonic_time(:millisecond)
 
   # Any progress from the session means the turn is alive: reset the
-  # silence clock and clear a stale in-flight tool label.
+  # silence clock. The in-flight tool label is owned by the
+  # {:tool_started}/{:tool_executed} pair, not by progress — clearing it
+  # here made the label vanish on the first result of a multi-call round
+  # (review F2).
   defp touch(state) do
-    %{state | last_activity_at: now_ms(), active_tool: nil, tool_started_at: nil}
+    %{state | last_activity_at: now_ms()}
   end
 
   # The tool result names the tool it finishes; only clear the in-flight
