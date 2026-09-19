@@ -51,4 +51,38 @@ defmodule CodingAgent.UI.KeymapTest do
     assert Keymap.resolve(km, %{key: :enter, mod: :alt}) == :send_input
     assert Keymap.resolve(km, %{key: :ctrl_m, mod: :none}) == :send_input
   end
+
+  describe "modifier fallback lattice (review B)" do
+    test "a shifted special with no explicit binding falls back to its plain binding" do
+      # Regression: mapping every shifted special to :shift used to
+      # unbind these, which had worked as their plain keys.
+      assert Keymap.resolve(@defaults, %{key: :tab, mod: :shift}) == :switch_agent
+      assert Keymap.resolve(@defaults, %{key: :page_up, mod: :shift}) == :scroll_up
+      assert Keymap.resolve(@defaults, %{key: :page_down, mod: :shift}) == :scroll_down
+    end
+
+    test "an explicit shift binding wins over the fallback (shift+enter)" do
+      # This is the whole reason the fallback is ordered
+      # specific-before-generic: a blanket shift->none would make
+      # shift+enter plain enter and never reach its own binding.
+      assert Keymap.resolve(@defaults, %{key: :enter, mod: :shift}) == :insert_newline
+      # and plain/alt stay as they were
+      assert Keymap.resolve(@defaults, %{key: :enter, mod: :none}) == :insert_newline
+      assert Keymap.resolve(@defaults, %{key: :enter, mod: :alt}) == :send_input
+    end
+
+    test "alt/ctrl are deliberate chords and do NOT fall back" do
+      # ctrl+enter is a send binding; a plain ctrl chord on an unbound
+      # special must not silently run the plain action.
+      assert Keymap.resolve(@defaults, %{key: :tab, mod: :ctrl}) == :unbound
+      assert Keymap.resolve(@defaults, %{key: :page_up, mod: :ctrl}) == :unbound
+    end
+
+    test "a shifted letter still falls back (terminal folds shift into the char)" do
+      # not a control candidate by itself, but resolve/2 is pure: given
+      # :a+shift it must find the plain :a binding if one exists
+      {km, _} = Keymap.merge(@defaults, %{"insert_newline" => "a"})
+      assert Keymap.resolve(km, %{key: :a, mod: :shift}) == :insert_newline
+    end
+  end
 end

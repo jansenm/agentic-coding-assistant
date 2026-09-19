@@ -96,32 +96,56 @@ defmodule CodingAgent.UI.Keymap do
   @doc """
   Resolves an event against a keymap: the action atom, or :unbound when
   nothing matches.
+
+  Modifier resolution is a **fallback lattice, most specific first**
+  (review B, 2026-09-19): an exact modifier match wins, then a
+  weak-modifier fallback, then `:any`. `:shift` is the weak modifier —
+  terminals fold it into the character for letters and report it
+  inconsistently for specials, so a shifted special with no explicit
+  binding falls back to its unmodified binding. `:alt`/`:ctrl` are
+  deliberate chords and match exactly (no fallback). The fallback is
+  resolved BEFORE override order, so an exact `shift+X` binding can never
+  lose to a plain `X` binding in an earlier action.
+
+  Rationale: before this, mapping every shifted special to `:shift`
+  (B2) silently unbound `shift+tab`, `shift+page_up`, `shift+page_down`,
+  which had worked as their plain keys. A modifier family must not be
+  able to unbind the unmodified bindings.
   """
   @spec resolve(t(), event()) :: action() | :unbound
   def resolve(keymap, %{key: k, mod: mod} = _event) do
-    event = %{key: k, mod: mod || :none}
+    mods = candidate_mods(mod || :none)
 
+    Enum.find_value(mods, :unbound, fn wanted_mod ->
+      find_action(keymap, k, wanted_mod)
+    end)
+  end
+
+  # The modifier candidates for an event, in priority order. `:any`
+  # (wildcard) is always last.
+  defp candidate_mods(:shift), do: [:shift, :none, :any]
+  defp candidate_mods(:none), do: [:none, :any]
+  defp candidate_mods(:alt), do: [:alt, :any]
+  defp candidate_mods(:ctrl), do: [:ctrl, :any]
+  defp candidate_mods(_), do: [:none, :any]
+
+  # One pass over the actions for an exact key+modifier match, user
+  # overrides first (their whole point). Pattern mod is normalized to
+  # :none at construction (key/2), so this is an exact comparison.
+  defp find_action(keymap, key, wanted_mod) do
     overridden = Map.get(keymap, :__overridden, [])
 
-    # user overrides first (their whole point), then the rest
     try_pairs =
       Enum.map(overridden, fn a -> {a, Map.fetch!(keymap, a)} end) ++
         Enum.reject(keymap, fn {a, _} -> a in overridden or a == :__overridden end)
 
-    Enum.find_value(try_pairs, :unbound, fn {action, patterns} ->
-      if Enum.any?(patterns, &matches?(&1, event)) do
-        action
-      end
+    Enum.find_value(try_pairs, fn {action, patterns} ->
+      if Enum.any?(patterns, &match_pattern?(&1, key, wanted_mod)), do: action
     end)
   end
 
-  # Pattern semantics (ADR 011): a pattern matches when the keys are
-  # equal AND the modifier matches exactly — except :any, which matches
-  # every modifier. A pattern without :mod is normalized to :none at
-  # construction (key/2 in defaults), so this stays exact.
-  defp matches?(%{key: key, mod: mod}, %{key: key, mod: mod}), do: true
-  defp matches?(%{key: key, mod: :any}, %{key: key, mod: _}), do: true
-  defp matches?(_, _), do: false
+  defp match_pattern?(%{key: key, mod: mod}, key, wanted_mod), do: mod == wanted_mod
+  defp match_pattern?(_, _, _), do: false
 
   @doc """
   The effective keymap: defaults merged with the user's ui.toml

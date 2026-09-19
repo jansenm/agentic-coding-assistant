@@ -352,25 +352,22 @@ of guessed.
       the reversed modifier (the text buffer has no cell attributes).
 
 - [ ] **B2 — Shift+Enter does something strange; typed text disappears.**
-      PARTIAL, and the partial attempt introduced a regression
-      (the 2026-09-19 review, finding B — commit `bbd7f2f`).
-      What holds: `:shift` is a real event
-      modifier through `Bridge.translate/2` → `Keymap`, `shift+enter` is
-      an `insert_newline` (ADR 011, amended), the wire encodings are
-      pinned by `tui_shift_enter_test.exs`, and dead `UI.AltDecode` is
-      deleted. What does NOT hold: `Keymap.matches?/2` is exact on
-      `:mod`, so mapping every shifted special to `:shift` **unbound**
-      `shift+tab`, `shift+page_up` and `shift+page_down`, which worked
-      before (they now fall through to the raw-textarea path). The
-      underlying B2 symptom — "typed text disappears" — is the
-      two-authorities bug, still open:
+      PARTIAL. The regression it introduced (shift+tab/shift+page_up/
+      shift+page_down going `:unbound`) is **fixed** by the modifier
+      fallback lattice in `Keymap.resolve/2`. What holds: `:shift` is a
+      real event modifier through `Bridge.translate/2` → `Keymap`,
+      `shift+enter` is an `insert_newline` (ADR 011, amended), the wire
+      encodings are pinned by `tui_shift_enter_test.exs`, dead
+      `UI.AltDecode` is deleted. What is still open is the underlying B2
+      symptom — "typed text disappears" — which is the two-authorities
+      bug:
       - **ctrl-j** is declared `:insert_newline` but falls through to the
         crate, which runs `delete_line_by_head` (typed line wiped).
       - **ctrl-u** is declared `:kill_line` but the crate runs `undo`.
       Of the 19 actions `Keymap` declares, `dispatch_input_key/3` handles
-      10; the rest are decorative. The real fix is "classify then drop"
-      (never forward the raw event), which needs its own ADR — see the
-      new P2 item below.
+      10; the rest are performed by the crate. The fix is "classify then
+      drop" (never forward the raw event) — designed in ADR 021, not yet
+      built. See the P2 item below.
 
 - [~] **B3 — No mechanism to attach or select files in the message field.**
       Not started (Track C). The design in the finding stands: an `@`
@@ -465,38 +462,38 @@ mechanical ones (A footer position, E separator, F role aliases, G stale
 ADRs, H modifier merge, C phantom `badge_list`) are fixed in the same
 pass; the two structural ones are recorded here.
 
-- [ ] **P2 — One authority for input events (the real B2).** The input
-      pipeline has two authorities: our `Keymap` and the textarea crate's
-      own Emacs bindings. `forward_to_textarea/2` passes the **raw** event,
-      so whatever the keymap does not intercept is performed by the crate
-      with different semantics. Verified live: `ctrl-j` (declared
-      `:insert_newline`) runs `delete_line_by_head` — it wipes the typed
-      line; `ctrl-u` (declared `:kill_line`) runs `undo`. Of the 19 actions
-      `Keymap` declares, `dispatch_input_key/3` handles 10; the other 9
-      (`:cursor_home`, `:cursor_end`, `:kill_line`, `:kill_word`,
-      `:kill_to_end`, `:cursor_up`, `:cursor_down`, `:cursor_left`,
-      `:cursor_right`) are decorative. Fix: `Bridge` classifies each event
-      as exactly `{:text, s}` or `{:command, intent}` and the raw event is
-      **dropped, never forwarded**; the intent→crate mapping lives in one
-      executor whose handled set *is* the keymap's action set. This is an
-      architecture cut and deserves its own ADR.
-- [ ] **P2 — Modifier fallback lattice in `Keymap.resolve/2`.** The `:shift`
-      pass made `shift+tab`/`shift+page_up`/`shift+page_down` `:unbound`
-      (they worked before), because `matches?/2` is exact on `:mod`. Fix
-      with a **specific-before-generic** fallback (`shift+X` binding wins,
-      else the `none` binding, then `:any`), so adding a modifier family
-      can never silently unbind the unmodified bindings. Care: a blanket
-      "shift falls back to none" must not re-break `shift+enter` (the very
-      bug just fixed) — the ordering above is the whole point.
-- [ ] **P2 — Action-coverage test.** Assert that every action in the
-      `@type action` typespec is actually handled in `tui.ex` (the 9
-      decorative actions above would fail it) and that every
-      `Keymap` binding resolves to something handled. This single test
-      catches both the P2 items and the class behind them.
+- [ ] **P2 — One authority for input events (the real B2).** Designed in
+      ADR 021 (Proposed): `Bridge` classifies each event as exactly
+      `{:text, s}` or `{:command, intent}`, the raw event is **dropped,
+      never forwarded**, and one executor owns the intent→textarea
+      mapping. Still to build; the two safety nets below shipped.
+      (Original finding: the input pipeline has two authorities — our
+      `Keymap` and the textarea crate's Emacs bindings.
+      `forward_to_textarea/2` passes the **raw** event, so whatever the
+      keymap does not intercept is performed by the crate with different
+      semantics. Verified live: `ctrl-j` (declared `:insert_newline`)
+      runs `delete_line_by_head` — it wipes the typed line; `ctrl-u`
+      (declared `:kill_line`) runs `undo`. Of the 19 actions `Keymap`
+      declares, `dispatch_input_key/3` handles 10; the other 9 are
+      decorative.)
+- [x] **P2 — Modifier fallback lattice in `Keymap.resolve/2`.** Done:
+      `resolve/2` now tries the exact modifier, then the weak fallback
+      (`:shift` → `:none`), then `:any`, **specific-before-generic**, so
+      `shift+tab`/`shift+page_up`/`shift+page_down` work again while
+      `shift+enter` keeps its own binding. `keymap_test.exs` pins the
+      lattice, including that `:alt`/`:ctrl` do NOT fall back.
+- [x] **P2 — Action-coverage tripwire.** Done:
+      `input_action_coverage_test.exs` asserts every declared keymap
+      action is either handled by `dispatch_input_key/3` or explicitly
+      listed in `Tui.delegated_input_actions/0`. The TUI now names its
+      delegation instead of relying on the wildcard, so a new action
+      cannot silently fall through as text.
 - [ ] **P3 — `shift+tab` (crossterm `back_tab`) is unbound.** Pre-existing
       (not a Track A regression), same bug class: a shifted key that the
-      terminal reports as a distinct code and the keymap never bound. Fix
-      alongside the B2 work so the input vocabulary is complete.
+      terminal reports as a distinct code and the keymap never bound. The
+      lattice makes other shifted specials fall back, but `back_tab` is
+      its own code, so it stays unbound until the intent vocabulary
+      (ADR 021) decides what it means.
 
 ---
 

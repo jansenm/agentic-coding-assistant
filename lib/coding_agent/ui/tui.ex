@@ -1331,6 +1331,51 @@ defmodule CodingAgent.UI.Tui do
     dispatch_input_key(km_event, ev, state)
   end
 
+  # Actions the TUI deliberately does NOT implement itself: the textarea
+  # crate performs them when the raw event is forwarded. Naming them here
+  # (a) reserves the wildcard below for `:unbound` only, so a NEW action
+  # cannot silently fall through as text, and (b) is the data the coverage
+  # test partitions against `Keymap.defaults()`.
+  #
+  # NOTE (review D, tracked): "delegated" is a euphemism today — the
+  # crate's bindings do not match the keymap's claims for several of
+  # these (ctrl-j is declared insert_newline but the crate deletes the
+  # line; ctrl-u is declared kill_line but the crate undoes). The fix is
+  # the one-authority redesign (own ADR); this list makes the current
+  # delegation explicit instead of accidental.
+  @delegated_input_actions [
+    :cursor_home,
+    :cursor_end,
+    :cursor_up,
+    :cursor_down,
+    :cursor_left,
+    :cursor_right,
+    :kill_to_end,
+    :kill_word,
+    :kill_line
+  ]
+
+  @doc false
+  # The actions `dispatch_input_key/3` handles with an explicit clause.
+  # Kept beside the case below and asserted by the coverage test.
+  def handled_input_actions do
+    [
+      :toggle_tool_output,
+      :switch_agent,
+      :scroll_up,
+      :scroll_down,
+      :send_input,
+      :insert_newline,
+      :history_prev,
+      :history_next,
+      :interrupt,
+      :abort
+    ]
+  end
+
+  @doc false
+  def delegated_input_actions, do: @delegated_input_actions
+
   defp dispatch_input_key(km_event, ev, state) do
     case Keymap.resolve(state.keymap, km_event) do
       :toggle_tool_output ->
@@ -1365,6 +1410,11 @@ defmodule CodingAgent.UI.Tui do
 
       :history_next ->
         {:noreply, history_step(state, -1)}
+
+      # delegated to the textarea crate (see @delegated_input_actions):
+      # forwarding the RAW event is how the crate receives the key
+      action when action in @delegated_input_actions ->
+        forward_to_textarea(state, ev)
 
       :interrupt ->
         # esc while a turn is in flight (running OR already stopping):
