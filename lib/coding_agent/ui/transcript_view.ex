@@ -42,6 +42,9 @@ defmodule CodingAgent.UI.TranscriptView do
   pays one probe per frame — bounded by the pane width, microseconds.
   """
 
+  alias CodingAgent.UI.Styles
+  alias ExRatatui.Text
+
   # empty rows after every NON-user block (answers, tools, info,
   # reasoning): the user frame stands out BY contrast — everything
   # around it breathes more than it does
@@ -106,7 +109,7 @@ defmodule CodingAgent.UI.TranscriptView do
   defp widget_for({:reasoning, text}, _width, _open_id) do
     {%ExRatatui.Widgets.Markdown{
        content: text,
-       style: %ExRatatui.Style{fg: :dark_gray, modifiers: [:italic]},
+       style: Styles.role(:reasoning),
        wrap: true
      }, 0}
   end
@@ -122,29 +125,39 @@ defmodule CodingAgent.UI.TranscriptView do
       # border rows arithmetically
       {%ExRatatui.Widgets.Paragraph{
          text: "▾ #{name}\n" <> content,
-         style: %ExRatatui.Style{fg: :dark_gray}
+         style: Styles.role(:muted)
        }, 2}
     else
       # collapsed: Tui paints a bare one-line header (no block)
       {%ExRatatui.Widgets.Paragraph{
          text: tool_header(name, content),
-         style: %ExRatatui.Style{fg: :dark_gray}
+         style: Styles.role(:muted)
        }, 0}
     end
   end
 
   # The footer for an agent-carrying entry: `agent` is the name or nil
   # (no agent). Shared by the assistant box (this module's footers) and
-  # the TUI's rendering — ONE definition of the footer strings.
+  # the TUI's rendering — ONE definition of the footer strings, now as
+  # role-styled lines (Styles owns the colors; the text keeps its shape).
   @doc "Footer for a user message: names the agent it was handed to."
-  @spec user_footer(String.t() | nil) :: String.t()
-  def user_footer(nil), do: "you"
-  def user_footer(agent), do: "you → #{agent}"
+  @spec user_footer(String.t() | nil) :: ExRatatui.Text.Line.t()
+  def user_footer(nil), do: Text.Line.new([Text.Span.new("you", style: Styles.role(:user))])
+
+  def user_footer(agent) do
+    Text.Line.new([
+      Text.Span.new("you", style: Styles.role(:user)),
+      Text.Span.new(" → ", style: Styles.role(:muted)),
+      Text.Span.new(agent, style: Styles.role(:agent))
+    ])
+  end
 
   @doc "Footer for an assistant reply: the name of the agent that answered."
-  @spec agent_footer(String.t() | nil) :: String.t()
-  def agent_footer(nil), do: "agent"
-  def agent_footer(agent), do: "#{agent}"
+  @spec agent_footer(String.t() | nil) :: ExRatatui.Text.Line.t()
+  def agent_footer(nil), do: Text.Line.new([Text.Span.new("agent", style: Styles.role(:muted))])
+
+  def agent_footer(agent),
+    do: Text.Line.new([Text.Span.new(agent, style: Styles.role(:agent))])
 
   @doc "Rows of air after a block (the TUI clips rects to content and leaves these blank)."
   def air, do: @air
@@ -204,17 +217,21 @@ defmodule CodingAgent.UI.TranscriptView do
   ("plan · model", "you → plan"). Measuring and painting both build this
   from this single function, so the layout can never drift.
   """
-  @spec agent_block(String.t(), ExRatatui.Style.t()) :: ExRatatui.Widgets.Block.t()
+  @spec agent_block(ExRatatui.Text.Line.t(), ExRatatui.Style.t()) :: ExRatatui.Widgets.Block.t()
+  # The footer sits on the BOTTOM-RIGHT border: it reads as the message's
+  # signature, not its heading. `title_style: nil` lets the footer line
+  # carry its own per-span role styles (a Block title_style would
+  # override them).
   def agent_block(footer, border_style) do
-    %ExRatatui.Widgets.Block{
-      title: footer,
+    Styles.panel(
       borders: [:all],
-      border_type: :rounded,
+      title: footer,
+      title_style: nil,
+      border: nil,
+      border_style: border_style,
       title_position: :bottom,
-      title_alignment: :right,
-      title_style: %ExRatatui.Style{fg: :dark_gray},
-      border_style: border_style
-    }
+      title_alignment: :right
+    )
   end
 
   # -- measured heights (render-into-buffer probe) ----------------------------

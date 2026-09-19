@@ -45,7 +45,7 @@ defmodule CodingAgent.UI.Bridge do
 
   @typedoc "What the bridge decided an event is."
   @type translated ::
-          {:key, %{key: atom(), mod: :none | :alt | :ctrl}}
+          {:key, %{key: atom(), mod: :none | :alt | :ctrl | :shift}}
           | {:text, String.t()}
 
   @doc """
@@ -58,21 +58,27 @@ defmodule CodingAgent.UI.Bridge do
     mods = MapSet.new(modifiers || [])
     ctrl? = MapSet.member?(mods, "ctrl")
     alt? = MapSet.member?(mods, "alt")
+    # shift matters only for the keys where it is not folded into the
+    # code: the terminal reports `A` for shift+a (no modifier), but a
+    # special key like enter keeps `shift` in the modifier list. The two
+    # layers used to disagree — the keymap never saw shift while the raw
+    # event (with shift) was forwarded to the textarea (the B2 report).
+    shift? = MapSet.member?(mods, "shift")
 
     cond do
       special?(code) ->
-        {:key, key_event(code, ctrl?, alt?)}
+        {:key, key_event(code, ctrl?, alt?, shift?)}
 
       # a chord (ctrl/alt) on a letter is ALWAYS a control candidate —
       # the keymap may or may not bind it, but it must get the chance
       ctrl? and single_lowercase?(code) ->
-        {:key, key_event(code, ctrl?, alt?)}
+        {:key, key_event(code, ctrl?, alt?, shift?)}
 
       alt? and single_lowercase?(code) ->
-        {:key, key_event(code, ctrl?, alt?)}
+        {:key, key_event(code, ctrl?, alt?, shift?)}
 
       single_lowercase?(code) and String.to_atom(code) in bound_letters ->
-        {:key, key_event(code, ctrl?, alt?)}
+        {:key, key_event(code, ctrl?, alt?, shift?)}
 
       true ->
         # text: any single printable char in full UTF-8; the textarea
@@ -83,7 +89,11 @@ defmodule CodingAgent.UI.Bridge do
 
   # -- keymap events (control tier) -----------------------------------------
 
-  defp key_event(code, ctrl?, alt?) do
+  # Precedence: ctrl > alt > shift > none. A key carrying several
+  # modifiers is rare (the terminal folds shift into the char), so the
+  # exact combination is kept to one marker; the important part is that
+  # shift is no longer silently dropped before the keymap sees the key.
+  defp key_event(code, ctrl?, alt?, shift?) do
     cond do
       ctrl? and code == "enter" ->
         # ADR 011 kitty-protocol hook: keep ctrl in mod
@@ -98,6 +108,9 @@ defmodule CodingAgent.UI.Bridge do
 
       alt? ->
         %{key: name(code), mod: :alt}
+
+      shift? ->
+        %{key: name(code), mod: :shift}
 
       true ->
         %{key: name(code), mod: :none}

@@ -121,4 +121,120 @@ defmodule CodingAgent.UI.TuiPickerTest do
     # row carries it (index 0 is selected by default)
     assert Enum.count(rows, &String.contains?(&1, "❯")) == 1
   end
+
+  describe "session manager (ADR 020, slice 1)" do
+    test "rows show the storage footprint and the header shows the total", %{root: root} do
+      pid = start_picker(root)
+      joined = Enum.join(buffer(pid), "\n")
+
+      # each row carries a human size unit (these tiny sessions are B/KB)
+      assert joined =~ " B" or joined =~ " KB"
+      # the summary line states the count and the total footprint
+      assert joined =~ "2 session(s)"
+      assert joined =~ "[this dir]"
+    end
+
+    test "list entries carry size and scope_root", %{root: root} do
+      [entry | _] = CodingAgent.Core.Session.Store.list_in(root)
+      assert is_integer(entry.size) and entry.size > 0
+      assert Path.expand(entry.scope_root) == Path.expand(root)
+    end
+
+    test "`a` widens the source to the whole store and names the scope column", %{root: root} do
+      pid = start_picker(root)
+      assert sync(pid).picker_all? == false
+
+      key(pid, "a")
+      st = sync(pid)
+      assert st.picker_all? == true
+      # the box retitles and the header names the whole store
+      joined = Enum.join(buffer(pid), "\n")
+      assert joined =~ "all sessions"
+      assert joined =~ "[all]"
+    end
+
+    test "`/` filters the visible rows live", %{root: root} do
+      pid = start_picker(root)
+
+      key(pid, "/")
+      # type a prefix that matches only one seeded id
+      Enum.each(String.graphemes("alpha"), &key(pid, &1))
+
+      st = sync(pid)
+      assert st.picker_filter == "alpha"
+      visible_ids = Enum.map(picker_visible(st), & &1.id)
+      assert length(visible_ids) == 1
+      assert hd(visible_ids) =~ "alpha"
+
+      # enter commits (keeps the filter)
+      key(pid, "enter")
+      st2 = sync(pid)
+      assert st2.picker_op == nil
+      assert st2.picker_filter == "alpha"
+
+      # esc (in filter mode) clears it
+      key(pid, "/")
+      key(pid, "escape")
+      assert sync(pid).picker_filter == ""
+    end
+
+    test "`D` deletes every VISIBLE session after confirmation", %{root: root} do
+      pid = start_picker(root)
+      assert length(sync(pid).picker) == 2
+
+      key(pid, "D")
+      assert match?({:delete_many, _}, sync(pid).picker_op)
+
+      key(pid, "y")
+
+      assert CodingAgent.Core.Session.Store.list_in(root) == []
+      # the delete is a management action; the picker stays open even
+      # though the directory is now empty
+      assert sync(pid).picker_op == nil
+    end
+
+    test "`D` with a filter deletes only the filtered rows", %{root: root} do
+      pid = start_picker(root)
+
+      # filter to one of the two, then bulk-delete only that one
+      key(pid, "/")
+      Enum.each(String.graphemes("beta"), &key(pid, &1))
+      key(pid, "enter")
+      key(pid, "D")
+      key(pid, "y")
+
+      remaining = CodingAgent.Core.Session.Store.list_in(root)
+      assert length(remaining) == 1
+      assert hd(remaining).id =~ "alpha"
+    end
+
+    test "single `d` still deletes one (regression)", %{root: root} do
+      pid = start_picker(root)
+      selected = picker_visible(sync(pid)) |> Enum.at(sync(pid).picker_index)
+
+      key(pid, "d")
+      key(pid, "y")
+
+      remaining_ids = Enum.map(CodingAgent.Core.Session.Store.list_in(root), & &1.id)
+      refute selected.id in remaining_ids
+      assert length(remaining_ids) == 1
+    end
+  end
+
+  # Mirror of Tui.picker_visible/1 for assertions: reads the raw source
+  # and filter off the state (the function is private).
+  defp picker_visible(state) do
+    filter = String.trim(Map.get(state, :picker_filter, ""))
+
+    if filter == "" do
+      state.picker
+    else
+      needle = String.downcase(filter)
+
+      Enum.filter(state.picker, fn s ->
+        String.downcase("#{s.id} #{s.model || ""} #{s.status} #{s.scope_root || ""}")
+        |> String.contains?(needle)
+      end)
+    end
+  end
 end

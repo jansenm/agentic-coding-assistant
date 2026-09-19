@@ -85,8 +85,11 @@ Consequences
   stays at the application layer: keymap (ADR 011), session driver,
   approval flow, panes.
 - Multi-line paste and alt/ctrl-modifier reporting arrive via
-  crossterm's input stack; ADR 011's ESC-prefix decoder becomes
-  unnecessary for the TUI path (kept for the CLI line-mode harness).
+  crossterm's input stack. ADR 011's ESC-prefix decoder is therefore
+  unnecessary — crossterm reports modifiers natively — and was
+  **deleted** (2026-09-19): it had no call site, and the CLI line mode
+  uses ``IO.gets``, which never needed it. The earlier "kept for the
+  CLI line-mode harness" justification was false.
 - API drift is a real maintenance cost: version bumps will occasionally
   touch UI code. Accepted in exchange for not owning the bottom layer.
 - Future surfaces (SSH/distributed attach, LiveView embedding) are

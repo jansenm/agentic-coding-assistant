@@ -75,10 +75,82 @@ defmodule CodingAgent.UI.TuiAgentTest do
     buffer = Enum.join(buffer(pid), "\n")
 
     assert buffer =~ "you → build"
-    # the sidebar no longer renders running/next slots (removed in the
-    # shared agent-box redesign)
+    # the sidebar no longer renders "running:"/"next:" label slots (the
+    # shared agent-box redesign); identity is a badge
     refute buffer =~ "running:"
     refute buffer =~ "next:"
+  end
+
+  # Regression (review A): the agent-box footer belongs on the
+  # BOTTOM-RIGHT border. The substring assertions above are
+  # position-blind and did not catch it moving to the top-left when
+  # agent_block/2 started delegating to Styles.panel/1.
+  test "the input footer sits on the bottom border, right-aligned" do
+    pid = start_app(agent: "build")
+    rows = buffer(pid)
+
+    footer_row =
+      rows
+      |> Enum.with_index()
+      |> Enum.find(fn {r, _} -> String.contains?(r, "you → build") end)
+
+    assert {row_text, idx} = footer_row
+    # bottom border: the row after it starts the status line (no box row
+    # below the footer); the footer row carries the rounded bottom glyph
+    assert String.contains?(row_text, "╰")
+    # right-aligned: the footer hugs the right edge, no box content after
+    assert String.trim_trailing(row_text) |> String.ends_with?("╯")
+    # and it is NOT the top border (the old regression put it there)
+    refute String.contains?(rows |> Enum.at(idx - 1), "you → build")
+  end
+
+  # B4: the status panel answers "which agent handles what I type, and
+  # which is running", as a badge. Its title is truthful ("status", not
+  # "agent" — it holds session/effort/token data).
+  test "the sidebar is titled status and carries the agent badge" do
+    pid = start_app(agent: "build")
+    rows = buffer(pid)
+
+    assert rows |> Enum.at(1) |> String.contains?("status")
+    refute rows |> Enum.at(1) |> String.contains?("agent╯")
+
+    buffer = Enum.join(rows, "\n")
+    assert buffer =~ "build"
+  end
+
+  test "while a turn runs, the running agent shows in the panel" do
+    pid = start_app(agent: "build")
+
+    agent(pid, {:turn_started, "build"})
+    agent(pid, {:status_changed, :running})
+
+    assert Enum.join(buffer(pid), "\n") =~ "build running"
+  end
+
+  test "running and next agents both show when they differ" do
+    pid = start_app(agent: "build")
+
+    agent(pid, {:turn_started, "build"})
+    agent(pid, {:status_changed, :running})
+
+    # Tab while running only changes the NEXT input's agent (ADR 018)
+    TuiAgentTest.press(pid, "tab")
+    assert sync(pid).next_agent == "plan"
+
+    buffer = Enum.join(buffer(pid), "\n")
+    assert buffer =~ "build running"
+    assert buffer =~ "plan next"
+  end
+
+  test "when idle, only the next agent shows (no stale 'running')" do
+    pid = start_app(agent: "build")
+
+    agent(pid, {:turn_started, "build"})
+    agent(pid, {:status_changed, :idle})
+
+    buffer = Enum.join(buffer(pid), "\n")
+    refute buffer =~ "running"
+    assert buffer =~ "build"
   end
 
   test "the input footer shows the agent and the model it would use" do

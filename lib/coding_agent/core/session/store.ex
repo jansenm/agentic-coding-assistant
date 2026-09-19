@@ -171,13 +171,25 @@ defmodule CodingAgent.Core.Session.Store do
     Regex.match?(~r/^[A-Za-z0-9][A-Za-z0-9._-]*$/, id)
   end
 
-  @doc "Lists persisted sessions, newest first: [{id, saved_at, model}]."
+  @doc """
+  Lists persisted sessions, newest first. Each entry carries the
+  storage footprint (`:size`, bytes — ADR 020 R13) and the persisted
+  `:scope_root`, so a caller can show and group by project without
+  decoding the state again.
+  """
   @spec list() :: [
-          %{id: String.t(), saved_at: DateTime.t(), model: String.t() | nil, status: atom()}
+          %{
+            id: String.t(),
+            saved_at: DateTime.t(),
+            model: String.t() | nil,
+            status: atom(),
+            scope_root: String.t() | nil,
+            size: non_neg_integer()
+          }
         ]
   def list do
     list_entries()
-    |> Enum.map(&Map.take(&1, [:id, :saved_at, :model, :status]))
+    |> Enum.map(&Map.take(&1, [:id, :saved_at, :model, :status, :scope_root, :size]))
   end
 
   @doc """
@@ -186,7 +198,14 @@ defmodule CodingAgent.Core.Session.Store do
   Filters on the persisted scope_root.
   """
   @spec list_in(String.t()) :: [
-          %{id: String.t(), saved_at: DateTime.t(), model: String.t() | nil, status: atom()}
+          %{
+            id: String.t(),
+            saved_at: DateTime.t(),
+            model: String.t() | nil,
+            status: atom(),
+            scope_root: String.t() | nil,
+            size: non_neg_integer()
+          }
         ]
   def list_in(root) do
     root = Path.expand(root)
@@ -197,7 +216,7 @@ defmodule CodingAgent.Core.Session.Store do
     # waste.
     list_entries()
     |> Enum.filter(&(&1.scope_root && Path.expand(&1.scope_root) == root))
-    |> Enum.map(&Map.take(&1, [:id, :saved_at, :model, :status]))
+    |> Enum.map(&Map.take(&1, [:id, :saved_at, :model, :status, :scope_root, :size]))
   end
 
   # Decode every session file ONCE: id, mtime, and the loaded state's
@@ -212,7 +231,7 @@ defmodule CodingAgent.Core.Session.Store do
           path = Path.join(dir(), file)
 
           case File.stat(path, time: :posix) do
-            {:ok, %{mtime: mtime}} ->
+            {:ok, %{mtime: mtime, size: size}} ->
               # a file can vanish or corrupt between ls and load; an
               # error tuple is NOT nil, so filter on the map shape — the
               # old `with`+reject(is_nil) let {:error, _} through and
@@ -225,7 +244,8 @@ defmodule CodingAgent.Core.Session.Store do
                     saved_at: DateTime.from_unix!(mtime),
                     model: state.model,
                     status: state.status,
-                    scope_root: state.scope_root
+                    scope_root: state.scope_root,
+                    size: size
                   }
 
                 {:error, _} ->

@@ -52,9 +52,24 @@ Elixir over termbox events — not assumed from the library.
 changing the defaults:
 
 - ``ctrl-j`` → insert newline (readline habit)
-- ``ctrl-enter``/``shift-enter`` → send, *when the terminal can
-  distinguish them* (kitty-protocol terminals); silently absent
-  elsewhere. Alt-enter remains the dependable send key.
+- ``shift-enter`` → insert newline, *when the terminal reports the
+  shift modifier* (kitty/meta protocol). Shift is a real event
+  modifier now (see the amendment below); on legacy terminals
+  shift-enter sends the same bytes as alt-enter, so there it is
+  indistinguishable from send. Alt-enter remains the dependable send
+  key.
+- ``ctrl-enter`` → send, *when the terminal can distinguish it*
+  (kitty-protocol terminals); silently absent elsewhere.
+
+.. note::
+   **Amended 2026-09-19.** This table originally read
+   ``ctrl-enter``/``shift-enter`` → **send**. The implementation now
+   binds ``shift-enter`` → ``insert_newline`` (composition-first: the
+   common "newline" reflex, matching plain enter), and ``Bridge``
+   carries ``:shift`` as a first-class modifier through to ``Keymap``.
+   The keymap is the data-of-record (this ADR's own claim), so the
+   table follows the code. ``ctrl-enter`` remains the kitty-protocol
+   send hook.
 
 **The keymap is data from the first commit**: a map
 ``action => [key_event_patterns]`` with the defaults in code, overridable

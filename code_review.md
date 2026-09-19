@@ -257,7 +257,8 @@ first.
       markdown line-structure from the buffer/window trailing-newline
       invariant. Measured: 500 deltas used to cause up to 500 renders; now
       **0** — each throttle tick causes exactly one. New mid-stream
-      interactivity test. (`UI_STREAMING_HANG_REPORT.md`.)
+      interactivity test. (Report implemented and removed;
+      `test/coding_agent/ui/tui_stream_burst_test.exs` is the record.)
 - [x] **P1 — `Config.snapshot/1`.** New `CodingAgent.Core.Config`:
       one typed read of merged config, permissions, mounts, providers,
       agents; typed runtime-knob accessors with the single defaults
@@ -307,11 +308,19 @@ first.
       prompt composition out of the loop.
 - [ ] **P3 — `Session.Usage` struct + defaults.** One home for
       `last_input_tokens` semantics.
-- [ ] **P3 — Session storage decision (Section 4b).** Pick one: (a) a
-      sidecar `meta` so `list/0` stops decoding every full state, or
-      (b) an ADR settling format (binary vs JSONL+meta), trust
-      (`binary_to_term`), retention and the export vector. Recommendation:
-      (a) now as a contained win, (b) as the ADR before export/share.
+- [~] **P3 — Session storage decision (Section 4b).** ADR 020
+      (`docs/source/decisions/020-session-storage.rst`, *Proposed*)
+      settles the direction: per-session SQLite within a selectable
+      store, agent view + immutable display view as separate tables;
+      R0 (session management is a first-class surface) leads it.
+      Slice 1 shipped: the TUI picker now shows storage footprint per
+      session and a total, filters live, toggles this-dir/whole-store,
+      and bulk-deletes the visible set (delete-by-directory). `Store.list`
+      entries carry `:size` and `:scope_root`. Not yet done: the engine
+      change, store selection (`--store`/`AGENT_STORE`), export/import,
+      migration of existing blobs. The opencode objection was an API
+      objection — missing verbs — which this slice addresses before any
+      format change.
 - [ ] **P4 — Split `tui.ex` along its own comment sections**; single state
       struct definition.
 - [ ] **P4 — `TranscriptView.metrics/…`.** One home for pane geometry; render,
@@ -322,7 +331,189 @@ first.
 
 ---
 
+# TODO — dog-fooding blockers (urgent)
+
+Found by using the TUI on real work. None of these are architectural; all six
+make the tool annoying enough to avoid, which is worse than a bug. Ordered as
+they were reported, not by leverage. Root causes below were read from the tree
+as reviewed; where a mechanism is not yet pinned, that is said plainly instead
+of guessed.
+
+- [x] **B1 — No visible cursor in the input field.**
+      Fixed: `input_widget/1` now sets
+      `cursor_style: %Style{modifiers: [:reversed]}` explicitly (and
+      `cursor_line_style: %Style{}` deliberately — a reversed current char
+      is enough; a full-line highlight is noisy in a multi-line composer).
+      Root cause was as diagnosed: an empty struct default overwrote
+      tui-textarea's own REVERSED default through the always-encoded
+      bridge. The upstream API gap ("unset" vs "empty") remains noted for
+      a dependency fix; the app-side behavior is correct now. New
+      `tui_cursor_test.exs` asserts the widget `render/2` builds carries
+      the reversed modifier (the text buffer has no cell attributes).
+
+- [ ] **B2 — Shift+Enter does something strange; typed text disappears.**
+      PARTIAL, and the partial attempt introduced a regression
+      (`UI_TRACK_A_REVIEW.md` §B). What holds: `:shift` is a real event
+      modifier through `Bridge.translate/2` → `Keymap`, `shift+enter` is
+      an `insert_newline` (ADR 011, amended), the wire encodings are
+      pinned by `tui_shift_enter_test.exs`, and dead `UI.AltDecode` is
+      deleted. What does NOT hold: `Keymap.matches?/2` is exact on
+      `:mod`, so mapping every shifted special to `:shift` **unbound**
+      `shift+tab`, `shift+page_up` and `shift+page_down`, which worked
+      before (they now fall through to the raw-textarea path). The
+      underlying B2 symptom — "typed text disappears" — is the
+      two-authorities bug, still open:
+      - **ctrl-j** is declared `:insert_newline` but falls through to the
+        crate, which runs `delete_line_by_head` (typed line wiped).
+      - **ctrl-u** is declared `:kill_line` but the crate runs `undo`.
+      Of the 19 actions `Keymap` declares, `dispatch_input_key/3` handles
+      10; the rest are decorative. The real fix is "classify then drop"
+      (never forward the raw event), which needs its own ADR — see the
+      new P2 item below.
+
+- [~] **B3 — No mechanism to attach or select files in the message field.**
+      Not started (Track C). The design in the finding stands: an `@`
+      word-start trigger reusing the picker/menu surface, sourced from
+      `Core.Tools` under `Tools.scope/1` + `Mounts`.
+
+- [x] **B4 — Hard to tell whether I am in build or plan mode.**
+      Addressed with the `UI.Styles` work. The sidebar is retitled
+      `" status "` (it holds session/effort/token data, not agent slots)
+      and now carries an agent BADGE; while a turn is in flight the
+      RUNNING and NEXT agents are both shown (they can differ — Tab only
+      changes the next turn's agent), and when idle only the next agent
+      shows (no stale running label). Identity is one `Styles.badge/2`
+      vocabulary across the input footer, the message-box footers and the
+      panel. New `styles_test.exs` and the identity tests in
+      `tui_agent_test.exs`.
+      Decision recorded (user, on B6): build/plan is NOT a filesystem mode
+      — read-only is not "plan" (build legitimately writes `.git/` etc.),
+      it is a SIGNAL to the agent ("please plan, no real code changes").
+      So no distinct mode chrome is added; identity stays a badge. The
+      remaining work is the plan *definition* (B6), not a mode.
+
+- [ ] **B5 — The input field does not auto-wrap.** Not started (Track C).
+      Symptom: a long line runs off the right edge and you cannot see what you
+      typed (and the box does not grow, because it grows per *line*).
+      Root cause, corrected: there is **no `wrap` field to set.** The
+      `%Textarea{}` struct is `state, style, cursor_style, cursor_line_style,
+      placeholder, placeholder_style, line_number_style, block`
+      (`deps/ex_ratatui/lib/ex_ratatui/widgets/textarea.ex:85-93`) — an earlier
+      note in this review claimed a `wrap` field existed and was simply unset;
+      that was wrong, `wrap` exists only on `Paragraph`/`Markdown`/`CodeBlock`
+      (`bridge.ex:76`, `:400`, `:416`, and no textarea case). Upstream
+      `tui-textarea` renders per logical line with a viewport that scrolls
+      horizontally; soft wrap is not implemented in the crate we depend on.
+      `input_height/1` (`tui.ex:67-74`) measures `textarea_line_count/1`, i.e.
+      newline count, so wrapping would also have to feed the height math
+      (the measure/render agreement rule this file already lives by).
+      Fix direction: choose one, explicitly — (a) soft-wrap in our own render
+      layer: pre-wrap the value to the input width and map cursor
+      row/col ↔ wrapped display position (the honest fix, but it is a real
+      text-layout component and it must also drive `input_height/1`);
+      (b) patch/vendor the textarea widget upstream to wrap and report wrapped
+      height (contributes the fix where it belongs, slower to land);
+      (c) accept no wrap and give the input a horizontal scroll indicator so at
+      least "there is more text to the right" is visible. Do not do (c) alone —
+      the symptom is losing sight of your own text.
+
+- [~] **B6 — Plan mode is useless in its current configuration.**
+      Direction settled (user decision), implementation pending. Build/plan
+      is a SIGNAL to the agent, not a sandbox/mode state: read-only is not
+      "plan" (build legitimately needs `.git/` writes), so the fix is the
+      plan *definition* (what tools it gets, whether it may write a durable
+      plan artifact, whether it needs read-only network/subagents), not
+      mode chrome. The original finding text follows.
+
+      Symptom: switching to plan gives no practical value in a normal session.
+      Root cause: `priv/coding-agent/agents/plan.md` denies
+      `disallowedTools: edit, write_file, shell, git`, so plan can only
+      `read_file`, `grep`, `glob`, `list_dir` — it can analyse but cannot
+      produce anything durable (no plan file, no todo list, no way to hand work
+      off except prose in the transcript), and it is visually identical to build
+      (B4), so it feels like build with fewer tools rather than a mode.
+      Also note how much of the difference the *tool layer* even sees: the
+      permission layer treats `disallowedTools` as a deny-list intersected with
+      the allow-list (`core/permissions.ex:139-171`), so "plan" is defined
+      entirely by absence.
+      Fix direction: a configuration/definition decision, not a code fix.
+      Settle three questions: (1) what is plan *for* — analysis, or producing a
+      durable plan artifact (if the latter, grant a scoped write, e.g. a single
+      plan/findings file, or add a `todo`/`plan` tool it may write); (2) is plan
+      a *mode* (changes what send means, changes the composer/status, visibly
+      distinct) or just an agent name; (3) does plan need the read-only network
+      tools (`webfetch`) and subagents to be worth entering. Until (1) and (2)
+      are answered, plan stays decorative.
+
+Cross-cutting note for the research pass: B1/B2 are both one missing piece of
+vocabulary (cell-attribute default; shift modifier) rather than logic bugs, and
+B4/B6 are the same question asked twice (agent identity vs. mode). Doing B1+B4
+as a pair with the `Styles` work covers two blockers for the price of one
+refactor; B5 is the only one that is genuinely new machinery.
+
+**Status after the Track A pass:** B1 and B4 are done; B2 is partial and
+introduced a regression (see below); the `Styles` vocabulary and the dead
+`AltDecode` removal are done. B3 (file picker) and B5 (input wrap) remain
+in Track C. B6's direction is settled (plan is a signal to the agent, not
+a sandbox mode) and needs only the plan definition decided.
+
+### New backlog from `UI_TRACK_A_REVIEW.md` (2026-09-19)
+
+The Track A review found real defects the green suite could not see. The
+mechanical ones (A footer position, E separator, F role aliases, G stale
+ADRs, H modifier merge, C phantom `badge_list`) are fixed in the same
+pass; the two structural ones are recorded here.
+
+- [ ] **P2 — One authority for input events (the real B2).** The input
+      pipeline has two authorities: our `Keymap` and the textarea crate's
+      own Emacs bindings. `forward_to_textarea/2` passes the **raw** event,
+      so whatever the keymap does not intercept is performed by the crate
+      with different semantics. Verified live: `ctrl-j` (declared
+      `:insert_newline`) runs `delete_line_by_head` — it wipes the typed
+      line; `ctrl-u` (declared `:kill_line`) runs `undo`. Of the 19 actions
+      `Keymap` declares, `dispatch_input_key/3` handles 10; the other 9
+      (`:cursor_home`, `:cursor_end`, `:kill_line`, `:kill_word`,
+      `:kill_to_end`, `:cursor_up`, `:cursor_down`, `:cursor_left`,
+      `:cursor_right`) are decorative. Fix: `Bridge` classifies each event
+      as exactly `{:text, s}` or `{:command, intent}` and the raw event is
+      **dropped, never forwarded**; the intent→crate mapping lives in one
+      executor whose handled set *is* the keymap's action set. This is an
+      architecture cut and deserves its own ADR.
+- [ ] **P2 — Modifier fallback lattice in `Keymap.resolve/2`.** The `:shift`
+      pass made `shift+tab`/`shift+page_up`/`shift+page_down` `:unbound`
+      (they worked before), because `matches?/2` is exact on `:mod`. Fix
+      with a **specific-before-generic** fallback (`shift+X` binding wins,
+      else the `none` binding, then `:any`), so adding a modifier family
+      can never silently unbind the unmodified bindings. Care: a blanket
+      "shift falls back to none" must not re-break `shift+enter` (the very
+      bug just fixed) — the ordering above is the whole point.
+- [ ] **P2 — Action-coverage test.** Assert that every action in the
+      `@type action` typespec is actually handled in `tui.ex` (the 9
+      decorative actions above would fail it) and that every
+      `Keymap` binding resolves to something handled. This single test
+      catches both the P2 items and the class behind them.
+- [ ] **P3 — `shift+tab` (crossterm `back_tab`) is unbound.** Pre-existing
+      (not a Track A regression), same bug class: a shifted key that the
+      terminal reports as a distinct code and the keymap never bound. Fix
+      alongside the B2 work so the input vocabulary is complete.
+
+---
+
 # UI — styling and visual consistency
+
+**IMPLEMENTED (steps 1-4 of the sequence below).** `CodingAgent.UI.Styles`
+now owns roles (`role/1`), badges (`badge/2`), a definition list
+(`definition_list/1`), panels (`panel/1`), section headers, chrome fills
+and `status_badge/1`. (`badge_list/1` from the original sketch was
+dropped: the input footer needs the `you → agent · model` arrow shape,
+not a `·`-joined list, so `badge/2` composed inline is the real
+primitive.) The ~35 inline `%Style{}`
+sites in `tui.ex`/`transcript_view.ex` are gone (only genuinely-empty
+styles and the `Styles` module itself remain); box footers and the input
+footer use role-styled identity; the sidebar is a `definition_list` with
+a truthful `" status "` title and agent badges. `styles_test.exs` covers
+the vocabulary. Not done: a swappable theme (step 5 — deliberately, no
+config surface is wanted yet).
 
 Goal: a small, central vocabulary for "how a piece of information looks", so
 that every surface renders the same concept the same way. Today there is no
@@ -391,7 +582,8 @@ Sketch:
 ```elixir
 Styles.badge(:agent, "plan")     # e.g. dim label "agent" + accent "plan"
 Styles.badge(:model, "glm-5.3")
-Styles.badge_list([{:agent, "plan"}, {:model, "glm-5.3"}])
+# A badge list as first sketched was dropped: the footer needs an arrow
+# relationship ("you → plan"), not a `·`-joined label list.
 ```
 
 Then the assistant/user box footer, which currently builds strings via
@@ -471,8 +663,8 @@ and model, the panel becomes truthful and the identity moves to a badge.
 1. Introduce `UI.Styles` with roles only. Mechanically replace the ~35 inline
    `%Style{}` literals with role lookups. No visual change intended; this makes
    the vocabulary exist. (Tests that assert on style/color may need updating.)
-2. Add `badge/2` and `badge_list/1`; move the box footers and the input footer
-   onto them.
+2. Add `badge/2`; move the box footers and the input footer onto it
+   (`badge_list/1` proved unnecessary — the footer needs the arrow shape).
 3. Add `definition_list/1`; rewrite the sidebar (`sidebar_widget/1`) with it,
    and correct the panel title to `"status"`.
 4. Add `section_header/1` and `panel/1`; fold `TranscriptView.agent_block/2`

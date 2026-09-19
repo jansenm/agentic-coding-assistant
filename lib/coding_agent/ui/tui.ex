@@ -23,7 +23,7 @@ defmodule CodingAgent.UI.Tui do
   alias CodingAgent.Core.Session.Compactor
   alias CodingAgent.Core.Session.Supervisor
   alias CodingAgent.Core.Session.Store
-  alias CodingAgent.UI.{Bridge, Keymap, Menu, TranscriptView}
+  alias CodingAgent.UI.{Bridge, Keymap, Menu, Styles, TranscriptView}
   alias ExRatatui.Event
   alias ExRatatui.Layout
   alias ExRatatui.Layout.Rect
@@ -120,16 +120,16 @@ defmodule CodingAgent.UI.Tui do
   end
 
   # deferred start: the picker deferred session creation; run it now.
-  # resume: a chosen id re-runs mount_session with that id AND
-  # resume_id (start_session loads the snapshot); fresh: no id.
-  defp picker_select(
-         %{picker: sessions, picker_index: idx, picker_opts: opts, picker_prompt: prompt},
-         action
-       ) do
+  # resume: the SELECTED (visible) session re-runs mount_session with
+  # that id AND resume_id (start_session loads the snapshot); fresh: no
+  # id. Selection reads the same `picker_visible/1` the render uses.
+  defp picker_select(%{picker_opts: opts, picker_prompt: prompt} = state, action) do
     case action do
       :resume ->
-        %{id: chosen} = Enum.at(sessions, idx)
-        mount_session(chosen, Keyword.put(opts, :resume_id, chosen), prompt)
+        case picker_selected(state) do
+          nil -> {:error, :no_selection}
+          %{id: chosen} -> mount_session(chosen, Keyword.put(opts, :resume_id, chosen), prompt)
+        end
 
       :new ->
         mount_session(nil, opts, prompt)
@@ -196,6 +196,14 @@ defmodule CodingAgent.UI.Tui do
       picker_prompt: prompt,
       picker_op: nil,
       picker_scope: Path.expand(root),
+      # Session management (ADR 020, slice 1): the picker is a manager,
+      # not just a chooser. `picker_all?` widens the source from this
+      # directory's sessions to the whole store; `picker_filter` narrows
+      # the visible rows (id / model / status / scope). While the filter
+      # prompt is open, `picker_op` is `{:filter, buf}` and routes
+      # printable keys into the query.
+      picker_all?: false,
+      picker_filter: "",
       # sidebar panel: visible by default; toggled at runtime
       # (Menu :toggle_sidebar) or seeded off via `sidebar: false`
       # (tests read a clean transcript buffer without a 36-col panel)
@@ -733,18 +741,90 @@ defmodule CodingAgent.UI.Tui do
 
   def handle_event(_event, state), do: {:noreply, state}
 
-  # Click a to  # -- Picker keys -----------------------------------------------------------
-  # up/down/j/k move; enter resumes the selection; n starts fresh;
-  # q quits; d deletes (y confirms), r renames (type + enter). While a
-  # confirm/rename prompt is up, keys route to it, not the list.
+  # -- Picker source (ADR 020, slice 1) --------------------------------------
+  # The picker lists either this directory's sessions (default) or the
+  # whole store (`a`), narrowed by a free-text filter (`/`). `picker_visible/1`
+  # feeds both the render and the key handlers, so "what is selected" and
+  # "what is shown" can never drift. `state.picker` holds the loaded
+  # source; it is reloaded on any mutation or source toggle (never on a
+  # plain keypress — the store is not a hot path).
+  defp picker_visible(state) do
+    source = Map.get(state, :picker) || []
+    filter = String.trim(Map.get(state, :picker_filter, ""))
+
+    if filter == "" do
+      source
+    else
+      needle = String.downcase(filter)
+
+      Enum.filter(source, fn s ->
+        String.downcase("#{s.id} #{s.model || ""} #{s.status} #{s.scope_root || ""}")
+        |> String.contains?(needle)
+      end)
+    end
+  end
+
+  # The currently selected row, or nil when the list is empty.
+  defp picker_selected(state) do
+    Enum.at(picker_visible(state), state.picker_index)
+  end
+
+  # Reload the source for the current scope flag (this dir vs whole store),
+  # clear the prompt, and clamp the selection into range.
+  defp picker_reload(state) do
+    sessions =
+      if Map.get(state, :picker_all?, false) do
+        Store.list()
+      else
+        Store.list_in(state.picker_scope)
+      end
+
+    idx = min(state.picker_index, max(length(sessions) - 1, 0))
+    %{state | picker: sessions, picker_index: max(idx, 0), picker_op: nil}
+  end
+
+  # -- Picker keys -----------------------------------------------------------
+  # up/down move; enter resumes; n starts fresh; q quits; d deletes one
+  # (y confirms); r renames; `a` toggles this-dir vs whole-store; `/`
+  # opens a filter; `D` deletes every VISIBLE session (the directory bulk
+  # delete). While a confirm/rename/filter prompt is up, keys route to it.
   defp handle_picker_key(%Event.Key{code: "up"}, %{picker_op: nil} = state) do
     idx = max(state.picker_index - 1, 0)
     {:noreply, %{state | picker_index: idx}}
   end
 
   defp handle_picker_key(%Event.Key{code: "down"}, %{picker_op: nil} = state) do
-    idx = min(state.picker_index + 1, length(state.picker) - 1)
+    idx = min(state.picker_index + 1, length(picker_visible(state)) - 1)
+    idx = max(idx, 0)
     {:noreply, %{state | picker_index: idx}}
+  end
+
+  # `a`: widen/narrow the source (this directory <-> the whole store).
+  # The selection resets — the row at the same index is a different
+  # session once the source changes.
+  defp handle_picker_key(%Event.Key{code: "a"}, %{picker_op: nil} = state) do
+    state = %{state | picker_all?: not Map.get(state, :picker_all?, false), picker_index: 0}
+    {:noreply, picker_reload(state)}
+  end
+
+  # `/`: open the filter prompt. Printable keys build it, enter commits
+  # (the list is already live-filtered as you type), esc clears+closes.
+  defp handle_picker_key(%Event.Key{code: "/"}, %{picker_op: nil} = state) do
+    {:noreply, %{state | picker_op: {:filter, ""}, picker_index: 0}}
+  end
+
+  # `D`: delete every VISIBLE session (bulk). This is the directory
+  # delete when the source is this-dir, and "filtered set" when the
+  # whole store is shown — the confirmation names the count and scope.
+  defp handle_picker_key(%Event.Key{code: "D"}, %{picker_op: nil} = state) do
+    case picker_visible(state) do
+      [] ->
+        {:noreply, state}
+
+      visible ->
+        ids = Enum.map(visible, & &1.id)
+        {:noreply, %{state | picker_op: {:delete_many, ids}}}
+    end
   end
 
   defp handle_picker_key(%Event.Key{code: "enter"}, %{picker_op: nil} = state) do
@@ -767,7 +847,7 @@ defmodule CodingAgent.UI.Tui do
   end
 
   defp handle_picker_key(%Event.Key{code: "d"}, %{picker_op: nil} = state) do
-    case Enum.at(state.picker, state.picker_index) do
+    case picker_selected(state) do
       nil ->
         {:noreply, state}
 
@@ -778,7 +858,7 @@ defmodule CodingAgent.UI.Tui do
   end
 
   defp handle_picker_key(%Event.Key{code: "r"}, %{picker_op: nil} = state) do
-    case Enum.at(state.picker, state.picker_index) do
+    case picker_selected(state) do
       nil ->
         {:noreply, state}
 
@@ -789,26 +869,41 @@ defmodule CodingAgent.UI.Tui do
     end
   end
 
+  # y confirms a single delete; if the picker now has no sessions at all
+  # (this dir AND whole store empty), there is nothing to pick — start
+  # fresh instead of leaving a dead picker.
   defp handle_picker_key(%Event.Key{code: "y"}, %{picker_op: {:delete, id}} = state) do
-    :ok = CodingAgent.Core.Session.Store.delete(id)
-    sessions = CodingAgent.Core.Session.Store.list_in(state.picker_scope)
+    :ok = Store.delete(id)
+    state = picker_reload(state)
 
-    cond do
-      sessions == [] ->
-        # nothing left to pick: start fresh
-        case picker_select(%{state | picker: []}, :new) do
-          {:ok, st} -> {:noreply, st}
-          {:error, reason} -> {:noreply, %{state | last_error: inspect(reason)}}
-        end
-
-      true ->
-        idx = min(state.picker_index, length(sessions) - 1)
-        {:noreply, %{state | picker: sessions, picker_index: idx, picker_op: nil}}
+    if state.picker == [] do
+      case picker_select(state, :new) do
+        {:ok, st} -> {:noreply, st}
+        {:error, reason} -> {:noreply, %{state | last_error: inspect(reason)}}
+      end
+    else
+      {:noreply, state}
     end
+  end
+
+  # y confirms a bulk delete of the VISIBLE set (the directory delete).
+  # It never empties the store to auto-start a session — it is a
+  # management action, not a selection.
+  defp handle_picker_key(%Event.Key{code: "y"}, %{picker_op: {:delete_many, ids}} = state) do
+    Enum.each(ids, &Store.delete/1)
+    {:noreply, picker_reload(state)}
   end
 
   defp handle_picker_key(%Event.Key{code: "y"}, state) do
     {:noreply, state}
+  end
+
+  # Filter prompt esc: unlike the other prompts, esc also CLEARS the
+  # filter (it is a live query, not a pending decision). This clause must
+  # precede the generic prompt-esc below, which would only close it.
+  defp handle_picker_key(%Event.Key{code: code}, %{picker_op: {:filter, _buf}} = state)
+       when code in ["escape", "esc"] do
+    {:noreply, %{state | picker_op: nil, picker_filter: "", picker_index: 0}}
   end
 
   defp handle_picker_key(%Event.Key{code: "escape"}, %{picker_op: prompt} = state)
@@ -822,15 +917,30 @@ defmodule CodingAgent.UI.Tui do
   end
 
   defp handle_picker_key(%Event.Key{code: "enter"}, %{picker_op: {:rename, id, buf}} = state) do
-    case CodingAgent.Core.Session.Store.rename(id, buf) do
+    case Store.rename(id, buf) do
       {:ok, _new_id} ->
-        sessions = CodingAgent.Core.Session.Store.list_in(state.picker_scope)
-        idx = min(state.picker_index, max(length(sessions) - 1, 0))
-        {:noreply, %{state | picker: sessions, picker_index: idx, picker_op: nil}}
+        {:noreply, picker_reload(state)}
 
       {:error, reason} ->
         {:noreply, status_note(%{state | picker_op: nil}, "rename failed: #{inspect(reason)}")}
     end
+  end
+
+  # Filter prompt: enter commits (the list was already filtered live as
+  # you typed), esc clears the filter and closes, backspace edits.
+  defp handle_picker_key(%Event.Key{code: "enter"}, %{picker_op: {:filter, _buf}} = state) do
+    {:noreply, %{state | picker_op: nil, picker_index: 0}}
+  end
+
+  defp handle_picker_key(%Event.Key{code: "backspace"}, %{picker_op: {:filter, buf}} = state) do
+    next = String.slice(buf, 0, max(String.length(buf) - 1, 0))
+    {:noreply, %{state | picker_op: {:filter, next}, picker_filter: next, picker_index: 0}}
+  end
+
+  defp handle_picker_key(%Event.Key{code: code}, %{picker_op: {:filter, buf}} = state)
+       when binary_part(code, 0, 1) == code and byte_size(code) == 1 do
+    next = buf <> code
+    {:noreply, %{state | picker_op: {:filter, next}, picker_filter: next, picker_index: 0}}
   end
 
   defp handle_picker_key(%Event.Key{code: code}, %{picker_op: {:rename, id, buf}} = state)
@@ -908,13 +1018,8 @@ defmodule CodingAgent.UI.Tui do
 
     widget = %Paragraph{
       text: body,
-      style: %Style{fg: :white, bg: :dark_gray},
-      block: %Block{
-        title: " menu ",
-        borders: [:all],
-        border_type: :rounded,
-        border_style: %Style{fg: :cyan, bg: :dark_gray}
-      }
+      style: Styles.chrome(),
+      block: Styles.panel(title: " menu ", border_style: Styles.chrome(:accent))
     }
 
     [{%Clear{}, rect}, {widget, rect}]
@@ -1986,14 +2091,11 @@ defmodule CodingAgent.UI.Tui do
 
     widget = %Paragraph{
       text: text,
-      style: %Style{fg: :white},
+      style: Styles.role(:value),
       block:
         TranscriptView.agent_block(
           TranscriptView.user_footer(agent),
-          # signaling color: magenta reads as "the user's voice" and
-          # separates from the status colors (green running / yellow
-          # approval / red error)
-          %Style{fg: :magenta, modifiers: [:bold]}
+          Styles.role(:user)
         )
     }
 
@@ -2009,12 +2111,12 @@ defmodule CodingAgent.UI.Tui do
     [
       {%Markdown{
          content: text,
-         style: %Style{fg: :white},
+         style: Styles.role(:value),
          wrap: true,
          block:
            TranscriptView.agent_block(
              TranscriptView.agent_footer(agent),
-             %Style{fg: :dark_gray}
+             Styles.role(:muted)
            )
        }, max(h, 1)}
     ]
@@ -2039,7 +2141,7 @@ defmodule CodingAgent.UI.Tui do
     [
       {%Markdown{
          content: text,
-         style: %Style{fg: :dark_gray, modifiers: [:italic]},
+         style: Styles.role(:reasoning),
          wrap: true
        }, max(h, 1)}
     ]
@@ -2050,14 +2152,14 @@ defmodule CodingAgent.UI.Tui do
     # the content only, so the air rows below stay background
     h = TranscriptView.height({:assistant, text}, w, nil) - TranscriptView.air()
 
-    [%Markdown{content: text, style: %Style{fg: :white}, wrap: true}]
+    [%Markdown{content: text, style: Styles.role(:value), wrap: true}]
     |> List.update_at(0, &{&1, max(h, 1)})
   end
 
   defp entry_widgets({:tool, id, name, content}, _w, open_id) when id != open_id do
     line = "▸ #{name}: #{first_line(content)}"
 
-    [{%Paragraph{text: line, style: %Style{fg: :dark_gray}}, 1}]
+    [{%Paragraph{text: line, style: Styles.role(:muted)}, 1}]
   end
 
   defp entry_widgets({:tool, id, name, content}, w, _open_id) do
@@ -2067,13 +2169,8 @@ defmodule CodingAgent.UI.Tui do
 
     widget = %Paragraph{
       text: "▾ #{name}\n" <> content,
-      style: %Style{fg: :dark_gray},
-      block: %Block{
-        title: " tool output ",
-        borders: [:all],
-        border_type: :rounded,
-        border_style: %Style{fg: :dark_gray}
-      }
+      style: Styles.role(:muted),
+      block: Styles.panel(title: " tool output ")
     }
 
     [{widget, h}]
@@ -2082,7 +2179,7 @@ defmodule CodingAgent.UI.Tui do
   # Compaction/notice lines carry the agent that triggered them; a bare
   # info (no agent, e.g. resumed notices) renders the same dim line.
   defp entry_widgets({:info, text, _agent}, _w, _te) do
-    [{%Paragraph{text: "  " <> text, style: %Style{fg: :dark_gray}}, 1}]
+    [{%Paragraph{text: "  " <> text, style: Styles.role(:muted)}, 1}]
   end
 
   # Display shape of the thinking buffer, shared by measure, paint and
@@ -2336,27 +2433,56 @@ defmodule CodingAgent.UI.Tui do
     # (design: one box for composer + messages). Its bottom footer shows
     # the target agent (the NEXT input's agent) and the EFFECTIVE model
     # (the agent's definition model when set, else the session model),
-    # next to the reading measure.
+    # next to the reading measure. Identity is a BADGE (Styles), so agent
+    # and model read the same here and in the message box footers.
     agent = Map.get(state, :next_agent)
     definition_model = Map.get(state, :next_agent_model)
     session_model = Map.get(state, :model)
-    eff_model = definition_model || session_model || "?"
+    eff_model = definition_model || session_model
 
+    # `you → agent · model <id>`: the identity relationship keeps its
+    # arrow shape (asserted by tests and clearer than a label), the
+    # agent and model carry their roles, and the model is labelled so a
+    # bare id is never ambiguous with an agent name.
     footer =
-      if(agent, do: "you → #{agent}", else: "you") <>
-        " · #{String.slice(eff_model, 0, 24)}"
+      Text.Line.new(
+        [
+          Text.Span.new("you", style: Styles.role(:user)),
+          if(agent,
+            do: [
+              Text.Span.new(" → ", style: Styles.role(:muted)),
+              Text.Span.new(agent, style: Styles.role(:agent))
+            ],
+            else: []
+          ),
+          Text.Span.new(" · ", style: Styles.role(:muted)),
+          Text.Span.new("model ", style: Styles.role(:muted)),
+          Text.Span.new(String.slice(eff_model || "?", 0, 24), style: Styles.role(:model))
+        ]
+        |> List.flatten()
+      )
 
     %Textarea{
       state: state.textarea,
       placeholder:
         "Message the agent… (enter=newline, alt-enter=send, ctrl-t opens last tool, click to toggle)",
       line_number_style: nil,
+      # The cursor is a CELL STYLE, not a hardware cursor. The dep
+      # struct default is an EMPTY %Style{} — which the bridge always
+      # encodes, overwriting tui-textarea's own REVERSED default, so the
+      # cursor painted nothing (found live: "you cannot see where you
+      # are typing"). Set it explicitly. `cursor_line_style` stays empty
+      # on purpose: a reversed current char is enough, a full-line
+      # highlight is noisy in a multi-line composer.
+      cursor_style: %Style{modifiers: [:reversed]},
+      cursor_line_style: %Style{},
       block:
-        TranscriptView.agent_block(footer, %Style{
-          fg: :cyan,
-          modifiers: [:bold],
-          bg: :dark_gray
-        })
+        TranscriptView.agent_block(
+          footer,
+          # accent border + focused background: the composer is the one
+          # always-active control
+          Styles.chrome(:accent)
+        )
     }
   end
 
@@ -2438,79 +2564,70 @@ defmodule CodingAgent.UI.Tui do
     pct = trunc(last_in * 100 / max(window, 1))
 
     # pre-compaction notice territory: the Compactor's warn threshold
-    pct_style =
-      if last_in >= warn_at, do: %Style{fg: :yellow}, else: %Style{fg: :dark_gray}
+    pct_role = if last_in >= warn_at, do: :warning, else: :value
 
-    lines = [
-      Text.Line.new([Text.Span.new("session", style: %Style{fg: :dark_gray})]),
-      Text.Line.new([
-        Text.Span.new(String.slice(state.session_id, 0, 22), style: %Style{fg: :white})
-      ]),
-      Text.Line.new([Text.Span.new("", style: %Style{})]),
-      # the agent is attributed per message (box footers) and shown on
-      # the input footer, so the panel no longer needs running/next
-      # slots (user redesign). Only the effort hint survives here.
-      Text.Line.new([
-        Text.Span.new(
-          "effort: #{effort || "default"}",
-          style: %Style{fg: :dark_gray}
-        )
-      ]),
-      Text.Line.new([Text.Span.new("", style: %Style{})]),
-      Text.Line.new([Text.Span.new("context", style: %Style{fg: :dark_gray})]),
-      Text.Line.new([
-        Text.Span.new(
-          "#{fmt_k(Map.get(usage, :input_tokens, 0))} tok in",
-          style: %Style{fg: :white}
-        )
-      ]),
-      Text.Line.new([
-        Text.Span.new(
-          "#{fmt_k(Map.get(usage, :output_tokens, 0))} tok out",
-          style: %Style{fg: :white}
-        )
-      ]),
-      Text.Line.new([
-        Text.Span.new(
-          "#{fmt_k(last_in)} ctx (#{pct}% win)",
-          style: pct_style
-        )
-      ]),
-      Text.Line.new([
-        Text.Span.new("compacts at #{fmt_k(trigger)} tok", style: pct_style)
+    # Identity is a BADGE here too (B4): the panel answers "which agent
+    # will handle what I type, and which is running" — the question the
+    # old "agent"-titled status panel could not. While a turn is IN
+    # FLIGHT, running and next are BOTH shown so they can differ (Tab
+    # only changes the next turn's agent); when idle only the next agent
+    # is shown, because `running_agent` keeps the last turn's value.
+    running = Map.get(state, :running_agent)
+    next_agent = Map.get(state, :next_agent)
+    busy? = state.status in [:running, :interrupting]
+
+    identity_badges =
+      cond do
+        not busy? ->
+          [Styles.badge(:agent, next_agent)]
+
+        is_binary(running) and running != next_agent ->
+          [
+            Styles.badge(:agent, "#{running} running"),
+            Styles.badge(:agent, "#{next_agent} next")
+          ]
+
+        is_binary(running) ->
+          [Styles.badge(:agent, "#{running} running")]
+
+        true ->
+          [Styles.badge(:agent, next_agent)]
+      end
+
+    identity_lines = identity_badges ++ [Styles.gap()]
+
+    definition_lines =
+      Styles.definition_list([
+        {"session", String.slice(state.session_id, 0, 22)},
+        {"effort", effort || "default"},
+        {"tokens in", fmt_k(Map.get(usage, :input_tokens, 0))},
+        {"tokens out", fmt_k(Map.get(usage, :output_tokens, 0))},
+        {"context", "#{fmt_k(last_in)} (#{pct}% win)", pct_role},
+        {"compacts at", "#{fmt_k(trigger)} tok", pct_role}
       ])
-    ]
 
     cost_line =
       case usage[:cost] do
         c when is_number(c) and c > 0 ->
-          Text.Line.new([Text.Span.new("$#{Float.round(c, 4)}", style: %Style{fg: :white})])
+          Styles.definition_list([{"cost", "$#{Float.round(c, 4)}"}])
 
         _ ->
-          nil
+          []
       end
 
-    lines =
-      if(cost_line, do: lines ++ [cost_line], else: lines) ++
-        [
-          Text.Line.new([Text.Span.new("", style: %Style{})]),
-          Text.Line.new([
-            Text.Span.new("ctrl-t toggles tools", style: %Style{fg: :dark_gray})
-          ]),
-          Text.Line.new([
-            Text.Span.new("ctrl-x p hides panel", style: %Style{fg: :dark_gray})
-          ])
-        ]
+    help = [
+      Styles.gap(),
+      Styles.section_header("ctrl-t toggles tools"),
+      Styles.section_header("ctrl-x p hides panel")
+    ]
+
+    lines = identity_lines ++ definition_lines ++ cost_line ++ help
 
     %Paragraph{
       text: lines,
       style: %Style{},
-      block: %Block{
-        title: " agent ",
-        borders: [:right],
-        border_type: :rounded,
-        border_style: %Style{fg: :dark_gray}
-      }
+      # truthful title (B4): this panel is session status, not "agent"
+      block: Styles.panel(title: " status ", borders: [:right])
     }
   end
 
@@ -2646,8 +2763,8 @@ defmodule CodingAgent.UI.Tui do
 
   defp status_widget_note(_state, note) do
     # menu prompt replaces the scroll diagnostics while visible
-    line = Text.Line.new([Text.Span.new(note, style: %Style{fg: :yellow})])
-    %Paragraph{text: [line], style: %Style{bg: :dark_gray}, block: nil}
+    line = Text.Line.new([Text.Span.new(note, style: Styles.role(:warning))])
+    %Paragraph{text: [line], style: Styles.chrome_bg(), block: nil}
   end
 
   defp status_widget_plain(state) do
@@ -2668,85 +2785,124 @@ defmodule CodingAgent.UI.Tui do
         "h: #{ph} w: #{w})"
 
     down? = Map.get(state, :provider_down?, false)
-
-    {glyph, color, label} =
-      case state.status do
-        :running -> {"●", :light_green, "running…"}
-        :interrupting -> {"◐", :yellow, "stopping…"}
-        :idle -> {"○", :gray, "idle"}
-        :interrupted -> {"⏸", :yellow, "approval needed (y/n/e)"}
-        :error -> {"✖", :red, if(down?, do: "provider unavailable", else: "error")}
-        _ -> {"?", :gray, "unknown"}
-      end
+    badge = Styles.status_badge(state.status, down?)
 
     status_text =
       cond do
-        Map.get(state, :quit_confirm?, false) -> label <> "  — esc again to quit"
-        Map.get(state, :stop_confirm?, false) -> label <> "  — esc again to stop"
-        true -> label
+        Map.get(state, :quit_confirm?, false) -> badge.label <> "  — esc again to quit"
+        Map.get(state, :stop_confirm?, false) -> badge.label <> "  — esc again to stop"
+        true -> badge.label
       end
 
     line =
       Text.Line.new([
-        Text.Span.new("#{state.session_id}  ", style: %Style{fg: :gray}),
-        Text.Span.new(glyph, style: %Style{fg: color, modifiers: [:bold]}),
-        Text.Span.new(" #{status_text}  ", style: %Style{fg: color}),
-        Text.Span.new(diag, style: %Style{fg: :dark_gray})
+        Text.Span.new("#{state.session_id}  ", style: Styles.role(:muted)),
+        # merge, not replace: a future role with its own modifier (e.g.
+        # italic) keeps it while the glyph gains bold
+        Text.Span.new(
+          badge.glyph,
+          style: %{badge.style | modifiers: Enum.uniq([:bold | badge.style.modifiers])}
+        ),
+        Text.Span.new(" #{status_text}  ", style: badge.style),
+        Text.Span.new(diag, style: Styles.role(:muted))
       ])
 
-    %Paragraph{text: [line], style: %Style{bg: :dark_gray}, block: nil}
+    %Paragraph{text: [line], style: Styles.chrome_bg(), block: nil}
   end
 
-  # Approval dialog: one bordered box per pending call, args pretty-printed.
-  # Session picker (mount-time): list the cwd's previous sessions,
-  # newest first; enter resumes, n starts fresh, q quits. The
-  # selected row is highlighted; each row shows the id, age, status.
+  # Session manager (ADR 020, slice 1): list either this directory's
+  # sessions (default) or the whole store (`a`), narrowed by a filter
+  # (`/`). Each row shows id, status, age and STORAGE FOOTPRINT (R13);
+  # the header shows the total. `d` deletes one, `D` deletes every
+  # visible row (the directory bulk delete), `r` renames.
   defp picker_widgets(state, area) do
+    visible = picker_visible(state)
+
     rows =
-      state.picker
+      visible
       |> Enum.with_index()
       |> Enum.map(fn {s, i} ->
         marker = if i == state.picker_index, do: "❯ ", else: "  "
 
         status = s.status |> to_string() |> String.pad_trailing(8)
+        size = format_bytes(Map.get(s, :size, 0)) |> String.pad_leading(7)
+
+        scope =
+          if Map.get(state, :picker_all?, false),
+            do: "  " <> short_scope(s.scope_root),
+            else: ""
 
         "#{marker}#{String.slice(s.id, 0, 22)}  #{status}  " <>
-          "#{format_age(s.saved_at)}"
+          "#{size}  #{format_age(s.saved_at)}#{scope}"
       end)
 
-    header =
-      case state.picker_op do
-        {:delete, id} ->
-          " Delete #{id}?  (y=confirm, any other key cancels)"
-
-        {:rename, _id, buf} ->
-          " Rename to: #{buf}  (enter=commit, esc=cancel)"
-
-        nil ->
-          " Pick a session:  (enter=resume, n=new, d=delete, r=rename, q=quit)"
-      end
+    header = picker_header(state, visible)
 
     body = ([header] ++ rows) |> Enum.join("\n")
 
-    h = min(length(state.picker) + 3, area.height - 4)
-    w = min(60, area.width - 4)
+    h = min(length(rows) + 4, area.height - 4)
+    w = min(78, area.width - 4)
     x = div(max(area.width - w, 0), 2)
     y = div(max(area.height - h, 0), 2)
     rect = %Rect{x: x, y: y, width: w, height: h}
 
+    title = if Map.get(state, :picker_all?, false), do: " all sessions ", else: " sessions "
+
     widget = %Paragraph{
       text: body,
-      style: %Style{fg: :white, bg: :dark_gray},
-      block: %Block{
-        title: " sessions ",
-        borders: [:all],
-        border_type: :rounded,
-        border_style: %Style{fg: :cyan, bg: :dark_gray}
-      }
+      style: Styles.chrome(),
+      block: Styles.panel(title: title, border_style: Styles.chrome(:accent))
     }
 
     [{%Clear{}, rect}, {widget, rect}]
   end
+
+  # The picker header: a prompt when one is armed, otherwise the summary
+  # line (count, total footprint, active filter, key hints).
+  defp picker_header(state, visible) do
+    case state.picker_op do
+      {:delete, id} ->
+        " Delete #{id}?  (y=confirm, any other key cancels)"
+
+      {:delete_many, ids} ->
+        where = if Map.get(state, :picker_all?, false), do: "visible", else: "in this directory"
+        " Delete #{length(ids)} session(s) #{where}?  (y=confirm, any other key cancels)"
+
+      {:rename, _id, buf} ->
+        " Rename to: #{buf}  (enter=commit, esc=cancel)"
+
+      {:filter, buf} ->
+        " Filter: #{buf}▌  (enter=apply, esc=clear)"
+
+      nil ->
+        total = visible |> Enum.map(&Map.get(&1, :size, 0)) |> Enum.sum()
+        scope = if Map.get(state, :picker_all?, false), do: "all", else: "this dir"
+
+        filter =
+          case String.trim(Map.get(state, :picker_filter, "")) do
+            "" -> ""
+            f -> "  filter: #{f}"
+          end
+
+        " #{length(visible)} session(s), #{format_bytes(total)}  [#{scope}]#{filter}\n" <>
+          "  (enter=resume, n=new, a=all/dir, /=filter, d=delete, D=delete all, r=rename, q=quit)"
+    end
+  end
+
+  # A short directory label for the all-store view: the last two path
+  # segments, so a row stays scannable.
+  defp short_scope(nil), do: ""
+
+  defp short_scope(root) do
+    root
+    |> Path.split()
+    |> Enum.take(-2)
+    |> Path.join()
+  end
+
+  defp format_bytes(n) when n < 1024, do: "#{n} B"
+  defp format_bytes(n) when n < 1024 * 1024, do: "#{Float.round(n / 1024, 0) |> trunc()} KB"
+  defp format_bytes(n), do: "#{Float.round(n / 1024 / 1024, 1)} MB"
 
   defp format_age(%DateTime{} = dt) do
     mins = div(DateTime.diff(DateTime.utc_now(), dt), 60)
@@ -2801,15 +2957,18 @@ defmodule CodingAgent.UI.Tui do
         |> Enum.concat(List.duplicate(" ", max(h - 2 - length(String.split(text, "\n")), 0)))
         |> Enum.join("\n")
 
+      # The gate is a distinct, blocking surface: a double border in the
+      # warning role (one meaning per color role). The panel builder owns
+      # the border type now — no reaching around it.
       widget = %Paragraph{
         text: body,
-        style: %Style{fg: :white, bg: :dark_gray},
-        block: %Block{
-          title: " APPROVAL #{i + 1}/#{length(pending)} ",
-          borders: [:all],
-          border_type: :double,
-          border_style: %Style{fg: :yellow, bg: :dark_gray}
-        }
+        style: Styles.chrome(),
+        block:
+          Styles.panel(
+            title: " APPROVAL #{i + 1}/#{length(pending)} ",
+            border_style: Styles.chrome(:warning),
+            border_type: :double
+          )
       }
 
       # cap at the reading measure and center: a wide terminal must

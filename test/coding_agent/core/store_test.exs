@@ -238,6 +238,8 @@ defmodule CodingAgent.Core.Session.StoreTest do
       assert newest.model == "ollama:test-model"
       assert newest.status == :idle
       assert %DateTime{} = newest.saved_at
+      # storage footprint (ADR 020 R13): a real byte count per session
+      assert is_integer(newest.size) and newest.size > 0
     end
 
     test "empty dir yields empty list" do
@@ -273,9 +275,12 @@ defmodule CodingAgent.Core.Session.StoreTest do
 
       in_a = Store.list_in(root_a)
       assert Enum.map(in_a, & &1.id) == [a.id]
-      # same shape as list/0 (no scope_root leaks into the summary)
-      assert %{id: _, saved_at: %DateTime{}, model: "m-a", status: :idle} = hd(in_a)
-      refute Map.has_key?(hd(in_a), :scope_root)
+
+      # same shape as list/0: the summary now also carries scope_root
+      # (the picker groups/filters by project — ADR 020) and size (R13)
+      assert %{id: _, saved_at: %DateTime{}, model: "m-a", status: :idle, size: size} = hd(in_a)
+      assert is_integer(size) and size > 0
+      assert Path.expand(hd(in_a).scope_root) == Path.expand(root_a)
 
       assert Enum.map(Store.list_in(root_b), & &1.id) == [b.id]
       assert Store.list_in(Path.join(System.tmp_dir!(), "nope-#{System.unique_integer()}")) == []

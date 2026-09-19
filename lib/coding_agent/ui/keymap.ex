@@ -5,18 +5,19 @@ defmodule CodingAgent.UI.Keymap do
   Input keymap as DATA (ADR 011): action => [event patterns], defaults
   in code, overridable from ~/.config/coding-agent/ui.toml.
 
-  A binding pattern matches an `ExTermbox.Event` of type :key with the
-  given key and modifier state. Patterns are maps with :key plus
-  optional :mod — the event's key atom (e.g. :enter, :ctrl_a) and a
-  modifier marker (:alt | :none) produced by the ESC-prefix decoder
-  (CodingAgent.UI.AltDecode).
+  A binding pattern matches a key event with the given key atom and
+  modifier state. Patterns are maps with :key plus optional :mod — the
+  event's key atom (e.g. :enter, :ctrl_a) and the modifier marker
+  (`:none | :alt | :ctrl | :shift`) produced by
+  `CodingAgent.UI.Bridge` from the terminal's own modifier list
+  (crossterm reports modifiers; no ESC-prefix decoding is needed).
   """
 
-  @typedoc "One concrete key event as produced by the decoder layer."
-  @type event :: %{key: atom(), mod: :none | :alt}
+  @typedoc "One concrete key event as produced by the bridge layer."
+  @type event :: %{key: atom(), mod: :none | :alt | :ctrl | :shift}
 
   @typedoc "A match pattern; a missing :mod means :none."
-  @type pattern :: %{key: atom(), mod: :none | :alt | :any}
+  @type pattern :: %{key: atom(), mod: :none | :alt | :ctrl | :shift | :any}
 
   @typedoc "The actions the UI recognizes."
   @type action ::
@@ -52,7 +53,12 @@ defmodule CodingAgent.UI.Keymap do
   def defaults do
     %{
       send_input: [key(:enter, :alt), key(:enter, :ctrl)],
-      insert_newline: [key(:enter), key(:ctrl_j)],
+      # shift+enter is the common "newline" reflex from other tools; it
+      # is explicit here so a terminal that REPORTS shift (kitty/meta
+      # protocol) gets newline, matching composition-first (ADR 011).
+      # Legacy terminals send the same bytes as alt+enter (ESC CR), so
+      # there shift+enter IS send — the wire cannot tell them apart.
+      insert_newline: [key(:enter), key(:enter, :shift), key(:ctrl_j)],
       cursor_home: [key(:ctrl_a), key(:home)],
       cursor_end: [key(:ctrl_e), key(:end)],
       cursor_left: [key(:ctrl_b), key(:arrow_left)],
@@ -68,7 +74,7 @@ defmodule CodingAgent.UI.Keymap do
       scroll_down: [key(:page_down)],
       # tool-output toggle: ctrl-t ('t' must stay free for text input;
       # found live — the owner types t in messages). The bridge emits
-      # termbox names for ctrl chords: :ctrl_t, mod :none.
+      # synthesized ctrl_ names for ctrl chords: :ctrl_t, mod :none.
       toggle_tool_output: [key(:ctrl_t)],
       # switch the primary agent for the NEXT turn (ADR 018): Tab. A turn
       # in flight keeps its agent; Tab only changes what the next input
@@ -184,12 +190,16 @@ defmodule CodingAgent.UI.Keymap do
 
   defp to_pattern("alt-" <> k), do: %{key: String.to_existing_atom(k), mod: :alt}
 
+  # shift is a real event modifier now (kitty/meta protocol reports it);
+  # only special keys keep it — a shifted letter arrives as its uppercase
+  # char, not as a modifier.
+  defp to_pattern("shift-" <> k), do: %{key: String.to_existing_atom(k), mod: :shift}
+
   # Termbox names ctrl-chords distinctly (ctrl_a, ctrl_j, ...), so a
-  # "ctrl-x" spec becomes the termbox key name with mod :none — the
-  # modifier is IN the key name. The one special case is ctrl-enter:
-  # termbox reports 0x0D as plain :enter, and a :ctrl modifier can
-  # never actually arrive on legacy terminals — kept as the
-  # kitty-protocol future hook (ADR 011).
+  # "ctrl-x" spec becomes the synthesized ctrl_ key name with mod :none —
+  # the modifier is IN the key name. The one special case is ctrl-enter:
+  # crossterm reports 0x0D with a ctrl modifier, kept as the
+  # kitty-protocol hook (ADR 011).
   defp to_pattern("ctrl-enter"), do: %{key: :enter, mod: :ctrl}
 
   # synthetic ctrl_/alt_ atoms match the defaults() convention

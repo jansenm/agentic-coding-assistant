@@ -41,6 +41,18 @@ interruption, decision applied). ``mix agent --sessions`` lists them,
 previous context, verified live (a codeword given in one process was
 answered from the resumed one).
 
+.. note::
+   ADR 020 (proposed) replaces the blob with **per-session SQLite**
+   inside a **selectable store**, and splits the persistence into the
+   agent view and the immutable display view. Reasons: (1) the display
+   view is reconstructed from the compaction-mutable agent view today,
+   so reasoning is lost on resume and compaction erases visible history
+   — a violation of the dual-view pattern below; (2) cross-session
+   search, aggregation and export are wanted and the blob can answer
+   none of them; (3) the real pain in opencode was the missing verbs
+   (R0), which this project addresses first-class. The ``Store`` API is
+   unchanged by that ADR, so the two coexist.
+
 Design points worth knowing:
 
 - **Fail-closed loading**: corrupt bytes, wrong format version or a
@@ -81,29 +93,50 @@ Design commitments for the session store, written down after seeing
 what we did *not* want (opencode's storage measured on a dev machine:
 a 113 MB SQLite DB, sessions keyed to the directory they were opened
 in, project deletion leaving orphaned rows, cleanup = schema
-archaeology). Revisit any of these only with a new ADR:
+archaeology). Revisit any of these only with a new ADR.
+
+.. note::
+   These principles were written against opencode's concrete failure
+   modes, not against databases as such. ADR 020 revisits the *format*
+   (per-session SQLite within a selectable store) and, crucially,
+   promotes the missing concern to the lead requirement: **R0 — session
+   management is a first-class product surface.** The opencode objection
+   was an API objection (a hidden directory as a password; SQL as the
+   only lens), not an engine objection. The principles below are
+   unchanged in intent; principle 2's "no opaque database blob" is
+   refined to "one session = one portable unit = one ``rm``", and the
+   size guard in principle 4 is now concrete.
+
+0. **The verbs are the product (R0).** A store without the operations
+   to list, filter, search, size, delete (by id, age, size or
+   directory), export and import is unusable regardless of its engine.
+   The UI surface ships with — or before — the engine change.
 
 1. **Portability over project-binding.** A session belongs to itself;
    the repo scope root is *data inside the session*, not the storage
    key. Moving/renaming a directory orphans nothing; resuming from
-   elsewhere is possible (with the scope as recorded).
+   elsewhere is possible (with the scope as recorded). A *store* is a
+   directory the user selects (ADR 020, R16).
 
-2. **One session = one file = one ``rm``.** No opaque database blob.
-   Cleanup is a file operation, discoverable via ``--sessions``
-   (which must print the file paths), never schema archaeology.
+2. **One session = one portable unit = one ``rm``.** No single
+   aggregated blob that hides sessions. Cleanup stays a file operation,
+   discoverable via ``--sessions``, never schema archaeology. A
+   per-session database satisfies this; one database for all sessions
+   does not.
 
 3. **Lifecycle commands are first-class verbs.** Listing is not
-   enough: deleting, pruning (age/size) and exporting belong in the
-   CLI surface — ``--sessions`` will grow a delete/prune action
-   before 4b lands, so cleanup never depends on undocumented files.
+   enough: deleting, pruning (age/size), deleting by directory and
+   exporting belong in the UI and CLI surface, so cleanup never depends
+   on undocumented files.
 
-4. **Size honesty.** The per-file format keeps ``du`` a truthful
-   answer to "how much session data do I have"; aggregate stores hide
-   growth until the number is embarrassing.
+4. **Size honesty.** Listing shows each session's footprint and ``du``
+   is a truthful answer to "how much session data do I have"; aggregate
+   stores hide growth until the number is embarrassing.
 
 5. **Retention is a decision, not an accident.** Any cap/TTL policy
-   gets an ADR and a CLI verb; silent accumulation is the failure
-   mode this list exists to prevent.
+   gets an ADR and a CLI verb; silent accumulation is the failure mode
+   this list exists to prevent. A loud, configurable size *warning* is
+   preferred over silent deletion.
 
 Compaction (short-term tier)
 ----------------------------
@@ -161,11 +194,13 @@ Design notes:
   over next; losing it to summary would blind it mid-task.
 - **Failure degrades, never errors**: if the summary call fails, the
   full (oversized) context is kept and the turn proceeds.
-- **v1 rewrites the agent view only**: the CLI transcript is
-  ephemeral today. When the dual-view transcript lands (phase 5), the
-  display view is the immutable record compaction must never touch —
-  the principles above and the mermaid diagram in this page already
-  fix that boundary.
+- **v1 rewrites the agent view only**: compaction mutates the agent
+  view and nothing else. The display view is the immutable record
+  compaction must never touch — the principles above and the mermaid
+  diagram in this page fix that boundary. Today the display view is not
+  yet persisted separately (it is reconstructed from the agent view, so
+  reasoning is lost on resume and compaction erases visible history);
+  ADR 020 makes the two views structural.
 - Verified live: a 238k-char tool result triggered compaction on the
   next call, and the model still answered a question about the
   compacted-away content correctly from the summary.

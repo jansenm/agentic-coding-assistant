@@ -22,9 +22,17 @@ defmodule CodingAgent.UI.BridgeTest do
       assert Bridge.translate(key("enter", ["alt"]), @bound) == {:key, %{key: :enter, mod: :alt}}
     end
 
-    test "ctrl chords get termbox names" do
+    test "ctrl chords get synthesized ctrl_ names" do
       assert Bridge.translate(key("a", ["ctrl"]), @bound) == {:key, %{key: :ctrl_a, mod: :none}}
       assert Bridge.translate(key("j", ["ctrl"]), @bound) == {:key, %{key: :ctrl_j, mod: :none}}
+    end
+
+    test "shift is kept for specials (it is not folded into the code there)" do
+      assert Bridge.translate(key("enter", ["shift"]), @bound) ==
+               {:key, %{key: :enter, mod: :shift}}
+
+      assert Bridge.translate(key("up", ["shift"]), @bound) ==
+               {:key, %{key: :arrow_up, mod: :shift}}
     end
 
     test "ctrl-enter keeps mod :ctrl (kitty hook)" do

@@ -292,9 +292,10 @@ defmodule CodingAgent.UI.TuiVisualTest do
     fire(pid, :__resize_poll__)
 
     rows = buffer(pid)
-    # sidebar starts on the first content row; its border column still
-    # drawn at the input row (full-height span — it used to stop above)
-    assert rows |> Enum.at(1) |> String.contains?("agent")
+    # sidebar starts on the first content row with its truthful title
+    # (it was "agent", but the panel is session status — B4); its border
+    # column is still drawn at the input row (full-height span)
+    assert rows |> Enum.at(1) |> String.contains?("status")
     assert rows |> Enum.at(26) |> String.contains?("│")
 
     # floor: empty input = 4 rows; typing 5 lines grows the box
@@ -317,7 +318,7 @@ defmodule CodingAgent.UI.TuiVisualTest do
 
     # visible by default; the panel claims @sidebar_width columns
     assert sync(pid).sidebar_visible?
-    assert buffer(pid) |> Enum.at(1) |> String.contains?("agent")
+    assert buffer(pid) |> Enum.at(1) |> String.contains?("status")
 
     # the wider panel fits a full model id (the 24-col cut it mid-name:
     # "ollama_cloud:glm-5.3-f|"; 36 leaves room for the whole string)
@@ -332,7 +333,7 @@ defmodule CodingAgent.UI.TuiVisualTest do
     refute sync(pid).sidebar_visible?
 
     rows = buffer(pid)
-    refute rows |> Enum.at(1) |> String.contains?("agent")
+    refute rows |> Enum.at(1) |> String.contains?("status")
     # the transcript now begins at column 0 — a reasoning line sits at
     # the left edge with no 36-col gutter before it
     agent(pid, {:reasoning_deltas, "flush left"})
@@ -342,13 +343,13 @@ defmodule CodingAgent.UI.TuiVisualTest do
     key(pid, "x", ["ctrl"])
     key(pid, "p")
     assert sync(pid).sidebar_visible?
-    assert buffer(pid) |> Enum.at(1) |> String.contains?("agent")
+    assert buffer(pid) |> Enum.at(1) |> String.contains?("status")
   end
 
   test "sidebar: false seeds the panel off at mount (test seam)" do
     pid = start_tui({100, 30}, sidebar: false)
     refute sync(pid).sidebar_visible?
-    refute buffer(pid) |> Enum.at(1) |> String.contains?("agent")
+    refute buffer(pid) |> Enum.at(1) |> String.contains?("status")
   end
 
   test "approval dialog: cleared background, above status, capped width" do

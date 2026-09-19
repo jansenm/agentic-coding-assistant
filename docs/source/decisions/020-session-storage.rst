@@ -1,0 +1,384 @@
+:orphan:
+
+Session storage: selectable stores, per-session SQLite, two explicit views
+===========================================================================
+
+.. adr::
+   :id: 020
+   :status: Proposed
+   :date: 2026-09-19
+   :tags: persistence, sessions, storage, memory, sqlite, tooling
+
+.. note::
+   Proposed 2026-09-19. Supersedes the *format* commitment of slice 4a
+   (``term_to_binary`` blob, ``Store``) without changing the domain
+   contract: ``Store.save/1``/``load/1`` keep returning a
+   ``%Core.Session.State{}``, so the storage change is encapsulated.
+   The requirement that leads this ADR is **R0 — session management
+   is a first-class product surface**, not the storage engine. The
+   engine is chosen *after* the surface. Revisit the "Session storage
+   principles" in ``explanation/memory.rst`` together with this ADR.
+
+Context
+-------
+
+Slice 4a chose the simplest thing that could work: one file per
+session, one ``:erlang.term_to_binary({1, %State{}})`` blob, atomic
+tmp+rename, fail-closed load (``explanation/memory.rst``). That choice
+was correct for its moment, and its stated failure mode was opencode's
+aggregated store.
+
+Two things have since become true, and one of them reframes the whole
+question.
+
+**1. The persistence model contradicts the dual-view design.** Memory
+is three tiers (``memory.rst``); the middle tier must carry **two
+views**: the *agent view* (what the LLM sees, compacted) and the
+*display view* (what the user sees, the immutable record compaction must
+never touch). The store persists only the agent view
+(``state.context``); the TUI reconstructs the display from it
+(``Tui.restored_history/1``). That is wrong in two observable ways:
+
+- **Reasoning is lost on resume.** ``:reasoning_delta`` is broadcast to
+  the UI and discarded (``session.ex:1351``); nothing appends it to the
+  context. Live you see the thinking; after ``--resume`` it is gone.
+  The comment in ``Tui.persist_reasoning/1`` ("the full fidelity lives
+  in the core session") is false.
+- **Compaction erases visible history.** Compaction rewrites
+  ``state.context`` to a summary plus the recent tail, so a resumed
+  session shows a *lossy* transcript — exactly what dual-view forbids.
+
+**2. The opencode objection is an API objection, not an engine
+objection.** The experience that makes a database distasteful is: (a)
+the session's directory is a secret password you must know to reach a
+session, and (b) you must learn SQL to understand the blob. Neither has
+anything to do with SQLite. It is a **product gap**: the store was built
+without the verbs that make it legible. Every one of the operations a
+user actually wants —
+
+- list all sessions,
+- list them with their storage footprint,
+- delete one,
+- delete all sessions belonging to a directory ``x/y/z``,
+- search everything,
+
+— was unavailable or required schema knowledge.
+
+The lesson for this project: **the engine is an implementation detail
+below the verbs. The verbs are the product.** A central, queryable
+store is therefore not the enemy; it is the enabler — *provided* the
+surface ships with it.
+
+Measured on the dev machine (2026-09-19): 19 sessions / 582 KB total;
+one live session 550 KB, of which ``state.context`` is 548 KB / 203
+messages, dominated by tool output. ``Store.load`` ~1 ms, ``Store.list``
+~13 ms — because ``list/0`` decodes every full state to read four
+summary fields, so its cost scales with *total bytes*, not session
+count.
+
+Requirements
+------------
+
+Collected 2026-09-19, ordered by priority.
+
+``R0`` — the leading requirement
+   **Session management is a first-class product surface** (CLI *and*
+   TUI): list, filter, search, show storage footprint, delete by
+   id / age / size / **directory**, export, import — without SQL
+   knowledge and without having to know the storage directory.
+
+Hard
+~~~~
+
+``R1``
+   Persist the **agent view** losslessly (exact ReqLLM round-trip).
+``R2``
+   Persist the **display view** separately and immutably; compaction
+   never touches it. Include reasoning and tool metadata.
+``R3``
+   Persist gate state across an interruption (pending calls/results).
+``R4``
+   Never persist runtime-only fields (worker refs, queue, test seam).
+``R5``
+   Fail-closed load: corrupt / foreign / wrong version → error, never a
+   half state.
+``R6``
+   Atomic durability: a crash must not destroy the last boundary.
+``R7``
+   A persistence failure must never kill a live session.
+``R8``
+   Schema evolution must not crash old or new readers.
+``R9``
+   Listing cost scales with the **number** of sessions, not their total
+   bytes.
+``R10``
+   Lifecycle verbs are first-class: list, delete, prune by **age**, prune
+   by **size**, delete by **directory**, export, import.
+``R11``
+   Path safety: a session id cannot traverse the filesystem.
+``R12``
+   Portability: a session is not bound to a directory; the scope root is
+   *data inside* the session.
+``R13``
+   Size honesty: listing shows each session's footprint, and the store's
+   total is a truthful answer to "how much session data do I have".
+``R14``
+   No daemon, no external service.
+``R15``
+   Deterministic, tested round-trip of the ReqLLM structs.
+``R16``
+   **Several selectable stores.** The user can keep more than one store
+   — e.g. one per client/project — and point the tool at one of them.
+   No automatic resolution *across* stores is required: the store is
+   chosen explicitly.
+
+Soft
+~~~~
+
+``S1``
+   Cross-session full-text search **within the active store** ("in which
+   sessions did I touch X").
+``S2``
+   Cross-session aggregation/reporting within a store (tokens per
+   session, failures over time).
+``S3``
+   Export/import a single session as a portable artifact.
+``S4``
+   Human-readable / greppable / git-diffable session data.
+``S5``
+   ``--resume`` in two processes on one session is **not** required
+   (single writer per session).
+``S6``
+   An automatic retention cap is wanted only if sessions can plausibly
+   exhaust disk/quota; otherwise explicit pruning is enough.
+``S7``
+   A native dependency is acceptable **if** it wins on requirements.
+
+Decision
+--------
+
+**R0 first: ship the verbs.** The storage decision below exists to
+serve the surface, and the first slice is UI, not engine:
+
+**Slice 1 (the actual first cut) — the picker becomes a session
+manager.** Today the TUI picker lists id/status/age and deletes one
+session. It gains:
+
+- **storage footprint per session** (``R13``);
+- a **search/filter field** over the active store (id, model, scope;
+  content-level search rides the FTS table, ``S1``);
+- **delete by directory**: group/filter by ``scope_root`` and delete a
+  whole project's sessions after confirmation (``R10``).
+
+This is largely achievable on today's blob (size via ``File.stat``,
+filter in memory, directory from the loaded field) and delivers the
+opencode complaint's fix before any format change. It also forces the
+UI to stop assuming "sessions are everywhere and opaque".
+
+**Then the engine: a *store* is a directory of *per-session SQLite
+databases*, with the agent view and the display view as separate
+tables.**
+
+```
+<store>/<id>.session          # a SQLite database
+```
+
+This is deliberately *not* opencode's single aggregated database. It
+keeps the property that mattered — **one session = one portable unit =
+one ``rm``** — while gaining SQL, indexes and transactions, and it makes
+stores a first-class, selectable grouping.
+
+Schema (indicative, not final):
+
+.. code-block:: sql
+
+   -- format and lifecycle
+   meta(key TEXT PRIMARY KEY, value)   -- schema_version, id, model, status,
+                                       -- scope_root, usage, policy, agent,
+                                       -- mounts, turn_agents, saved_at
+   -- agent view: what the model sees; compaction mutates THIS table
+   messages(seq INTEGER PRIMARY KEY, role, name, tool_call_id,
+            content, tool_calls, reasoning_details)
+   -- display view: what the user sees; APPEND-ONLY, never compacted
+   display(seq INTEGER PRIMARY KEY, kind, text, agent, meta)
+                                       -- kind: user|assistant|reasoning|
+                                       -- tool|info
+   -- gate state across an interruption
+   pending(round_calls, round_results, tool_calls)
+   -- search within this session
+   display_fts (content='display')     -- FTS5 external content
+
+Compaction ``DELETE``s and re-``INSERT``s in ``messages`` only;
+``display`` grows by append and is the immutable record. Resume renders
+``display`` directly; the agent view is only for the next request. This
+is the dual-view pattern made structural.
+
+Store selection (R16)
+---------------------
+
+A store is a named directory. Selection is explicit, never guessed:
+
+- **Default store**: the existing XDG location
+  (``~/.local/state/coding_agent/sessions``).
+- **Named stores**: ``config.toml`` gains a ``[stores]`` table mapping a
+  name to a path; ``store = "work"`` selects the default.
+- **Per-invocation**: ``--store <name|path>`` and the ``AGENT_STORE``
+  environment variable override the default.
+
+No verb resolves one session across multiple stores (the user's explicit
+choice): you select a store, then list/search/prune within it. Switching
+stores is a selection, not a query.
+
+The *location* of a store is not special-cased. Pointing one at a path
+inside a repository is possible because a store is just a directory, but
+it is not part of this design and has no dedicated verb: tool output can
+contain secrets and runs to hundreds of KB, so auto-committing sessions
+would leak and bloat. A repo store would only make sense as a
+deliberate, gitignored choice, and that is exactly the kind of
+functionality this project does not build before it is needed.
+
+Why SQLite over the alternatives
+--------------------------------
+
+- **vs. binary blob + a ``display_history`` field** — fixes the reasoning
+  symptom (``R2``) but leaves ``R9``, ``S1``, ``S2``, ``S3`` unanswered
+  and keeps full-rewrite-per-boundary and shape-fragile healing.
+- **vs. JSON envelope (one file)** — answers ``R9`` partly and ``S4``
+  fully, but not ``S1``/``S2`` (no index; scan-and-decode), and a single
+  JSON document re-serialises in full at every boundary.
+- **vs. JSONL event log + snapshot** — best on ``S4`` and append-only
+  display, zero new dependency; but cross-session search is
+  ``rg``-outside-the-program and aggregation needs ad-hoc parsing, and
+  the agent view still needs whole-document rewrites. Runner-up if
+  ``S1``/``S2`` are dropped.
+- **vs. ``:mnesia`` / ``:dets``** — pure BEAM, but neither is a portable
+  single file with SQL/FTS; ``dets`` has a 2 GB limit and repair
+  archaeology, ``mnesia`` is node-oriented. Rejected.
+- **vs. one global database** — violates *one session = one file* and
+  *size honesty*, and is the opencode failure mode this project already
+  documented. Rejected. (A *store* is a directory of files, not one
+  file; the difference is exactly the unit you can ``rm`` and ``du``.)
+
+Trade-off accepted: SQLite files are **not** ``cat``/``git``-readable
+(``S4`` downgraded to a bonus). That is bought back by a JSON
+``--export`` verb, which serves the sharing/readability case better than
+the raw store would have.
+
+Reconciliation with the existing principles
+-------------------------------------------
+
+The five "Session storage principles" (``memory.rst``) were written
+against opencode's concrete failure modes, not against databases as
+such. Per-session SQLite *within a selectable store* satisfies them:
+
+1. **Portability over project-binding** — unchanged; ``scope_root`` is a
+   column, and a store is a directory you choose. A session is never
+   bound to the directory it was opened in.
+2. **One session = one file = one ``rm``** — unchanged in substance: one
+   SQLite file, still discoverable and deletable. "Plaintext" is dropped.
+3. **Lifecycle verbs first-class** — strengthened: this is now ``R0``,
+   with delete-by-directory and footprint in the first slice, and
+   prune-by-size/export/import following.
+4. **Size honesty** — *better*: each session's footprint is shown, and
+   the store's ``du`` is truthful; growth is not hidden in an aggregate.
+5. **Retention is a decision** — a default size guard is added (see
+   *Retention*), documented here as this principle requires.
+
+The ``memory.rst`` principles section should be amended to reference this
+ADR (principle 2 wording; principle 4 gains the size guard; ``R0`` is
+promoted to the lead commitment there).
+
+Retention
+---------
+
+``S6``: no automatic deletion unless growth threatens disk/quota.
+Decision:
+
+- **Prune is explicit**: ``--session-prune <days>`` exists; add
+  ``--session-prune-size <bytes>`` and delete-by-directory.
+- **One guard is automatic and loud**: a configurable per-session
+  warning threshold (default generous, e.g. several MB) emits a warning
+  when a session crosses it, so a runaway session is visible before it
+  fills a disk. No silent deletion.
+
+Migration
+---------
+
+Existing ``<id>.session`` binary files must keep working. The formats
+are trivially distinguishable by magic bytes (``term_to_binary`` begins
+``0x83``; SQLite begins ``SQLite format 3\0``):
+
+- ``Store.load/1`` detects the format. A binary file is read with the
+  existing path, handed to the state decoder, then **rewritten as SQLite
+  once** (a lazy, in-place migration).
+- A failed migration leaves the original file untouched and the session
+  unreadable rather than half-converted (``R5``).
+- A ``--session-migrate`` verb can convert a whole store explicitly;
+  the lazy path keeps individual resumes working meanwhile.
+
+Export/import
+-------------
+
+``S3``. Export writes a portable JSON document (``--session-export <id>``)
+with the display view, meta and the agent view as plain arrays; import
+validates the schema and writes a fresh session DB. **Redaction is part
+of export**: ``meta.provider_config`` may carry user-written connection
+info and must not ship secrets. This also retires the trust caveat: once
+the store is SQL values, the ``binary_to_term`` atom-exhaustion vector
+(``Store.safe_binary_to_term/1``) disappears.
+
+Cross-session search and aggregation
+------------------------------------
+
+``S1``/``S2``, within the active store. Each database carries an FTS5
+table over its display view. For a store-wide query the first
+implementation scans the store's session DBs (open, query, close) — no
+second artifact, cost scales with session count, acceptable for an
+explicit verb. A derived store-level index (``index.sqlite``, rebuilt by
+``--session-reindex``) is a **cache** that must never be the source of
+truth; this ADR defers it. The picker's own listing needs only ``meta``
+(``R9``), so it needs no index at all.
+
+Implementation boundaries
+-------------------------
+
+- The format change is **inside ``Core.Session.Store``** plus a new
+  encoder for the ReqLLM message list. ``State`` keeps its shape;
+  ``Store.save/1``/``load/1`` keep their contracts, so ``Session``,
+  ``State.restore/1`` (healing shrinks to a migration concern) and most
+  of the UI are untouched.
+- The session's ``persist/1`` call sites remain; only the write strategy
+  changes from full-blob rewrite to table upserts.
+- ``restored_history/1`` switches its source from ``state.context`` to
+  the persisted display view.
+- ``session.ex`` must append display events (user, assistant, reasoning,
+  tool, info) at the boundaries it already persists.
+- Store selection (``R16``) lands in ``Core.Config`` (one reader), the
+  CLI tasks and the TUI picker.
+- The TUI picker work (slice 1) is independent of the format change and
+  can ship first.
+
+Slice order
+-----------
+
+1. **TUI session manager** on the current store: footprint, search/filter,
+   delete-by-directory (``R0``, ``R10``, ``R13``, ``S1`` within memory).
+2. **Store selection** (``R16``): config ``[stores]``, ``--store``,
+   ``AGENT_STORE``; picker shows and switches the active store.
+3. **SQLite format + two views** (``R1``–``R9``, ``R2``), with lazy
+   migration of existing blobs.
+4. **CLI verbs**: ``--session-delete-dir``, ``--session-prune-size``,
+   ``--session-search``, ``--session-export``/``--import``.
+5. **Derived store index** only if store-wide search proves slow.
+
+Open questions
+--------------
+
+1. Store selection in the TUI: switch at runtime, or only at launch?
+2. Exact retention defaults: warning threshold value; whether a
+   size-prune verb is in the first slice.
+3. Does the display view need tool *arguments* (not only results) for a
+   faithful resume? Today the UI shows results; the request that
+   produced them lives in the agent view.
+4. ``--export`` format: the JSON document above, or a self-contained
+   ``.session`` (SQLite) file that is simply copied?
