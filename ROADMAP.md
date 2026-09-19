@@ -60,6 +60,41 @@ since shipped anyway, ADR 013 — dogfood showed doc work needed it.)
 | Terminal input           | Readline-style editing component on ratatui events | [006](docs/source/decisions/006-terminal-input.rst), [012](docs/source/decisions/012-tui-backend.rst) |
 | Multi-agent target model | Specialist/repository matrix                       | [007](docs/source/decisions/007-agent-matrix.rst)       |
 
+## Product thesis: confinement as the differentiator (recorded 2026-09-19)
+
+Bubblewrap should be treated as a **product core**, not just a safety
+mechanism — the thing that makes this harness distinct. Sandboxing itself
+is not unique (Codex CLI has Seatbelt/Landlock, OpenHands/Devin have
+containers), so the claim must be precise. What is rare is the
+**combination** we already half-have:
+
+- **per tool call**, not per session/container — no image build, no long
+  boot, the sandbox is a property of each invocation;
+- **declarative mount schema** (`rw` / `ro` / `hide`) rather than
+  imperative flags — the policy is data, most-restrictive-wins;
+- **fail-safe**: declarations only ever *narrow* access; where bwrap
+  cannot run the effective sandbox is `None` and the gate asks for
+  *every* shell/git call, exactly the pre-confinement behavior (ADR 015);
+- **approval gates visible in the UI** instead of silent isolation.
+
+The power is the **semantics above the namespace**: say declaratively
+"this tool class may do exactly this" and have the runtime enforce it.
+Two things would turn "nice" into a genuine differentiator:
+
+1. **Traceability** — for every call, show *which* confinement applied
+   (not merely that the tool ran). The mount profile is already data, so
+   surfacing the effective profile is a rendering problem, not new law.
+2. **User-extensible profiles/policy** — users author confinement the way
+   they author permissions, without needing to know bwrap flags.
+
+This reframes B7 (`/tmp` scratch, `code_review.md`): a sandbox model
+powerful enough to *live in* needs a notion of state across calls
+(persistent scratch, session scope). Today `/tmp` is per-call tmpfs by
+construction (`sandbox/bwrap.ex:210`), which makes the "run now, inspect
+next call" pattern impossible. See the B7 fix direction and the bwrap
+overlay note below; the multi-agent overlay work and this thesis are the
+same trajectory viewed from different ends.
+
 ## Phases
 
 1. **Core single-agent loop** ✅ — session process, streaming turns,
@@ -329,6 +364,26 @@ CLI *and* TUI before the format matters). A ticket should be able to
 `relate` to a session and to a review finding. **Prerequisite is the R0
 instinct from ADR 020**: ship the verbs, keep the engine simple. Do not
 build this until the Markdown backlog actually hurts.
+
+**SQLite is increasingly the right engine (owner note, 2026-09-19).** The
+more the pieces take shape, the clearer it is that the store needs a real
+database rather than per-session `term_to_binary` blobs:
+
+- the **double-decode cost** in `Store.list/0` (full context decoded just
+  to read id/model/mtime/scope) is exactly the "no indexes, no columns"
+  problem a DB makes disappear;
+- the **ticket/coordination store** wants relational shape (`relate` to a
+  session, to a finding, comment history) that blobs cannot express;
+- **B7 (persistent scratch)** wants per-session state with a lifecycle —
+  a row/table is the natural home, not a sidecar file;
+- and the **dual view** of ADR 020 (agent view vs immutable display view)
+  is two tables, not two blob shapes.
+
+Keep the ADR-020 discipline: **verbs first**, engine second, and decide
+the engine explicitly in ADR 020 (still *Proposed*) — the lean is SQLite,
+but the slice order (session management surface → engine) does not
+change. Do not rip out the blob store until the verbs have proven the
+shape.
 
 **Reviewer in the same TUI, on a bwrap snapshot** (idea recorded
 2026-09-19; future). Combine the bwrap-layer isolation above with the
