@@ -242,68 +242,10 @@ twice (`mount_picker` `tui.ex:141-195`, `mount_session` `tui.ex:287-381`).
 
 ## TODO — priorities
 
-Ordered by leverage. Items 1–2 are contained and remove real bugs; do those
-first.
+Open items only. Completed work is not kept here (git history and the
+ADRs are the record); this list is the live backlog. Ordered by
+leverage.
 
-- [x] **P1 — Streaming interactivity: defer the render, throttle the
-      stream.** Deltas no longer paint (they return `render?: false`); a
-      fixed-cadence `subscriptions/1` tick (`:stream_render`, 60ms) is the
-      only stream render source and retires itself while the stream is
-      quiet. Deleted `drain_deltas/2` (the mailbox `receive … after 0`
-      starved input on a steady trickle). Also removed the duplicate
-      per-frame `render_reasoning/1` in `entry_widgets/3` (display entries
-      are already normalized) and corrected the `render_reasoning` /
-      `harden_line_breaks` / `normalize_block` comments to separate
-      markdown line-structure from the buffer/window trailing-newline
-      invariant. Measured: 500 deltas used to cause up to 500 renders; now
-      **0** — each throttle tick causes exactly one. New mid-stream
-      interactivity test. (Report implemented and removed;
-      `test/coding_agent/ui/tui_stream_burst_test.exs` is the record.)
-- [x] **P1 — `Config.snapshot/1`.** New `CodingAgent.Core.Config`:
-      one typed read of merged config, permissions, mounts, providers,
-      agents; typed runtime-knob accessors with the single defaults
-      (removed from `config.exs`); `state_dir`/`store_dir`; the no-model
-      message. `Session.init` reads once and threads the snapshot;
-      `Compactor`, `Sandbox`, `Store`, `TUI`, mix task, `Application`
-      and `CodingAgent.model/0` all route through it. Deleted the dead
-      `UserConfig.model/1`; renamed `project_dir_for_test/1` to a real
-      `project_dir/1`; cached the per-file layers so the merge and the
-      mount schema share one read. New `config_test.exs`.
-- [x] **P1 — Fix the compactor `Request` divergence.** `effective_model/1`
-      moved to `Session.State` and `Compactor.summarize/2` now builds
-      with it and keeps `Request.build`'s base opts (base_url/api_key).
-      (Bug 4.1.)
-- [x] **P1 — Route `grep`/`glob` through `Exec` + `Sandbox`.** `rg`/`fd`
-      now run through the one executor under `Tools.profile/1` (scope +
-      mounts, no network/git-write) instead of a bare `System.cmd`.
-      Added `Mounts.empty/0`. (Bug 4.4.)
-- [x] **P2 — Core `Events` module.** `Core.Events` owns the event
-      vocabulary and `publish/2`; `Session`, `Compactor`, `ProviderHealth`
-      and `Session.subscribe/1` all use it. New `events_test.exs`.
-- [x] **P2 — Shared `ToolCall.normalize/1`.** `Core.ToolCall` is the one
-      normalizer; `Session.call_parts/1`, the CLI's and the TUI's
-      `call_info/1` are deleted. New `tool_call_test.exs`.
-- [x] **P2 — Move failure classification into core.**
-      `Core.Failure.classify/1` (+ `provider_reason/1`) is the one
-      classifier; `Tui.classify_failure/1` delegates and
-      `ProviderHealth` uses the provider path. Test moved to
-      `core/failure_test.exs`. (Section 1.3.)
-- [x] **P2 — `Session.resume/2` factory + canonical `resume_opts/1`.** CLI
-      and TUI stop reconstructing state. `State.restore/1` now owns
-      snapshot healing (moved out of `Store`); `Store.rename` calls
-      `Session.notify_renamed/2` instead of reaching the registry.
-      (Bugs 1.2, 4.2; Section 3.)
-- [x] **P3 — `Session.Gate` + `Session.ToolRunner` extraction.**
-      `Core.Session.Gate` owns the gate decision + call bucketing and
-      `Core.Session.ToolRunner` owns tool exposure and execution.
-      `Permissions.effective/4` is now the real production path (the
-      gate supplies a confinement-aware `:fallback`; `matching/3` is
-      gone). Also extracted `Core.Text` for the UTF-8 scrub. New
-      `session/gate_test.exs`. (Bugs 4.3; Section 5.)
-- [x] **P3 — Single `Containment.resolve` + `Mounts.empty/0`.** The
-      three private `check_scope` copies now call
-      `Containment.check_scope!`; all six empty-mount literals route
-      through `Mounts.empty/0`.
 - [ ] **P3 — `Session.Prompt` + `ProjectMemory`.** Move AGENTS.md I/O and
       prompt composition out of the loop.
 - [ ] **P3 — `Session.Usage` struct + defaults.** One home for
@@ -326,10 +268,6 @@ first.
       defined twice.)
 - [ ] **P4 — `TranscriptView.metrics/…`.** One home for pane geometry; render,
       clamp, hit-test and status all use it.
-- [x] **P4 — Remove `project_dir_for_test` from the production path.**
-      Done under P1: the function is gone, replaced by a real
-      `UserConfig.project_dir/1`; nothing named `*_for_test` remains in
-      `lib/`.
 - [ ] **P4 — Replace `test_mode?` branches with injected behaviours** where it
       has already let bugs slip.
 - [ ] **P4 (cosmetic, Track B step 6/E) — glyph passes.** The status
@@ -347,55 +285,16 @@ first.
 
 # TODO — dog-fooding blockers (urgent)
 
-Found by using the TUI on real work. None of these are architectural; all six
-make the tool annoying enough to avoid, which is worse than a bug. Ordered as
-they were reported, not by leverage. Root causes below were read from the tree
-as reviewed; where a mechanism is not yet pinned, that is said plainly instead
-of guessed.
-
-- [x] **B1 — No visible cursor in the input field.**
-      Fixed: `input_widget/1` now sets
-      `cursor_style: %Style{modifiers: [:reversed]}` explicitly (and
-      `cursor_line_style: %Style{}` deliberately — a reversed current char
-      is enough; a full-line highlight is noisy in a multi-line composer).
-      Root cause was as diagnosed: an empty struct default overwrote
-      tui-textarea's own REVERSED default through the always-encoded
-      bridge. The upstream API gap ("unset" vs "empty") remains noted for
-      a dependency fix; the app-side behavior is correct now. New
-      `tui_cursor_test.exs` asserts the widget `render/2` builds carries
-      the reversed modifier (the text buffer has no cell attributes).
-
-- [x] **B2 — Shift+Enter does something strange; typed text disappears.**
-      Done. `:shift` is a real event modifier through
-      `Bridge.translate/2` → `Keymap`; `shift+enter` is an
-      `insert_newline` (ADR 011, amended); the wire encodings are pinned
-      by `tui_shift_enter_test.exs`; the regression that briefly unbound
-      `shift+tab`/`shift+page_up`/`shift+page_down` is fixed by the
-      modifier fallback lattice in `Keymap.resolve/2`; and the underlying
-      "typed text disappears" bug is fixed by ADR 021 — `ctrl-j` inserts
-      a newline, `ctrl-u` kills the line, unowned keys are dropped. Dead
-      `UI.AltDecode` deleted.
+Found by using the TUI on real work. None of these are architectural; they
+make the tool annoying enough to avoid, which is worse than a bug. B1, B2
+and B4 are **done** (see git history / ADR 021); the three below are the
+live state. Root causes were read from the tree as reviewed; where a
+mechanism is not pinned, that is said plainly instead of guessed.
 
 - [~] **B3 — No mechanism to attach or select files in the message field.**
       Not started (Track C). The design in the finding stands: an `@`
       word-start trigger reusing the picker/menu surface, sourced from
       `Core.Tools` under `Tools.scope/1` + `Mounts`.
-
-- [x] **B4 — Hard to tell whether I am in build or plan mode.**
-      Addressed with the `UI.Styles` work. The sidebar is retitled
-      `" status "` (it holds session/effort/token data, not agent slots)
-      and now carries an agent BADGE; while a turn is in flight the
-      RUNNING and NEXT agents are both shown (they can differ — Tab only
-      changes the next turn's agent), and when idle only the next agent
-      shows (no stale running label). Identity is one `Styles.badge/2`
-      vocabulary across the input footer, the message-box footers and the
-      panel. New `styles_test.exs` and the identity tests in
-      `tui_agent_test.exs`.
-      Decision recorded (user, on B6): build/plan is NOT a filesystem mode
-      — read-only is not "plan" (build legitimately writes `.git/` etc.),
-      it is a SIGNAL to the agent ("please plan, no real code changes").
-      So no distinct mode chrome is added; identity stays a badge. The
-      remaining work is the plan *definition* (B6), not a mode.
 
 - [~] **B5 — The input field does not auto-wrap.** DEFERRED by owner
       decision (2026-09-19): accept for now, do not spend time on it —
@@ -451,12 +350,6 @@ of guessed.
       tools (`webfetch`) and subagents to be worth entering. Until (1) and (2)
       are answered, plan stays decorative.
 
-Cross-cutting note for the research pass: B1/B2 are both one missing piece of
-vocabulary (cell-attribute default; shift modifier) rather than logic bugs, and
-B4/B6 are the same question asked twice (agent identity vs. mode). Doing B1+B4
-as a pair with the `Styles` work covers two blockers for the price of one
-refactor; B5 is the only one that is genuinely new machinery.
-
 **Status (2026-09-19, after Track A/B).** B1, B2 and B4 are **done**; the
 `Styles` vocabulary, the one-authority input executor (ADR 021) and the
 status/activity spinner (Track B) shipped. B5 (input wrap) is **deferred
@@ -465,42 +358,14 @@ B6's direction is settled (plan is a signal to the agent, not a sandbox
 mode) and needs only the plan definition decided. The glyph passes (E)
 are the remaining cosmetic work.
 
-### New backlog from the 2026-09-19 UI review (commit `bbd7f2f`)
+### Open backlog from the 2026-09-19 UI review (commit `bbd7f2f`)
 
-The Track A review found real defects the green suite could not see. The
-mechanical ones (A footer position, E separator, F role aliases, G stale
-ADRs, H modifier merge, C phantom `badge_list`) are fixed in the same
-pass; the two structural ones are recorded here.
+The Track A review's mechanical defects (A footer position, E separator,
+F role aliases, G stale ADRs, H modifier merge, C phantom `badge_list`)
+and its two structural P2 items (one-authority input executor, modifier
+fallback lattice, action-coverage tripwire) are **done** — see ADR 021
+and commits `7a055ac`/`3e4c6c3`. What remains from that review:
 
-- [x] **P2 — One authority for input events (the real B2).** Done;
-      ADR 021 (Accepted). New `CodingAgent.UI.Editor` is the one
-      executor: intents mirror the keymap's editing action names, the
-      TUI maps an action to an edit by name, and the **raw terminal
-      event never reaches the textarea crate**. `dispatch_input_key/3`
-      drops an `:unbound`/unowned action instead of forwarding it.
-      Verified: `ctrl-j` now inserts a newline (was
-      `delete_line_by_head`, which wiped the line) and `ctrl-u` kills
-      the line (was `undo`). The intent→crate mapping is grounded in
-      probes against the vendored crate (see `Editor` moduledoc).
-      `editor_test.exs` + new `tui_5b_test.exs` cases pin the behavior.
-      Found while implementing: the approval letters `y`/`n`/`e` were
-      bound unconditionally, so `e` became untypable outside the dialog
-      once unowned keys stopped being forwarded — now bound only while
-      the dialog is up.
-- [x] **P2 — Modifier fallback lattice in `Keymap.resolve/2`.** Done:
-      `resolve/2` now tries the exact modifier, then the weak fallback
-      (`:shift` → `:none`), then `:any`, **specific-before-generic**, so
-      `shift+tab`/`shift+page_up`/`shift+page_down` work again while
-      `shift+enter` keeps its own binding. `keymap_test.exs` pins the
-      lattice, including that `:alt`/`:ctrl` do NOT fall back.
-- [x] **P2 — Action-coverage tripwire.** Done:
-      `input_action_coverage_test.exs` asserts every declared keymap
-      action has exactly one owner — handled by
-      `dispatch_input_key/3` (`Tui.handled_input_actions/0`) or owned by
-      the editor (`Editor.editing_action?/1`) — and that no action is
-      owned twice. (The earlier `delegated_input_actions/0` list was
-      removed when ADR 021 made the editor the single executor.) A new
-      action cannot silently fall through as text.
 - [ ] **P3 — `shift+tab` (crossterm `back_tab`) is unbound.** Pre-existing
       (not a Track A regression), same bug class: a shifted key that the
       terminal reports as a distinct code and the keymap never bound. The
