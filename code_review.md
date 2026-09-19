@@ -351,23 +351,16 @@ of guessed.
       `tui_cursor_test.exs` asserts the widget `render/2` builds carries
       the reversed modifier (the text buffer has no cell attributes).
 
-- [ ] **B2 — Shift+Enter does something strange; typed text disappears.**
-      PARTIAL. The regression it introduced (shift+tab/shift+page_up/
-      shift+page_down going `:unbound`) is **fixed** by the modifier
-      fallback lattice in `Keymap.resolve/2`. What holds: `:shift` is a
-      real event modifier through `Bridge.translate/2` → `Keymap`,
-      `shift+enter` is an `insert_newline` (ADR 011, amended), the wire
-      encodings are pinned by `tui_shift_enter_test.exs`, dead
-      `UI.AltDecode` is deleted. What is still open is the underlying B2
-      symptom — "typed text disappears" — which is the two-authorities
-      bug:
-      - **ctrl-j** is declared `:insert_newline` but falls through to the
-        crate, which runs `delete_line_by_head` (typed line wiped).
-      - **ctrl-u** is declared `:kill_line` but the crate runs `undo`.
-      Of the 19 actions `Keymap` declares, `dispatch_input_key/3` handles
-      10; the rest are performed by the crate. The fix is "classify then
-      drop" (never forward the raw event) — designed in ADR 021, not yet
-      built. See the P2 item below.
+- [x] **B2 — Shift+Enter does something strange; typed text disappears.**
+      Done. `:shift` is a real event modifier through
+      `Bridge.translate/2` → `Keymap`; `shift+enter` is an
+      `insert_newline` (ADR 011, amended); the wire encodings are pinned
+      by `tui_shift_enter_test.exs`; the regression that briefly unbound
+      `shift+tab`/`shift+page_up`/`shift+page_down` is fixed by the
+      modifier fallback lattice in `Keymap.resolve/2`; and the underlying
+      "typed text disappears" bug is fixed by ADR 021 — `ctrl-j` inserts
+      a newline, `ctrl-u` kills the line, unowned keys are dropped. Dead
+      `UI.AltDecode` deleted.
 
 - [~] **B3 — No mechanism to attach or select files in the message field.**
       Not started (Track C). The design in the finding stands: an `@`
@@ -462,20 +455,21 @@ mechanical ones (A footer position, E separator, F role aliases, G stale
 ADRs, H modifier merge, C phantom `badge_list`) are fixed in the same
 pass; the two structural ones are recorded here.
 
-- [ ] **P2 — One authority for input events (the real B2).** Designed in
-      ADR 021 (Proposed): `Bridge` classifies each event as exactly
-      `{:text, s}` or `{:command, intent}`, the raw event is **dropped,
-      never forwarded**, and one executor owns the intent→textarea
-      mapping. Still to build; the two safety nets below shipped.
-      (Original finding: the input pipeline has two authorities — our
-      `Keymap` and the textarea crate's Emacs bindings.
-      `forward_to_textarea/2` passes the **raw** event, so whatever the
-      keymap does not intercept is performed by the crate with different
-      semantics. Verified live: `ctrl-j` (declared `:insert_newline`)
-      runs `delete_line_by_head` — it wipes the typed line; `ctrl-u`
-      (declared `:kill_line`) runs `undo`. Of the 19 actions `Keymap`
-      declares, `dispatch_input_key/3` handles 10; the other 9 are
-      decorative.)
+- [x] **P2 — One authority for input events (the real B2).** Done;
+      ADR 021 (Accepted). New `CodingAgent.UI.Editor` is the one
+      executor: intents mirror the keymap's editing action names, the
+      TUI maps an action to an edit by name, and the **raw terminal
+      event never reaches the textarea crate**. `dispatch_input_key/3`
+      drops an `:unbound`/unowned action instead of forwarding it.
+      Verified: `ctrl-j` now inserts a newline (was
+      `delete_line_by_head`, which wiped the line) and `ctrl-u` kills
+      the line (was `undo`). The intent→crate mapping is grounded in
+      probes against the vendored crate (see `Editor` moduledoc).
+      `editor_test.exs` + new `tui_5b_test.exs` cases pin the behavior.
+      Found while implementing: the approval letters `y`/`n`/`e` were
+      bound unconditionally, so `e` became untypable outside the dialog
+      once unowned keys stopped being forwarded — now bound only while
+      the dialog is up.
 - [x] **P2 — Modifier fallback lattice in `Keymap.resolve/2`.** Done:
       `resolve/2` now tries the exact modifier, then the weak fallback
       (`:shift` → `:none`), then `:any`, **specific-before-generic**, so

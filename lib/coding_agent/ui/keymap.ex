@@ -19,10 +19,19 @@ defmodule CodingAgent.UI.Keymap do
   @typedoc "A match pattern; a missing :mod means :none."
   @type pattern :: %{key: atom(), mod: :none | :alt | :ctrl | :shift | :any}
 
-  @typedoc "The actions the UI recognizes."
+  @typedoc """
+  The actions the UI recognizes.
+
+  The editing actions (`:insert_newline`, `:backspace`, `:delete`,
+  `:cursor_*`, `:kill_*`) are performed by `CodingAgent.UI.Editor` — the
+  one executor (ADR 021). They are keymap actions so a user can rebind
+  them and so the action-coverage tripwire forces each to an owner.
+  """
   @type action ::
           :send_input
           | :insert_newline
+          | :backspace
+          | :delete
           | :cursor_home
           | :cursor_end
           | :cursor_left
@@ -59,6 +68,11 @@ defmodule CodingAgent.UI.Keymap do
       # Legacy terminals send the same bytes as alt+enter (ESC CR), so
       # there shift+enter IS send — the wire cannot tell them apart.
       insert_newline: [key(:enter), key(:enter, :shift), key(:ctrl_j)],
+      # editing actions, performed by UI.Editor (ADR 021). Named (not
+      # left unbound) so each has exactly one owner and the coverage
+      # tripwire sees them.
+      backspace: [key(:backspace)],
+      delete: [key(:delete)],
       cursor_home: [key(:ctrl_a), key(:home)],
       cursor_end: [key(:ctrl_e), key(:end)],
       cursor_left: [key(:ctrl_b), key(:arrow_left)],

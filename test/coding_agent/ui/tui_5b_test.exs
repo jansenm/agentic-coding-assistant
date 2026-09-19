@@ -63,6 +63,53 @@ defmodule CodingAgent.UI.Tui5bTest do
 
       assert input_value(pid) == "line one\nline two\nline three"
     end
+
+    # Regression (ADR 021, one authority): the raw event used to be
+    # forwarded to the crate, whose own Emacs bindings disagreed with the
+    # keymap. ctrl-j (declared :insert_newline) ran delete_line_by_head
+    # and wiped the typed line; ctrl-u (declared :kill_line) ran undo.
+    # The editor now performs the ACTION, so the keymap's claim holds.
+    test "ctrl-j inserts a newline, it does NOT delete the line (ADR 021)" do
+      pid = start_app()
+      type(pid, "h")
+      type(pid, "i")
+      type(pid, "j", ["ctrl"])
+      type(pid, "!")
+      # a newline (the keymap's :insert_newline), not a wiped buffer
+      assert input_value(pid) == "hi\n!"
+    end
+
+    test "ctrl-u kills the whole line (ADR 021)" do
+      pid = start_app()
+      for c <- String.graphemes("hello"), do: type(pid, c)
+      type(pid, "u", ["ctrl"])
+      assert input_value(pid) == ""
+    end
+
+    test "ctrl-k kills from the cursor to the line end (ADR 021)" do
+      pid = start_app()
+      for c <- String.graphemes("hello"), do: type(pid, c)
+      # move the cursor home, then kill to end
+      type(pid, "a", ["ctrl"])
+      type(pid, "k", ["ctrl"])
+      assert input_value(pid) == ""
+    end
+
+    test "ctrl-w deletes the word before the cursor (ADR 021)" do
+      pid = start_app()
+      for c <- String.graphemes("hello world"), do: type(pid, c)
+      type(pid, "w", ["ctrl"])
+      assert input_value(pid) == "hello "
+    end
+
+    test "an unbound ctrl chord is dropped, not forwarded raw (ADR 021)" do
+      pid = start_app()
+      type(pid, "a")
+      type(pid, "z", ["ctrl"])
+      # the crate would have executed its own ctrl-z binding; the
+      # boundary drops an unowned key instead
+      assert input_value(pid) == "a"
+    end
   end
 
   describe "approval dialog (5b)" do

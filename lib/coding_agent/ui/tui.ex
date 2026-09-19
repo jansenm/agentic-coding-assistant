@@ -23,7 +23,7 @@ defmodule CodingAgent.UI.Tui do
   alias CodingAgent.Core.Session.Compactor
   alias CodingAgent.Core.Session.Supervisor
   alias CodingAgent.Core.Session.Store
-  alias CodingAgent.UI.{Bridge, Keymap, Menu, Styles, TranscriptView}
+  alias CodingAgent.UI.{Bridge, Editor, Keymap, Menu, Styles, TranscriptView}
   alias ExRatatui.Event
   alias ExRatatui.Layout
   alias ExRatatui.Layout.Rect
@@ -735,8 +735,8 @@ defmodule CodingAgent.UI.Tui do
   end
 
   def handle_event(%Event.Paste{content: text}, state) do
-    state = put_in_textarea(state, text)
-    {:noreply, state}
+    # bracketed paste is text, not a key: route through the same executor
+    {:noreply, edit(state, {:text, text})}
   end
 
   def handle_event(_event, state), do: {:noreply, state}
@@ -960,21 +960,31 @@ defmodule CodingAgent.UI.Tui do
   end
 
   defp handle_normal_key(ev, state) do
-    # two-tier bridge (ADR 011 + the UTF-8 lesson): only special keys
-    # and letters the keymap binds become keymap events; everything
-    # else is text, forwarded raw to the textarea
-    bound = Bridge.bound_letters(state.keymap) ++ Bridge.bound_letters(decision_keymap())
+    # Two-tier bridge (ADR 011 + the UTF-8 lesson): only special keys and
+    # letters the keymap binds become keymap events; everything else is
+    # TEXT. The decision letters (y/n/e) are control candidates ONLY
+    # while the approval dialog is up — outside it they are ordinary
+    # typing, so they must not be bound (binding them always made "e"
+    # untypable once ADR 021 stopped forwarding unowned keys as text).
+    deciding? = state.pending != [] and not Map.get(state, :deciding?, false)
+
+    bound =
+      if deciding? do
+        Bridge.bound_letters(state.keymap) ++ Bridge.bound_letters(decision_keymap())
+      else
+        Bridge.bound_letters(state.keymap)
+      end
 
     case Bridge.translate(ev, bound) do
       {:text, code} ->
         # text input disarms the esc confirms (only esc drives them)
         state = %{state | quit_confirm?: false, stop_confirm?: false}
-        {:noreply, put_in_textarea(state, code)}
+        {:noreply, edit(state, {:text, code})}
 
       {:key, km_event} ->
         # while the decide task is in flight the dialog is hidden and its
-        # keys must not fire again
-        if state.pending != [] and not Map.get(state, :deciding?, false) do
+        # keys must not fire again (deciding? is false then)
+        if deciding? do
           handle_decision_key(km_event, state)
         else
           handle_input_key(km_event, ev, state)
@@ -1331,33 +1341,11 @@ defmodule CodingAgent.UI.Tui do
     dispatch_input_key(km_event, ev, state)
   end
 
-  # Actions the TUI deliberately does NOT implement itself: the textarea
-  # crate performs them when the raw event is forwarded. Naming them here
-  # (a) reserves the wildcard below for `:unbound` only, so a NEW action
-  # cannot silently fall through as text, and (b) is the data the coverage
-  # test partitions against `Keymap.defaults()`.
-  #
-  # NOTE (review D, tracked): "delegated" is a euphemism today — the
-  # crate's bindings do not match the keymap's claims for several of
-  # these (ctrl-j is declared insert_newline but the crate deletes the
-  # line; ctrl-u is declared kill_line but the crate undoes). The fix is
-  # the one-authority redesign (own ADR); this list makes the current
-  # delegation explicit instead of accidental.
-  @delegated_input_actions [
-    :cursor_home,
-    :cursor_end,
-    :cursor_up,
-    :cursor_down,
-    :cursor_left,
-    :cursor_right,
-    :kill_to_end,
-    :kill_word,
-    :kill_line
-  ]
-
+  # Actions the TUI drives itself (the complement is the editing actions,
+  # owned by UI.Editor). The coverage tripwire asserts the two sets
+  # partition every declared keymap action, so a new action cannot fall
+  # through unowned.
   @doc false
-  # The actions `dispatch_input_key/3` handles with an explicit clause.
-  # Kept beside the case below and asserted by the coverage test.
   def handled_input_actions do
     [
       :toggle_tool_output,
@@ -1365,7 +1353,6 @@ defmodule CodingAgent.UI.Tui do
       :scroll_up,
       :scroll_down,
       :send_input,
-      :insert_newline,
       :history_prev,
       :history_next,
       :interrupt,
@@ -1373,10 +1360,7 @@ defmodule CodingAgent.UI.Tui do
     ]
   end
 
-  @doc false
-  def delegated_input_actions, do: @delegated_input_actions
-
-  defp dispatch_input_key(km_event, ev, state) do
+  defp dispatch_input_key(km_event, _ev, state) do
     case Keymap.resolve(state.keymap, km_event) do
       :toggle_tool_output ->
         state = toggle_last_tool(state)
@@ -1402,30 +1386,22 @@ defmodule CodingAgent.UI.Tui do
       :send_input ->
         {:noreply, send_input(state)}
 
-      :insert_newline ->
-        forward_to_textarea(state, ev)
-
       :history_prev ->
         {:noreply, history_step(state, +1)}
 
       :history_next ->
         {:noreply, history_step(state, -1)}
 
-      # delegated to the textarea crate (see @delegated_input_actions):
-      # forwarding the RAW event is how the crate receives the key
-      action when action in @delegated_input_actions ->
-        forward_to_textarea(state, ev)
-
+      # esc while a turn is in flight (running OR already stopping):
+      # DOUBLE press to stop. A lone esc must never stop — esc is
+      # pressed out of habit in text fields (vim muscle memory: "I
+      # sometimes press esc out of habit"). First esc arms and shows a
+      # hint; a second esc within @stop_confirm_window actually stops
+      # (idempotent, and it must NEVER arm the quit confirm — the old
+      # cascade was found live: esc #1 set :interrupting, esc #2 fell
+      # through and ARMED quit, esc #3 killed the app). Esc-to-quit is
+      # only reachable while idle; to quit a busy app use ctrl-c.
       :interrupt ->
-        # esc while a turn is in flight (running OR already stopping):
-        # DOUBLE press to stop. A lone esc must never stop — esc is
-        # pressed out of habit in text fields (vim muscle memory: "I
-        # sometimes press esc out of habit"). First esc arms and shows a
-        # hint; a second esc within @stop_confirm_window actually stops
-        # (idempotent, and it must NEVER arm the quit confirm — the old
-        # cascade was found live: esc #1 set :interrupting, esc #2 fell
-        # through and ARMED quit, esc #3 killed the app). Esc-to-quit is
-        # only reachable while idle; to quit a busy app use ctrl-c.
         if state.status in [:running, :interrupting] do
           esc_stop(state)
         else
@@ -1435,10 +1411,21 @@ defmodule CodingAgent.UI.Tui do
       :abort ->
         {:stop, state}
 
-      _ ->
-        # any other key disarms the esc confirms (only esc drives them)
-        state = %{state | quit_confirm?: false, stop_confirm?: false}
-        forward_to_textarea(state, ev)
+      action ->
+        cond do
+          # The one executor (ADR 021): editing actions are performed by
+          # UI.Editor from the action NAME — the raw event never reaches
+          # the crate, so the keymap and the crate cannot disagree.
+          Editor.editing_action?(action) ->
+            {:noreply, edit(state, action)}
+
+          # :unbound or an action with no owner: drop it. This is the
+          # boundary that used to forward the raw event to the crate —
+          # the second authority ADR 021 removes. Any key also disarms
+          # the esc confirm (only esc drives them).
+          true ->
+            {:noreply, %{state | quit_confirm?: false, stop_confirm?: false}}
+        end
     end
   end
 
@@ -1557,12 +1544,14 @@ defmodule CodingAgent.UI.Tui do
     %{state | deciding?: true, pending_edit: nil, status: :running}
   end
 
-  defp forward_to_textarea(state, ev) do
-    state = put_in_textarea(state, ev)
-    # typing can grow the input box (opencode-style) — the transcript
-    # pane height changes with it, so re-derive pane dims like the
-    # resize handler does (measure/render agreement)
-    {:noreply, rederive_pane(state)}
+  # Apply ONE edit through the single executor (ADR 021). The raw
+  # terminal event never reaches the crate; the intent is an action name
+  # or a text string. Then re-derive the pane: an edit can grow the input
+  # box (opencode-style), which changes the transcript pane height
+  # (measure/render agreement, as the resize handler does).
+  defp edit(state, intent) do
+    :ok = Editor.apply(state.textarea, intent)
+    rederive_pane(state)
   end
 
   defp rederive_pane(state) do
@@ -1583,20 +1572,6 @@ defmodule CodingAgent.UI.Tui do
       _ ->
         state
     end
-  end
-
-  # The textarea state is a mutable NIF resource: textarea_handle_key
-  # returns :ok and mutates in place, so we keep the same reference.
-  defp put_in_textarea(state, %Event.Key{} = ev) do
-    _ = ExRatatui.textarea_handle_key(state.textarea, ev.code, ev.modifiers || [])
-    state
-  end
-
-  defp put_in_textarea(state, text) when is_binary(text) do
-    # raw text (UTF-8) or bracketed paste: insert at the cursor
-    # (native API, in-place)
-    _ = ExRatatui.textarea_insert_str(state.textarea, text)
-    state
   end
 
   # 5c: history navigation through the textarea value setter.

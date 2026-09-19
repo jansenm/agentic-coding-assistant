@@ -5,19 +5,19 @@ Input events: one authority (classify then drop)
 
 .. adr::
    :id: 021
-   :status: Proposed
+   :status: Accepted
    :date: 2026-09-19
    :tags: ui, input, keymap, textarea, bugfix
 
 .. note::
-   Proposed 2026-09-19. Responds to a review finding (the 2026-09-19 UI
-   review, finding D; commit ``bbd7f2f``) that the input pipeline has
-   **two authorities** — our ``Keymap`` and the textarea crate's own
-   Emacs bindings — and that the raw event is forwarded to the crate, so
+   Accepted 2026-09-19, implemented in the same change as the design
+   (option 1). Responds to a review finding (the 2026-09-19 UI review,
+   finding D; commit ``bbd7f2f``) that the input pipeline has **two
+   authorities** — our ``Keymap`` and the textarea crate's own Emacs
+   bindings — and that the raw event is forwarded to the crate, so
    whatever the keymap does not intercept is executed with different
-   semantics. This ADR is the design for removing that class of bug;
-   the small safety nets around it (modifier fallback, action coverage)
-   shipped with the review fixes.
+   semantics. The small safety nets around it (modifier fallback,
+   action coverage) shipped first with the review fixes.
 
 Context
 -------
@@ -147,6 +147,34 @@ Consequences
   intent's crate behavior; the review's table is the starting point.
 - ``Bridge`` grows a vocabulary, so it is no longer a pure translation
   table — it becomes the *classification* boundary. That is the point.
+
+Implementation note (2026-09-19)
+--------------------------------
+
+Option 1 shipped, with a slightly different shape than the sketch above:
+
+- The executor is ``CodingAgent.UI.Editor``. Its intent vocabulary
+  deliberately **mirrors the keymap's editing action names**
+  (``:insert_newline``, ``:kill_line``, ``:cursor_*`` …), so the TUI's
+  mapping is identity and a new editing action cannot be forgotten here.
+- ``Bridge.translate/2`` still returns ``{:key, e} | {:text, s}`` rather
+  than a three-way ``{:text | :command | :ignored}``. The "ignored"
+  outcome is realized in ``dispatch_input_key/3``: an ``:unbound`` (or
+  otherwise unowned) action is **dropped**, not forwarded. Same class
+  removed, smaller diff.
+- ``Keymap`` gained explicit ``:backspace``/``:delete`` actions so every
+  editing key has a named owner. ``Editor.editing_action?/1`` and
+  ``Tui.handled_input_actions/0`` are the partition; the coverage
+  tripwire asserts they cover every declared action exactly once.
+- A subtlety found while implementing: the approval letters ``y``/``n``/
+  ``e`` were bound unconditionally, so once unowned keys stopped being
+  forwarded as text, ``e`` became untypable outside the dialog. Fixed by
+  binding the decision letters **only while the dialog is up** — text
+  and command classification is now context-dependent, which the
+  original sketch under-specified.
+- ``:kill_line`` is composed (``home`` + kill-to-end) because the crate
+  binds no single "delete the line" key (``ctrl-u`` is ``undo``). The
+  full measured intent→crate table lives in ``Editor``'s moduledoc.
 
 What is NOT decided here
 ------------------------
