@@ -136,11 +136,13 @@ defmodule CodingAgent.UI.TuiResumeTest do
         {Tui, [name: nil, test_mode: {80, 24}, resume_id: sid, scope_root: File.cwd!()]}
       )
 
+    canonical = CodingAgent.Core.Session.Usage.from_map(usage)
+
     st = sync(pid)
-    assert st.session_usage == usage
+    assert st.session_usage == canonical
 
     {:ok, live} = CodingAgent.Core.Session.state(sid)
-    assert live.usage == usage
+    assert live.usage == canonical
     # >80K chars (chars fallback would fire) but 50k tokens < the 180k
     # trigger: the decision must be :none
     trigger = CodingAgent.Core.Session.Compactor.trigger()

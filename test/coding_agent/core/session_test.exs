@@ -183,7 +183,9 @@ defmodule CodingAgent.Core.SessionTest do
       )
 
       {:ok, state} = Session.state(id)
-      assert state.usage == usage
+      # usage normalizes into the canonical struct (wire-compatible with
+      # the old map form; see Usage.from_map/1)
+      assert state.usage == CodingAgent.Core.Session.Usage.from_map(usage)
       assert state.compaction_warned == true
       assert state.compaction_backoff == 2
     end

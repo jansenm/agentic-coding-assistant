@@ -157,7 +157,7 @@ defmodule CodingAgent.UI.Tui do
     initial = %{
       session_id: nil,
       model: nil,
-      session_usage: %{input_tokens: 0, output_tokens: 0, cost: nil},
+      session_usage: CodingAgent.Core.Session.Usage.new(),
       last_pane_width: max(tw - @width_overhead, 10),
       last_pane_height: max(th - @layout_overhead, 1),
       status: :idle,
@@ -353,8 +353,7 @@ defmodule CodingAgent.UI.Tui do
           agent_model(session_scope(effective_id), session_agent(effective_id)),
         next_agent_model: agent_model(session_scope(effective_id), session_agent(effective_id)),
         session_usage:
-          (restored && Map.get(restored, :usage)) ||
-            %{input_tokens: 0, output_tokens: 0, cost: nil},
+          CodingAgent.Core.Session.Usage.from_map(restored && Map.get(restored, :usage)),
         last_pane_width: max(tw - @width_overhead, 10),
         last_pane_height: max(th - @layout_overhead, 1),
         status: status,
@@ -2728,7 +2727,7 @@ defmodule CodingAgent.UI.Tui do
   end
 
   defp sidebar_widget(state) do
-    usage = Map.get(state, :session_usage) || %{input_tokens: 0, output_tokens: 0, cost: nil}
+    usage = CodingAgent.Core.Session.Usage.from_map(Map.get(state, :session_usage))
     window = CodingAgent.Core.Config.context_window_tokens()
 
     # ONE reader of the compaction policy: the sidebar renders the same
@@ -2800,7 +2799,7 @@ defmodule CodingAgent.UI.Tui do
       ])
 
     cost_line =
-      case usage[:cost] do
+      case usage.cost do
         c when is_number(c) and c > 0 ->
           Styles.definition_list([{"cost", "$#{Float.round(c, 4)}"}])
 

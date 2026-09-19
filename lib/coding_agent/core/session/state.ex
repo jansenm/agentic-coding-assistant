@@ -43,8 +43,10 @@ defmodule CodingAgent.Core.Session.State do
     tool_rounds: 0,
     test_mode: false,
     # cumulative usage across the session (sidebar + token-based
-    # compaction trigger); cost only when the provider prices it
-    usage: %{input_tokens: 0, output_tokens: 0, cost: nil},
+    # compaction trigger); cost only when the provider prices it. The
+    # shape lives in Core.Session.Usage (P3: one home for the defaults
+    # and last_input_tokens semantics).
+    usage: CodingAgent.Core.Session.Usage.new(),
     # set once the 80%-of-trigger warning has been broadcast (once,
     # not every turn)
     compaction_warned: false,
@@ -109,7 +111,7 @@ defmodule CodingAgent.Core.Session.State do
           tool_rounds: non_neg_integer(),
           test_mode: boolean(),
           turn_agents: [String.t() | nil],
-          usage: map(),
+          usage: CodingAgent.Core.Session.Usage.t(),
           compaction_warned: boolean(),
           compaction_backoff: non_neg_integer(),
           worker_ref: reference() | nil,
@@ -180,7 +182,8 @@ defmodule CodingAgent.Core.Session.State do
       # old never-reset bug) resurrected as 25, so resuming and
       # approving a pending call died instantly at the gate
       tool_rounds: 0,
-      usage: Map.get(state, :usage) || %{input_tokens: 0, output_tokens: 0, cost: nil},
+      # usage heals a legacy map into the struct (wire-compatible)
+      usage: CodingAgent.Core.Session.Usage.from_map(Map.get(state, :usage)),
       compaction_warned: Map.get(state, :compaction_warned, false),
       compaction_backoff: Map.get(state, :compaction_backoff, 0),
       pending_round_calls: Map.get(state, :pending_round_calls, []),

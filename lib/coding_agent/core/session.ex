@@ -47,7 +47,18 @@ defmodule CodingAgent.Core.Session do
   alias CodingAgent.Core.Interrupt
   alias CodingAgent.Core.Permissions
   alias CodingAgent.Core.ToolCall
-  alias CodingAgent.Core.Session.{Compactor, Gate, Request, State, Store, ToolRunner}
+
+  alias CodingAgent.Core.Session.{
+    Compactor,
+    Gate,
+    Prompt,
+    Request,
+    State,
+    Store,
+    ToolRunner,
+    Usage
+  }
+
   alias ReqLLM.Context
 
   # GenServer call timeout. Gate decisions can take arbitrarily long
@@ -65,14 +76,6 @@ defmodule CodingAgent.Core.Session do
   # catch a runaway loop, and its cost is proportional to the work
   # actually requested.
   defp max_tool_rounds, do: CodingAgent.Core.Config.max_tool_rounds()
-
-  # providers whose requests need no api_key option
-
-  @framework_prompt """
-  You are a coding assistant embedded in a terminal tool. Be concise and
-  precise. When you intend to use a tool, emit the tool call; do not
-  narrate that you are about to call tools.
-  """
 
   # -- Client API -------------------------------------------------------------
 
@@ -281,7 +284,6 @@ defmodule CodingAgent.Core.Session do
         Config.model(snapshot) ||
         raise(Config.no_model_message())
 
-    system_prompt = Keyword.get(opts, :system_prompt, @framework_prompt)
     test_mode = Keyword.get(opts, :test_mode, false)
     policy = Keyword.get(opts, :policy) || snapshot.permissions
 
@@ -290,7 +292,7 @@ defmodule CodingAgent.Core.Session do
     # measure; without it decide/2 takes the chars fallback and compacts
     # a just-resumed session on its first command regardless of the real
     # token count (found live: every resumed session compacted at once).
-    usage = Keyword.get(opts, :usage) || %{input_tokens: 0, output_tokens: 0, cost: nil}
+    usage = Usage.from_map(Keyword.get(opts, :usage))
     compaction_warned = Keyword.get(opts, :compaction_warned, false)
     compaction_backoff = Keyword.get(opts, :compaction_backoff, 0)
     # test seam: replace the worker's blocking body. Lets a test hold a
@@ -308,28 +310,17 @@ defmodule CodingAgent.Core.Session do
     pending_round_calls = Keyword.get(opts, :pending_round_calls, [])
     pending_round_results = Keyword.get(opts, :pending_round_results, [])
 
-    # Project memory (4c): AGENTS.md at the scope root is read once at
-    # session start and appended to the system prompt — the long-term
-    # memory tier that writes knowledge down as files (memory.rst).
-    # Missing file is the normal case; unreadable/corrupt content
-    # degrades to a warning, never an error.
-    system_prompt = append_project_memory(system_prompt, scope_root)
-
-    # Agent definition (ADR 017). `:agent` names a definition; when given,
-    # its prompt is composed onto the (already memory-augmented) framework
-    # prompt and its permission layer is applied to the policy
-    # (restrictive only). Absent => the pre-agent behaviour, so tests and
-    # headless callers are unchanged.
-    #
+    # The system prompt is framework + project memory (4c, AGENTS.md) +
+    # the agent definition's prompt (ADR 017), composed by Session.Prompt.
     # base_policy/base_prompt are the values BEFORE the agent layer, kept
     # so a later set_agent/2 (Tab switch) recomputes from scratch:
     # apply_agent narrows, so stacking a second definition would compound
     # the first's restrictions.
     base_policy = policy
-    base_prompt = system_prompt
+    base_prompt = Prompt.base(Keyword.get(opts, :system_prompt), scope_root)
 
     {agent, policy, system_prompt} =
-      case resolve_agent(Keyword.get(opts, :agent), policy, system_prompt, snapshot.agents) do
+      case resolve_agent(Keyword.get(opts, :agent), policy, base_prompt, snapshot.agents) do
         {:ok, agent, policy, prompt} -> {agent, policy, prompt}
         {:error, reason} -> raise ArgumentError, format_agent_error(reason)
       end
@@ -415,7 +406,7 @@ defmodule CodingAgent.Core.Session do
             {:error, {:unknown_agent, name, Enum.map(definitions, & &1.name)}}
 
           agent ->
-            composed = compose_agent_prompt(system_prompt, agent)
+            composed = Prompt.compose_agent(system_prompt, agent.prompt)
             {:ok, agent, Permissions.apply_agent(policy, agent), composed}
         end
 
@@ -431,68 +422,6 @@ defmodule CodingAgent.Core.Session do
 
   defp format_agent_error({:bad_definitions, errors}) do
     "cannot load agent definitions:\n  " <> Enum.join(errors, "\n  ")
-  end
-
-  defp compose_agent_prompt(framework_prompt, agent) do
-    case String.trim(agent.prompt) do
-      "" -> framework_prompt
-      prompt -> framework_prompt <> "\n\n" <> prompt
-    end
-  end
-
-  # AGENTS.md at the scope root: project conventions for the agent
-  # (the pragmatic long-term memory: knowledge written down as files,
-  # pulled back by this loader instead of exotic memory systems).
-  @agents_file "AGENTS.md"
-  @agents_max_bytes 64 * 1024
-
-  defp append_project_memory(prompt, scope_root) do
-    file = scope_root && Path.join(scope_root, @agents_file)
-
-    cond do
-      not is_binary(file) ->
-        prompt
-
-      not File.regular?(file) ->
-        prompt
-
-      true ->
-        case File.read(file) do
-          {:ok, bytes} when byte_size(bytes) <= @agents_max_bytes ->
-            prompt <> "\n\n" <> project_memory_section(bytes)
-
-          {:ok, bytes} when byte_size(bytes) > @agents_max_bytes ->
-            Logger.warning("AGENTS.md larger than 64 KiB; truncated for the system prompt")
-
-            prompt <> "\n\n" <> project_memory_section(binary_part(bytes, 0, @agents_max_bytes))
-
-          {:error, reason} ->
-            Logger.warning("AGENTS.md unreadable: #{inspect(reason)}")
-            prompt
-        end
-    end
-  end
-
-  defp project_memory_section(text) do
-    """
-    # Project memory (AGENTS.md)
-
-    Conventions and context for THIS project, written by the team:
-
-    #{String.trim_trailing(text)}
-    """
-  end
-
-  defp replace_system_prompt(context, prompt) do
-    messages = ReqLLM.Context.to_list(context)
-
-    case messages do
-      [%ReqLLM.Message{role: :system} | rest] ->
-        ReqLLM.Context.new([ReqLLM.Context.system(prompt) | rest])
-
-      _ ->
-        ReqLLM.Context.new([ReqLLM.Context.system(prompt) | messages])
-    end
   end
 
   @impl true
@@ -537,7 +466,7 @@ defmodule CodingAgent.Core.Session do
     # system message is replaced in place (index 0) when present.
     case resolve_agent(name, state.base_policy, state.base_prompt, agents_of(state)) do
       {:ok, agent, policy, prompt} ->
-        context = replace_system_prompt(state.context, prompt)
+        context = Prompt.replace_in_context(state.context, prompt)
         new_state = %{state | agent: agent, policy: policy, context: context}
         persist(new_state)
         {:reply, {:ok, new_state}, new_state}
@@ -948,7 +877,7 @@ defmodule CodingAgent.Core.Session do
         state
 
       {:set, agent, policy, prompt} ->
-        context = replace_system_prompt(state.context, prompt)
+        context = Prompt.replace_in_context(state.context, prompt)
         %{state | agent: agent, policy: policy, context: context}
     end
   end
@@ -1404,40 +1333,17 @@ defmodule CodingAgent.Core.Session do
   Public for tests: the accounting is core behavior, and the tests
   are LLM-free so they exercise it directly.
   """
-  def add_usage(state, usage) when is_map(usage) do
-    prev = state.usage || %{input_tokens: 0, output_tokens: 0, cost: nil}
-
-    # a nil/zero input count (interrupted or error turn, provider usage
-    # event missing) must NOT clobber the honest count from the last
-    # complete turn — a zero here silently re-arms the chars-based
-    # compaction fallback on a fat context (found live: session
-    # resumed, compaction fired at 212K chars despite the sidebar
-    # showing 58.3k)
-    last_in =
-      case usage[:input_tokens] do
-        n when is_integer(n) and n > 0 -> n
-        _ -> Map.get(prev, :last_input_tokens, 0)
-      end
-
-    next = %{
-      input_tokens: Map.get(prev, :input_tokens, 0) + (usage[:input_tokens] || 0),
-      output_tokens: Map.get(prev, :output_tokens, 0) + (usage[:output_tokens] || 0),
-      # the LAST turn's input = the context size the provider actually
-      # saw — the honest token-based compaction measure (a chars-based
-      # estimate drifts; the provider's own count is ground truth)
-      last_input_tokens: last_in,
-      cost: sum_cost(prev[:cost], usage[:total_cost])
-    }
-
-    state = %{state | usage: next}
-    broadcast(state, {:usage_updated, next})
-    state
+  def add_usage(state, usage) do
+    next = Usage.add(state.usage, usage)
+    # nil usage leaves the totals untouched — do not broadcast a no-op
+    if next == state.usage do
+      state
+    else
+      state = %{state | usage: next}
+      broadcast(state, {:usage_updated, next})
+      state
+    end
   end
-
-  def add_usage(state, nil), do: state
-
-  defp sum_cost(nil, nil), do: nil
-  defp sum_cost(a, b), do: (a || 0.0) + (b || 0.0)
 
   defp complete_turn(state, text) do
     context =

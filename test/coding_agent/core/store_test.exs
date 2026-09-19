@@ -396,7 +396,8 @@ defmodule CodingAgent.Core.Session.StoreTest do
     Store.save(old_shaped)
     {:ok, loaded} = Store.load(old_shaped.id)
 
-    assert loaded.usage == %{input_tokens: 0, output_tokens: 0, cost: nil}
+    # usage heals the missing field into the canonical struct
+    assert loaded.usage == CodingAgent.Core.Session.Usage.new()
     assert loaded.status == :idle
     Store.delete(old_shaped.id)
   end
