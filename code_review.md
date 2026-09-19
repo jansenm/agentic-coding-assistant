@@ -383,30 +383,31 @@ of guessed.
       So no distinct mode chrome is added; identity stays a badge. The
       remaining work is the plan *definition* (B6), not a mode.
 
-- [ ] **B5 — The input field does not auto-wrap.** Not started (Track C).
-      Symptom: a long line runs off the right edge and you cannot see what you
-      typed (and the box does not grow, because it grows per *line*).
-      Root cause, corrected: there is **no `wrap` field to set.** The
-      `%Textarea{}` struct is `state, style, cursor_style, cursor_line_style,
-      placeholder, placeholder_style, line_number_style, block`
-      (`deps/ex_ratatui/lib/ex_ratatui/widgets/textarea.ex:85-93`) — an earlier
-      note in this review claimed a `wrap` field existed and was simply unset;
-      that was wrong, `wrap` exists only on `Paragraph`/`Markdown`/`CodeBlock`
-      (`bridge.ex:76`, `:400`, `:416`, and no textarea case). Upstream
-      `tui-textarea` renders per logical line with a viewport that scrolls
-      horizontally; soft wrap is not implemented in the crate we depend on.
-      `input_height/1` (`tui.ex:67-74`) measures `textarea_line_count/1`, i.e.
-      newline count, so wrapping would also have to feed the height math
-      (the measure/render agreement rule this file already lives by).
-      Fix direction: choose one, explicitly — (a) soft-wrap in our own render
-      layer: pre-wrap the value to the input width and map cursor
-      row/col ↔ wrapped display position (the honest fix, but it is a real
-      text-layout component and it must also drive `input_height/1`);
-      (b) patch/vendor the textarea widget upstream to wrap and report wrapped
-      height (contributes the fix where it belongs, slower to land);
-      (c) accept no wrap and give the input a horizontal scroll indicator so at
-      least "there is more text to the right" is visible. Do not do (c) alone —
-      the symptom is losing sight of your own text.
+- [~] **B5 — The input field does not auto-wrap.** DEFERRED by owner
+      decision (2026-09-19): accept for now, do not spend time on it —
+      there are real features to implement. Recorded with the measurement
+      so re-evaluation is cheap.
+
+      Symptom: a long line runs off the right edge (the box grows per
+      *line*, not per wrapped row). Root cause, corrected: there is **no
+      `wrap` field to set.** The `%Textarea{}` struct has no wrap field;
+      `wrap` exists only on `Paragraph`/`Markdown`/`CodeBlock`, not the
+      textarea. Measured against the vendored `ratatui-textarea` 0.9.2
+      (`ex_ratatui` 0.13.1): a 56-char value in a 20-col textarea renders
+      only the first ~20 cols, and with the cursor at the end it
+      **scrolls horizontally to the cursor** (shows the tail, not the
+      head) — so the cursor is not lost, but the line start and the
+      overall shape are. `input_height/1` measures
+      `textarea_line_count/1` (newline count), so wrapping would have to
+      feed the height math too (the measure/render agreement rule this
+      file lives by).
+
+      Options if revisited: (a) soft-wrap in our own render layer —
+      pre-wrap the value to the input width, map cursor row/col to the
+      wrapped position, drive `input_height/1` from wrapped rows (honest,
+      real text-layout component); (b) patch/vendor the textarea upstream
+      (Rust NIF, not landable in this repo); (c) a horizontal "more text
+      right" indicator (does not solve the review's symptom alone).
 
 - [~] **B6 — Plan mode is useless in its current configuration.**
       Direction settled (user decision), implementation pending. Build/plan
