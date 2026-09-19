@@ -1164,6 +1164,16 @@ defmodule CodingAgent.Core.Session do
 
   defp execute_tools(state, calls) do
     tools = ToolRunner.tools(state.policy, tool_scope(state))
+
+    # Announce each call BEFORE running it. Tools run synchronously here
+    # (no progress events mid-run), so without this the UI shows a static
+    # "running" for the whole call — it cannot say "running mix". The TUI
+    # turns this into a named, timed spinner.
+    Enum.each(calls, fn call ->
+      {_id, name, _args} = ToolCall.normalize(call)
+      broadcast(state, {:tool_started, name})
+    end)
+
     ToolRunner.execute(state.id, tools, calls)
   end
 

@@ -66,6 +66,14 @@ defmodule CodingAgent.UI.Menu do
         needs_popup: false
       },
       %{
+        # scroll diagnostics are developer output; off by default
+        action: :toggle_debug,
+        key: "d",
+        label: "toggle debug line",
+        menu: :main,
+        needs_popup: false
+      },
+      %{
         # model switch: the popup lists catalog + discovered models
         # (Core.Providers.Discovery). TUI-owned popup like switch_session
         # (needs a live fetch, so Menu's placeholder popup is unused).

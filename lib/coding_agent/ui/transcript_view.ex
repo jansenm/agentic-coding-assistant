@@ -221,11 +221,13 @@ defmodule CodingAgent.UI.TranscriptView do
   # The footer sits on the BOTTOM-RIGHT border: it reads as the message's
   # signature, not its heading. `title_style: nil` lets the footer line
   # carry its own per-span role styles (a Block title_style would
-  # override them).
-  def agent_block(footer, border_style) do
+  # override them). `extra_titles` (e.g. the status on the input box's
+  # top-right) are additional `%Block.Title{}` entries.
+  def agent_block(footer, border_style, extra_titles \\ []) do
     Styles.panel(
       borders: [:all],
       title: footer,
+      titles: extra_titles,
       title_style: nil,
       border: nil,
       border_style: border_style,

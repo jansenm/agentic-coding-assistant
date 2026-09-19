@@ -55,6 +55,11 @@ defmodule CodingAgent.UI.Tui do
   @stream_render_ms 60
   @stream_render_tick :__stream_render__
 
+  # The activity spinner: a calm ~8fps, driven by a subscription that is
+  # declared only while a turn is busy.
+  @spin_ms 120
+  @spin_tick :__spin__
+
   # rows the transcript pane loses to chrome: app margin top+bottom (2)
   # + spacing above/below it (2) + input area + status line. Kept in
   # one place so the manual dimension math (mount/poller/resize/clamp)
@@ -174,6 +179,19 @@ defmodule CodingAgent.UI.Tui do
       # true while a delta landed but its frame has not painted; drives
       # subscriptions/1 (the stream render throttle)
       stream_dirty?: false,
+      # Activity/spinner state: the last message from the session that
+      # shows progress (any delta, a tool start/finish). The spinner
+      # reports how long the app has been silent, so a stuck turn visibly
+      # diverges from a healthy one.
+      last_activity_at: nil,
+      spin: 0,
+      # the tool currently running (from {:tool_started, name}), nil when
+      # none — lets the status read "running mix".
+      active_tool: nil,
+      tool_started_at: nil,
+      # scroll diagnostics in the status line are developer output; off
+      # by default, toggled with ctrl-x d.
+      debug_visible?: false,
       textarea: ExRatatui.textarea_new(),
       history: [],
       history_index: nil,
@@ -354,6 +372,12 @@ defmodule CodingAgent.UI.Tui do
         # true while a delta has landed but its frame has not been painted;
         # drives subscriptions/1 (the stream render throttle)
         stream_dirty?: false,
+        # activity/spinner + debug state (see mount_picker)
+        last_activity_at: nil,
+        spin: 0,
+        active_tool: nil,
+        tool_started_at: nil,
+        debug_visible?: false,
         textarea: ExRatatui.textarea_new(),
         history: recall,
         history_index: nil,
@@ -1202,7 +1226,9 @@ defmodule CodingAgent.UI.Tui do
         {:noreply, %{state | menu_pending: false}}
 
       item ->
-        state = %{state | menu_pending: false}
+        # clear the "press a letter…" note so the status line returns to
+        # its normal content (else the note masks the debug line, etc.)
+        state = %{state | menu_pending: false, menu_note: nil}
 
         # needs_popup items whose target list is TUI-owned
         # (switch_session opens the session list) route through
@@ -1276,6 +1302,9 @@ defmodule CodingAgent.UI.Tui do
   end
 
   defp run_menu_action(:toggle_sidebar, state), do: {:noreply, toggle_sidebar(state)}
+
+  defp run_menu_action(:toggle_debug, state),
+    do: {:noreply, %{state | debug_visible?: not Map.get(state, :debug_visible?, false)}}
 
   defp run_menu_action(:quit, state), do: {:stop, :normal, state}
 
@@ -1497,6 +1526,10 @@ defmodule CodingAgent.UI.Tui do
           stop_confirm?: false,
           stream: [],
           stream_dirty?: false,
+          # start the silence clock now (see handle_info {:__run__, ...})
+          last_activity_at: now_ms(),
+          active_tool: nil,
+          tool_started_at: nil,
           scroll_offset: 0,
           turn_agents: Map.get(state, :turn_agents, []) ++ [next_agent]
       }
@@ -1654,7 +1687,12 @@ defmodule CodingAgent.UI.Tui do
   # peek entirely: input is handled in the normal loop, and one frame per
   # window keeps the stream visibly live.
   def handle_info({:agent, {:llm_deltas, delta}}, state) do
-    state = %{state | stream: append_stream(state.stream, :assistant, delta), stream_dirty?: true}
+    state =
+      state
+      |> touch()
+      |> Map.put(:stream_dirty?, true)
+      |> Map.update!(:stream, &append_stream(&1, :assistant, delta))
+
     {:noreply, state, %{render?: false}}
   end
 
@@ -1775,8 +1813,20 @@ defmodule CodingAgent.UI.Tui do
   # a phantom row (see render_reasoning/1). The delta DEFERS its render:
   # the stream throttle (subscriptions/1) paints it on a fixed cadence.
   def handle_info({:agent, {:reasoning_deltas, delta}}, state) do
-    state = %{state | stream: append_stream(state.stream, :reasoning, delta), stream_dirty?: true}
+    state =
+      state
+      |> touch()
+      |> Map.put(:stream_dirty?, true)
+      |> Map.update!(:stream, &append_stream(&1, :reasoning, delta))
+
     {:noreply, state, %{render?: false}}
+  end
+
+  # A tool call is about to run. Tools run synchronously on the worker,
+  # so this is the only signal that a tool is *in flight*; the status
+  # reads "running mix" until the matching {:tool_executed, ...}.
+  def handle_info({:agent, {:tool_started, name}}, state) do
+    {:noreply, %{touch(state) | active_tool: name, tool_started_at: now_ms()}}
   end
 
   def handle_info({:agent, {:tool_executed, name, content}}, state) do
@@ -1790,7 +1840,17 @@ defmodule CodingAgent.UI.Tui do
     transcript =
       state.transcript ++ persist_stream(state.stream, nil) ++ [{:tool, id, name, content}]
 
-    {:noreply, %{state | transcript: transcript, stream: [], stream_dirty?: false}}
+    state =
+      state
+      |> touch()
+      |> Map.put(:transcript, transcript)
+      |> Map.put(:stream, [])
+      |> Map.put(:stream_dirty?, false)
+      # clear the in-flight tool when its result lands (a round can have
+      # several calls; the next {:tool_started} re-sets it)
+      |> clear_tool_if_done(name)
+
+    {:noreply, state}
   end
 
   def handle_info({:agent, {:context_compacted, _keep}}, state) do
@@ -1800,6 +1860,9 @@ defmodule CodingAgent.UI.Tui do
   def handle_info({:agent, {:turn_started, agent}}, state) do
     # the session resolved the agent this turn is running as; refresh the
     # live attribution used by streaming lines and the running slot.
+    # Starting the silence clock here means a turn that produces no delta
+    # for a while still reads "thinking · Ns".
+    state = touch(state)
     {:noreply, %{state | active_agent: agent, running_agent: agent}}
   end
 
@@ -1815,6 +1878,11 @@ defmodule CodingAgent.UI.Tui do
          transcript: state.transcript ++ [{:user, prompt}],
          stream: [],
          stream_dirty?: false,
+         # start the silence clock at send: the spinner reads "thinking · Ns"
+         # measured from here until the first delta/tool arrives.
+         last_activity_at: now_ms(),
+         active_tool: nil,
+         tool_started_at: nil,
          turn_agents: Map.get(state, :turn_agents, []) ++ [next_agent]
      }}
   end
@@ -1868,28 +1936,86 @@ defmodule CodingAgent.UI.Tui do
     {:noreply, %{state | stream_dirty?: false}}
   end
 
+  # The spinner tick: advance the frame. The subscription is declared
+  # only while a turn is busy (subscriptions/1), so it stops on its own
+  # when the turn ends — no manual cancel. Re-rendering here is what makes
+  # a silent agent visibly alive.
+  def handle_info(@spin_tick, state) do
+    {:noreply, %{state | spin: Map.get(state, :spin, 0) + 1}}
+  end
+
   def handle_info(_msg, state), do: {:noreply, state}
 
-  # Paint the in-flight stream on a fixed cadence instead of per delta.
-  # Declared only while a stream has unrendered text: after each tick the
-  # dirty flag clears and the subscription is reconciled away, so a quiet
-  # stream costs nothing and the next delta re-arms it.
+  # The stream throttle (only while unrendered text) and the busy spinner
+  # (only while a turn is in flight). Both reconcile from state, so each
+  # stops on its own.
   #
   # Under test_mode no timer is armed (like :__resize_poll__): tests drive
-  # the tick with `fire(pid, :__stream_render__)` so buffer assertions are
-  # deterministic instead of racing a wall clock.
+  # the ticks with `fire/2` so buffer assertions are deterministic instead
+  # of racing a wall clock. `spinner/1` is asserted directly for the
+  # frame set.
   @impl true
-  def subscriptions(%{stream_dirty?: true, stream: [_ | _], test_mode?: false}),
-    do: [
-      %ExRatatui.Subscription{
-        id: :stream_render,
-        kind: :interval,
-        interval_ms: @stream_render_ms,
-        message: @stream_render_tick
-      }
-    ]
+  def subscriptions(%{test_mode?: false} = state) do
+    stream =
+      if Map.get(state, :stream_dirty?, false) and match?([_ | _], Map.get(state, :stream)) do
+        [
+          %ExRatatui.Subscription{
+            id: :stream_render,
+            kind: :interval,
+            interval_ms: @stream_render_ms,
+            message: @stream_render_tick
+          }
+        ]
+      else
+        []
+      end
+
+    spinner =
+      if Styles.busy?(state.status) do
+        [
+          %ExRatatui.Subscription{
+            id: :spinner,
+            kind: :interval,
+            interval_ms: @spin_ms,
+            message: @spin_tick
+          }
+        ]
+      else
+        []
+      end
+
+    stream ++ spinner
+  end
 
   def subscriptions(_state), do: []
+
+  # -- activity tracking -----------------------------------------------------
+
+  defp now_ms, do: System.monotonic_time(:millisecond)
+
+  # Any progress from the session means the turn is alive: reset the
+  # silence clock and clear a stale in-flight tool label.
+  defp touch(state) do
+    %{state | last_activity_at: now_ms(), active_tool: nil, tool_started_at: nil}
+  end
+
+  # The tool result names the tool it finishes; only clear the in-flight
+  # label if it matches (a round can interleave calls and results).
+  defp clear_tool_if_done(%{active_tool: name} = state, name),
+    do: %{state | active_tool: nil, tool_started_at: nil}
+
+  defp clear_tool_if_done(state, _name), do: state
+
+  # Seconds since the turn's last activity, or nil when there has been
+  # none yet (so a fast turn never flashes a duration). The sentinel is
+  # `nil`, not 0: `System.monotonic_time/1` is negative on Linux, so 0 is
+  # a valid timestamp.
+  defp silence_s(state) do
+    case Map.get(state, :last_activity_at) do
+      t when is_integer(t) -> div(now_ms() - t, 1000)
+      _ -> nil
+    end
+  end
 
   # Test mode reports its declared virtual size; production reads the tty.
   defp pane_size(%{test_mode?: true} = state) do
@@ -2487,6 +2613,16 @@ defmodule CodingAgent.UI.Tui do
         |> List.flatten()
       )
 
+    # Status on the input box's TOP-RIGHT (ADR-track A/B): the question
+    # "is the model still working?" is asked at the input, so the answer
+    # sits on the input's frame. While a turn runs it names the active
+    # tool or shows the spinner + silence duration.
+    status_title = %ExRatatui.Widgets.Block.Title{
+      content: status_line_for_input(state),
+      position: :top,
+      alignment: :right
+    }
+
     %Textarea{
       state: state.textarea,
       placeholder:
@@ -2506,9 +2642,38 @@ defmodule CodingAgent.UI.Tui do
           footer,
           # accent border + focused background: the composer is the one
           # always-active control
-          Styles.chrome(:accent)
+          Styles.chrome(:accent),
+          [status_title]
         )
     }
+  end
+
+  # The status text on the input's top-right border: the status badge,
+  # with the active tool's name while one runs, or the silence duration
+  # while the model is thinking. `idle` shows the badge so the frame is
+  # never bare.
+  defp status_line_for_input(state) do
+    down? = Map.get(state, :provider_down?, false)
+    step = if Styles.busy?(state.status), do: Map.get(state, :spin, 0), else: nil
+
+    cond do
+      is_binary(Map.get(state, :active_tool)) ->
+        elapsed = tool_elapsed_s(state)
+        Styles.status_line(state.status, down?, step, elapsed, "running #{state.active_tool}")
+
+      Styles.busy?(state.status) ->
+        Styles.status_line(state.status, down?, step, silence_s(state), "thinking")
+
+      true ->
+        Styles.status_line(state.status, down?)
+    end
+  end
+
+  defp tool_elapsed_s(state) do
+    case Map.get(state, :tool_started_at) do
+      t when is_integer(t) -> div(now_ms() - t, 1000)
+      _ -> nil
+    end
   end
 
   # Transcript rows visible above the input/status areas.
@@ -2606,7 +2771,7 @@ defmodule CodingAgent.UI.Tui do
         not busy? ->
           [Styles.badge(:agent, next_agent)]
 
-        is_binary(running) and running != next_agent ->
+        is_binary(running) and is_binary(next_agent) and running != next_agent ->
           [
             Styles.badge(:agent, "#{running} running"),
             Styles.badge(:agent, "#{next_agent} next")
@@ -2615,8 +2780,11 @@ defmodule CodingAgent.UI.Tui do
         is_binary(running) ->
           [Styles.badge(:agent, "#{running} running")]
 
+        is_binary(next_agent) ->
+          [Styles.badge(:agent, "#{next_agent} next")]
+
         true ->
-          [Styles.badge(:agent, next_agent)]
+          [Styles.badge(:agent, nil)]
       end
 
     identity_lines = identity_badges ++ [Styles.gap()]
@@ -2792,47 +2960,50 @@ defmodule CodingAgent.UI.Tui do
     %Paragraph{text: [line], style: Styles.chrome_bg(), block: nil}
   end
 
+  # The bottom line. The user-facing status now lives on the input box's
+  # top border (near the question it answers); this row carries the
+  # esc-confirm hints and, behind `debug_visible?` (ctrl-x d), the scroll
+  # diagnostics that used to be shown to every user.
   defp status_widget_plain(state) do
-    # scroll diagnostics (live debugging): entries / measured total /
-    # offset / expand state — visible in the status line
+    down? = Map.get(state, :provider_down?, false)
+    badge = Styles.status_badge(state.status, down?)
+
+    hint =
+      cond do
+        Map.get(state, :quit_confirm?, false) -> "esc again to quit"
+        Map.get(state, :stop_confirm?, false) -> "esc again to stop"
+        true -> ""
+      end
+
+    # geometric `▲`, not the emoji warning sign (width-safe)
+    spans =
+      [Text.Span.new("#{state.session_id}  ", style: Styles.role(:muted))] ++
+        if(hint == "",
+          do: [],
+          else: [Text.Span.new("▲ #{hint}  ", style: Styles.role(:warning))]
+        ) ++
+        [Text.Span.new(badge.label, style: badge.style)] ++
+        if(Map.get(state, :debug_visible?, false),
+          do: [Text.Span.new("  " <> scroll_diagnostics(state), style: Styles.role(:muted))],
+          else: []
+        )
+
+    %Paragraph{text: [Text.Line.new(spans)], style: Styles.chrome_bg(), block: nil}
+  end
+
+  # Scroll diagnostics (developer output, ctrl-x d): entries / measured
+  # total / offset / expand state.
+  defp scroll_diagnostics(state) do
     entries = display_entries(state)
 
     w = content_width(if is_integer(state.last_pane_width), do: state.last_pane_width, else: 78)
     ph = if is_integer(state.last_pane_height), do: state.last_pane_height, else: 24
     total = TranscriptView.total_height(entries, w, state.open_tool_id)
 
-    open =
-      if state.open_tool_id, do: "open:#{state.open_tool_id}", else: "tools shut"
+    open = if state.open_tool_id, do: "open:#{state.open_tool_id}", else: "tools shut"
 
-    diag =
-      "scroll: #{state.scroll_offset}/#{max(total - ph, 0)} (#{length(entries)} entries, " <>
-        "#{open}, " <>
-        "h: #{ph} w: #{w})"
-
-    down? = Map.get(state, :provider_down?, false)
-    badge = Styles.status_badge(state.status, down?)
-
-    status_text =
-      cond do
-        Map.get(state, :quit_confirm?, false) -> badge.label <> "  — esc again to quit"
-        Map.get(state, :stop_confirm?, false) -> badge.label <> "  — esc again to stop"
-        true -> badge.label
-      end
-
-    line =
-      Text.Line.new([
-        Text.Span.new("#{state.session_id}  ", style: Styles.role(:muted)),
-        # merge, not replace: a future role with its own modifier (e.g.
-        # italic) keeps it while the glyph gains bold
-        Text.Span.new(
-          badge.glyph,
-          style: %{badge.style | modifiers: Enum.uniq([:bold | badge.style.modifiers])}
-        ),
-        Text.Span.new(" #{status_text}  ", style: badge.style),
-        Text.Span.new(diag, style: Styles.role(:muted))
-      ])
-
-    %Paragraph{text: [line], style: Styles.chrome_bg(), block: nil}
+    "scroll: #{state.scroll_offset}/#{max(total - ph, 0)} (#{length(entries)} entries, " <>
+      "#{open}, h: #{ph} w: #{w})"
   end
 
   # Session manager (ADR 020, slice 1): list either this directory's

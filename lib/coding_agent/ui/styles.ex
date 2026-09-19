@@ -270,4 +270,73 @@ defmodule CodingAgent.UI.Styles do
 
   def status_badge(:error, false), do: %{glyph: "✖", style: role(:error), label: "error"}
   def status_badge(_, _down), do: %{glyph: "?", style: role(:muted), label: "unknown"}
+
+  # -- spinner ---------------------------------------------------------------
+
+  # Braille frames: single-width in practice and calm at ~8 fps. The
+  # frame set is DATA (here), never a glyph literal in the render path.
+  @braille_frames {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+  @doc """
+  One spinner frame for the given step (cycles by remainder). Pure, so
+  the animation is testable without a terminal.
+
+  Pass `step` as `nil` for a static first frame (a non-animating caller).
+  """
+  @spec spinner(non_neg_integer() | nil) :: String.t()
+  def spinner(nil), do: elem(@braille_frames, 0)
+
+  def spinner(step) when is_integer(step) do
+    elem(@braille_frames, rem(step, tuple_size(@braille_frames)))
+  end
+
+  @doc "The number of frames in the spinner cycle."
+  @spec spinner_frames() :: pos_integer()
+  def spinner_frames, do: tuple_size(@braille_frames)
+
+  @doc """
+  Whether a status means "work is in flight" — the spinner should run.
+  Driven by status only; the *elapsed* time (in the caller) makes a
+  silently stuck turn diverge from a healthy one.
+  """
+  @spec busy?(atom()) :: boolean()
+  def busy?(status), do: status in [:running, :interrupting]
+
+  @doc """
+  The status line for the input box's top border: `⠋ running · 12s`.
+  `elapsed_s` is nil (not shown) when the turn just started, so a fast
+  turn never flashes a duration. `label` overrides the badge's default
+  text (e.g. `"running mix"` while a tool is in flight).
+
+  Returns a `%Text.Line{}` so it composes in a `Block.Title`, the same
+  way the identity footer does.
+  """
+  @spec status_line(
+          atom(),
+          boolean(),
+          non_neg_integer() | nil,
+          non_neg_integer() | nil,
+          String.t() | nil
+        ) :: Text.Line.t()
+  def status_line(status, provider_down? \\ false, step \\ nil, elapsed_s \\ nil, label \\ nil) do
+    badge = status_badge(status, provider_down?)
+
+    glyph =
+      if busy?(status) do
+        spinner(step)
+      else
+        badge.glyph
+      end
+
+    elapsed =
+      case elapsed_s do
+        s when is_integer(s) and s > 0 -> " · #{s}s"
+        _ -> ""
+      end
+
+    Text.Line.new([
+      Text.Span.new(" #{glyph} ", style: badge.style),
+      Text.Span.new((label || badge.label) <> elapsed, style: role(:muted))
+    ])
+  end
 end

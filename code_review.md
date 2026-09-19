@@ -847,24 +847,30 @@ error, approval) and leave prose alone.
 
 ## F. Sequencing
 
-This slots into the earlier UI sequence, after `Styles` exists:
+**IMPLEMENTED (steps 1-5).** Status/activity shipped:
 
-1. `Styles.status_badge/1` + role colors; move the glyph/color map out of
-   `status_widget_plain/1`.
-2. Move the status onto the input box's top border (A); keep a provisional
-   bottom row only if transcript-visible status is wanted.
-3. Move scroll diagnostics behind a debug toggle (D).
-4. Add the `subscriptions/1` spinner + `last_activity_at` tracking (C.1, C.2);
-   this is the first real animation and the template for any future one.
-5. Add the core `{:tool_started, name}` event so the spinner can name the tool
-   and its elapsed time (C.2). Pairs naturally with the `Events` module todo.
-6. Glyph passes on dialog / transcript severity / picker (E).
+- step 1: `Styles.status_badge/1` + roles (in the `Styles` pass);
+- step 2 (A): the status badge + spinner render on the input box's
+  TOP-RIGHT border (`status_line_for_input/1`), the identity footer stays
+  bottom-right;
+- step 3 (D): the scroll diagnostics are behind `debug_visible?`
+  (`ctrl-x d`); the bottom row now carries esc hints + the status label;
+- step 4 (C.1/C.2): a `subscriptions/1` spinner (`:spinner`, 120ms) runs
+  only while `Styles.busy?/1`, and `last_activity_at` tracks silence —
+  the status reads `⠋ thinking` or `⠋ thinking · 12s`;
+- step 5 (C.2): core broadcasts `{:tool_started, name}`, so the status
+  reads `⠋ running mix` for the duration of the call.
+- step 6 (E, glyph passes: dialog/transcript severity/picker) is **not**
+  done — cosmetic, tracked below.
 
-Dependency note: step 5 touches core, so it should land with the `Events`
-module work (P2 in the TODO) rather than as a one-off. Steps 1–4 are pure UI
-and can land independently. The spinner is worth doing regardless of `Styles`
-maturity — it is the single biggest perceived-responsiveness win here, because
-it turns "the app might be hung" into "the tool has been running 38 s".
+Tests: `track_b_status_test.exs` (pure frame set + status line, the
+subscription lifecycle, the input-border render, tool naming, the debug
+toggle) and `tool_started_event_test.exs` (core: start precedes result).
+
+The spinner turned "the app might be hung" into "the tool has been
+running 38 s" — the single biggest perceived-responsiveness win after the
+streaming fix. Still open: step 6 glyph passes (E — approval dialog,
+transcript severity, picker).
 
 ---
 
