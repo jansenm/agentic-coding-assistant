@@ -306,6 +306,44 @@ and how the harness addresses per-agent layers. Note this is a
 was per-single-agent protection (superseded by "Git is the undo"); here
 it is isolation *between* agents.
 
+**Ticket / coordination store** (idea recorded 2026-09-19; not planned).
+Multi-agent work (implementer + reviewer) currently coordinates through
+Markdown documents (`code_review.md`) that both sides edit: no stable
+identifiers, no status field, no comment history, and a "moving target"
+when two agents touch one file. The idea is deliberately small — *not*
+JIRA/Mantis: one central place where agents (or a single agent) record
+and coordinate work:
+
+- **record** a TODO / FINDING (title, body, optional source ref like
+  file:line or commit);
+- **status** (at least `open` / `in_progress` / `done` / `wontfix` /
+  `duplicate`), so "B2 done" is a state transition rather than a hand
+  edit of prose;
+- **comments**, to keep the history and let agents exchange context on
+  one item instead of forking a document.
+
+Storage: sits naturally in the same database direction as ADR 020
+(session storage) — a coordination database, likely one per store, with
+the same verbs-first rule (list/show/create/comment/status must exist in
+CLI *and* TUI before the format matters). A ticket should be able to
+`relate` to a session and to a review finding. **Prerequisite is the R0
+instinct from ADR 020**: ship the verbs, keep the engine simple. Do not
+build this until the Markdown backlog actually hurts.
+
+**Reviewer in the same TUI, on a bwrap snapshot** (idea recorded
+2026-09-19; future). Combine the bwrap-layer isolation above with the
+ticket store: run the reviewer *as an agent inside the same TUI* as the
+implementer, but give it a **read-write overlay snapshot** of the
+implementer's working tree (bwrap `--overlay`), so it reviews a frozen,
+reproducible state instead of the live tree both are editing. It writes
+its findings as *tickets* (not a prose review document) that the
+implementer consumes, which removes the shared-worktree collision
+entirely. This is the multi-agent endgame the overlay note and the
+ticket store each half-enable; both are prerequisites, so it stays a
+future note. (For the review to be reproducible it should pin an
+explicit ref/tree hash — `git write-tree` gives that without committing
+the writer's work.)
+
 TUI wish-list (user's own list, keyboard-first, from the live sessions):
 
 - **Navigator**: Go To Questions / Go To Blocks popup (ctrl-g style,
