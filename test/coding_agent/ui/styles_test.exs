@@ -46,11 +46,14 @@ defmodule CodingAgent.UI.StylesTest do
       assert only.style == Styles.role(:muted)
     end
 
-    test "the value role is per-kind (agent cyan, model muted)" do
+    test "the value role is per-kind (agent cyan, model legible on chrome)" do
       %Text.Line{spans: [_, a]} = Styles.badge(:agent, "build")
       %Text.Line{spans: [_, m]} = Styles.badge(:model, "glm")
       assert a.style == Styles.role(:agent)
       assert m.style == Styles.role(:model)
+      # the model id sits on the input border (chrome bg dark_gray); its
+      # own color must differ from the fill, or it vanishes
+      assert Styles.role(:model).fg != Styles.chrome_bg().bg
     end
   end
 

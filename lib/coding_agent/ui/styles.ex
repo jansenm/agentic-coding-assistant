@@ -28,9 +28,6 @@ defmodule CodingAgent.UI.Styles do
   intentional, not an oversight — kept as distinct roles so the next
   author can change one without moving the other:
 
-  - `:model` == `:muted`: a model id is secondary text. It exists as its
-    own role so a future palette can give models a colour without
-    touching every muted hint.
   - `:info` == `:muted`: informational transcript lines are muted.
   - `:agent` == `:accent`: the agent hue doubles as the focused-chrome
     hue. They are separate roles because "who answered" and "what is
@@ -70,7 +67,11 @@ defmodule CodingAgent.UI.Styles do
   def role(:value), do: %Style{fg: :white}
   def role(:user), do: %Style{fg: :magenta, modifiers: [:bold]}
   def role(:agent), do: %Style{fg: :cyan, modifiers: [:bold]}
-  def role(:model), do: %Style{fg: :dark_gray}
+  # NOT `:muted`: the model id sits on the input box's border, whose
+  # chrome background is `:dark_gray` — muted (= dark_gray) was invisible
+  # there ("grey bear in a snowstorm", found live). A distinct, legible
+  # value color, matching the other identity roles.
+  def role(:model), do: %Style{fg: :light_cyan}
   def role(:accent), do: %Style{fg: :cyan, modifiers: [:bold]}
   def role(:reasoning), do: %Style{fg: :dark_gray, modifiers: [:italic]}
   def role(:info), do: %Style{fg: :dark_gray}

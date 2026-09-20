@@ -1167,6 +1167,12 @@ defmodule CodingAgent.UI.Tui do
         items -> items
       end)
 
+    # Open with the cursor ON the running model (found live: landing on
+    # index 0 — the alphabetically first discovered id, e.g.
+    # "deepseek-v4-flash:0731" — made that row look like the current
+    # model, which is exactly the wrong reading).
+    index = Enum.find_index(items, &(&1.id == state.model)) || 0
+
     title =
       case note do
         nil -> " switch model  (arrows, enter=switch, esc=cancel)"
@@ -1179,7 +1185,7 @@ defmodule CodingAgent.UI.Tui do
        | menu_popup: %{id: :switch_model, title: title, items: items},
          menu_popup_id: :switch_model,
          menu_pending: false,
-         menu_index: 0
+         menu_index: index
      }}
   end
 
@@ -2610,7 +2616,11 @@ defmodule CodingAgent.UI.Tui do
           ),
           Text.Span.new(" · ", style: Styles.role(:muted)),
           Text.Span.new("model ", style: Styles.role(:muted)),
-          Text.Span.new(String.slice(eff_model || "?", 0, 24), style: Styles.role(:model))
+          # the WHOLE id: a hard cap cut the version suffix off real ids
+          # ("ollama_cloud:glm-5.3-flash" -> "…-fl"), hiding exactly the
+          # part that distinguishes one model from another. The block
+          # clips if the pane is too narrow.
+          Text.Span.new(eff_model || "?", style: Styles.role(:model))
         ]
         |> List.flatten()
       )
@@ -2794,6 +2804,7 @@ defmodule CodingAgent.UI.Tui do
     definition_lines =
       Styles.definition_list([
         {"session", String.slice(state.session_id, 0, 22)},
+        {"model", Map.get(state, :model)},
         {"effort", effort || "default"},
         {"tokens in", fmt_k(Map.get(usage, :input_tokens, 0))},
         {"tokens out", fmt_k(Map.get(usage, :output_tokens, 0))},
