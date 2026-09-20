@@ -52,6 +52,14 @@ defmodule CodingAgent.Core.Session.Usage do
     }
   end
 
+  @doc "Cumulative input tokens (the sidebar total)."
+  @spec input_tokens(t() | map() | nil) :: non_neg_integer()
+  def input_tokens(usage), do: from_map(usage).input_tokens
+
+  @doc "Cumulative output tokens."
+  @spec output_tokens(t() | map() | nil) :: non_neg_integer()
+  def output_tokens(usage), do: from_map(usage).output_tokens
+
   @doc "The last turn's input count — the compaction measure."
   @spec last_input_tokens(t() | map() | nil) :: non_neg_integer()
   def last_input_tokens(usage), do: from_map(usage).last_input_tokens

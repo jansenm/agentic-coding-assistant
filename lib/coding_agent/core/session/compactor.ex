@@ -37,7 +37,7 @@ defmodule CodingAgent.Core.Session.Compactor do
   """
 
   alias CodingAgent.Core.Compaction
-  alias CodingAgent.Core.Session.{Request, State}
+  alias CodingAgent.Core.Session.{Request, State, Usage}
   alias ReqLLM.Context
 
   require Logger
@@ -108,7 +108,7 @@ defmodule CodingAgent.Core.Session.Compactor do
   """
   @spec decide(State.t(), pos_integer()) :: :none | {:ok, {list(), list()}}
   def decide(%State{} = state, trigger) do
-    last_in = Map.get(state.usage || %{}, :last_input_tokens, 0)
+    last_in = Usage.last_input_tokens(state.usage)
 
     cond do
       last_in >= trigger ->
@@ -136,7 +136,7 @@ defmodule CodingAgent.Core.Session.Compactor do
   """
   @spec warn_approaching(State.t(), pos_integer()) :: {State.t(), boolean()}
   def warn_approaching(%State{} = state, trigger) do
-    last_in = Map.get(state.usage || %{}, :last_input_tokens, 0)
+    last_in = Usage.last_input_tokens(state.usage)
     warn_at = trunc(trigger * @warn_fraction)
 
     if last_in >= warn_at and not state.compaction_warned do

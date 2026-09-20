@@ -21,8 +21,9 @@ defmodule CodingAgent.UI.Tui do
   alias CodingAgent.Core.Providers.Discovery
   alias CodingAgent.Core.ToolCall
   alias CodingAgent.Core.Session.Compactor
-  alias CodingAgent.Core.Session.Supervisor
   alias CodingAgent.Core.Session.Store
+  alias CodingAgent.Core.Session.Supervisor
+  alias CodingAgent.Core.Session.Usage
   alias CodingAgent.UI.{Bridge, Editor, Keymap, Menu, Styles, TranscriptView}
   alias ExRatatui.Event
   alias ExRatatui.Layout
@@ -2776,8 +2777,10 @@ defmodule CodingAgent.UI.Tui do
       cfg.config["reasoning_effort"] || CodingAgent.Core.Config.reasoning_effort()
 
     # last turn's context size (ground truth from the provider) drives
-    # the % line; cumulative totals are separate
-    last_in = Map.get(usage, :last_input_tokens, 0)
+    # the % line; cumulative totals are separate. `Usage.last_input_tokens/1`
+    # is the one reader (heals a legacy map too); usage is a struct by
+    # this point (from_map/1 above), so no map-guard needed.
+    last_in = Usage.last_input_tokens(usage)
     pct = trunc(last_in * 100 / max(window, 1))
 
     # pre-compaction notice territory: the Compactor's warn threshold
@@ -2826,8 +2829,8 @@ defmodule CodingAgent.UI.Tui do
         [
           {"session", String.slice(state.session_id, 0, 22)},
           {"effort", effort || "default"},
-          {"tokens in", fmt_k(Map.get(usage, :input_tokens, 0))},
-          {"tokens out", fmt_k(Map.get(usage, :output_tokens, 0))},
+          {"tokens in", fmt_k(Usage.input_tokens(usage))},
+          {"tokens out", fmt_k(Usage.output_tokens(usage))},
           {"context", "#{fmt_k(last_in)} (#{pct}% win)", pct_role},
           {"compacts at", "#{fmt_k(trigger)} tok", pct_role}
         ],
