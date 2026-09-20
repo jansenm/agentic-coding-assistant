@@ -2853,9 +2853,11 @@ defmodule CodingAgent.UI.Tui do
 
     %Paragraph{
       text: lines,
-      style: %Style{},
+      # the whole panel carries the sidebar fill, so the gaps between
+      # role-styled spans are filled too (a patchy fill looked broken)
+      style: Styles.surface(:sidebar),
       # truthful title (B4): this panel is session status, not "agent"
-      block: Styles.panel(title: " status ", borders: [:right])
+      block: Styles.panel(title: " status ", borders: [:right], surface: :sidebar)
     }
   end
 
