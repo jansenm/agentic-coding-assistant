@@ -149,6 +149,23 @@ defmodule CodingAgent.UI.TuiPickerTest do
       assert joined =~ CodingAgent.Core.Session.Store.dir()
     end
 
+    test "the picker advertises every management verb, incl. prune", %{root: root} do
+      pid = start_picker(root)
+      joined = Enum.join(buffer(pid), "\n")
+
+      for verb <- [
+            "enter=resume",
+            "n=new",
+            "a=all/dir",
+            "d=delete",
+            "D=delete all",
+            "r=rename",
+            "P=prune"
+          ] do
+        assert joined =~ verb, "missing hint #{verb}"
+      end
+    end
+
     test "`a` widens the source to the whole store and names the scope column", %{root: root} do
       pid = start_picker(root)
       assert sync(pid).picker_all? == false
@@ -185,6 +202,49 @@ defmodule CodingAgent.UI.TuiPickerTest do
       key(pid, "/")
       key(pid, "escape")
       assert sync(pid).picker_filter == ""
+    end
+
+    test "`P` prunes sessions older than N days after confirmation", %{root: root, ids: ids} do
+      # backdate one seeded session's file mtime (saved_at comes from mtime)
+      [old_id | _] = ids
+      old_path = CodingAgent.Core.Session.Store.path(old_id)
+      eleven_days_ago = DateTime.add(DateTime.utc_now(), -11 * 86_400) |> DateTime.to_unix()
+      File.touch!(old_path, eleven_days_ago)
+
+      pid = start_picker(root)
+
+      key(pid, "P")
+      assert match?({:prune, ""}, sync(pid).picker_op)
+
+      # type "10" then enter -> armed confirmation, not yet deleted
+      key(pid, "1")
+      key(pid, "0")
+
+      key(pid, "enter")
+      assert match?({:prune_confirm, [^old_id]}, sync(pid).picker_op)
+      assert File.exists?(old_path)
+
+      key(pid, "y")
+      refute File.exists?(old_path)
+      # the fresh session survives; the picker reloaded and closed the prompt
+      assert sync(pid).picker_op == nil
+      assert Enum.any?(CodingAgent.Core.Session.Store.list_in(root), &(&1.id != old_id))
+    end
+
+    test "`P` with nothing old enough reports and deletes nothing", %{root: root, ids: ids} do
+      pid = start_picker(root)
+
+      key(pid, "P")
+      key(pid, "3")
+      key(pid, "0")
+      key(pid, "enter")
+
+      # no sessions are 30 days old; the prompt closes, both survive
+      assert sync(pid).picker_op == nil
+
+      for id <- ids do
+        assert File.exists?(CodingAgent.Core.Session.Store.path(id))
+      end
     end
 
     test "`D` deletes every VISIBLE session after confirmation", %{root: root} do

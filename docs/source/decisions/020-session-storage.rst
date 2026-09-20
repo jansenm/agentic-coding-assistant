@@ -294,8 +294,9 @@ Retention
 ``S6``: no automatic deletion unless growth threatens disk/quota.
 Decision:
 
-- **Prune is explicit**: ``--session-prune <days>`` exists; add
-  ``--session-prune-size <bytes>`` and delete-by-directory.
+- **Prune is explicit**: prune-by-age ships in the TUI picker (``P``);
+  a size-based prune and delete-by-directory remain to add (the CLI
+  ``--session-prune`` was retired with ``mix agent``, 2026-09-20).
 - **One guard is automatic and loud**: a configurable per-session
   warning threshold (default generous, e.g. several MB) emits a warning
   when a session crosses it, so a runaway session is visible before it
@@ -369,7 +370,8 @@ Slice order
    **Shipped** (selection, not runtime switching — resolve at launch).
    ``Core.Config.resolve_store/2`` maps a selector (a ``[stores]`` name
    or an absolute/``~`` path) to a directory; ``select_store!/2`` sets
-   the ``:store_dir`` seam; ``--store`` on ``mix agent``/``mix tui``,
+   the ``:store_dir`` seam; ``--store`` on ``mix tui`` (``mix agent``
+   was retired 2026-09-20 — the TUI is the only surface),
    ``AGENT_STORE`` and ``config.toml store =`` are one reader with a
    strict precedence (explicit override > ``AGENT_STORE`` > config >
    default). An unresolvable selector raises rather than silently
@@ -377,8 +379,10 @@ Slice order
    third fallback (the ``[stores]`` table only defines names).
 3. **SQLite format + two views** (``R1``–``R9``, ``R2``), with lazy
    migration of existing blobs.
-4. **CLI verbs**: ``--session-delete-dir``, ``--session-prune-size``,
-   ``--session-search``, ``--session-export``/``--import``.
+4. **Management verbs** (in the TUI, per the "TUI is the only surface"
+   decision): delete-by-directory, prune-by-size, store-wide search,
+   export/import. Delete-one, delete-visible, and prune-by-age already
+   ship in the picker (``d``/``D``/``P``).
 5. **Derived store index** only if store-wide search proves slow.
 
 Open questions

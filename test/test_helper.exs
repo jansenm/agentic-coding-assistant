@@ -1,7 +1,7 @@
 # Test isolation: ALL tests run against an isolated session-store dir
 # (Session.Store persists at every turn boundary; without this, test
 # sessions leaked into the user's real ~/.local/state storage — found
-# by the user's `mix agent --sessions`).
+# by the user's session listing).
 test_store = Path.join(System.tmp_dir!(), "coding-agent-test-store-#{System.unique_integer()}")
 
 Application.put_env(:coding_agent, :store_dir, test_store)

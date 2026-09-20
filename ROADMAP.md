@@ -98,7 +98,9 @@ same trajectory viewed from different ends.
 ## Phases
 
 1. **Core single-agent loop** ✅ — session process, streaming turns,
-   multi-turn chat (`mix agent` / `mix agent --chat`), ollama provider,
+   multi-turn chat (originally `mix agent` / `mix agent --chat`;
+   **the CLI was retired 2026-09-20** — the TUI is the only surface,
+   and every verb it had lives in `mix tui`), ollama provider,
    tool-call *detection*. Model config, error paths.
 2. **Tool subsystem** ✅ — scope-aware file tools and shell execution
    with a permission gate (HITL: pause, approve/edit/reject, resume).
@@ -147,7 +149,7 @@ same trajectory viewed from different ends.
      Live-verified: the model reads + edits its own file, gate asks,
      result confirmed.
 3. **Dogfood milestone** — **conditionally met** (first real task:
-   README rework, executed end-to-end in `mix agent --chat`, agent-
+   README rework, executed end-to-end in the then-CLI chat loop, agent-
    initiated verification via shell, fact-checked result committed).
    Proven: the loop, the then-seven tools, gate round-trips, model
    research-before-write. Not yet proven at the time: long sessions
@@ -168,10 +170,11 @@ same trajectory viewed from different ends.
      version-tagged `term_to_binary` snapshots under
      `~/.local/state/coding_agent/sessions/`, atomic write at every
      turn boundary; fail-closed load (corrupt/wrong-version errors,
-     never half-states); running/error resume as idle, interrupted
-     resumes with pending gate decisions intact. CLI: `mix agent
-     --sessions`, `mix agent --resume <id>`. Live-verified: codeword
-     given in one process answered correctly after `--resume`.
+      never half-states); running/error resume as idle, interrupted
+      resumes with pending gate decisions intact. (Then CLI:
+      `--sessions`/`--resume <id>`; **retired 2026-09-20** — the TUI
+      picker does both.) Live-verified: codeword
+      given in one process answered correctly after `--resume`.
      Two live-found bugs fixed along the way: `[:safe]` atom
      rejection broke cross-process resume; stream errors crashed the
      session GenServer instead of failing the turn.
@@ -181,8 +184,9 @@ same trajectory viewed from different ends.
      summary replaces the old span, compacted state persists
      immediately; summary-call failure degrades (keeps full context),
      never errors. Lifecycle verbs shipped first per the storage
-     principles: `--session-delete <id>`, `--session-prune <days>`,
-     `--sessions` now prints file paths + sizes. Live-verified: a
+     principles: delete one, prune by age, and list with file paths +
+     sizes (then CLI flags; now the TUI picker's `d`/`D`/`P`/summary,
+     the CLI retired 2026-09-20). Live-verified: a
      238k-char tool result compacted on the next call and the model
      still answered correctly from the summary.
    - **4c. Project memory** ✅ — `AGENTS.md` at the scope root is read

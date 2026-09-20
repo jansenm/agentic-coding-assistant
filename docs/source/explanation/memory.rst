@@ -36,10 +36,11 @@ hard requirement for a coding assistant.
 the full state is one ``term_to_binary`` blob under
 ``~/.local/state/coding_agent/sessions/<id>.session``, written
 atomically at every turn boundary (turn complete, turn error, gate
-interruption, decision applied). ``mix agent --sessions`` lists them,
-``mix agent --resume <id>`` continues one — the model retains the full
+interruption, decision applied). The TUI session picker lists them and
+``mix tui --resume <id>`` continues one — the model retains the full
 previous context, verified live (a codeword given in one process was
-answered from the resumed one).
+answered from the resumed one). (The one-shot CLI ``mix agent`` was
+retired 2026-09-20; the TUI is the only surface.)
 
 .. note::
    ADR 020 (proposed) replaces the blob with **per-session SQLite**
@@ -120,7 +121,7 @@ archaeology). Revisit any of these only with a new ADR.
 
 2. **One session = one portable unit = one ``rm``.** No single
    aggregated blob that hides sessions. Cleanup stays a file operation,
-   discoverable via ``--sessions``, never schema archaeology. A
+   discoverable via the TUI session picker, never schema archaeology. A
    per-session database satisfies this; one database for all sessions
    does not.
 

@@ -807,6 +807,24 @@ defmodule CodingAgent.UI.Tui do
     %{state | picker: sessions, picker_index: max(idx, 0), picker_op: nil}
   end
 
+  # The ids older than `days`, over the picker's SOURCE (this dir or the
+  # whole store), not the filtered view — age cleanup is a management
+  # action orthogonal to a display filter.
+  defp prune_candidates(state, days) do
+    cutoff = DateTime.add(DateTime.utc_now(), -days * 86_400)
+
+    source =
+      if Map.get(state, :picker_all?, false) do
+        Store.list()
+      else
+        Store.list_in(state.picker_scope)
+      end
+
+    source
+    |> Enum.filter(&(DateTime.compare(&1.saved_at, cutoff) == :lt))
+    |> Enum.map(& &1.id)
+  end
+
   # -- Picker keys -----------------------------------------------------------
   # up/down move; enter resumes; n starts fresh; q quits; d deletes one
   # (y confirms); r renames; `a` toggles this-dir vs whole-store; `/`
@@ -849,6 +867,16 @@ defmodule CodingAgent.UI.Tui do
         ids = Enum.map(visible, & &1.id)
         {:noreply, %{state | picker_op: {:delete_many, ids}}}
     end
+  end
+
+  # `P`: prune by age (the old CLI verb `--session-prune <days>`, now
+  # that the CLI is being retired). Opens a days prompt, then confirms —
+  # destructive, like d/D. Operates on the picker's SOURCE (this dir /
+  # whole store), NOT the filtered view: age cleanup is orthogonal to a
+  # display filter, and silently pruning only the filtered subset would
+  # be a trap.
+  defp handle_picker_key(%Event.Key{code: "P"}, %{picker_op: nil} = state) do
+    {:noreply, %{state | picker_op: {:prune, ""}}}
   end
 
   defp handle_picker_key(%Event.Key{code: "enter"}, %{picker_op: nil} = state) do
@@ -918,6 +946,17 @@ defmodule CodingAgent.UI.Tui do
     {:noreply, picker_reload(state)}
   end
 
+  # y confirms a prune: delete the sessions older than `days`.
+  defp handle_picker_key(%Event.Key{code: "y"}, %{picker_op: {:prune_confirm, ids}} = state) do
+    Enum.each(ids, &Store.delete/1)
+    {:noreply, status_note(picker_reload(state), "pruned #{length(ids)} session(s)")}
+  end
+
+  # y with no armed prune is a no-op (mirrors the other confirm clauses).
+  defp handle_picker_key(%Event.Key{code: "y"}, %{picker_op: {:prune, _buf}} = state) do
+    {:noreply, state}
+  end
+
   defp handle_picker_key(%Event.Key{code: "y"}, state) do
     {:noreply, state}
   end
@@ -954,6 +993,36 @@ defmodule CodingAgent.UI.Tui do
   # you typed), esc clears the filter and closes, backspace edits.
   defp handle_picker_key(%Event.Key{code: "enter"}, %{picker_op: {:filter, _buf}} = state) do
     {:noreply, %{state | picker_op: nil, picker_index: 0}}
+  end
+
+  # Prune prompt: digits build the age (in days); enter arms the
+  # confirmation with the matching session set; backspace edits.
+  defp handle_picker_key(%Event.Key{code: code}, %{picker_op: {:prune, buf}} = state)
+       when code in ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"] do
+    {:noreply, %{state | picker_op: {:prune, buf <> code}}}
+  end
+
+  defp handle_picker_key(%Event.Key{code: "backspace"}, %{picker_op: {:prune, buf}} = state) do
+    {:noreply,
+     %{state | picker_op: {:prune, String.slice(buf, 0, max(String.length(buf) - 1, 0))}}}
+  end
+
+  defp handle_picker_key(%Event.Key{code: "enter"}, %{picker_op: {:prune, buf}} = state) do
+    case Integer.parse(String.trim(buf)) do
+      {days, ""} when days > 0 ->
+        ids = prune_candidates(state, days)
+
+        case ids do
+          [] ->
+            {:noreply, status_note(%{state | picker_op: nil}, "nothing older than #{days}d")}
+
+          _ ->
+            {:noreply, %{state | picker_op: {:prune_confirm, ids}}}
+        end
+
+      _ ->
+        {:noreply, %{state | picker_op: nil}}
+    end
   end
 
   defp handle_picker_key(%Event.Key{code: "backspace"}, %{picker_op: {:filter, buf}} = state) do
@@ -3123,6 +3192,12 @@ defmodule CodingAgent.UI.Tui do
       {:filter, buf} ->
         " Filter: #{buf}▌  (enter=apply, esc=clear)"
 
+      {:prune, buf} ->
+        " Prune sessions older than N days: #{buf}▌  (enter=confirm, esc=cancel)"
+
+      {:prune_confirm, ids} ->
+        " Delete #{length(ids)} session(s) older than the chosen age?  (y=confirm, any other key cancels)"
+
       nil ->
         total = visible |> Enum.map(&Map.get(&1, :size, 0)) |> Enum.sum()
         scope = if Map.get(state, :picker_all?, false), do: "all", else: "this dir"
@@ -3139,7 +3214,8 @@ defmodule CodingAgent.UI.Tui do
 
         " store: #{store}\n" <>
           " #{length(visible)} session(s), #{format_bytes(total)}  [#{scope}]#{filter}\n" <>
-          "  (enter=resume, n=new, a=all/dir, /=filter, d=delete, D=delete all, r=rename, q=quit)"
+          "  enter=resume  n=new  a=all/dir  /=filter  q=quit\n" <>
+          "  d=delete  D=delete all  r=rename  P=prune by age"
     end
   end
 

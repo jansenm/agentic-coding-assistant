@@ -90,7 +90,7 @@ Decision
    ``/tmp``; isolation is preserved and the writable set is not widened.
 3. **Lifetime = the session.** Created lazily on the first confined
    call; removed when the session is deleted or pruned
-   (``Store.delete/1`` — today's ``mix agent --session-prune`` loops
+   (``Store.delete/1`` — the picker's prune/delete loop
    over ``Store.delete/1``, so pruning inherits the cleanup; no
    ``Store.prune`` verb exists), and moved on ``Store.rename/2``. The
    cleanup is *ours* (the session lifecycle verbs), not an OS timer.

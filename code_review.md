@@ -204,8 +204,8 @@ a candidate for its own ADR (principle 5: "revisit only with a new ADR"):
    feature turns a foreign session file into an atom-exhaustion /
    code-exec vector. Fix the trust boundary before shipping export.
 
-Retention is also unowned: `--session-prune <days>` exists, but there is
-no size cap and no documented policy (principle 5).
+Retention is also unowned: prune-by-age exists (now the picker's `P`),
+but there is no size cap and no documented policy (principle 5).
 
 ---
 
@@ -256,7 +256,7 @@ leverage.
       and bulk-deletes the visible set (delete-by-directory). `Store.list`
       entries carry `:size` and `:scope_root`. Slice 2 shipped: store
       selection — `config.toml [stores]` (name → path), `--store` on
-      `mix agent`/`mix tui`, `AGENT_STORE`, and `config.toml store =`,
+      `mix tui` (the CLI was retired), `AGENT_STORE`, and `config.toml store =`,
       resolved in one `Core.Config` reader (`resolve_store/2`,
       `select_store!/2`); the picker names the active store. Not yet
       done: the engine change (per-session SQLite, agent/display tables),

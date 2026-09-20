@@ -14,13 +14,16 @@ and the ADR log under [docs/source/decisions/](docs/source/decisions/index.rst).
 
     # Requirements: Erlang/OTP 28, Elixir 1.20 (see ADR 008)
     mix deps.get
-    mix agent "Say hello"
-    mix agent --chat          # multi-turn session
+    mix tui                   # the terminal UI (the only surface)
 
-The configured default model (`ollama:glm-5.3-flash:cloud`, see
-config/config.exs) needs **no API key** — the ollama provider sends no
-Authorization header. Other providers do: copy `.env.example` to `.env`
-and fill in the key variable named there.
+The TUI is the product: sessions, the session picker/manager, approvals
+and every verb live there (`mix tui --resume <id>`, `mix tui --store
+<name|path>`). The configured model (from
+`~/.config/coding-agent/config.toml`) drives every turn.
+
+Providers may need a key: copy `.env.example` to `.env` and fill in the
+variable named there (the ollama provider sends no Authorization
+header).
 
 ## What can it do
 
