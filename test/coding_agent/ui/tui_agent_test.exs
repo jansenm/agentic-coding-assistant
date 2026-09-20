@@ -85,7 +85,13 @@ defmodule CodingAgent.UI.TuiAgentTest do
   # BOTTOM-RIGHT border. The substring assertions above are
   # position-blind and did not catch it moving to the top-left when
   # agent_block/2 started delegating to Styles.panel/1.
-  test "the input footer sits on the bottom border, right-aligned" do
+  #
+  # The composer has no frame any more (it is a filled field), so the
+  # "bottom border" is now the field's LAST row: identity on the left,
+  # status on the right. The regression this guards is the same one —
+  # the identity line must be at the BOTTOM of the input rect, not
+  # stacked above the text.
+  test "the input footer sits on the field's last row: identity left, status right" do
     pid = start_app(agent: "build")
     rows = buffer(pid)
 
@@ -95,13 +101,17 @@ defmodule CodingAgent.UI.TuiAgentTest do
       |> Enum.find(fn {r, _} -> String.contains?(r, "you → build") end)
 
     assert {row_text, idx} = footer_row
-    # bottom border: the row after it starts the status line (no box row
-    # below the footer); the footer row carries the rounded bottom glyph
-    assert String.contains?(row_text, "╰")
-    # right-aligned: the footer hugs the right edge, no box content after
-    assert String.trim_trailing(row_text) |> String.ends_with?("╯")
-    # and it is NOT the top border (the old regression put it there)
+    # no box glyphs: the frame is gone (the "c64" report)
+    refute row_text =~ "╰"
+    refute row_text =~ "╭"
+    # the status rides the SAME row, hugging the right edge
+    assert row_text =~ "○ idle"
+    assert String.trim_trailing(row_text) |> String.ends_with?("idle")
+
+    # and the identity row is BELOW everything else in the input rect:
+    # the row above it carries no identity and no typed text
     refute String.contains?(rows |> Enum.at(idx - 1), "you → build")
+    refute String.contains?(rows |> Enum.at(idx + 1), "you → build")
   end
 
   # B4: the status panel answers "which agent handles what I type, and

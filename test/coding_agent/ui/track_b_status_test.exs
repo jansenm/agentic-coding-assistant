@@ -87,7 +87,7 @@ defmodule CodingAgent.UI.TrackBStatusTest do
   end
 
   describe "status at the input (A)" do
-    test "the status renders on the input box's top border" do
+    test "the status renders on the composer's identity row, right-aligned" do
       pid = start_tui()
 
       agent(pid, {:turn_started, "build"})
@@ -95,17 +95,14 @@ defmodule CodingAgent.UI.TrackBStatusTest do
 
       rows = buffer(pid)
 
-      # the input footer (bottom border) starts with "you"
+      # ONE row carries both halves: identity (left) and status (right)
       footer = Enum.find(rows, &String.contains?(&1, "you"))
       assert footer != nil
-      assert String.contains?(footer, "╰")
-
-      # the status row is a different border row (top, ╭), carries a
-      # spinner frame and the thinking label
-      status_rows = Enum.filter(rows, &String.contains?(&1, "thinking"))
-      assert length(status_rows) >= 1
-      assert Enum.any?(status_rows, &String.contains?(&1, "╭"))
-      refute footer in status_rows
+      assert String.contains?(footer, "thinking")
+      assert String.contains?(footer, Styles.spinner(sync(pid).spin))
+      # no frame glyphs: the composer is a filled field, not a box
+      refute String.contains?(footer, "╰")
+      refute String.contains?(footer, "╭")
     end
 
     test "a started tool is named in the status" do

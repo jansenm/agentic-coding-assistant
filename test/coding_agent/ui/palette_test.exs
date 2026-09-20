@@ -3,14 +3,29 @@ defmodule CodingAgent.UI.PaletteTest do
 
   alias CodingAgent.UI.Palette
 
-  test "default/0 is the shipping scheme with three surfaces" do
+  test "default/0 is the shipping scheme with one unpainted and two painted surfaces" do
     p = Palette.default()
     assert Map.keys(p.fills) |> Enum.sort() == [:base, :chrome, :sidebar]
     assert Palette.fill(p, :base) == nil
-    assert Palette.fill(p, :chrome) == :dark_gray
-    assert Palette.fill(p, :sidebar) == :dark_gray
+    # the painted surfaces share ONE grey, so the chrome and the composer
+    # read as the same material
+    assert Palette.fill(p, :chrome) == Palette.fill(p, :sidebar)
     refute Palette.filled?(p, :base)
     assert Palette.filled?(p, :chrome)
+  end
+
+  test "the body text is stated, not themed" do
+    p = Palette.default()
+    # `:white` is ANSI 15 — a slot in the user's theme, whose rendering
+    # read as washed-out grey. The body colours are therefore explicit
+    # indexed values (see the moduledoc).
+    assert {:indexed, _} = Palette.resolve(p, :text, :base).fg
+    assert Palette.resolve(p, :text, :base).fg == Palette.resolve(p, :emphasis, :base).fg
+
+    # the SEMANTIC colors stay named: their meaning is "whatever this
+    # terminal calls yellow/red/cyan"
+    assert Palette.resolve(p, :warning, :base).fg == :yellow
+    assert Palette.resolve(p, :error, :base).fg == :red
   end
 
   test "resolution: base roles on the base surface carry no fill" do
@@ -52,7 +67,18 @@ defmodule CodingAgent.UI.PaletteTest do
     # ...and everything they did not name still inherits the default
     assert Palette.resolve(custom, :muted, :chrome).fg == :gray
     assert Palette.resolve(custom, :agent, :base).fg == :cyan
-    assert Palette.fill(custom, :chrome) == :dark_gray
+    assert Palette.fill(custom, :chrome) == Palette.fill(Palette.default(), :chrome)
+  end
+
+  test "a custom palette may name a fill outright (the composer contrast)" do
+    # the seam is not limited to named colours: a scheme that wants a
+    # specific contrast states the indexed value, exactly as the
+    # shipping scheme does
+    user = %Palette{fills: %{chrome: {:indexed, 234}}}
+    custom = Palette.merge(Palette.default(), user)
+
+    assert Palette.fill(custom, :chrome) == {:indexed, 234}
+    assert Palette.resolve(custom, :text, :chrome).bg == {:indexed, 234}
   end
 
   test "unknown role and surface raise ArgumentError" do

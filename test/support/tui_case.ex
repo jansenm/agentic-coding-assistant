@@ -127,4 +127,59 @@ defmodule CodingAgent.TuiCase do
       _ -> state
     end
   end
+
+  @doc """
+  Starts a TUI whose output is a `CellSession` instead of a real
+  terminal, and returns `{pid, session}`.
+
+  `buffer/1` carries SYMBOLS only, so it cannot answer "is this text
+  actually white" or "is this row filled". A `CellSession` surfaces the
+  rendered cell buffer itself — per-cell `(symbol, fg, bg, modifiers)` —
+  which is the only way to assert colour. Use `cells/1` / `cell/2` /
+  `row_text/2` on the returned session.
+
+  The transport is a plain `{:cell_session, session, writer}` tuple, so
+  this must go through `ExRatatui.Server` directly: `Tui.start_link/1`
+  routes through `ExRatatui.App.dispatch_start/1`, which only knows the
+  `:local`/`:ssh`/`:distributed` shapes.
+  """
+  @spec start_cell_tui(keyword(), {pos_integer(), pos_integer()}) ::
+          {pid(), ExRatatui.CellSession.t()}
+  def start_cell_tui(opts \\ [], size \\ {100, 30}) do
+    {w, h} = size
+    session = ExRatatui.CellSession.new(w, h)
+
+    start_opts =
+      [
+        mod: CodingAgent.UI.Tui,
+        test_mode: size,
+        transport: {:cell_session, session, fn _diff -> :ok end}
+      ] ++ opts
+
+    pid =
+      ExUnit.Callbacks.start_supervised!(%{
+        id: :"cell-tui-#{System.unique_integer([:positive])}",
+        start: {ExRatatui.Server, :start_link, [start_opts]}
+      })
+
+    {pid, session}
+  end
+
+  @doc "The rendered cell snapshot (symbols AND colours) of a cell session."
+  @spec cells(ExRatatui.CellSession.t()) :: ExRatatui.CellSession.Snapshot.t()
+  def cells(session), do: ExRatatui.CellSession.take_cells(session)
+
+  @doc "The cell at `(row, col)` of a snapshot."
+  @spec cell(ExRatatui.CellSession.Snapshot.t(), non_neg_integer(), non_neg_integer()) ::
+          ExRatatui.CellSession.Cell.t()
+  def cell(snapshot, row, col), do: Enum.at(snapshot.cells, row * snapshot.width + col)
+
+  @doc "One snapshot row as a string (the same text `buffer/1` would give)."
+  @spec row_text(ExRatatui.CellSession.Snapshot.t(), non_neg_integer()) :: String.t()
+  def row_text(snapshot, row) do
+    snapshot.cells
+    |> Enum.filter(&(&1.row == row))
+    |> Enum.sort_by(& &1.col)
+    |> Enum.map_join("", & &1.symbol)
+  end
 end

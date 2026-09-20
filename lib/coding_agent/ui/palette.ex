@@ -23,6 +23,21 @@ defmodule CodingAgent.UI.Palette do
   *also* dark, so `:muted` is overridden to a lighter `:gray` there. A
   palette with no such override would paint invisible text; the test
   suite asserts, for every role x filled surface, that `fg != bg`.
+
+  ## Named colours vs indexed colours (the "tempered white" report)
+
+  A named ANSI colour is not a colour, it is a *slot in the user's
+  theme*: `:white` is ANSI 15, and what that renders as is the
+  terminal's business (the observed theme put it near `#c0c0c0`, which
+  read as washed-out grey). An `{:indexed, n}` / `{:rgb, r, g, b}`
+  value is stated outright: the cell carries it and no theme can soften
+  it. So the fills and the body text — the two things the owner reads
+  for hours — are stated, while the *semantic* colours (warning, error,
+  agent, model) stay named, because their meaning is exactly "whatever
+  this terminal calls yellow/red".
+
+  That is the trade: pinned colours cost theme-adaptivity, so they are
+  spent only on contrast.
   """
 
   alias ExRatatui.Style
@@ -45,27 +60,50 @@ defmodule CodingAgent.UI.Palette do
   @typedoc "A region the app paints on."
   @type surface :: :base | :chrome | :sidebar
 
+  @typedoc """
+  A colour: a named ANSI atom, or an explicit indexed/RGB value.
+
+  Explicit values are how the scheme gets a contrast the terminal's own
+  theme cannot override — see the moduledoc.
+  """
+  @type color :: atom() | {:indexed, 0..255} | {:rgb, 0..255, 0..255, 0..255}
+
   @type t :: %__MODULE__{
-          base: %{role() => %{fg: atom(), modifiers: [atom()]}},
-          overrides: %{surface() => %{role() => atom()}},
-          fills: %{surface() => atom() | nil}
+          base: %{role() => %{fg: color(), modifiers: [atom()]}},
+          overrides: %{surface() => %{role() => color()}},
+          fills: %{surface() => color() | nil}
         }
 
   defstruct base: %{}, overrides: %{}, fills: %{}
 
+  # ANSI 8 / ANSI 15 are theme slots; these are the greys this app paints
+  # itself. 235 is #262626 (~90% black) — the owner's "90% grey", dark
+  # enough to read as a surface instead of as "just grey" on a dark
+  # terminal. 255 is #eeeeee: a soft white, one step off pure white so
+  # long text does not glare.
+  @surface_grey {:indexed, 235}
+  @body_white {:indexed, 255}
+
   @doc """
   The shipped scheme. `:base` is the terminal-default surface (no fill,
-  the transcript); `:chrome` is every overlay (menu, picker, dialog,
-  status row, input box); `:sidebar` is the status panel. The dark fills
-  of chrome/sidebar are why `:muted`/`:info`/`:reasoning` lighten there.
+  the transcript); `:chrome` is every region the app PAINTS ITSELF — the
+  overlays (menu, picker, dialog, status row) and the composer field; the
+  fills are the point: one grey, so the chrome reads as one material and
+  the composer sits on it like the rest of the frame. `:sidebar` is the
+  status panel, on the same grey.
+
+  The dark fills are why `:muted`/`:info`/`:reasoning` lighten on those
+  surfaces.
   """
   @spec default() :: t()
   def default do
     %__MODULE__{
       base: %{
-        text: %{fg: :white},
+        # the body text: stated, not themed (a theme's "white" slot read
+        # as tempered grey — see the moduledoc)
+        text: %{fg: @body_white},
         muted: %{fg: :dark_gray},
-        emphasis: %{fg: :white, modifiers: [:bold]},
+        emphasis: %{fg: @body_white, modifiers: [:bold]},
         info: %{fg: :dark_gray},
         success: %{fg: :light_green},
         warning: %{fg: :yellow},
@@ -81,7 +119,7 @@ defmodule CodingAgent.UI.Palette do
         chrome: %{muted: :gray, info: :gray, reasoning: :gray},
         sidebar: %{muted: :gray, info: :gray, reasoning: :gray}
       },
-      fills: %{base: nil, chrome: :dark_gray, sidebar: :dark_gray}
+      fills: %{base: nil, chrome: @surface_grey, sidebar: @surface_grey}
     }
   end
 
@@ -130,7 +168,7 @@ defmodule CodingAgent.UI.Palette do
   end
 
   @doc "The fill colour of a surface (`nil` = terminal default)."
-  @spec fill(t(), surface()) :: atom() | nil
+  @spec fill(t(), surface()) :: color() | nil
   def fill(%__MODULE__{fills: fills}, surface), do: Map.fetch!(fills, surface)
 
   @doc "Whether `surface` has a non-default fill."

@@ -194,6 +194,11 @@ defmodule CodingAgent.UI.Styles do
     * `:title_style` — an explicit style; pass `nil` to let a title line
       carry its own per-span styles (a block title_style would override
       them). Defaults to `role(:muted, surface)`.
+    * `:style` — the block's own area style; defaults to the surface's
+      FILL. That default is load-bearing: a widget-level style only
+      paints the rows the widget writes, so a bordered panel whose
+      content is short would show terminal background between the
+      titles. The block covers its whole rect.
   """
   @spec panel(keyword()) :: Block.t()
   def panel(opts \\ []) do
@@ -214,6 +219,7 @@ defmodule CodingAgent.UI.Styles do
       title_position: Keyword.get(opts, :title_position, :top),
       title_alignment: Keyword.get(opts, :title_alignment, :left),
       title_style: Keyword.get(opts, :title_style, role(:muted, surface)),
+      style: Keyword.get(opts, :style, surface_bg(surface)),
       padding: Keyword.get(opts, :padding, {0, 0, 0, 0})
     }
   end

@@ -43,8 +43,24 @@ defmodule CodingAgent.UI.StylesTest do
 
       for role <- @roles, surface <- @surfaces, Palette.filled?(palette, surface) do
         style = Styles.role(role, surface)
-        assert style.fg != style.bg, "#{inspect(role)} on #{surface}: fg == bg (#{style.fg})"
+
+        assert style.fg != style.bg,
+               "#{inspect(role)} on #{surface}: fg == bg (#{inspect(style.fg)})"
       end
+    end
+
+    test "the composer field is legible against its own fill" do
+      # the composer is the one surface the user types ON for hours: its
+      # text must be both distinct from the fill and a real white (an
+      # ANSI 15 "white" is a theme slot, and the observed theme rendered
+      # it as washed-out grey — the "tempered" report)
+      palette = Styles.palette()
+      fill = Palette.fill(palette, :chrome)
+      text = Styles.role(:text, :chrome)
+
+      assert text.bg == fill
+      assert text.fg != fill
+      assert {:indexed, _} = text.fg
     end
   end
 
@@ -68,8 +84,9 @@ defmodule CodingAgent.UI.StylesTest do
       %Text.Line{spans: [_, m]} = Styles.badge(:model, "glm", :chrome)
       assert a.style == Styles.role(:agent, :chrome)
       assert m.style == Styles.role(:model, :chrome)
-      # the model id sits on the input border (chrome bg dark_gray); its
-      # own color must differ from the fill, or it vanishes
+      # the model id sits on the chrome fill (the grey the composer and
+      # every overlay share); its own color must differ from the fill,
+      # or it vanishes
       assert Styles.role(:model, :chrome).fg != Styles.surface_bg(:chrome).bg
     end
   end

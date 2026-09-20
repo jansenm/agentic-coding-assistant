@@ -33,10 +33,14 @@ defmodule CodingAgent.UI.Tui do
   alias ExRatatui.Text
   alias ExRatatui.Widgets.{Block, Clear, Markdown, Paragraph, Textarea}
 
-  # input grows while typing (opencode-style): floor 4 (2 visible
-  # lines + border), grows per textarea line, caps at 12
-  @input_height 4
-  @input_max_height 12
+  # the composer grows while typing (opencode-style). It has NO border
+  # any more: the block is only the fill + title carrier, and its LAST
+  # row belongs to the identity line (a block title paints over the
+  # bottom row of the rect, so the text must never reach it — that is
+  # the measure/paint contract `input_height/1` encodes). Floor 2 lines
+  # (the old floor was 2 lines + 2 border rows).
+  @input_lines 2
+  @input_max_lines 10
   @tool_cap 30
   # how long an armed esc-to-quit stays armed (ms)
   @quit_confirm_window 3_000
@@ -66,17 +70,17 @@ defmodule CodingAgent.UI.Tui do
   # one place so the manual dimension math (mount/poller/resize/clamp)
   # floor variant for state-side math before any render / without a
   # textarea; render-side and live handlers use layout_overhead(state)
-  @layout_overhead 2 + 2 + @input_height + 1
+  @layout_overhead 2 + 2 + (@input_lines + 1) + 1
 
-  # lines typed -> input height (border included); render and the
-  # state-side clamp math MUST agree (the measure/render lesson)
+  # The composer's height: the typed lines, plus the identity row the
+  # block title owns (never painted over — see @input_lines).
   defp input_height(state) do
     lines =
       if state.textarea,
         do: max(ExRatatui.textarea_line_count(state.textarea), 1),
-        else: 2
+        else: @input_lines
 
-    min(@input_height - 2 + lines, @input_max_height - 2) + 2
+    min(lines, @input_max_lines) + 1
   end
 
   defp layout_overhead(state), do: 2 + 2 + input_height(state) + 1
@@ -2663,12 +2667,16 @@ defmodule CodingAgent.UI.Tui do
   # screen" report — Paragraphs clip at their area, so we pre-window.
 
   defp input_widget(state) do
-    # The input box reuses the same "agent box" frame as the messages
-    # (design: one box for composer + messages). Its bottom footer shows
-    # the target agent (the NEXT input's agent) and the EFFECTIVE model
-    # (the agent's definition model when set, else the session model),
-    # next to the reading measure. Identity is a BADGE (Styles), so agent
-    # and model read the same here and in the message box footers.
+    # The composer is NOT the message box any more. Messages keep their
+    # bordered "agent box" (one frame for user/assistant); the input is
+    # a filled FIELD: no frame at all, the same `:chrome` grey the rest
+    # of the app paints itself on, and one title row at the bottom
+    # carrying identity (left) and status (right). The frame read as
+    # "c64"; the fill reads as a field the text stands in.
+    #
+    # The textarea's OWN bg only fills the rows it writes (measured), so
+    # the block carries the fill AND the padding rect — that is what
+    # makes the field one continuous surface.
     agent = Map.get(state, :next_agent)
     definition_model = Map.get(state, :next_agent_model)
     session_model = Map.get(state, :model)
@@ -2678,8 +2686,9 @@ defmodule CodingAgent.UI.Tui do
     # arrow shape (asserted by tests and clearer than a label), the
     # agent and model carry their roles, and the model is labelled so a
     # bare id is never ambiguous with an agent name.
-    # the footer rides the input box's border, which is the chrome
-    # surface — every span names it, or its text vanishes into the fill
+    # every span names the `:chrome` surface — the fill is explicit
+    # there, and a role resolved for another surface would be chosen
+    # against the wrong background
     footer =
       Text.Line.new(
         [
@@ -2702,21 +2711,25 @@ defmodule CodingAgent.UI.Tui do
         |> List.flatten()
       )
 
-    # Status on the input box's TOP-RIGHT (ADR-track A/B): the question
-    # "is the model still working?" is asked at the input, so the answer
-    # sits on the input's frame. While a turn runs it names the active
-    # tool or shows the spinner + silence duration.
+    # Status on the SAME bottom row, right-aligned (it used to ride the
+    # top border): the question "is the model still working?" is asked
+    # at the input, and one title row for identity + status keeps the
+    # field a single visual band.
     status_title = %ExRatatui.Widgets.Block.Title{
       content: status_line_for_input(state),
-      position: :top,
+      position: :bottom,
       alignment: :right
     }
 
     %Textarea{
       state: state.textarea,
-      placeholder:
-        "Message the agent… (enter=newline, alt-enter=send, ctrl-t opens last tool, click to toggle)",
+      placeholder: "Message the agent… (alt-enter sends)",
+      placeholder_style: Styles.role(:muted, :chrome),
       line_number_style: nil,
+      # The text on the field: the `:text` role on the chrome surface,
+      # so it is the SAME body white as the transcript and pinned rather
+      # than inherited from the terminal ("the white looks tempered").
+      style: Styles.role(:text, :chrome),
       # The cursor is a CELL STYLE, not a hardware cursor. The dep
       # struct default is an EMPTY %Style{} — which the bridge always
       # encodes, overwriting tui-textarea's own REVERSED default, so the
@@ -2727,12 +2740,25 @@ defmodule CodingAgent.UI.Tui do
       cursor_style: %Style{modifiers: [:reversed]},
       cursor_line_style: %Style{},
       block:
-        TranscriptView.agent_block(
-          footer,
-          # accent border + focused background: the composer is the one
-          # always-active control
-          Styles.role(:accent, :chrome),
-          [status_title]
+        Styles.panel(
+          borders: [],
+          surface: :chrome,
+          # padding is {left, right, top, bottom}: one column of inset so
+          # the typed text does not touch the field's left edge (a
+          # bottom inset would eat the text row instead — the tuple is
+          # ordered, not named)
+          padding: {1, 0, 0, 0},
+          titles: [
+            %ExRatatui.Widgets.Block.Title{
+              content: footer,
+              position: :bottom,
+              alignment: :left
+            },
+            status_title
+          ],
+          # the title line carries per-span roles; a block title_style
+          # would override them
+          title_style: nil
         )
     }
   end

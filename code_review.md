@@ -273,15 +273,15 @@ leverage.
 - [ ] **P4 — Replace `test_mode?` branches with injected behaviours** where it
       has already let bugs slip.
 - [ ] **P4 (cosmetic, review F3) — the bottom status row duplicates the
-      input-border status.** The input box's top-right already renders the
+      composer's status.** The composer's own title row already renders the
       full live status (glyph + spinner + label + elapsed) via
       `status_line_for_input/1`; `status_widget_plain/1` additionally keeps
       the static `badge.label` in a full-width bottom row. Deliberate and
       provisional (option A/B), but two renderers of one concept. The row's
       only unique content now is session id, esc hints and the
       debug-gated diagnostics. When the layout is next touched: drop the
-      duplicate label (or the whole row, folding the hints into the input
-      footer) to free a terminal row, and if the label is kept make the row
+      duplicate label (or the whole row, folding the hints into the composer
+      title row) to free a terminal row, and if the label is kept make the row
       consume `Styles.status_line/5` instead of `badge.label` directly so
       there is one source.
 - [ ] **P4 (cosmetic, Track B step 6/E) — glyph passes.** The status
@@ -418,6 +418,26 @@ footer use role-styled identity; the sidebar is a `definition_list` with
 a truthful `" status "` title and agent badges. `styles_test.exs` covers
 the vocabulary. Not done: a swappable theme (step 5 — deliberately, no
 config surface is wanted yet).
+
+**Revised (visual pass, see `ui_redesign.md`).** Three things changed on
+live feedback:
+
+- the **fills and the body text are now stated indexed colours**, not
+  named ANSI slots. A named colour is a slot in the user's theme, and the
+  observed theme rendered ANSI 15 as washed-out grey (the "text looks
+  tempered" report) and ANSI 8 as near-invisible. The *semantic* colours
+  (warning/error/agent/model/user/accent) stay named on purpose — their
+  meaning is "whatever this terminal calls red/cyan".
+- the **composer is no longer a box**. It is a filled field on the chrome
+  grey with no border, its identity line and the status sharing one bottom
+  row (`Styles.panel(borders: [], surface: :chrome, titles: [...])`). The
+  frame read as "c64"; measuring showed a widget-level bg fills only the
+  rows the widget writes, so `Styles.panel/1` now defaults the block's
+  `style` to the surface fill. `input_height/1` reserves one line for the
+  bottom title (it used to reserve two border rows) — `measure = paint`.
+- colours are asserted through `ExRatatui.CellSession` (`TuiCase.start_cell_tui/2`,
+  `cells/1`, `cell/3`): `buffer/1` carries symbols only and can never catch
+  a colour regression (`test/coding_agent/ui/tui_cells_test.exs`).
 
 Goal: a small, central vocabulary for "how a piece of information looks", so
 that every surface renders the same concept the same way. Today there is no
@@ -595,19 +615,21 @@ so activity must be visible.**
 Layout (`render_main/2`, `tui.ex:1810-1861`):
 
 ```
-┌─ sidebar (right) ─┐
+┌─ sidebar (left) ──┐
 │                   │   transcript (middle, reading measure)
 │                   │
-│                   │   ┌─ input box ────────────┐
-│                   │   └── you → plan · glm-5.3 ─┘
-│                   │
+│                   │   ▏composer: a filled field, no frame
+│                   │   ▏you → plan · glm-5.3        ⠋ running mix
 └───────────────────┘   status row (bottom, full width, 1 line)
 ```
 
 - The status row is split off first, full width, at the very bottom
-  (`tui.ex:1820-1824`), while the input box is only reading-measure wide
+  (`tui.ex:1820-1824`), while the composer is only reading-measure wide
   (`tui.ex:1840-1844`). So the status is visually detached from both the input
-  and the transcript.
+  and the transcript. (The composer is a **filled field with no frame** since
+  the visual pass — `borders: []`, the chrome grey, one bottom title row for
+  identity + status. The remaining duplication above still stands: the bottom
+  row repeats the label.)
 - `status_widget_plain/1` (`tui.ex:2671-2715`) packs four unrelated things into
   that one line: session id, a glyph + status label, esc-confirm hints, and
   **scroll diagnostics** (`scroll: 3/120 (48 entries, tools shut, h: 22 w: 78)`).
@@ -762,9 +784,10 @@ error, approval) and leave prose alone.
 **IMPLEMENTED (steps 1-5).** Status/activity shipped:
 
 - step 1: `Styles.status_badge/1` + roles (in the `Styles` pass);
-- step 2 (A): the status badge + spinner render on the input box's
-  TOP-RIGHT border (`status_line_for_input/1`), the identity footer stays
-  bottom-right;
+- step 2 (A): the status badge + spinner render next to the composer's
+  identity line (originally the input box's TOP-RIGHT border; since the
+  visual pass the composer is a borderless filled field and the two share
+  its bottom row — see `ui_redesign.md`);
 - step 3 (D): the scroll diagnostics are behind `debug_visible?`
   (`ctrl-x d`); the bottom row now carries esc hints + the status label;
 - step 4 (C.1/C.2): a `subscriptions/1` spinner (`:spinner`, 120ms) runs
