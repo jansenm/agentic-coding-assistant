@@ -1061,5 +1061,5 @@ Root cause, read from the tree and the mount table:
 Fix: `bf59a58` (resolve the per-worktree gitdir from the gitfile AND the
 shared common dir from `commondir`, bind `--ro-bind` for shell and
 `--bind` for git_write; `argv/3` stays pure). Live-verified from the
-worktree session: probe commits `e721599`/`14c1b05` (create + release
-`index.lock` twice) both landed — the finding is closed.
+worktree session with two throwaway probe commits (create + release
+`index.lock` twice, since reverted) — the finding is closed.
