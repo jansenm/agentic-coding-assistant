@@ -358,49 +358,33 @@ mechanism is not pinned, that is said plainly instead of guessed.
       tools (`webfetch`) and subagents to be worth entering. Until (1) and (2)
       are answered, plan stays decorative.
 
-- [ ] **B7 — `/tmp` scratch does not survive between tool calls, so an
-      agent cannot build state across calls.** Found by dog-fooding: the
-      agent wrote intermediate files to `/tmp`, and the next tool call
-      found the directory empty. Root cause read from the tree: every
-      tool call runs in a **fresh bwrap namespace**, and the sandbox
-      always mounts a new tmpfs over `/tmp`
+- [~] **B7 — `/tmp` scratch does not survive between tool calls, so an
+      agent cannot build state across calls.** Direction settled in
+      **ADR 022** (`docs/source/decisions/022-session-scratch.rst`,
+      *Proposed*): a per-session host scratch dir (``$TMPDIR`` with a
+      ``/tmp`` fallback) is bound over ``/tmp`` inside the sandbox, with
+      ``TMPDIR=/tmp`` exported, and cleaned by the session lifecycle
+      verbs. The slice (scope seam, ``Session.Scratch``, ``Bwrap`` bind,
+      store cleanup) is outlined in the ADR's implementation order.
+
+      Symptom (original finding): the agent wrote intermediate files to
+      `/tmp`, and the next tool call found the directory empty. Root
+      cause read from the tree: every tool call runs in a **fresh bwrap
+      namespace**, and the sandbox always mounts a new tmpfs over `/tmp`
       (`lib/coding_agent/core/sandbox/bwrap.ex:210` —
       `["--size", @tmpfs_bytes, "--tmpfs", "/tmp"]`). A tmpfs dies with
-      its namespace, so `/tmp` is per-call scratch by construction.
-
-      This is a real workflow blocker, not cosmetic: `/tmp` is the
-      natural scratch space for "run something now, inspect its output
-      next call" (build artifacts, captured command output, a diff
-      applied and then verified), and that pattern cannot work when the
-      namespace is torn down between calls.
-
-      Fix direction (a decision to settle, not a code fix):
-      1. **Persistent scratch bind.** Bind a per-session scratch dir
-         (e.g. under the session store / `Core.Config.state_dir`) at a
-         stable path inside the sandbox — could be `/tmp` itself or a
-         dedicated `/workspace/.scratch`. Needs a lifecycle decision
-         (per session? cleaned on session end? size cap?) and a
-         visibility decision (agent-visible only, or surfaced in the
-         TUI).
-      2. **Document the constraint.** If persistent scratch is
-         deliberately denied (confinement purity), say so where the
-         agent sees it (AGENTS.md/prompt) and point it at the scope root
-         instead — but note the scope root is the user's repo, so
-         "write scratch into my repo" is not an acceptable default.
-      3. Keep the tmpfs for everything else: the ephemeral `/tmp` is
-         still the right default for untrusted scratch; only the
-         persistence of a chosen subdir is in question.
-
-      The cleanest shape is likely (1) + (3): one named, per-session,
-      capped scratch directory bound read-write over the tmpfs, with
-      `/tmp` otherwise still ephemeral. Decide where it lives and how
-      it is cleaned.
+      its namespace, so `/tmp` is per-call scratch by construction. This
+      is a real workflow blocker, not cosmetic: `/tmp` is the natural
+      scratch space for "run something now, inspect its output next
+      call" (build artifacts, captured command output, a diff applied
+      and then verified).
 
 **Status (2026-09-19, after Track A/B).** B1, B2 and B4 are **done**; the
 `Styles` vocabulary, the one-authority input executor (ADR 021) and the
 status/activity spinner (Track B) shipped. B5 (input wrap) is **deferred
-by owner decision**; B3 (file picker) and B7 (persistent `/tmp` scratch)
-are open; B6's direction is settled (plan is a signal to the agent, not a
+by owner decision**; B3 (file picker) is open, and B7 (persistent `/tmp`
+scratch) has its direction settled in ADR 022 (*Proposed*, implementation
+pending); B6's direction is settled (plan is a signal to the agent, not a
 sandbox mode) and needs only the plan definition decided. The glyph
 passes (E) are the remaining cosmetic work.
 
