@@ -374,8 +374,12 @@ database rather than per-session `term_to_binary` blobs:
   problem a DB makes disappear;
 - the **ticket/coordination store** wants relational shape (`relate` to a
   session, to a finding, comment history) that blobs cannot express;
-- **B7 (persistent scratch)** wants per-session state with a lifecycle —
-  a row/table is the natural home, not a sidecar file;
+- **B7 (persistent scratch)** — superseded as a store argument: ADR 022
+  (2026-09-20) resolves session scratch as a host directory derived
+  from the session id, cleaned by the existing session-lifecycle verbs,
+  with no bookkeeping row. What remains store-shaped is only the
+  lifecycle bookkeeping (scratch cleanup riding `Store.delete`), not
+  scratch state itself;
 - and the **dual view** of ADR 020 (agent view vs immutable display view)
   is two tables, not two blob shapes.
 

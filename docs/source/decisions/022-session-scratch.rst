@@ -90,7 +90,9 @@ Decision
    ``/tmp``; isolation is preserved and the writable set is not widened.
 3. **Lifetime = the session.** Created lazily on the first confined
    call; removed when the session is deleted or pruned
-   (``Store.delete/1``/``prune``), and moved on ``Store.rename/2``. The
+   (``Store.delete/1`` — today's ``mix agent --session-prune`` loops
+   over ``Store.delete/1``, so pruning inherits the cleanup; no
+   ``Store.prune`` verb exists), and moved on ``Store.rename/2``. The
    cleanup is *ours* (the session lifecycle verbs), not an OS timer.
 4. **No new size cap in v1.** The per-file ``ulimit -f`` from ADR 015
    still applies. A whole-directory quota is deliberately left open
@@ -156,7 +158,8 @@ Consequences
 - ADR 015's scratch-tmpfs cap is replaced by the session lifetime plus
   ``ulimit -f``; the tmpfs-size figure (``@tmpfs_bytes``) becomes
   meaningful only for the fallback path.
-- ``Store.delete/1`` and ``prune`` gain a scratch-removal step and
+- ``Store.delete/1`` gains a scratch-removal step (pruning loops over
+  ``Store.delete/1`` in the mix task, so it inherits the cleanup) and
   ``Store.rename/2`` a move — the existing lifecycle verbs, no new
   surface.
 - The ``bwrap_test`` case "scratch tmpfs comes before the scope bind"
@@ -189,7 +192,8 @@ Implementation order (slice)
    scope; ``Bwrap.argv/3`` emits ``--bind <scratch> /tmp`` (or the
    fallback tmpfs when absent) and the prelude exports ``TMPDIR=/tmp``;
    ``Bwrap.wrap/2`` ensures the directory.
-4. ``Store.delete/1``/``prune`` call ``Scratch.remove/1``;
+4. ``Store.delete/1`` calls ``Scratch.remove/1`` (pruning loops over
+   ``Store.delete/1`` in the mix task, so it inherits the cleanup);
    ``Store.rename/2`` moves the directory.
 5. Acceptance demo: two separate shell calls in one session — write a
    file to ``/tmp`` in the first, read it in the second (must succeed),

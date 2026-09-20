@@ -1035,3 +1035,31 @@ terminal:
 - The tick handler is a pure state increment — inject `:__spin__` and assert the
   step advanced, then render and assert the buffer changed (the existing
   `TuiCase.buffer/1` + `fire/2` helpers already support this pattern).
+
+---
+
+## Dogfood finding (2026-09-20): the git tool could not commit from a worktree checkout
+
+Found by dogfooding (review agent session in the worktree
+`agentic-coding-assistant-mjansen`): `git commit` failed with
+`Unable to create …/.git/worktrees/…/index.lock: Read-only file system`
+in EVERY profile, including the `git` tool's own `git_write: true` one.
+
+Root cause, read from the tree and the mount table:
+
+- The scope root is bound read-write (`--bind root root`), which covers
+  an in-tree `.git` — the plain-checkout case works.
+- A **worktree checkout's `.git` is a gitfile** naming a gitdir OUTSIDE
+  the scope root. Nothing bound that gitdir read-write; it was only
+  covered by the read-only `/` base bind, so `index.lock` failed (EROFS).
+- The `git` tool's premise ("grants `git_write: true`, so the agent can
+  commit") silently failed for every worktree checkout — and the sandbox
+  tests could not catch it: their `triple_in/2` matcher matched
+  non-consecutive runs, so bind assertions could pass against the wrong
+  argv window (found and fixed in the same pass).
+
+Fix: `bf59a58` (resolve the per-worktree gitdir from the gitfile AND the
+shared common dir from `commondir`, bind `--ro-bind` for shell and
+`--bind` for git_write; `argv/3` stays pure). Live-verified from the
+worktree session: probe commits `e721599`/`14c1b05` (create + release
+`index.lock` twice) both landed — the finding is closed.
