@@ -146,7 +146,7 @@ defmodule CodingAgent.UI.TuiPickerTest do
 
       # the header states which store these sessions belong to
       assert joined =~ "store: "
-      assert joined =~ CodingAgent.Core.Session.Store.dir()
+      assert joined =~ CodingAgent.Core.Session.Store.path()
     end
 
     test "the picker advertises every management verb, incl. prune", %{root: root} do

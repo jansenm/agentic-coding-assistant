@@ -6,7 +6,7 @@
 test_root = Path.join(System.tmp_dir!(), "coding-agent-test-store-#{System.unique_integer()}")
 test_store = Path.join(test_root, "store.db")
 
-Application.put_env(:coding_agent, :store_dir, test_store)
+Application.put_env(:coding_agent, :store_path, test_store)
 
 # tests are LLM-free: a fixed cheap spec satisfies the no-default-model
 # rule without touching config.exs (which no longer carries a model)

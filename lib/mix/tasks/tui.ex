@@ -52,7 +52,7 @@ defmodule Mix.Tasks.Tui do
       )
 
     # Pin the store before the TUI mounts: the picker, the log path and
-    # every session read `Store.dir/0` (the flag, else AGENT_STORE/config).
+    # every session read `Store.path/0` (the flag, else AGENT_STORE/config).
     CodingAgent.Core.Config.select_store!(opts[:store])
 
     prompt =

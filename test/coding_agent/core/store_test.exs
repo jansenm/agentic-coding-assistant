@@ -19,17 +19,17 @@ defmodule CodingAgent.Core.Session.StoreTest do
   # the store active at test-compile time: the global test_helper sets an
   # isolated path; restore it on exit instead of nil (nil would expose
   # the user's real storage to later tests)
-  @prev_store_dir Application.compile_env(:coding_agent, :store_dir)
+  @prev_store_dir Application.compile_env(:coding_agent, :store_path)
 
   setup do
     # isolate: tests run against their own store, never the user's real
     # session storage (an earlier version wiped real sessions once)
-    Application.put_env(:coding_agent, :store_dir, @store_path)
+    Application.put_env(:coding_agent, :store_path, @store_path)
     File.rm_rf!(@tmp_root)
     File.mkdir_p!(@scope_dir)
 
     on_exit(fn ->
-      Application.put_env(:coding_agent, :store_dir, @prev_store_dir)
+      Application.put_env(:coding_agent, :store_path, @prev_store_dir)
       File.rm_rf!(@tmp_root)
     end)
 
@@ -509,7 +509,7 @@ defmodule CodingAgent.Core.Session.StoreTest do
 
     Store.save(st)
 
-    # note: store_dir is overridden for this test, so the registry-keyed
+    # note: the store path is overridden for this test, so the registry-keyed
     # live session started by the supervisor persists into @scope_dir too
     {:ok, pid} =
       Session.Supervisor.start_session(id: "ren-live", scope_root: @scope_dir)

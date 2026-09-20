@@ -3210,7 +3210,7 @@ defmodule CodingAgent.UI.Tui do
 
         # the ACTIVE store names itself (ADR 020 R16): sessions from
         # different stores must never be confused for one another
-        store = Store.dir()
+        store = Store.path()
 
         " store: #{store}\n" <>
           " #{length(visible)} session(s), #{format_bytes(total)}  [#{scope}]#{filter}\n" <>

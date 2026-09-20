@@ -425,8 +425,8 @@ Slice order
    ``AGENT_STORE``; picker shows and switches the active store.
    **Shipped** (selection, not runtime switching — resolve at launch).
    ``Core.Config.resolve_store/2`` maps a selector (a ``[stores]`` name
-   or an absolute/``~`` path) to a directory; ``select_store!/2`` sets
-   the ``:store_dir`` seam; ``--store`` on ``mix tui`` (``mix agent``
+   or an absolute/``~`` path) to a store DB path; ``select_store!/2``
+   sets the ``:store_path`` seam; ``--store`` on ``mix tui`` (``mix agent``
    was retired 2026-09-20 — the TUI is the only surface),
    ``AGENT_STORE`` and ``config.toml store =`` are one reader with a
    strict precedence (explicit override > ``AGENT_STORE`` > config >

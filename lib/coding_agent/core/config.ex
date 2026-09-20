@@ -146,15 +146,15 @@ defmodule CodingAgent.Core.Config do
   def reasoning_effort, do: app(:reasoning_effort, nil)
 
   @doc """
-  The base state directory: the `:store_dir` test override's parent, or
+  The base state directory: the `:store_path` test override's parent, or
   `$XDG_STATE_HOME/coding_agent` (or `~/.local/state/coding_agent`).
-  Logs and other non-session state live alongside `sessions/`.
+  Logs and other non-session state live alongside the store DB.
   """
   @spec state_dir() :: String.t()
   def state_dir do
-    case app(:store_dir, nil) do
-      dir when is_binary(dir) ->
-        Path.dirname(dir)
+    case app(:store_path, nil) do
+      path when is_binary(path) ->
+        Path.dirname(path)
 
       _ ->
         base = System.get_env("XDG_STATE_HOME") || Path.join(System.user_home!(), ".local/state")
@@ -163,36 +163,33 @@ defmodule CodingAgent.Core.Config do
   end
 
   @doc """
-  The active session store (ADR 020 R16). A store is the selectable DB
-  path holding many sessions; the selector resolves to that path. Until
-  the SQLite engine lands (ADR 020, pending slice) the path is a
-  directory of per-session blob files — the *selector* and its
-  precedence are already the final shape.
+  The active session store: the path of the SQLite database that holds
+  many sessions (ADR 020 R16, ADR 023).
 
   Precedence, strongest first:
 
-    1. the `:store_dir` application-env value — the test seam, and what
+    1. the `:store_path` application-env value — the test seam, and what
        the `--store` flag sets after resolving a selector;
     2. `AGENT_STORE` (a name or a path);
     3. `config.toml` `store = "<name|path>"`;
-    4. the default `state_dir()/sessions`.
+    4. the default `state_dir()/store.db`.
 
   A configured selector that cannot be resolved **raises** rather than
   silently falling back — a store is a deliberate choice, and quietly
-  writing sessions to the wrong directory is worse than a loud failure.
+  writing sessions to the wrong database is worse than a loud failure.
   """
-  @spec store_dir() :: String.t()
-  def store_dir do
-    case app(:store_dir, nil) do
-      dir when is_binary(dir) ->
-        dir
+  @spec store_path() :: String.t()
+  def store_path do
+    case app(:store_path, nil) do
+      path when is_binary(path) ->
+        path
 
       _ ->
         # No explicit override: resolve the ambient selector. This reads
         # config, so the CLI tasks PIN the store at startup
         # (`select_store!/1`) and the hot paths never reach here.
-        case ambient_store_dir() do
-          {:ok, dir} -> dir
+        case ambient_store_path() do
+          {:ok, path} -> path
           {:error, reason} -> raise store_error(ambient_selector(), reason)
         end
     end
@@ -210,17 +207,20 @@ defmodule CodingAgent.Core.Config do
     end
   end
 
-  defp ambient_store_dir do
+  # The default store path when no selector is configured.
+  defp default_store_path, do: Path.join(state_dir(), "store.db")
+
+  defp ambient_store_path do
     case ambient_selector() do
-      nil -> {:ok, Path.join(state_dir(), "sessions")}
+      nil -> {:ok, default_store_path()}
       selector -> resolve_store(selector)
     end
   end
 
   @doc """
   Resolves a store selector — a name from `config.toml`'s `[stores]`
-  table, or an absolute / `~`-rooted path — to a directory. Names are
-  looked up; anything that is neither a known name nor a path is an
+  table, or an absolute / `~`-rooted path — to the store DB path. Names
+  are looked up; anything that is neither a known name nor a path is an
   error (never guessed). Relative paths are refused for the same reason
   sandbox mounts are: they would resolve against a varying CWD.
   """
@@ -252,9 +252,9 @@ defmodule CodingAgent.Core.Config do
   end
 
   @doc """
-  Pins the active store for the process and returns the directory,
-  setting the `:store_dir` app env (the same seam `store_dir/0`, `Store`
-  and the test suite read).
+  Pins the active store for the process and returns the DB path, setting
+  the `:store_path` app env (the same seam `store_path/0`, `Store` and
+  the test suite read).
 
   With a `selector` (a `--store` flag value), that choice wins and an
   unresolvable one **raises** — a flag that silently fell back would
@@ -262,7 +262,7 @@ defmodule CodingAgent.Core.Config do
   ambient selector (`AGENT_STORE` / `config.toml store =`) is resolved,
   falling back to the default location.
 
-  Entry points call this **once at startup**, so `store_dir/0` stays a
+  Entry points call this **once at startup**, so `store_path/0` stays a
   cheap app-env read on hot paths (the config is not re-read per frame —
   the per-frame `UserConfig.load` CPU-storm lesson).
   """
@@ -277,27 +277,24 @@ defmodule CodingAgent.Core.Config do
   # No flag: keep an already-pinned store (the strongest layer), else
   # resolve the ambient selector / default and pin that.
   def select_store!(nil, scope_root) do
-    case app(:store_dir, nil) do
-      dir when is_binary(dir) -> dir
+    case app(:store_path, nil) do
+      path when is_binary(path) -> path
       _ -> pin_store!(ambient_selector(), scope_root)
     end
   end
 
-  defp pin_store!(nil, _scope_root) do
-    dir = Path.join(state_dir(), "sessions")
-    Application.put_env(:coding_agent, :store_dir, dir)
-    dir
-  end
+  defp pin_store!(nil, _scope_root), do: put_store_path(default_store_path())
 
   defp pin_store!(selector, scope_root) do
     case resolve_store(selector, scope_root) do
-      {:ok, dir} ->
-        Application.put_env(:coding_agent, :store_dir, dir)
-        dir
-
-      {:error, reason} ->
-        raise store_error(selector, reason)
+      {:ok, path} -> put_store_path(path)
+      {:error, reason} -> raise store_error(selector, reason)
     end
+  end
+
+  defp put_store_path(path) do
+    Application.put_env(:coding_agent, :store_path, path)
+    path
   end
 
   defp store_path?(selector) do

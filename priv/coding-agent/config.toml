@@ -78,7 +78,7 @@ hide = []
 #   [stores]                named stores: name -> absolute path
 #
 # Selection precedence: `--store` flag > AGENT_STORE env > `store =` here
-# > the default (~/.local/state/coding_agent). A selector that cannot be
+# > the default (~/.local/state/coding_agent/store.db). A selector that cannot be
 # resolved is an error, never a silent fallback.
 #
 # Example:

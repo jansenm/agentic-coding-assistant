@@ -179,10 +179,10 @@ defmodule CodingAgent.UI.TuiAgentTest do
       # shared id would hand the second test the first test's live
       # session (or a stale one) instead of resuming the saved snapshot.
       # the store is one SQLite DB file (ADR 020): give this suite its own
-      dir = Application.get_env(:coding_agent, :store_dir)
-      Application.put_env(:coding_agent, :store_dir, Path.join(@tmp_root, "store.db"))
+      dir = Application.get_env(:coding_agent, :store_path)
+      Application.put_env(:coding_agent, :store_path, Path.join(@tmp_root, "store.db"))
 
-      on_exit(fn -> if dir, do: Application.put_env(:coding_agent, :store_dir, dir) end)
+      on_exit(fn -> if dir, do: Application.put_env(:coding_agent, :store_path, dir) end)
 
       id = "resume-agent-#{System.unique_integer([:positive])}"
 

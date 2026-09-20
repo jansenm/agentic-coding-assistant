@@ -60,12 +60,7 @@ defmodule CodingAgent.Core.Session.Store do
   `Core.Config` (one reader); this is the typed accessor.
   """
   @spec path() :: String.t()
-  def path, do: CodingAgent.Core.Config.store_dir()
-
-  # The old name, kept so callers that referred to the store as a
-  # directory do not silently mean the wrong thing; it is now the DB path.
-  @doc false
-  def dir, do: path()
+  def path, do: CodingAgent.Core.Config.store_path()
 
   # -- Schema -----------------------------------------------------------------
 
