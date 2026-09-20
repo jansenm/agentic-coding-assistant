@@ -1,33 +1,50 @@
 defmodule CodingAgent.UI.StylesTest do
   use ExUnit.Case, async: true
 
-  alias CodingAgent.UI.Styles
+  alias CodingAgent.UI.{Palette, Styles}
   alias ExRatatui.Text
 
+  @roles [
+    :text,
+    :muted,
+    :emphasis,
+    :user,
+    :agent,
+    :model,
+    :accent,
+    :reasoning,
+    :info,
+    :warning,
+    :error,
+    :success
+  ]
+
+  @surfaces [:base, :chrome, :sidebar]
+
   describe "roles" do
-    test "every role returns a %Style{} and unknown roles raise" do
-      for role <- [
-            :muted,
-            :value,
-            :user,
-            :agent,
-            :model,
-            :accent,
-            :reasoning,
-            :info,
-            :warning,
-            :error,
-            :success
-          ] do
-        assert %ExRatatui.Style{} = Styles.role(role)
+    test "every role on every surface returns a %Style{}; unknown roles raise" do
+      for role <- @roles, surface <- @surfaces do
+        assert %ExRatatui.Style{} = Styles.role(role, surface)
       end
 
       bad = String.to_atom("not_a_role")
       assert_raise ArgumentError, fn -> Styles.role(bad) end
     end
 
-    test "muted is one role (no gray/dark_gray split)" do
+    test "muted is dark_gray on the base surface" do
       assert Styles.role(:muted).fg == :dark_gray
+    end
+
+    test "the palette never paints a role in its own surface's fill" do
+      # The grey-bear invariant: for every role on every FILLED surface,
+      # the foreground must differ from the background. A new role or
+      # surface that collides fails here, not in the user's eyes.
+      palette = Styles.palette()
+
+      for role <- @roles, surface <- @surfaces, Palette.filled?(palette, surface) do
+        style = Styles.role(role, surface)
+        assert style.fg != style.bg, "#{inspect(role)} on #{surface}: fg == bg (#{style.fg})"
+      end
     end
   end
 
@@ -47,13 +64,13 @@ defmodule CodingAgent.UI.StylesTest do
     end
 
     test "the value role is per-kind (agent cyan, model legible on chrome)" do
-      %Text.Line{spans: [_, a]} = Styles.badge(:agent, "build")
-      %Text.Line{spans: [_, m]} = Styles.badge(:model, "glm")
-      assert a.style == Styles.role(:agent)
-      assert m.style == Styles.role(:model)
+      %Text.Line{spans: [_, a]} = Styles.badge(:agent, "build", :chrome)
+      %Text.Line{spans: [_, m]} = Styles.badge(:model, "glm", :chrome)
+      assert a.style == Styles.role(:agent, :chrome)
+      assert m.style == Styles.role(:model, :chrome)
       # the model id sits on the input border (chrome bg dark_gray); its
       # own color must differ from the fill, or it vanishes
-      assert Styles.role(:model).fg != Styles.chrome_bg().bg
+      assert Styles.role(:model, :chrome).fg != Styles.surface_bg(:chrome).bg
     end
   end
 
@@ -62,7 +79,7 @@ defmodule CodingAgent.UI.StylesTest do
       [row] = Styles.definition_list([{"effort", "default"}])
       assert %Text.Line{spans: [label, value]} = row
       assert label.style == Styles.role(:muted)
-      assert value.style == Styles.role(:value)
+      assert value.style == Styles.role(:text)
 
       [nil_row] = Styles.definition_list([{"cost", nil}])
       assert %Text.Line{spans: [_, v]} = nil_row

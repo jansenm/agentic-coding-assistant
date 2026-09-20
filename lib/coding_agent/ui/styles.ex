@@ -3,85 +3,78 @@ defmodule CodingAgent.UI.Styles do
   The one home for "how a piece of information looks" (presentation
   vocabulary).
 
-  Call sites name a semantic ROLE, never a raw color. Changing what
-  "muted" looks like is then a one-line edit here, and `:gray` vs
-  `:dark_gray` stops being a per-author guess. This is deliberately not a
-  theme: there is one palette, no config surface.
+  Call sites name a semantic ROLE and, when they paint on a non-default
+  region, a SURFACE (`:base`, `:chrome`, `:sidebar`) — never a raw color.
+  Changing what "muted" looks like is a one-line edit in
+  `CodingAgent.UI.Palette`, and `:gray` vs `:dark_gray` stops being a
+  per-author guess.
+
+  The role/surface split exists because one colour cannot serve every
+  region: `:muted` is `dark_gray` on the base surface, but the chrome and
+  sidebar fills are *also* dark, so on those surfaces `:muted` must
+  lighten (see `Palette`). A role used on a surface without that
+  override would paint invisible text — the "grey bear in a snowstorm"
+  bug — so the palette resolves per surface, and the test suite asserts,
+  for every role x filled surface, that `fg != bg`.
 
   Rules this module encodes (see `code_review.md`, UI styling):
 
-  - One meaning per color role; call sites name the role.
+  - One meaning per role; call sites name the role (and surface).
   - All borders `:rounded`; the border color is chosen by role
     (`:accent` for focused/input, `:muted` for passive panels,
     `:warning` for the approval gate).
-  - Muted text is one role (`:muted`); there is no `:gray`/`:dark_gray`
-    split.
   - Identity (agent, model) always uses a badge.
   - Label/value rows always come from `definition_list/1`.
 
   Pure presentation: no config, no domain. A caller prepares a status
   struct and this module only paints it.
-
-  ## Deliberate role aliases
-
-  Two roles currently resolve to the same `%Style{}` as another. That is
-  intentional, not an oversight — kept as distinct roles so the next
-  author can change one without moving the other:
-
-  - `:info` == `:muted`: informational transcript lines are muted.
-  - `:agent` == `:accent`: the agent hue doubles as the focused-chrome
-    hue. They are separate roles because "who answered" and "what is
-    focused" are different meanings that happen to share a colour today.
-
-  If you change one of a pair, decide explicitly whether the other moves
-  with it; the role names are the place to record that decision.
   """
 
+  alias CodingAgent.UI.Palette
   alias ExRatatui.Style
   alias ExRatatui.Text
   alias ExRatatui.Widgets.Block
 
+  @typedoc "A semantic style role (re-exported from `Palette`)."
+  @type role :: Palette.role()
+
+  @typedoc "A region the app paints on (re-exported from `Palette`)."
+  @type surface :: Palette.surface()
+
+  # The active palette. A module attribute today (the shipped scheme); a
+  # future user theme merges into `Palette.default()` and is read here —
+  # the seam already exists, so no call site changes.
+  @palette Palette.default()
+
+  @doc "The active palette (the seam a user theme would replace)."
+  @spec palette() :: Palette.t()
+  def palette, do: @palette
+
   # -- roles -----------------------------------------------------------------
 
-  @typedoc "A semantic style role."
-  @type role ::
-          :muted
-          | :value
-          | :user
-          | :agent
-          | :model
-          | :accent
-          | :reasoning
-          | :info
-          | :warning
-          | :error
-          | :success
+  @doc """
+  The `%Style{}` for a semantic role on a surface. The only place raw
+  colors are chosen (via `Palette`). Unknown roles raise (a typo should
+  not silently render default-styled).
+  """
+  @spec role(role(), surface()) :: Style.t()
+  def role(name, surface \\ :base), do: Palette.resolve(palette(), name, surface)
 
   @doc """
-  The `%Style{}` for a semantic role. This is the only place raw colors
-  are chosen. Unknown roles raise (a typo should not silently render
-  default-styled).
+  The full-surface style: the `:text` role on `surface`, including that
+  surface's background. Use as a widget-level style for a body whose
+  spans carry no roles of their own.
   """
-  @spec role(role()) :: Style.t()
-  def role(:muted), do: %Style{fg: :dark_gray}
-  def role(:value), do: %Style{fg: :white}
-  def role(:user), do: %Style{fg: :magenta, modifiers: [:bold]}
-  def role(:agent), do: %Style{fg: :cyan, modifiers: [:bold]}
-  # NOT `:muted`: the model id sits on the input box's border, whose
-  # chrome background is `:dark_gray` — muted (= dark_gray) was invisible
-  # there ("grey bear in a snowstorm", found live). A distinct, legible
-  # value color, matching the other identity roles.
-  def role(:model), do: %Style{fg: :light_cyan}
-  def role(:accent), do: %Style{fg: :cyan, modifiers: [:bold]}
-  def role(:reasoning), do: %Style{fg: :dark_gray, modifiers: [:italic]}
-  def role(:info), do: %Style{fg: :dark_gray}
-  def role(:warning), do: %Style{fg: :yellow}
-  def role(:error), do: %Style{fg: :red}
-  def role(:success), do: %Style{fg: :light_green}
+  @spec surface(surface()) :: Style.t()
+  def surface(name), do: role(:text, name)
 
-  def role(other) do
-    raise ArgumentError, "unknown style role: #{inspect(other)}"
-  end
+  @doc """
+  Background only: the surface's fill, no foreground, so a line's spans
+  keep their own roles. Use as the widget style of a bar (e.g. the
+  status row) whose spans are already role-styled.
+  """
+  @spec surface_bg(surface()) :: Style.t()
+  def surface_bg(name), do: %Style{bg: Palette.fill(palette(), name)}
 
   # -- badges ----------------------------------------------------------------
 
@@ -93,40 +86,37 @@ defmodule CodingAgent.UI.Styles do
   line-like `%Text.Line{}` (usable in a `Block` title, a `Paragraph`, a
   table cell). `nil` values render as the bare label in `:muted` so a
   missing identity is honest, not blank.
-
-  The value color is the identity role: `:agent` for agents, `:model`
-  for models, `:user` for the user, `:value` for anything else.
   """
-  @spec badge(badge_kind(), String.t() | nil) :: Text.Line.t()
-  def badge(kind, value) do
+  @spec badge(badge_kind(), String.t() | nil, surface()) :: Text.Line.t()
+  def badge(kind, value, surface \\ :base) do
     label = to_string(kind)
-    value_style = badge_value_style(kind)
+    value_style = badge_value_style(kind, surface)
 
     spans =
       case value do
         v when is_binary(v) and v != "" ->
           [
-            Text.Span.new("#{label} ", style: role(:muted)),
+            Text.Span.new("#{label} ", style: role(:muted, surface)),
             Text.Span.new(v, style: value_style)
           ]
 
         _ ->
-          [Text.Span.new(label, style: role(:muted))]
+          [Text.Span.new(label, style: role(:muted, surface))]
       end
 
     Text.Line.new(spans)
   end
 
-  defp badge_value_style(:agent), do: role(:agent)
-  defp badge_value_style(:model), do: role(:model)
-  defp badge_value_style(:user), do: role(:user)
-  defp badge_value_style(_), do: role(:value)
+  defp badge_value_style(:agent, surface), do: role(:agent, surface)
+  defp badge_value_style(:model, surface), do: role(:model, surface)
+  defp badge_value_style(:user, surface), do: role(:user, surface)
+  defp badge_value_style(_, surface), do: role(:text, surface)
 
   # -- definition list -------------------------------------------------------
 
   @doc """
   A key/value list for a `Paragraph`: each label in `:muted`, each value
-  in `:value` (or a per-row role), one line per pair. Replaces the
+  in `:text` (or a per-row role), one line per pair. Replaces the
   hand-assembled span/blank assembly in the sidebar (the code that
   drifted).
 
@@ -139,9 +129,11 @@ defmodule CodingAgent.UI.Styles do
   concatenation (`sessiontui-259`) is unreadable — the separator is the
   point of a definition list, not decoration.
   """
-  @spec definition_list([{String.t(), String.t()} | {String.t(), String.t(), role()}]) ::
-          [Text.Line.t()]
-  def definition_list(pairs) when is_list(pairs) do
+  @spec definition_list(
+          [{String.t(), String.t()} | {String.t(), String.t(), role()}],
+          surface()
+        ) :: [Text.Line.t()]
+  def definition_list(pairs, surface \\ :base) when is_list(pairs) do
     width =
       pairs
       |> Enum.map(fn
@@ -151,20 +143,27 @@ defmodule CodingAgent.UI.Styles do
       |> Enum.max(fn -> 0 end)
 
     Enum.map(pairs, fn
-      {label, value, value_role} -> definition_line(label, value, width, role(value_role))
-      {label, value} -> definition_line(label, value, width, role(:value))
+      {label, value, value_role} ->
+        definition_line(label, value, width, value_role, surface)
+
+      {label, value} ->
+        definition_line(label, value, width, :text, surface)
     end)
   end
 
-  defp definition_line(label, value, width, style) do
+  defp definition_line(label, value, width, value_role, surface) do
     label_span =
       label
       |> to_string()
       |> then(&String.pad_trailing("#{&1}:", width + 1))
 
+    # label and value share the surface: the label is `:muted` ON that
+    # surface (so its fg and bg match the value's, no invisible label)
     Text.Line.new([
-      Text.Span.new(label_span <> " ", style: role(:muted)),
-      Text.Span.new(if(value in [nil, ""], do: "—", else: to_string(value)), style: style)
+      Text.Span.new(label_span <> " ", style: role(:muted, surface)),
+      Text.Span.new(if(value in [nil, ""], do: "—", else: to_string(value)),
+        style: role(value_role, surface)
+      )
     ])
   end
 
@@ -182,24 +181,28 @@ defmodule CodingAgent.UI.Styles do
   Options:
 
     * `:title`, `:titles`, `:borders`, `:padding`
-    * `:border` — a role for the border style (default `:muted`); ignored
+    * `:surface` — the region (`:base` default); sets the background of
+      the panel and the title's role colors
+    * `:border` — a role for the border color (default `:muted`); ignored
       when `:border_style` is given
     * `:border_style` — an explicit `%Style{}` (for a caller-owned border
-      color); when omitted, `role(border)` is used
+      color); when omitted, `role(border, surface)` is used
     * `:border_type` — default `:rounded`; pass e.g. `:double` for a
       distinct surface (the approval gate)
     * `:title_position` — `:top` (default) or `:bottom`
     * `:title_alignment` — `:left` (default), `:center` or `:right`
     * `:title_style` — an explicit style; pass `nil` to let a title line
       carry its own per-span styles (a block title_style would override
-      them). Defaults to `role(:muted)`.
+      them). Defaults to `role(:muted, surface)`.
   """
   @spec panel(keyword()) :: Block.t()
   def panel(opts \\ []) do
+    surface = Keyword.get(opts, :surface, :base)
+
     border_style =
       case Keyword.fetch(opts, :border_style) do
         {:ok, style} -> style
-        :error -> role(Keyword.get(opts, :border, :muted))
+        :error -> role(Keyword.get(opts, :border, :muted), surface)
       end
 
     %Block{
@@ -210,36 +213,16 @@ defmodule CodingAgent.UI.Styles do
       border_style: border_style,
       title_position: Keyword.get(opts, :title_position, :top),
       title_alignment: Keyword.get(opts, :title_alignment, :left),
-      title_style: Keyword.get(opts, :title_style, role(:muted)),
+      title_style: Keyword.get(opts, :title_style, role(:muted, surface)),
       padding: Keyword.get(opts, :padding, {0, 0, 0, 0})
     }
   end
 
   @doc "A muted, slightly emphasized line for a panel section."
-  @spec section_header(String.t()) :: Text.Line.t()
-  def section_header(text) do
-    Text.Line.new([Text.Span.new(to_string(text), style: role(:muted))])
+  @spec section_header(String.t(), surface()) :: Text.Line.t()
+  def section_header(text, surface \\ :base) do
+    Text.Line.new([Text.Span.new(to_string(text), style: role(:muted, surface))])
   end
-
-  # -- chrome (overlay backgrounds) ------------------------------------------
-
-  @doc """
-  The chrome background for overlays (menu, dialog, status row): readable
-  text on the app's dark panel fill, so an overlay is legible over the
-  transcript. `fg` is the `:value` role's color.
-  """
-  @spec chrome() :: Style.t()
-  def chrome, do: %Style{fg: :white, bg: :dark_gray}
-
-  @doc "Chrome variant with an explicit foreground role (e.g. a warning border)."
-  @spec chrome(role()) :: Style.t()
-  def chrome(fg_role) do
-    %Style{role(fg_role) | bg: :dark_gray}
-  end
-
-  @doc "Chrome background only, no foreground: a full-width bar whose spans carry their own roles."
-  @spec chrome_bg() :: Style.t()
-  def chrome_bg, do: %Style{bg: :dark_gray}
 
   # -- status badge ----------------------------------------------------------
 
@@ -253,24 +236,29 @@ defmodule CodingAgent.UI.Styles do
   Geometric Unicode only — emoji width is unreliable across terminals
   and breaks the single-line footer math.
   """
-  @spec status_badge(atom(), boolean()) :: status_badge_t()
-  def status_badge(status, provider_down? \\ false)
+  @spec status_badge(atom(), boolean(), surface()) :: status_badge_t()
+  def status_badge(status, provider_down? \\ false, surface \\ :base)
 
-  def status_badge(:running, _down), do: %{glyph: "●", style: role(:success), label: "running…"}
+  def status_badge(:running, _down, surface),
+    do: %{glyph: "●", style: role(:success, surface), label: "running…"}
 
-  def status_badge(:interrupting, _down),
-    do: %{glyph: "◐", style: role(:warning), label: "stopping…"}
+  def status_badge(:interrupting, _down, surface),
+    do: %{glyph: "◐", style: role(:warning, surface), label: "stopping…"}
 
-  def status_badge(:idle, _down), do: %{glyph: "○", style: role(:muted), label: "idle"}
+  def status_badge(:idle, _down, surface),
+    do: %{glyph: "○", style: role(:muted, surface), label: "idle"}
 
-  def status_badge(:interrupted, _down),
-    do: %{glyph: "⏸", style: role(:warning), label: "approval needed (y/n/e)"}
+  def status_badge(:interrupted, _down, surface),
+    do: %{glyph: "⏸", style: role(:warning, surface), label: "approval needed (y/n/e)"}
 
-  def status_badge(:error, true),
-    do: %{glyph: "✖", style: role(:error), label: "provider unavailable"}
+  def status_badge(:error, true, surface),
+    do: %{glyph: "✖", style: role(:error, surface), label: "provider unavailable"}
 
-  def status_badge(:error, false), do: %{glyph: "✖", style: role(:error), label: "error"}
-  def status_badge(_, _down), do: %{glyph: "?", style: role(:muted), label: "unknown"}
+  def status_badge(:error, false, surface),
+    do: %{glyph: "✖", style: role(:error, surface), label: "error"}
+
+  def status_badge(_, _down, surface),
+    do: %{glyph: "?", style: role(:muted, surface), label: "unknown"}
 
   # -- spinner ---------------------------------------------------------------
 
@@ -317,10 +305,18 @@ defmodule CodingAgent.UI.Styles do
           boolean(),
           non_neg_integer() | nil,
           non_neg_integer() | nil,
-          String.t() | nil
+          String.t() | nil,
+          surface()
         ) :: Text.Line.t()
-  def status_line(status, provider_down? \\ false, step \\ nil, elapsed_s \\ nil, label \\ nil) do
-    badge = status_badge(status, provider_down?)
+  def status_line(
+        status,
+        provider_down? \\ false,
+        step \\ nil,
+        elapsed_s \\ nil,
+        label \\ nil,
+        surface \\ :base
+      ) do
+    badge = status_badge(status, provider_down?, surface)
 
     glyph =
       if busy?(status) do
@@ -337,7 +333,7 @@ defmodule CodingAgent.UI.Styles do
 
     Text.Line.new([
       Text.Span.new(" #{glyph} ", style: badge.style),
-      Text.Span.new((label || badge.label) <> elapsed, style: role(:muted))
+      Text.Span.new((label || badge.label) <> elapsed, style: role(:muted, surface))
     ])
   end
 end

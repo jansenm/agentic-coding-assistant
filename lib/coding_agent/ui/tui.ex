@@ -1051,8 +1051,13 @@ defmodule CodingAgent.UI.Tui do
 
     widget = %Paragraph{
       text: body,
-      style: Styles.chrome(),
-      block: Styles.panel(title: " menu ", border_style: Styles.chrome(:accent))
+      style: Styles.surface(:chrome),
+      block:
+        Styles.panel(
+          title: " menu ",
+          surface: :chrome,
+          border_style: Styles.role(:accent, :chrome)
+        )
     }
 
     [{%Clear{}, rect}, {widget, rect}]
@@ -2250,7 +2255,7 @@ defmodule CodingAgent.UI.Tui do
 
     widget = %Paragraph{
       text: text,
-      style: Styles.role(:value),
+      style: Styles.role(:text),
       block:
         TranscriptView.agent_block(
           TranscriptView.user_footer(agent),
@@ -2270,7 +2275,7 @@ defmodule CodingAgent.UI.Tui do
     [
       {%Markdown{
          content: text,
-         style: Styles.role(:value),
+         style: Styles.role(:text),
          wrap: true,
          block:
            TranscriptView.agent_block(
@@ -2311,7 +2316,7 @@ defmodule CodingAgent.UI.Tui do
     # the content only, so the air rows below stay background
     h = TranscriptView.height({:assistant, text}, w, nil) - TranscriptView.air()
 
-    [%Markdown{content: text, style: Styles.role(:value), wrap: true}]
+    [%Markdown{content: text, style: Styles.role(:text), wrap: true}]
     |> List.update_at(0, &{&1, max(h, 1)})
   end
 
@@ -2603,24 +2608,26 @@ defmodule CodingAgent.UI.Tui do
     # arrow shape (asserted by tests and clearer than a label), the
     # agent and model carry their roles, and the model is labelled so a
     # bare id is never ambiguous with an agent name.
+    # the footer rides the input box's border, which is the chrome
+    # surface — every span names it, or its text vanishes into the fill
     footer =
       Text.Line.new(
         [
-          Text.Span.new("you", style: Styles.role(:user)),
+          Text.Span.new("you", style: Styles.role(:user, :chrome)),
           if(agent,
             do: [
-              Text.Span.new(" → ", style: Styles.role(:muted)),
-              Text.Span.new(agent, style: Styles.role(:agent))
+              Text.Span.new(" → ", style: Styles.role(:muted, :chrome)),
+              Text.Span.new(agent, style: Styles.role(:agent, :chrome))
             ],
             else: []
           ),
-          Text.Span.new(" · ", style: Styles.role(:muted)),
-          Text.Span.new("model ", style: Styles.role(:muted)),
+          Text.Span.new(" · ", style: Styles.role(:muted, :chrome)),
+          Text.Span.new("model ", style: Styles.role(:muted, :chrome)),
           # the WHOLE id: a hard cap cut the version suffix off real ids
           # ("ollama_cloud:glm-5.3-flash" -> "…-fl"), hiding exactly the
           # part that distinguishes one model from another. The block
           # clips if the pane is too narrow.
-          Text.Span.new(eff_model || "?", style: Styles.role(:model))
+          Text.Span.new(eff_model || "?", style: Styles.role(:model, :chrome))
         ]
         |> List.flatten()
       )
@@ -2654,7 +2661,7 @@ defmodule CodingAgent.UI.Tui do
           footer,
           # accent border + focused background: the composer is the one
           # always-active control
-          Styles.chrome(:accent),
+          Styles.role(:accent, :chrome),
           [status_title]
         )
     }
@@ -2671,13 +2678,21 @@ defmodule CodingAgent.UI.Tui do
     cond do
       is_binary(Map.get(state, :active_tool)) ->
         elapsed = tool_elapsed_s(state)
-        Styles.status_line(state.status, down?, step, elapsed, "running #{state.active_tool}")
+
+        Styles.status_line(
+          state.status,
+          down?,
+          step,
+          elapsed,
+          "running #{state.active_tool}",
+          :chrome
+        )
 
       Styles.busy?(state.status) ->
-        Styles.status_line(state.status, down?, step, silence_s(state), "thinking")
+        Styles.status_line(state.status, down?, step, silence_s(state), "thinking", :chrome)
 
       true ->
-        Styles.status_line(state.status, down?)
+        Styles.status_line(state.status, down?, nil, nil, nil, :chrome)
     end
   end
 
@@ -2766,7 +2781,7 @@ defmodule CodingAgent.UI.Tui do
     pct = trunc(last_in * 100 / max(window, 1))
 
     # pre-compaction notice territory: the Compactor's warn threshold
-    pct_role = if last_in >= warn_at, do: :warning, else: :value
+    pct_role = if last_in >= warn_at, do: :warning, else: :text
 
     # Identity is a BADGE here too (B4): the panel answers "which agent
     # will handle what I type, and which is running" — the question the
@@ -2781,41 +2796,48 @@ defmodule CodingAgent.UI.Tui do
     identity_badges =
       cond do
         not busy? ->
-          [Styles.badge(:agent, next_agent)]
+          [Styles.badge(:agent, next_agent, :sidebar)]
 
         is_binary(running) and is_binary(next_agent) and running != next_agent ->
           [
-            Styles.badge(:agent, "#{running} running"),
-            Styles.badge(:agent, "#{next_agent} next")
+            Styles.badge(:agent, "#{running} running", :sidebar),
+            Styles.badge(:agent, "#{next_agent} next", :sidebar)
           ]
 
         is_binary(running) ->
-          [Styles.badge(:agent, "#{running} running")]
+          [Styles.badge(:agent, "#{running} running", :sidebar)]
 
         is_binary(next_agent) ->
-          [Styles.badge(:agent, "#{next_agent} next")]
+          [Styles.badge(:agent, "#{next_agent} next", :sidebar)]
 
         true ->
-          [Styles.badge(:agent, nil)]
+          [Styles.badge(:agent, nil, :sidebar)]
       end
 
-    identity_lines = identity_badges ++ [Styles.gap()]
+    # the model is IDENTITY (like the agent), so it rides a badge on the
+    # full panel width — in the definition list the label column padding
+    # ("compacts at:") clipped long ids to "glm-5.3-f…", hiding the
+    # version that distinguishes one model from another
+    identity_lines =
+      identity_badges ++ [Styles.badge(:model, Map.get(state, :model), :sidebar), Styles.gap()]
 
     definition_lines =
-      Styles.definition_list([
-        {"session", String.slice(state.session_id, 0, 22)},
-        {"model", Map.get(state, :model)},
-        {"effort", effort || "default"},
-        {"tokens in", fmt_k(Map.get(usage, :input_tokens, 0))},
-        {"tokens out", fmt_k(Map.get(usage, :output_tokens, 0))},
-        {"context", "#{fmt_k(last_in)} (#{pct}% win)", pct_role},
-        {"compacts at", "#{fmt_k(trigger)} tok", pct_role}
-      ])
+      Styles.definition_list(
+        [
+          {"session", String.slice(state.session_id, 0, 22)},
+          {"effort", effort || "default"},
+          {"tokens in", fmt_k(Map.get(usage, :input_tokens, 0))},
+          {"tokens out", fmt_k(Map.get(usage, :output_tokens, 0))},
+          {"context", "#{fmt_k(last_in)} (#{pct}% win)", pct_role},
+          {"compacts at", "#{fmt_k(trigger)} tok", pct_role}
+        ],
+        :sidebar
+      )
 
     cost_line =
       case usage.cost do
         c when is_number(c) and c > 0 ->
-          Styles.definition_list([{"cost", "$#{Float.round(c, 4)}"}])
+          Styles.definition_list([{"cost", "$#{Float.round(c, 4)}"}], :sidebar)
 
         _ ->
           []
@@ -2823,8 +2845,8 @@ defmodule CodingAgent.UI.Tui do
 
     help = [
       Styles.gap(),
-      Styles.section_header("ctrl-t toggles tools"),
-      Styles.section_header("ctrl-x p hides panel")
+      Styles.section_header("ctrl-t toggles tools", :sidebar),
+      Styles.section_header("ctrl-x p hides panel", :sidebar)
     ]
 
     lines = identity_lines ++ definition_lines ++ cost_line ++ help
@@ -2969,8 +2991,8 @@ defmodule CodingAgent.UI.Tui do
 
   defp status_widget_note(_state, note) do
     # menu prompt replaces the scroll diagnostics while visible
-    line = Text.Line.new([Text.Span.new(note, style: Styles.role(:warning))])
-    %Paragraph{text: [line], style: Styles.chrome_bg(), block: nil}
+    line = Text.Line.new([Text.Span.new(note, style: Styles.role(:warning, :chrome))])
+    %Paragraph{text: [line], style: Styles.surface_bg(:chrome), block: nil}
   end
 
   # The bottom line. The user-facing status now lives on the input box's
@@ -2979,7 +3001,7 @@ defmodule CodingAgent.UI.Tui do
   # diagnostics that used to be shown to every user.
   defp status_widget_plain(state) do
     down? = Map.get(state, :provider_down?, false)
-    badge = Styles.status_badge(state.status, down?)
+    badge = Styles.status_badge(state.status, down?, :chrome)
 
     hint =
       cond do
@@ -2990,18 +3012,23 @@ defmodule CodingAgent.UI.Tui do
 
     # geometric `▲`, not the emoji warning sign (width-safe)
     spans =
-      [Text.Span.new("#{state.session_id}  ", style: Styles.role(:muted))] ++
+      [Text.Span.new("#{state.session_id}  ", style: Styles.role(:muted, :chrome))] ++
         if(hint == "",
           do: [],
-          else: [Text.Span.new("▲ #{hint}  ", style: Styles.role(:warning))]
+          else: [Text.Span.new("▲ #{hint}  ", style: Styles.role(:warning, :chrome))]
         ) ++
         [Text.Span.new(badge.label, style: badge.style)] ++
         if(Map.get(state, :debug_visible?, false),
-          do: [Text.Span.new("  " <> scroll_diagnostics(state), style: Styles.role(:muted))],
+          do: [
+            Text.Span.new(
+              "  " <> scroll_diagnostics(state),
+              style: Styles.role(:muted, :chrome)
+            )
+          ],
           else: []
         )
 
-    %Paragraph{text: [Text.Line.new(spans)], style: Styles.chrome_bg(), block: nil}
+    %Paragraph{text: [Text.Line.new(spans)], style: Styles.surface_bg(:chrome), block: nil}
   end
 
   # Scroll diagnostics (developer output, ctrl-x d): entries / measured
@@ -3059,8 +3086,13 @@ defmodule CodingAgent.UI.Tui do
 
     widget = %Paragraph{
       text: body,
-      style: Styles.chrome(),
-      block: Styles.panel(title: title, border_style: Styles.chrome(:accent))
+      style: Styles.surface(:chrome),
+      block:
+        Styles.panel(
+          title: title,
+          surface: :chrome,
+          border_style: Styles.role(:accent, :chrome)
+        )
     }
 
     [{%Clear{}, rect}, {widget, rect}]
@@ -3171,11 +3203,12 @@ defmodule CodingAgent.UI.Tui do
       # the border type now — no reaching around it.
       widget = %Paragraph{
         text: body,
-        style: Styles.chrome(),
+        style: Styles.surface(:chrome),
         block:
           Styles.panel(
             title: " APPROVAL #{i + 1}/#{length(pending)} ",
-            border_style: Styles.chrome(:warning),
+            surface: :chrome,
+            border_style: Styles.role(:warning, :chrome),
             border_type: :double
           )
       }
