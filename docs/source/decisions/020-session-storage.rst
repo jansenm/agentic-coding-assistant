@@ -213,9 +213,9 @@ session id, which is the grouping key:
    sessions(id TEXT PRIMARY KEY, schema_version, model, status,
             scope_root, usage, policy, agent, mounts, turn_agents,
             saved_at, size_bytes)
-   -- agent view: what the model sees; compaction mutates THIS table
-   messages(session_id, seq, role, name, tool_call_id,
-            content, tool_calls, reasoning_details,
+   -- agent view: one row PER MESSAGE; `data` is that message's exact
+   -- ReqLLM struct (term_to_binary BLOB). Compaction mutates THIS table.
+   messages(session_id, seq, data BLOB,
             PRIMARY KEY(session_id, seq))
    -- display view: what the user sees; APPEND-ONLY, never compacted
    display(session_id, seq, kind, text, agent, meta,
@@ -231,6 +231,37 @@ Compaction ``DELETE``s and re-``INSERT``s in ``messages`` only (scoped to
 one ``session_id``); ``display`` grows by append and is the immutable
 record. Resume renders ``display`` directly; the agent view is only for
 the next request. This is the dual-view pattern made structural.
+
+Encoding decision (settled 2026-09-20)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**The agent view's message content is stored as a ``term_to_binary``
+BLOB; the display view is plain text.**
+
+Options weighed: shred each message into typed columns (``role``,
+``content``, ``tool_calls``, ``reasoning_details``, …), JSON text
+(opencode's shape), or one BLOB per message.
+
+- **Per-column shredding is rejected** because ``ReqLLM.Message`` carries
+  multi-modal content parts, tool calls and provider-specific
+  ``reasoning_details``/``provider_data``; flattening those into columns
+  silently loses wire edges, violating ``R1``/``R15`` (lossless
+  round-trip).
+- **JSON is rejected** because it requires a hand-written
+  ``ReqLLM``-to-JSON encoder that must stay exact against every wire edge,
+  with an exactness test suite to prove it. It buys greppability **of the
+  agent view** — a representation nobody greps.
+- **Per-message BLOB is chosen.** The row is the appendable/addressable
+  unit (append = one ``INSERT``, not a whole-context rewrite; compaction =
+  ``DELETE`` a seq range), while the BLOB keeps the encoding exactly what
+  the runtime already round-trips.
+
+Greppability is served by the **display view**, which is *text by nature*
+(it is what was rendered), so no encoder is needed to search a session:
+``SELECT … WHERE text LIKE …`` runs in SQLite. ``display_fts`` is the
+later upgrade if a store-wide scan proves slow. The trade-off accepted:
+the agent view is not human-readable in the DB; ``--export`` covers the
+"hand someone a readable session" case.
 
 Consequences of aggregation (stated, not hidden)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

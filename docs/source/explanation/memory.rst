@@ -75,6 +75,49 @@ Design points worth knowing:
 - **Persistence failure never kills the session**: an unwritable disk
   logs a warning; the in-memory session keeps working.
 
+How long is a stored session readable?
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Short answer: an OTP, Elixir, or 32→64-bit move does **not** make a saved
+session unreadable. The realistic risk is *our own schema evolution*, and
+that is what the guards below address.
+
+The state BLOB is ``:erlang.term_to_binary/1`` — the **External Term
+Format** (ETF), a stable, documented, platform-independent contract
+(that is what "external" means). Measured facts:
+
+- **Integers are size-dependent, not word-size-dependent.** ``255``
+  encodes as ``SMALL_INTEGER_EXT`` (1 byte); ``65535`` as ``INTEGER_EXT``
+  (fixed 4 bytes); ``2^31`` as a bignum. A 32-bit BEAM and a 64-bit BEAM
+  write the *same bytes* for the same number.
+- **Floats are IEEE-754**, a fixed 8-byte encoding.
+- **The magic byte** is ``131`` (``VERSION_MAGIC``) followed by a format
+  version; ``minor_version: 2`` (the default) uses ``ATOM_UTF8_EXT``.
+- The compatibility guarantee is deliberately **backward**: a newer OTP
+  reads a term written by an older one. This is why ``binary_to_term``
+  can read decades-old Erlang binaries.
+
+What *can* break, and why it is guarded:
+
+- **Non-portable leaves**: a PID, reference, port or fun embedded in the
+  term is node/VM-local — meaningless on another VM. Verified: a
+  persisted ``%State{}`` contains **none** (``State.restore/1`` clears the
+  runtime-only fields before a save). This is a property to keep and test,
+  not an accident.
+- **Atoms**: a BLOB containing an atom the target VM has not interned
+  fails under ``[:safe]``. We therefore load without ``[:safe]`` (the 4a
+  lesson) — the trust domain is the user's own store file.
+- **Struct changes**: a field renamed or removed by a later version is
+  healed by ``State.restore/1`` (fill missing fields with defaults;
+  reject unknown ones gracefully), or fails closed.
+- **Format-version bump**: the leading ``@format_version`` makes an
+  incompatible format **fail closed** (an error, never a half-restored
+  state) rather than load garbage.
+
+So the durability promise is: *the encoding is stable across platforms and
+runtime versions; the schema is the thing we evolve, deliberately, behind
+a version byte and a healing loader.*
+
 3. Long-term memory (cross-session)
 -----------------------------------
 
@@ -217,18 +260,71 @@ Design notes:
 The dual-view pattern
 ---------------------
 
-Keep two views of every conversation:
+Every conversation has **two views that are not the same content in a
+different encoding**. This is the single most misunderstood point of this
+document, so it is spelled out.
 
-- **Agent view** – what the LLM sees. Compact, compaction-friendly.
-- **Display view** – what the user sees. The full, immutable transcript.
+- **Agent view** — what the LLM sees. The message history sent on the
+  next request. Compaction mutates it.
+- **Display view** — what the user sees. The rendered transcript.
+  Append-only; never touched by compaction.
 
-Both are written from the same events; compaction of the agent view never
-destroys user-visible history.
+They overlap only on *user*, *assistant* and *tool-result* messages.
+Everything else differs — in content, in mutability, in shape and in
+purpose:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 15 45 40
+
+   * - Aspect
+     - Agent view
+     - Display view
+   * - Contains
+     - system prompt, **compaction summary**
+     - reasoning, **info notes**
+   * - Missing
+     - reasoning, info notes
+     - nothing user-visible
+   * - Mutability
+     - compaction ``DELETE``/replaces a span
+     - append-only, immutable
+   * - Shape
+     - must be **wire-valid** (tool pairs, role order, content parts)
+     - rendered order, thoughts interleaved with the text
+   * - Encoding
+     - exact ``ReqLLM`` structs
+     - plain text (what was on screen)
+   * - Purpose
+     - the next provider request
+     - the honest, resumable history
+
+Two consequences fall directly out of conflating them, both observed
+live:
+
+1. **Reasoning is lost on resume.** ``:reasoning_delta`` is broadcast to
+   the UI and *discarded*; nothing appends it to the agent view, because
+   the agent view is the wire format and reasoning is not part of it. A
+   display view reconstructed from the agent view therefore cannot show
+   the thinking after a resume.
+2. **Compaction erases visible history.** The agent view *is* mutated by
+   compaction (a summary replaces the old span). Reconstructing the
+   display from it shows the lossy result — exactly what an immutable
+   transcript must prevent.
+
+The fix is structural: persist the two views separately (ADR 020). The
+agent view stays wire-exact and compactable; the display view is written
+from the same loop events as an append-only text record. Because the
+display view is *text by nature* — it is what was rendered — it is also
+the one that can be searched (SQL ``LIKE`` now, FTS5 later if a store-wide
+search proves slow), while the agent view is never grepped.
 
 .. mermaid::
 
    flowchart LR
        E[Loop events] --> A[(Agent state / LLM view)]
        E --> D[(Display transcript / UI)]
-       A --> S[(Session snapshot store)]
-       D --> P[(Persisted display messages)]
+       A --> S[(Session store: agent view)]
+       D --> P[(Session store: display view, append-only)]
+       C[Compaction] -. mutates .-> A
+       C -. never touches .-> D
