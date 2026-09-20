@@ -14,6 +14,7 @@ erl_crash.dump
 /.env.local
 /Makefile.local
 /.idea/
+*.iml
 
 # Docs build
 /docs/build/
@@ -22,3 +23,5 @@ erl_crash.dump
 __pycache__/
 *.pyc
 .venv
+
+
