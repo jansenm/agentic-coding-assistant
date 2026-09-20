@@ -35,3 +35,9 @@ Consequences
 - Dependency count is treated as a security metric; every dependency
   addition worth discussing gets an ADR.
 - UI choices are constrained to BEAM-native options (terminal, LiveView).
+- **NIF exception (amended 2026-09-20).** "No NIFs on the core path" is
+  relaxed to "no NIFs except those explicitly recorded and isolated at a
+  module boundary". Two exist: `ex_ratatui` (UI, precompiled Rust; ADR
+  012) and `exqlite` (session storage, precompiled C; ADR 023). The
+  "pure Elixir/Erlang tree" claim holds for everything else; each
+  exception is argued in its own ADR and confined behind one module.

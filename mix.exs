@@ -42,7 +42,12 @@ defmodule CodingAgent.MixProject do
       {:ex_ratatui, "~> 0.13"},
       # YAML frontmatter for agent definitions (ADR 017/019). Pure Erlang,
       # no NIF; used directly (not via yaml_elixir, which only wraps it).
-      {:yamerl, "~> 0.10"}
+      {:yamerl, "~> 0.10"},
+      # Session storage engine (ADR 020/023). SQLite has no pure-BEAM
+      # driver; this is the one core-path NIF, isolated behind
+      # Core.Session.Store. We use its raw `Exqlite.Sqlite3` API (not
+      # ecto_sqlite3) — ADR 020 chose SQL directly, no Ecto.
+      {:exqlite, "~> 0.40"}
     ]
   end
 end
