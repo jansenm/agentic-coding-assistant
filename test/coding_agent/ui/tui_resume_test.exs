@@ -206,8 +206,8 @@ defmodule CodingAgent.UI.TuiResumeTest do
 
     test "a corrupt session file reports why and starts a fresh session" do
       sid = "resume-corrupt-#{System.unique_integer()}"
-      File.mkdir_p!(Path.dirname(Store.path(sid)))
-      File.write!(Store.path(sid), <<1, 2, 3, "not a term">>)
+      # write a corrupt BLOB straight into the store (the test seam)
+      :ok = Store.debug_put(sid, <<1, 2, 3, "not a term">>, encode: false)
 
       pid =
         start_supervised!(

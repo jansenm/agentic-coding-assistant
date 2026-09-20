@@ -444,14 +444,12 @@ TUI wish-list (user's own list, keyboard-first, from the live sessions):
   entry_widgets), never in the buffer (per-delta trim glues the next
   delta's first word when the separator streams as its own delta —
   test-locked).
-- **Session list decodes the full context per file** (one day, perf):
-  `Store.list/0` and `list_in/1` still `term_to_binary`-decode every
-  whole session (context included) just to read id/model/mtime/scope.
-  The double decode is gone (one `list_entries/0` pass), but a picker
-  at 50+ sessions will feel it. Cheap fix: a small sidecar/header
-  (id/model/mtime/scope written at save time, or a light summary
-  element in the versioned tuple). Not correctness — defer until a
-  picker actually lags.
+- **Session list decodes the full context per file — FIXED (ADR 020
+  slice 3a)**: `Store.list/0` / `list_in/1` no longer decode any state.
+  The store is one SQLite DB and the listing reads metadata columns
+  (`model`, `status`, `scope_root`, `saved_at`, `size_bytes`), so cost
+  scales with session count, not total bytes (ADR 020 `R9`). The state
+  BLOB is read only by `load/1`.
 
 | opencode tool | Ours | Note |
 |---|---|---|

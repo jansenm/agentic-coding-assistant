@@ -205,11 +205,13 @@ defmodule CodingAgent.UI.TuiPickerTest do
     end
 
     test "`P` prunes sessions older than N days after confirmation", %{root: root, ids: ids} do
-      # backdate one seeded session's file mtime (saved_at comes from mtime)
+      # backdate one seeded session's saved_at (the store's prune key)
       [old_id | _] = ids
-      old_path = CodingAgent.Core.Session.Store.path(old_id)
-      eleven_days_ago = DateTime.add(DateTime.utc_now(), -11 * 86_400) |> DateTime.to_unix()
-      File.touch!(old_path, eleven_days_ago)
+
+      eleven_days_ago =
+        DateTime.add(DateTime.utc_now(), -11 * 86_400) |> DateTime.to_unix(:millisecond)
+
+      :ok = CodingAgent.Core.Session.Store.debug_set_saved_at(old_id, eleven_days_ago)
 
       pid = start_picker(root)
 
@@ -222,10 +224,10 @@ defmodule CodingAgent.UI.TuiPickerTest do
 
       key(pid, "enter")
       assert match?({:prune_confirm, [^old_id]}, sync(pid).picker_op)
-      assert File.exists?(old_path)
+      assert {:ok, _} = CodingAgent.Core.Session.Store.load(old_id)
 
       key(pid, "y")
-      refute File.exists?(old_path)
+      assert {:error, :enoent} = CodingAgent.Core.Session.Store.load(old_id)
       # the fresh session survives; the picker reloaded and closed the prompt
       assert sync(pid).picker_op == nil
       assert Enum.any?(CodingAgent.Core.Session.Store.list_in(root), &(&1.id != old_id))
@@ -243,7 +245,7 @@ defmodule CodingAgent.UI.TuiPickerTest do
       assert sync(pid).picker_op == nil
 
       for id <- ids do
-        assert File.exists?(CodingAgent.Core.Session.Store.path(id))
+        assert {:ok, _} = CodingAgent.Core.Session.Store.load(id)
       end
     end
 

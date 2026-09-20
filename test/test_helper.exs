@@ -1,8 +1,10 @@
-# Test isolation: ALL tests run against an isolated session-store dir
+# Test isolation: ALL tests run against an isolated session store
 # (Session.Store persists at every turn boundary; without this, test
 # sessions leaked into the user's real ~/.local/state storage — found
-# by the user's session listing).
-test_store = Path.join(System.tmp_dir!(), "coding-agent-test-store-#{System.unique_integer()}")
+# by the user's session listing). The store is now one SQLite DB FILE
+# (ADR 020); the test root is a directory that holds it plus the XDG dirs.
+test_root = Path.join(System.tmp_dir!(), "coding-agent-test-store-#{System.unique_integer()}")
+test_store = Path.join(test_root, "store.db")
 
 Application.put_env(:coding_agent, :store_dir, test_store)
 
@@ -15,7 +17,7 @@ System.put_env("AGENT_MODEL", "ollama:test-model")
 # live ~/.config files — a broken live TOML even crashed TUI tests
 # mid-keypress. Point XDG at an empty run-scoped dir before any test
 # starts; user_config_test overrides further per-test (it is async:false).
-test_xdg = Path.join(test_store, "xdg")
+test_xdg = Path.join(test_root, "xdg")
 File.mkdir_p!(Path.join(test_xdg, "config"))
 File.mkdir_p!(Path.join(test_xdg, "data"))
 System.put_env("XDG_CONFIG_HOME", Path.join(test_xdg, "config"))
@@ -23,4 +25,4 @@ System.put_env("XDG_DATA_HOME", Path.join(test_xdg, "data"))
 
 ExUnit.start()
 
-System.at_exit(fn _status -> File.rm_rf!(test_store) end)
+System.at_exit(fn _status -> File.rm_rf!(test_root) end)

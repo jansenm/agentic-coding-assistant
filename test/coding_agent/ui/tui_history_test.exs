@@ -94,14 +94,14 @@ defmodule CodingAgent.UI.TuiHistoryTest do
     st = sync(pid)
     assert {:delete, armed} = st.picker_op
     assert armed in [a, b]
-    assert File.exists?(CodingAgent.Core.Session.Store.path(armed))
+    assert {:ok, _} = CodingAgent.Core.Session.Store.load(armed)
 
     key(pid, "y")
 
     st2 = sync(pid)
     assert st2.picker_op == nil
     assert Enum.map(st2.picker, & &1.id) == [a, b] -- [armed]
-    refute File.exists?(CodingAgent.Core.Session.Store.path(armed))
+    assert {:error, :enoent} = CodingAgent.Core.Session.Store.load(armed)
 
     # esc cancels a delete prompt without deleting
     key(pid, "d")
@@ -143,8 +143,8 @@ defmodule CodingAgent.UI.TuiHistoryTest do
     st2 = sync(pid)
     assert st2.picker_op == nil
     assert Enum.map(st2.picker, & &1.id) == ["2b"]
-    assert File.exists?(CodingAgent.Core.Session.Store.path("2b"))
-    refute File.exists?(CodingAgent.Core.Session.Store.path(st.id))
+    assert {:ok, _} = CodingAgent.Core.Session.Store.load("2b")
+    assert {:error, :enoent} = CodingAgent.Core.Session.Store.load(st.id)
   end
 
   defp save_session(id, root) do

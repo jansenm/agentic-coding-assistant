@@ -10,14 +10,21 @@ Session storage: selectable stores, per-store SQLite, two explicit views
    :tags: persistence, sessions, storage, memory, sqlite, tooling
 
 .. note::
-   Proposed 2026-09-19. Supersedes the *format* commitment of slice 4a
-   (``term_to_binary`` blob, ``Store``) without changing the domain
-   contract: ``Store.save/1``/``load/1`` keep returning a
-   ``%Core.Session.State{}``, so the storage change is encapsulated.
-   The requirement that leads this ADR is **R0 — session management
-   is a first-class product surface**, not the storage engine. The
-   engine is chosen *after* the surface. Revisit the "Session storage
-   principles" in ``explanation/memory.rst`` together with this ADR.
+   Proposed 2026-09-19; being implemented. Supersedes the *format*
+   commitment of slice 4a (``term_to_binary`` blob, ``Store``) without
+   changing the domain contract: ``Store.save/1``/``load/1`` keep
+   returning a ``%Core.Session.State{}``, so the storage change is
+   encapsulated. The requirement that leads this ADR is **R0 — session
+   management is a first-class product surface**, not the storage
+   engine. The engine is chosen *after* the surface. Revisit the
+   "Session storage principles" in ``explanation/memory.rst`` together
+   with this ADR.
+
+   Shipped so far: slice 1 (picker as session manager), slice 2 (store
+   selection), and slice 3a (SQLite engine — one DB per store, metadata
+   columns for listing, state BLOB for the lossless round-trip; driver
+   chosen in ADR 023). Remaining: the normalized agent/display view
+   tables.
 
 Context
 -------
@@ -426,8 +433,15 @@ Slice order
    default). An unresolvable selector raises rather than silently
    falling back to the default store. ``config.toml store =`` is the
    third fallback (the ``[stores]`` table only defines names).
-3. **SQLite format + two views** (``R1``–``R9``, ``R2``), with lazy
-   migration of existing blobs.
+3. **SQLite engine** (``R1``–``R9``). **Slice 3a shipped** (2026-09-20,
+   ADR 023 chose the driver): the store is one SQLite DB file with a
+   ``sessions`` table whose metadata columns (model, status, scope_root,
+   saved_at, size_bytes) answer listings **without decoding a state**
+   (``R9``); the full ``%State{}`` rides a BLOB column, so the round-trip
+   stays lossless. Remaining in slice 3: **normalize the agent view and
+   the display view into session-keyed tables** (``R2``) — the display
+   write path touches ``session.ex``. Blob migration is intentionally
+   ignored (unreleased).
 4. **Management verbs** (in the TUI, per the "TUI is the only surface"
    decision): delete-by-directory, prune-by-size, store-wide search,
    export/import. Delete-one, delete-visible, and prune-by-age already

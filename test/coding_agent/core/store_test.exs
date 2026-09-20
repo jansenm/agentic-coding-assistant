@@ -10,22 +10,27 @@ defmodule CodingAgent.Core.Session.StoreTest do
   alias CodingAgent.Core.Session.State
   alias ReqLLM.Context
 
-  @test_dir System.tmp_dir!() |> Path.join("agent-store-test-#{System.unique_integer()}")
+  # @store_path is the DB FILE (the store is one SQLite db); @scope_dir is
+  # a real directory used where a test needs a scope root.
+  @tmp_root System.tmp_dir!() |> Path.join("agent-store-test-#{System.unique_integer()}")
+  @store_path Path.join(@tmp_root, "store.db")
+  @scope_dir Path.join(@tmp_root, "scope")
 
-  # the dir active at test-compile time: the global test_helper sets an
-  # isolated dir; restore it on exit instead of nil (nil would expose
+  # the store active at test-compile time: the global test_helper sets an
+  # isolated path; restore it on exit instead of nil (nil would expose
   # the user's real storage to later tests)
   @prev_store_dir Application.compile_env(:coding_agent, :store_dir)
 
   setup do
-    # isolate: tests run against their own dir, never the user's real
+    # isolate: tests run against their own store, never the user's real
     # session storage (an earlier version wiped real sessions once)
-    Application.put_env(:coding_agent, :store_dir, @test_dir)
-    File.rm_rf!(@test_dir)
+    Application.put_env(:coding_agent, :store_dir, @store_path)
+    File.rm_rf!(@tmp_root)
+    File.mkdir_p!(@scope_dir)
 
     on_exit(fn ->
       Application.put_env(:coding_agent, :store_dir, @prev_store_dir)
-      File.rm_rf!(@test_dir)
+      File.rm_rf!(@tmp_root)
     end)
 
     :ok
@@ -121,8 +126,7 @@ defmodule CodingAgent.Core.Session.StoreTest do
 
     test "corrupt bytes error instead of crashing" do
       id = "corrupt-#{System.unique_integer()}"
-      File.mkdir_p!(@test_dir)
-      File.write!(Store.path(id), <<1, 2, 3, "garbage">>)
+      :ok = Store.debug_put(id, <<1, 2, 3, "garbage">>, encode: false)
       assert {:error, _} = Store.load(id)
     end
 
@@ -136,13 +140,9 @@ defmodule CodingAgent.Core.Session.StoreTest do
 
       # simulate a snapshot from before base_policy/base_prompt/agent:
       # drop those keys entirely
-      older =
-        state
-        |> Map.drop([:base_policy, :base_prompt, :agent])
+      older = Map.drop(state, [:base_policy, :base_prompt, :agent])
 
-      payload = :erlang.term_to_binary({1, older})
-      File.mkdir_p!(@test_dir)
-      File.write!(Store.path(id), payload)
+      :ok = Store.debug_put(id, {1, older})
 
       assert {:ok, loaded} = Store.load(id)
       assert loaded.base_policy == nil
@@ -165,9 +165,7 @@ defmodule CodingAgent.Core.Session.StoreTest do
       old_policy = %{enabled: [], entries: %{}} |> Map.put(:__struct__, Permissions)
       older = %{state | policy: old_policy}
 
-      payload = :erlang.term_to_binary({1, older})
-      File.mkdir_p!(@test_dir)
-      File.write!(Store.path(id), payload)
+      :ok = Store.debug_put(id, {1, older})
 
       assert {:ok, loaded} = Store.load(id)
       assert %Permissions{} = loaded.policy
@@ -178,18 +176,13 @@ defmodule CodingAgent.Core.Session.StoreTest do
 
     test "wrong version errors" do
       id = "wrongver-#{System.unique_integer()}"
-      state = build_state(id)
-      payload = :erlang.term_to_binary({99, state})
-      File.mkdir_p!(@test_dir)
-      File.write!(Store.path(id), payload)
+      :ok = Store.debug_put(id, {99, build_state(id)})
       assert {:error, {:not_a_session_file, 99}} = Store.load(id)
     end
 
     test "foreign payload (not a state tuple) errors" do
       id = "foreign-#{System.unique_integer()}"
-      payload = :erlang.term_to_binary({1, :hello})
-      File.mkdir_p!(@test_dir)
-      File.write!(Store.path(id), payload)
+      :ok = Store.debug_put(id, {1, :hello})
       assert {:error, _} = Store.load(id)
     end
 
@@ -200,14 +193,9 @@ defmodule CodingAgent.Core.Session.StoreTest do
       # simulate a snapshot written by a later app version: extra keys
       # in the struct map (same format_version 1) — struct!/1 rejects
       # unknown keys, so the old binary must drop them, not crash
-      newer =
-        state
-        |> Map.put(:a_field_from_the_future, 42)
-        |> Map.put(:another_future_key, "x")
+      newer = state |> Map.put(:a_field_from_the_future, 42) |> Map.put(:another_future_key, "x")
 
-      payload = :erlang.term_to_binary({1, newer})
-      File.mkdir_p!(@test_dir)
-      File.write!(Store.path(id), payload)
+      :ok = Store.debug_put(id, {1, newer})
 
       # must not raise; unknown keys dropped, known state restored
       assert {:ok, loaded} = Store.load(id)
@@ -223,11 +211,11 @@ defmodule CodingAgent.Core.Session.StoreTest do
       b = build_state("list-b-#{System.unique_integer()}")
       :ok = Store.save(b)
 
-      # order by mtime: set them explicitly instead of sleeping a second
-      # for the filesystem clock to separate the two saves
-      now = System.os_time(:second)
-      File.touch!(Store.path(a.id), now - 60)
-      File.touch!(Store.path(b.id), now)
+      # order by saved_at: set them explicitly instead of sleeping for
+      # the clock to separate the two saves
+      now = DateTime.to_unix(DateTime.utc_now(), :millisecond)
+      :ok = Store.debug_set_saved_at(a.id, now - 60_000)
+      :ok = Store.debug_set_saved_at(b.id, now)
 
       sessions = Store.list()
       ids = Enum.map(sessions, & &1.id)
@@ -242,8 +230,30 @@ defmodule CodingAgent.Core.Session.StoreTest do
       assert is_integer(newest.size) and newest.size > 0
     end
 
-    test "empty dir yields empty list" do
+    test "empty store yields an empty list" do
       assert Store.list() == []
+    end
+
+    test "listing reads columns, never decodes a state (R9)" do
+      # A row whose state BLOB is garbage still lists: the summary comes
+      # from columns, so listing cost no longer scales with total bytes
+      # and a single corrupt session cannot break the picker.
+      id = "list-corrupt-#{System.unique_integer()}"
+
+      :ok =
+        Store.debug_put(id, <<1, 2, 3, "garbage">>,
+          encode: false,
+          model: "m-x",
+          scope_root: @scope_dir
+        )
+
+      summaries = Store.list()
+      entry = Enum.find(summaries, &(&1.id == id))
+      assert entry.model == "m-x"
+      assert Path.expand(entry.scope_root) == Path.expand(@scope_dir)
+      # and only the explicitly requested metadata fields are present
+      assert Map.keys(entry) |> Enum.sort() ==
+               [:id, :model, :saved_at, :scope_root, :size, :status]
     end
 
     test "list_in/1 filters by scope_root with the same summary fields" do
@@ -402,9 +412,9 @@ defmodule CodingAgent.Core.Session.StoreTest do
     Store.delete(old_shaped.id)
   end
 
-  # the store_dir override is compile-env-sealed in some paths; these
+  # the store override is compile-env-sealed in some paths; these
   # rename tests follow the same isolate pattern as above
-  test "rename/2 re-ids the file; live sessions are told so saves follow" do
+  test "rename/2 re-ids the row; live sessions are told so saves follow" do
     ctx = Context.new([Context.user("hi")])
 
     st =
@@ -413,15 +423,14 @@ defmodule CodingAgent.Core.Session.StoreTest do
         context: ctx,
         model: "m",
         status: :idle,
-        scope_root: @test_dir
+        scope_root: @scope_dir
       )
 
     Store.save(st)
 
-    # no live process: pure file dance
+    # no live process: pure row dance
     assert {:ok, "ren-b"} = Store.rename("ren-a", "ren-b")
-    refute File.exists?(Store.path("ren-a"))
-    assert File.exists?(Store.path("ren-b"))
+    assert {:error, :enoent} = Store.load("ren-a")
     assert {:ok, %{id: "ren-b"}} = Store.load("ren-b")
   end
 
@@ -437,7 +446,7 @@ defmodule CodingAgent.Core.Session.StoreTest do
       Scratch.remove(Scratch.path(new_id))
     end)
 
-    State.new(id: id, context: ctx, model: "m", status: :idle, scope_root: @test_dir)
+    State.new(id: id, context: ctx, model: "m", status: :idle, scope_root: @scope_dir)
     |> Store.save()
 
     # a session that actually used /tmp has a scratch dir
@@ -456,7 +465,7 @@ defmodule CodingAgent.Core.Session.StoreTest do
     ctx = Context.new([Context.user("hi")])
 
     for id <- ["ren-c", "ren-d"] do
-      State.new(id: id, context: ctx, model: "m", status: :idle, scope_root: @test_dir)
+      State.new(id: id, context: ctx, model: "m", status: :idle, scope_root: @scope_dir)
       |> Store.save()
     end
 
@@ -469,22 +478,21 @@ defmodule CodingAgent.Core.Session.StoreTest do
   test "rename/2 refuses path-injecting ids" do
     ctx = Context.new([Context.user("hi")])
 
-    State.new(id: "ren-inj", context: ctx, model: "m", status: :idle, scope_root: @test_dir)
+    State.new(id: "ren-inj", context: ctx, model: "m", status: :idle, scope_root: @scope_dir)
     |> Store.save()
 
-    # every one of these would escape or collide with the sessions dir;
-    # none may rename, and the original must stay intact
+    # every one of these would escape the derived scratch path or collide
+    # with a hidden name; none may rename, and the original stays intact
     for bad <- ["../evil", "../../x", "a/b", "a\\b", ".hidden", ".tmp-1", "-lead", "/abs"] do
       assert {:error, :invalid_name} = Store.rename("ren-inj", bad),
              "expected #{inspect(bad)} to be refused"
     end
 
-    assert File.exists?(Store.path("ren-inj"))
     assert {:ok, %{id: "ren-inj"}} = Store.load("ren-inj")
 
     # a valid dotted/dashed name still works (the guard is not too tight)
     assert {:ok, "ren.v2-ok"} = Store.rename("ren-inj", "ren.v2-ok")
-    assert File.exists?(Store.path("ren.v2-ok"))
+    assert {:ok, %{id: "ren.v2-ok"}} = Store.load("ren.v2-ok")
   end
 
   test "rename/2 notifies a live session: its next save lands on the new id" do
@@ -496,15 +504,15 @@ defmodule CodingAgent.Core.Session.StoreTest do
         context: ctx,
         model: "m",
         status: :idle,
-        scope_root: @test_dir
+        scope_root: @scope_dir
       )
 
     Store.save(st)
 
     # note: store_dir is overridden for this test, so the registry-keyed
-    # live session started by the supervisor persists into @test_dir too
+    # live session started by the supervisor persists into @scope_dir too
     {:ok, pid} =
-      Session.Supervisor.start_session(id: "ren-live", scope_root: @test_dir)
+      Session.Supervisor.start_session(id: "ren-live", scope_root: @scope_dir)
 
     assert {:ok, "ren-live2"} = Store.rename("ren-live", "ren-live2")
     assert Process.alive?(pid)
@@ -517,8 +525,8 @@ defmodule CodingAgent.Core.Session.StoreTest do
     assert s.id == "ren-live2"
     assert :ok = Store.save(s)
 
-    # no stale resurrection: old file gone, new file present
-    refute File.exists?(Store.path("ren-live"))
-    assert File.exists?(Store.path("ren-live2"))
+    # no stale resurrection: old row gone, new row present
+    assert {:error, :enoent} = Store.load("ren-live")
+    assert {:ok, %{id: "ren-live2"}} = Store.load("ren-live2")
   end
 end

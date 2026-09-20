@@ -17,9 +17,10 @@ defmodule CodingAgent.Core.ConfigTest do
     on_exit(fn ->
       # restore the run-wide seed, never delete (VM-global state races
       # async tests still reading the env)
-      store = Application.fetch_env!(:coding_agent, :store_dir)
-      System.put_env("XDG_CONFIG_HOME", Path.join(store, "xdg/config"))
-      System.put_env("XDG_DATA_HOME", Path.join(store, "xdg/data"))
+      # the store is a DB file; its parent is the run-scoped root
+      store_root = Path.dirname(Application.fetch_env!(:coding_agent, :store_dir))
+      System.put_env("XDG_CONFIG_HOME", Path.join(store_root, "xdg/config"))
+      System.put_env("XDG_DATA_HOME", Path.join(store_root, "xdg/data"))
       File.rm_rf!(@tmp_root)
     end)
 

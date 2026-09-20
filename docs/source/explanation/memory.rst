@@ -32,10 +32,12 @@ snapshot that is written at lifecycle boundaries (after each turn, before
 and after interruptions). A session that outlives a process restart is a
 hard requirement for a coding assistant.
 
-**Implemented in slice 4a** (:mod:`CodingAgent.Core.Session.Store`):
-the full state is one ``term_to_binary`` blob under
-``~/.local/state/coding_agent/sessions/<id>.session``, written
-atomically at every turn boundary (turn complete, turn error, gate
+**Implemented** (:mod:`CodingAgent.Core.Session.Store`): a *store* is
+**one SQLite database file** holding many sessions (ADR 020/023); the
+full state is one ``term_to_binary`` BLOB in the ``sessions`` row, with
+metadata columns (model, status, scope_root, saved_at, size) alongside
+so listing reads columns, never decodes a state. Writes are an atomic
+upsert at every turn boundary (turn complete, turn error, gate
 interruption, decision applied). The TUI session picker lists them and
 ``mix tui --resume <id>`` continues one — the model retains the full
 previous context, verified live (a codeword given in one process was
@@ -43,9 +45,11 @@ answered from the resumed one). (The one-shot CLI ``mix agent`` was
 retired 2026-09-20; the TUI is the only surface.)
 
 .. note::
-   ADR 020 (proposed) replaces the blob with **one SQLite database per
-   selectable store** (many sessions inside), and splits the persistence
-   into the agent view and the immutable display view. Reasons: (1) the display
+   ADR 020 (in progress) chose the SQLite engine and **one database per
+   selectable store** (many sessions inside); the remaining slice splits
+   the persistence into the agent view and the immutable display view
+   (normalized, session-keyed tables) — the state BLOB above is still
+   the agent view only. Reasons: (1) the display
    view is reconstructed from the compaction-mutable agent view today,
    so reasoning is lost on resume and compaction erases visible history
    — a violation of the dual-view pattern below; (2) cross-session
