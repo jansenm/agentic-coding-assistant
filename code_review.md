@@ -358,35 +358,27 @@ mechanism is not pinned, that is said plainly instead of guessed.
       tools (`webfetch`) and subagents to be worth entering. Until (1) and (2)
       are answered, plan stays decorative.
 
-- [~] **B7 — `/tmp` scratch does not survive between tool calls, so an
-      agent cannot build state across calls.** Direction settled in
-      **ADR 022** (`docs/source/decisions/022-session-scratch.rst`,
-      *Proposed*): a per-session host scratch dir (``$TMPDIR`` with a
-      ``/tmp`` fallback) is bound over ``/tmp`` inside the sandbox, with
-      ``TMPDIR=/tmp`` exported, and cleaned by the session lifecycle
-      verbs. The slice (scope seam, ``Session.Scratch``, ``Bwrap`` bind,
-      store cleanup) is outlined in the ADR's implementation order.
+**Status (2026-09-20).** B1, B2, B4 and **B7 are done**; the `Styles`
+vocabulary, the one-authority input executor (ADR 021) and the
+status/activity spinner (Track B) shipped, and B7 shipped via ADR 022
+(`Scratch` module, `session_id` scope seam, `Bwrap` bind over `/tmp`,
+store cleanup). B5 (input wrap) is **deferred by owner decision**; B3
+(file picker) is the only open B-item. B6's direction is settled (plan is
+a signal to the agent, not a sandbox mode) and needs only the plan
+definition decided. The glyph passes (E) are the remaining cosmetic work.
 
-      Symptom (original finding): the agent wrote intermediate files to
-      `/tmp`, and the next tool call found the directory empty. Root
-      cause read from the tree: every tool call runs in a **fresh bwrap
-      namespace**, and the sandbox always mounts a new tmpfs over `/tmp`
-      (`lib/coding_agent/core/sandbox/bwrap.ex:210` —
-      `["--size", @tmpfs_bytes, "--tmpfs", "/tmp"]`). A tmpfs dies with
-      its namespace, so `/tmp` is per-call scratch by construction. This
-      is a real workflow blocker, not cosmetic: `/tmp` is the natural
-      scratch space for "run something now, inspect its output next
-      call" (build artifacts, captured command output, a diff applied
-      and then verified).
+<details>
+<summary>B7 finding (resolved) — kept for the record</summary>
 
-**Status (2026-09-19, after Track A/B).** B1, B2 and B4 are **done**; the
-`Styles` vocabulary, the one-authority input executor (ADR 021) and the
-status/activity spinner (Track B) shipped. B5 (input wrap) is **deferred
-by owner decision**; B3 (file picker) is open, and B7 (persistent `/tmp`
-scratch) has its direction settled in ADR 022 (*Proposed*, implementation
-pending); B6's direction is settled (plan is a signal to the agent, not a
-sandbox mode) and needs only the plan definition decided. The glyph
-passes (E) are the remaining cosmetic work.
+The agent wrote intermediate files to `/tmp`, and the next tool call
+found the directory empty: every tool call ran in a fresh bwrap
+namespace whose `/tmp` was a fresh tmpfs
+(`lib/coding_agent/core/sandbox/bwrap.ex`), so `/tmp` was per-call
+scratch by construction. ADR 022 replaced that with a per-session host
+scratch dir (``System.tmp_dir!/0/coding-agent/<id>``) bound over
+``/tmp``, with ``TMPDIR=/tmp`` exported, cleaned by the session
+lifecycle verbs.
+</details>
 
 ### Open backlog from the 2026-09-19 UI review (commit `bbd7f2f`)
 

@@ -5,17 +5,27 @@ Session scratch: a persistent /tmp inside the sandbox
 
 .. adr::
    :id: 022
-   :status: Proposed
+   :status: Accepted
    :date: 2026-09-20
    :tags: security, tools, shell, sandbox, sessions
 
 .. note::
-   Proposed 2026-09-20. Extends ADR 015's confinement (the mount set
-   gains one session-scoped bind); does not change the threat model.
-   Responds to a live dogfooding finding (``code_review.md`` B7): every
-   tool call runs in a fresh namespace whose ``/tmp`` is a fresh tmpfs,
-   so the agent cannot build state across calls. Every mechanism below
-   was measured on the target machine before being written down.
+   Accepted 2026-09-20; implemented the same day. Extends ADR 015's
+   confinement (the mount set gains one session-scoped bind); does not
+   change the threat model. Responds to a live dogfooding finding
+   (``code_review.md`` B7): every tool call runs in a fresh namespace
+   whose ``/tmp`` is a fresh tmpfs, so the agent cannot build state
+   across calls. Every mechanism below was measured on the target
+   machine before being written down.
+
+   Shipped: ``Core.Session.Scratch`` (path rule, ``ensure``/``remove``/
+   ``move``), the ``session_id`` scope seam (``ToolRunner.scope/3`` →
+   ``Shell``/``Git``/``Tools`` profile ``:scratch``), the ``Bwrap`` bind
+   over ``/tmp`` with ``TMPDIR=/tmp`` exported (the per-call tmpfs
+   remains the fallback when no session id is present), and scratch
+   cleanup in ``Store.delete/1``/``rename/2``. Acceptance is the
+   bwrap integration test that writes ``/tmp`` in one call and reads it
+   in the next, and that the host's shared ``/tmp`` stays invisible.
 
 Context
 -------
@@ -114,24 +124,27 @@ The only missing wire is the session id in the sandbox scope:
 .. code-block:: text
 
    State.id ─────────────┐
-   State.scope_root ─────┤ ToolRunner.scope/3   (today /2: root + mounts)
+   State.scope_root ─────┤ ToolRunner.scope/3   (was /2: root + mounts)
    State.mounts ─────────┘        │  scope.session_id
                                   ▼
-                     Shell.profile/2 · Git.profile/1
+                     Scratch.from_scope/1   → host_path | nil
+                                  │
+                     Shell.profile/2 · Git.profile/1 · Tools.profile/1
                                   │  profile.scratch = host_path
                                   ▼
-                     Bwrap.wrap/2   mkdir_p(host_path, 0700)
+                     Bwrap.wrap/2   Scratch.ensure(host_path)  (0700)
                                   ▼
                      Bwrap.argv/3   --bind host_path /tmp
                                      (plain --tmpfs /tmp when scratch is nil)
                                   ▼
                      prelude        export TMPDIR=/tmp
 
-``argv/3`` stays **pure** (builds argv, no filesystem access) as it is
-today; ``wrap/2``, which already touches the filesystem
-(``File.dir?(root)``), creates the scratch directory before launching.
-An unset ``:scratch`` keeps today's behaviour exactly, so tests and any
-non-session caller are unaffected.
+``Scratch.from_scope/1`` is the one rule for the three profile builders,
+so the path derivation lives in one module. ``argv/3`` stays **pure**
+(builds argv, no filesystem access) as it is today; ``wrap/2``, which
+already touches the filesystem (``File.dir?(root)``), creates the
+scratch directory before launching. An unset ``:scratch`` keeps today's
+behaviour exactly, so tests and any non-session caller are unaffected.
 
 Consequences
 ------------

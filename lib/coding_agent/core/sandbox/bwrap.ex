@@ -172,14 +172,24 @@ defmodule CodingAgent.Core.Sandbox.Bwrap do
   def wrap(spec, %{root: root} = profile) when is_binary(root) do
     root = Path.expand(root)
 
-    if File.dir?(root) do
+    with true <- File.dir?(root) || {:error, {:no_scope_root, root}},
+         {:ok, _} <- ensure_scratch(profile) do
       {:ok, executable(), argv(root, spec, profile)}
     else
-      {:error, {:no_scope_root, root}}
+      {:error, reason} -> {:error, reason}
     end
   end
 
   def wrap(_spec, _profile), do: {:error, :bad_profile}
+
+  # The session scratch directory (ADR 022) is created lazily on the first
+  # confined call. A scope without a session id carries no `:scratch` and
+  # keeps the ephemeral tmpfs, so nothing is created.
+  defp ensure_scratch(%{scratch: dir}) when is_binary(dir) and dir != "" do
+    CodingAgent.Core.Session.Scratch.ensure(dir)
+  end
+
+  defp ensure_scratch(_profile), do: {:ok, nil}
 
   defp executable do
     System.find_executable(@bwrap) || @bwrap
@@ -203,11 +213,11 @@ defmodule CodingAgent.Core.Sandbox.Bwrap do
     network = Map.get(profile, :network, false)
     git_write = Map.get(profile, :git_write, false)
 
-    # Order matters: scratch tmpfs first, then the read-write scope bind
-    # *over* it, so a scope root that happens to live under /tmp is still
-    # visible (the tmpfs is the lower layer for the rest of /tmp).
+    # Order matters: scratch first, then the read-write scope bind *over*
+    # it, so a scope root that happens to live under /tmp is still visible
+    # (the scratch is the lower layer for the rest of /tmp).
     base ++
-      ["--size", to_string(@tmpfs_bytes), "--tmpfs", "/tmp"] ++
+      scratch_args(profile) ++
       rw_args(profile) ++
       ["--bind", root, root] ++
       git_args(root, git_write) ++
@@ -227,6 +237,21 @@ defmodule CodingAgent.Core.Sandbox.Bwrap do
 
   defp inner({:exec, file, args}) do
     ["/bin/sh", "-c", prelude() <> ~s(exec "$@"), "sh", file | args]
+  end
+
+  # The scratch over /tmp (ADR 022): a session-scoped host directory,
+  # bound so `/tmp` persists across calls but stays private to the
+  # session (the host's shared /tmp is never visible). Without a session
+  # scratch the historical per-call tmpfs is kept — `/tmp` then dies with
+  # the namespace, exactly as before. `--size` is tmpfs-only
+  # (`bwrap: --size must be followed by --tmpfs`), so it appears only on
+  # the fallback path.
+  defp scratch_args(%{scratch: dir}) when is_binary(dir) and dir != "" do
+    ["--bind", Path.expand(dir), "/tmp"]
+  end
+
+  defp scratch_args(_profile) do
+    ["--size", to_string(@tmpfs_bytes), "--tmpfs", "/tmp"]
   end
 
   # Extra read-write mounts (ADR 015 decision 3): the resolved mount
@@ -289,7 +314,10 @@ defmodule CodingAgent.Core.Sandbox.Bwrap do
   # which also makes the Shell timeout kill reach descendants, better than
   # the unconfined path.
   defp prelude do
-    "ulimit -u #{@ulimit_procs} 2>/dev/null; " <>
+    # TMPDIR points at the scratch mounted over /tmp (ADR 022), so tools
+    # that honour $TMPDIR and tools that hardcode /tmp agree on one place.
+    "export TMPDIR=/tmp; " <>
+      "ulimit -u #{@ulimit_procs} 2>/dev/null; " <>
       "ulimit -f #{@ulimit_fsize_blocks} 2>/dev/null; " <>
       "ulimit -t #{@ulimit_cpu_secs} 2>/dev/null; "
   end

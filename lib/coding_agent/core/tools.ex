@@ -28,9 +28,16 @@ defmodule CodingAgent.Core.Tools do
   alias CodingAgent.Core.Tools.WebFetch
   alias CodingAgent.Core.Tools.WriteFile
 
-  @typedoc "A tool scope: the root directory the tool may operate in."
+  @typedoc """
+  A tool scope: the root directory the tool may operate in, the resolved
+  mount schema, and the owning session id (ADR 022 — the id lets a
+  confined tool bind a session-persistent scratch over `/tmp`; absent
+  when there is no session).
+  """
   @type scope :: %{
-          required(:root) => String.t()
+          required(:root) => String.t(),
+          optional(:mounts) => CodingAgent.Core.Sandbox.Mounts.t(),
+          optional(:session_id) => String.t() | nil
         }
 
   @doc """
@@ -97,6 +104,7 @@ defmodule CodingAgent.Core.Tools do
       root: Map.fetch!(scope, :root),
       network: false,
       git_write: false,
+      scratch: CodingAgent.Core.Session.Scratch.from_scope(scope),
       rw: Map.get(mounts, :rw, []),
       ro: Map.get(mounts, :ro, []),
       hide: Map.get(mounts, :hide, [])

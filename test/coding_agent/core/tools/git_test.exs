@@ -59,6 +59,12 @@ defmodule CodingAgent.Core.Tools.GitTest do
       assert profile.rw == []
       assert profile.ro == []
       assert profile.hide == []
+      assert profile.scratch == nil
+    end
+
+    test "carries the session scratch from the scope (ADR 022)", %{root: root} do
+      profile = Git.profile(%{root: root, session_id: "git-scratch-y"})
+      assert profile.scratch == CodingAgent.Core.Session.Scratch.path("git-scratch-y")
     end
   end
 

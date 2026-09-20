@@ -28,12 +28,16 @@ defmodule CodingAgent.Core.Sandbox do
 
     * `:network` — may the process use the network (default false).
     * `:git_write` — may the process write `.git` (default false).
+    * `:scratch` — a host directory to bind over `/tmp` for the session
+      (ADR 022); `nil` keeps the per-call tmpfs, so a scope without a
+      session id is unchanged.
     * `:rw` / `:ro` / `:hide` — extra mount directives (user config).
   """
   @type profile :: %{
           required(:root) => String.t(),
           optional(:network) => boolean(),
           optional(:git_write) => boolean(),
+          optional(:scratch) => String.t() | nil,
           optional(:rw) => [String.t()],
           optional(:ro) => [String.t()],
           optional(:hide) => [String.t()]

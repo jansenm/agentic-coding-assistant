@@ -92,11 +92,17 @@ defmodule CodingAgent.Core.Session.ToolRunner do
   end
 
   @doc """
-  The sandbox scope for a session: the scope root plus its configured
-  mounts.
+  The sandbox scope for a session: the scope root, its configured mounts
+  and the session id (ADR 022 — the id lets the sandbox bind a
+  session-persistent scratch over `/tmp`).
   """
-  @spec scope(String.t() | nil, Sandbox.Mounts.t() | nil) :: CodingAgent.Core.Tools.scope()
-  def scope(scope_root, mounts) do
-    %{root: scope_root || File.cwd!(), mounts: mounts || Sandbox.Mounts.empty()}
+  @spec scope(String.t() | nil, Sandbox.Mounts.t() | nil, String.t() | nil) ::
+          CodingAgent.Core.Tools.scope()
+  def scope(scope_root, mounts, session_id \\ nil) do
+    %{
+      root: scope_root || File.cwd!(),
+      mounts: mounts || Sandbox.Mounts.empty(),
+      session_id: session_id
+    }
   end
 end

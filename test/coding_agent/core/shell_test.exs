@@ -142,6 +142,17 @@ defmodule CodingAgent.Core.Tools.ShellTest do
       assert profile.rw == []
       assert profile.ro == []
       assert profile.hide == []
+      assert profile.scratch == nil
+    end
+
+    test "profile/2 derives the session scratch from the scope (ADR 022)" do
+      scope = %{root: @tmp_root, session_id: "shell-scratch-x"}
+      profile = Shell.profile(scope, %{})
+
+      assert profile.scratch == CodingAgent.Core.Session.Scratch.path("shell-scratch-x")
+
+      # a bare root scope has no session id and keeps the tmpfs
+      assert Shell.profile(%{root: @tmp_root}, %{}).scratch == nil
     end
   end
 

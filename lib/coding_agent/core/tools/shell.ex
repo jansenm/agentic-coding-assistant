@@ -193,11 +193,17 @@ defmodule CodingAgent.Core.Tools.Shell do
       root: root,
       network: truthy?(Map.get(args, :network) || Map.get(args, "network")),
       git_write: truthy?(Map.get(args, :git_write) || Map.get(args, "git_write")),
+      scratch: scratch(scope),
       rw: Map.get(mounts, :rw, []),
       ro: Map.get(mounts, :ro, []),
       hide: Map.get(mounts, :hide, [])
     }
   end
+
+  # The session scratch (ADR 022): nil for a bare root scope, so the
+  # sandbox keeps its ephemeral tmpfs `/tmp`.
+  defp scratch(%{} = scope), do: CodingAgent.Core.Session.Scratch.from_scope(scope)
+  defp scratch(_root), do: nil
 
   defp truthy?(true), do: true
   defp truthy?("true"), do: true

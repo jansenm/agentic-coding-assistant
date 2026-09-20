@@ -2,6 +2,7 @@ defmodule CodingAgent.Core.Sandbox.BwrapTest do
   use ExUnit.Case, async: false
 
   alias CodingAgent.Core.Sandbox.Bwrap
+  alias CodingAgent.Core.Session.Scratch
   alias CodingAgent.Core.Tools.Shell
 
   @tmp_root System.tmp_dir!() |> Path.join("agent-bwrap-#{System.unique_integer([:positive])}")
@@ -107,6 +108,40 @@ defmodule CodingAgent.Core.Sandbox.BwrapTest do
       assert tmpfs_at < bind_at
     end
 
+    test "no session scratch keeps the per-call tmpfs (behaviour unchanged)", %{root: root} do
+      argv = Bwrap.argv(root, {:shell, "echo hi"}, %{root: root, scratch: nil})
+
+      assert triple_in(argv, {"--tmpfs", "/tmp"})
+      assert Enum.member?(argv, "--size")
+      refute triple_in(argv, {"--bind", "/tmp", "/tmp"})
+    end
+
+    test "a session scratch is bound over /tmp instead of the tmpfs", %{root: root} do
+      scratch = Path.join(root, "scratch")
+      File.mkdir_p!(scratch)
+      argv = Bwrap.argv(root, {:shell, "echo hi"}, %{root: root, scratch: scratch})
+
+      assert triple_in(argv, {"--bind", scratch, "/tmp"})
+      refute triple_in(argv, {"--tmpfs", "/tmp"})
+      refute Enum.member?(argv, "--size")
+    end
+
+    test "the prelude exports TMPDIR=/tmp so hardcoded /tmp and $TMPDIR agree", %{root: root} do
+      argv = Bwrap.argv(root, {:shell, "echo hi"}, %{root: root})
+      command = List.last(argv)
+
+      assert command =~ "export TMPDIR=/tmp;"
+    end
+
+    test "wrap/2 creates the session scratch lazily", %{root: root} do
+      scratch = Path.join(root, "lazy-scratch")
+      refute File.dir?(scratch)
+
+      assert {:ok, _exe, _argv} = Bwrap.wrap({:shell, "true"}, %{root: root, scratch: scratch})
+      assert File.dir?(scratch)
+      assert File.stat!(scratch).mode |> Bitwise.band(0o777) == 0o700
+    end
+
     test "refuses a missing scope root" do
       missing = Path.join(@tmp_root, "does-not-exist")
 
@@ -209,6 +244,51 @@ defmodule CodingAgent.Core.Sandbox.BwrapTest do
         assert out =~ "exit 0"
         {log, 0} = System.cmd("git", ~w(log --oneline), cd: root, stderr_to_stdout: true)
         assert log =~ "by git tool"
+      end
+    end
+
+    test "/tmp persists across separate calls when a session scope is present",
+         %{root: root} = ctx do
+      if ctx[:skip] do
+        :ok
+      else
+        Application.put_env(:coding_agent, :sandbox, Bwrap)
+        session_id = "bwrap-scratch-#{System.unique_integer([:positive])}"
+        scope = %{root: root, session_id: session_id}
+        scratch = Scratch.path(session_id)
+        on_exit(fn -> Scratch.remove(scratch) end)
+
+        tool = Shell.tool(scope)
+
+        # call 1 writes, call 2 (a fresh namespace) reads
+        assert {:ok, _} = ReqLLM.Tool.execute(tool, %{"command" => "echo persisted > /tmp/x"})
+
+        assert {:ok, out} = ReqLLM.Tool.execute(tool, %{"command" => "cat /tmp/x"})
+        assert out =~ "persisted"
+
+        # and TMPDIR agrees with the hardcoded /tmp
+        assert {:ok, out} =
+                 ReqLLM.Tool.execute(tool, %{"command" => "echo v > $TMPDIR/y; cat /tmp/y"})
+
+        assert out =~ "v"
+      end
+    end
+
+    test "the host's shared /tmp is not visible inside the sandbox", %{root: root} = ctx do
+      if ctx[:skip] do
+        :ok
+      else
+        Application.put_env(:coding_agent, :sandbox, Bwrap)
+        host_marker = Path.join(Scratch.base_dir(), "host-only-#{System.unique_integer()}")
+        File.mkdir_p!(Scratch.base_dir())
+        File.write!(host_marker, "secret")
+        on_exit(fn -> File.rm(host_marker) end)
+
+        tool = Shell.tool(%{root: root, session_id: "isolated"})
+        on_exit(fn -> Scratch.remove(Scratch.path("isolated")) end)
+
+        assert {:ok, out} = ReqLLM.Tool.execute(tool, %{"command" => "ls /tmp"})
+        refute out =~ "host-only-"
       end
     end
 

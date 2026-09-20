@@ -141,6 +141,7 @@ defmodule CodingAgent.Core.Tools.Git do
       root: scope.root,
       network: false,
       git_write: true,
+      scratch: CodingAgent.Core.Session.Scratch.from_scope(scope),
       rw: Map.get(mounts, :rw, []),
       ro: Map.get(mounts, :ro, []),
       hide: Map.get(mounts, :hide, [])

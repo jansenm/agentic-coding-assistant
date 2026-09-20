@@ -1112,7 +1112,7 @@ defmodule CodingAgent.Core.Session do
   # disallowedTools) — see Session.ToolRunner.
   defp current_tools(state), do: ToolRunner.tools(state.policy, tool_scope(state))
 
-  defp tool_scope(state), do: ToolRunner.scope(state.scope_root, state.mounts)
+  defp tool_scope(state), do: ToolRunner.scope(state.scope_root, state.mounts, state.id)
 
   # Tool output is arbitrary bytes; scrub is the PREVENT side of the
   # poisoned-context guard (`Core.Text`). `sanitize_context/1` is the

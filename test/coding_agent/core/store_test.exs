@@ -425,6 +425,33 @@ defmodule CodingAgent.Core.Session.StoreTest do
     assert {:ok, %{id: "ren-b"}} = Store.load("ren-b")
   end
 
+  test "delete/1 and rename/2 carry the session scratch directory (ADR 022)" do
+    ctx = Context.new([Context.user("hi")])
+    alias CodingAgent.Core.Session.Scratch
+
+    id = "scratch-life-#{System.unique_integer([:positive])}"
+    new_id = id <> "-ren"
+
+    on_exit(fn ->
+      Scratch.remove(Scratch.path(id))
+      Scratch.remove(Scratch.path(new_id))
+    end)
+
+    State.new(id: id, context: ctx, model: "m", status: :idle, scope_root: @test_dir)
+    |> Store.save()
+
+    # a session that actually used /tmp has a scratch dir
+    Scratch.ensure(Scratch.path(id))
+    assert File.dir?(Scratch.path(id))
+
+    assert {:ok, ^new_id} = Store.rename(id, new_id)
+    refute File.dir?(Scratch.path(id))
+    assert File.dir?(Scratch.path(new_id))
+
+    Store.delete(new_id)
+    refute File.dir?(Scratch.path(new_id))
+  end
+
   test "rename/2 errors: invalid name and collision" do
     ctx = Context.new([Context.user("hi")])
 

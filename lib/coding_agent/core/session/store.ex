@@ -19,7 +19,7 @@ defmodule CodingAgent.Core.Session.Store do
   Nothing in the repo; sessions are user-local artifacts.
   """
 
-  alias CodingAgent.Core.Session.State
+  alias CodingAgent.Core.Session.{Scratch, State}
 
   @format_version 1
 
@@ -115,10 +115,14 @@ defmodule CodingAgent.Core.Session.Store do
   # Store's concern, but the SHAPE of State and its nested structs is
   # not. Store decodes bytes and hands the state to State.
 
-  @doc "Deletes a persisted session (best effort)."
+  @doc """
+  Deletes a persisted session (best effort), including its session
+  scratch directory (ADR 022).
+  """
   @spec delete(String.t()) :: :ok
   def delete(id) do
     _ = File.rm(path(id))
+    Scratch.remove(Scratch.path(id))
     :ok
   end
 
@@ -151,6 +155,7 @@ defmodule CodingAgent.Core.Session.Store do
             new_state = struct!(state, id: new_id)
             save(new_state)
             _ = File.rm(path(id))
+            Scratch.move(Scratch.path(id), Scratch.path(new_id))
             # tell a live process under the old id (if any) so its next
             # save lands on the renamed file — the session layer owns the
             # registry lookup, not Store
