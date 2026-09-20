@@ -266,18 +266,88 @@ defmodule CodingAgent.Core.Sandbox.Bwrap do
     |> Enum.flat_map(fn dir -> ["--bind", dir, dir] end)
   end
 
-  # `.git` read-only over the rw scope bind, unless git write is granted.
-  defp git_args(root, false) do
+  # The git directories `.git` resolves to, re-bound OVER the scope bind:
+  # read-only for plain shell, read-write when git write is granted (the
+  # dedicated `git` tool). A plain checkout needs one bind; a WORKTREE
+  # checkout needs two, because git splits its state.
+  #
+  # Found live (dogfooding in a worktree): `.git` was a gitfile pointing
+  # at a gitdir *outside* the scope root, so it was only covered by the
+  # read-only `/` bind and `git commit` died on `index.lock` (EROFS).
+  # Binding just that worktree gitdir is not enough — a commit also writes
+  # the object and ref under the COMMON dir (`<gitdir>/commondir`, e.g.
+  # `../..`), which is likewise outside the scope. Resolve both from the
+  # filesystem only (gitfile + commondir), no git invocation, so `argv/3`
+  # stays pure and cheap.
+  defp git_args(root, git_write) do
+    root
+    |> git_dirs()
+    |> Enum.flat_map(fn dir -> [git_bind(git_write), dir, dir] end)
+  end
+
+  defp git_bind(true), do: "--bind"
+  defp git_bind(false), do: "--ro-bind"
+
+  # Every real git directory for `root`, de-duplicated, common dir
+  # included. Empty when there is no git metadata.
+  defp git_dirs(root) do
     git = Path.join(root, ".git")
 
-    if File.exists?(git) do
-      ["--ro-bind", git, git]
-    else
-      []
+    cond do
+      # a normal checkout: `.git` is the gitdir itself
+      File.dir?(git) ->
+        [git]
+
+      # a worktree/submodule checkout: `.git` is a gitfile naming the
+      # per-worktree gitdir, plus a commondir pointing at the shared dir
+      File.exists?(git) ->
+        case gitfile_target(git) do
+          nil -> []
+          dir -> Enum.uniq([dir | List.wrap(common_dir(dir))])
+        end
+
+      true ->
+        []
     end
   end
 
-  defp git_args(_root, true), do: []
+  # The gitdir named by a gitfile's `gitdir: <path>` (an absolute path in
+  # practice; resolved against the gitfile's dir if relative). The file
+  # may carry a trailing newline.
+  defp gitfile_target(path) do
+    case File.read(path) do
+      {:ok, content} ->
+        case Regex.run(~r/^gitdir:\s*(.+)$/m, String.trim_trailing(content)) do
+          [_, dir] -> expand_target(dir, Path.dirname(path))
+          _ -> nil
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp expand_target(dir, base) do
+    case String.trim(dir) do
+      "" -> nil
+      stripped -> Path.expand(stripped, base)
+    end
+  end
+
+  # The shared gitdir from `<worktree-gitdir>/commondir` (relative to the
+  # worktree gitdir). A normal checkout has no commondir file; nil then.
+  defp common_dir(gitdir) do
+    file = Path.join(gitdir, "commondir")
+
+    case File.read(file) do
+      {:ok, content} ->
+        rel = String.trim(content)
+        if rel == "", do: nil, else: Path.expand(rel, gitdir)
+
+      _ ->
+        nil
+    end
+  end
 
   defp ro_args(profile) do
     extra =

@@ -54,7 +54,36 @@ defmodule CodingAgent.Core.Sandbox.BwrapTest do
       argv = Bwrap.argv(root, {:shell, "echo hi"}, %{root: root, git_write: true})
       git = Path.join(root, ".git")
 
-      refute triple_in(argv, {"--ro-bind", git, git})
+      assert triple_in(argv, {"--bind", git, git})
+    end
+
+    test "a git worktree binds its gitdir AND common dir read-write (git_write)", %{root: root} do
+      # A worktree's `.git` is a gitfile pointing OUTSIDE the scope root;
+      # a commit also writes objects/refs in the shared common dir. Both
+      # must be bound or git dies on index.lock (found live).
+      {wt, common} = init_worktree!(root)
+      argv = Bwrap.argv(wt, {:exec, "git", ["commit"]}, %{root: wt, git_write: true})
+
+      assert triple_in(
+               argv,
+               {"--bind", Path.join(common, ".git/worktrees/wt"),
+                Path.join(common, ".git/worktrees/wt")}
+             )
+
+      assert triple_in(argv, {"--bind", Path.join(common, ".git"), Path.join(common, ".git")})
+    end
+
+    test "a git worktree binds its gitdirs read-only for plain shell", %{root: root} do
+      {wt, common} = init_worktree!(root)
+      argv = Bwrap.argv(wt, {:shell, "git log"}, %{root: wt})
+
+      assert triple_in(
+               argv,
+               {"--ro-bind", Path.join(common, ".git/worktrees/wt"),
+                Path.join(common, ".git/worktrees/wt")}
+             )
+
+      assert triple_in(argv, {"--ro-bind", Path.join(common, ".git"), Path.join(common, ".git")})
     end
 
     test "hides a directory with an empty tmpfs and a file with /dev/null", %{root: root} do
@@ -292,6 +321,28 @@ defmodule CodingAgent.Core.Sandbox.BwrapTest do
       end
     end
 
+    test "the git tool commits inside a linked worktree (git_write binds both gitdirs)",
+         %{root: root} = ctx do
+      if ctx[:skip] do
+        :ok
+      else
+        {wt, _repo} = init_worktree!(root)
+        File.write!(Path.join(wt, "b.txt"), "b\n")
+
+        Application.put_env(:coding_agent, :sandbox, Bwrap)
+        tool = CodingAgent.Core.Tools.Git.tool(%{root: wt})
+
+        assert {:ok, out} = ReqLLM.Tool.execute(tool, %{"args" => ["add", "b.txt"]})
+        assert out =~ "exit 0"
+
+        assert {:ok, out} = ReqLLM.Tool.execute(tool, %{"args" => ["commit", "-m", "wt commit"]})
+        assert out =~ "exit 0"
+
+        {log, 0} = System.cmd("git", ~w(log --oneline), cd: wt, stderr_to_stdout: true)
+        assert log =~ "wt commit"
+      end
+    end
+
     test "git argv is not re-parsed by a shell inside the sandbox", %{root: root} = ctx do
       if ctx[:skip] do
         :ok
@@ -324,6 +375,28 @@ defmodule CodingAgent.Core.Sandbox.BwrapTest do
     git!(root, ~w(init -q -b main))
     git!(root, ~w(config user.email test@example.com))
     git!(root, ~w(config user.name test))
+  end
+
+  # A repo plus a linked worktree at `<root>/wt`. Its `.git` is a gitfile
+  # pointing at `<repo>/.git/worktrees/wt`, and the shared object/ref
+  # store lives in `<repo>/.git`. Returns {worktree_dir, repo_dir}.
+  defp init_worktree!(root) do
+    repo = Path.join(root, "repo")
+    File.mkdir_p!(repo)
+    init_git!(repo)
+    File.write!(Path.join(repo, "a.txt"), "a\n")
+    git!(repo, ~w(add a.txt))
+    git!(repo, ~w(commit -m init))
+
+    wt = Path.join(root, "wt")
+
+    {_, 0} =
+      System.cmd("git", ["worktree", "add", "-b", "feature", wt],
+        cd: repo,
+        stderr_to_stdout: true
+      )
+
+    {wt, repo}
   end
 
   defp git!(root, args) do
