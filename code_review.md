@@ -248,9 +248,11 @@ leverage.
 
 - [~] **P3 — Session storage decision (Section 4b).** ADR 020
       (`docs/source/decisions/020-session-storage.rst`, *Proposed*)
-      settles the direction: per-session SQLite within a selectable
-      store, agent view + immutable display view as separate tables;
-      R0 (session management is a first-class surface) leads it.
+      settles the direction: **one SQLite DB per selectable store**
+      (many sessions inside; the per-session-file draft was reversed
+      2026-09-20), agent view + immutable display view as separate,
+      session-keyed tables; R0 (session management is a first-class
+      surface) leads it.
       Slice 1 shipped: the TUI picker now shows storage footprint per
       session and a total, filters live, toggles this-dir/whole-store,
       and bulk-deletes the visible set (delete-by-directory). `Store.list`
@@ -259,10 +261,10 @@ leverage.
       `mix tui` (the CLI was retired), `AGENT_STORE`, and `config.toml store =`,
       resolved in one `Core.Config` reader (`resolve_store/2`,
       `select_store!/2`); the picker names the active store. Not yet
-      done: the engine change (per-session SQLite, agent/display tables),
-      export/import, migration of existing blobs. The opencode objection
-      was an API objection — missing verbs — which these slices address
-      before any format change.
+      done: the engine change (per-store SQLite, session-keyed
+      agent/display tables), export/import (blob migration is ignored —
+      unreleased). The opencode objection was an API objection — missing
+      verbs — which these slices address before any format change.
 - [ ] **P4 — Split `tui.ex` along its own comment sections**; single state
       struct definition. (Grew to ~3200 lines; the mount state is still
       defined twice.)

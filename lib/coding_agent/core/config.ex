@@ -163,7 +163,11 @@ defmodule CodingAgent.Core.Config do
   end
 
   @doc """
-  The session storage directory (ADR 020 R16: a *store* is a directory).
+  The active session store (ADR 020 R16). A store is the selectable DB
+  path holding many sessions; the selector resolves to that path. Until
+  the SQLite engine lands (ADR 020, pending slice) the path is a
+  directory of per-session blob files — the *selector* and its
+  precedence are already the final shape.
 
   Precedence, strongest first:
 

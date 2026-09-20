@@ -43,9 +43,9 @@ answered from the resumed one). (The one-shot CLI ``mix agent`` was
 retired 2026-09-20; the TUI is the only surface.)
 
 .. note::
-   ADR 020 (proposed) replaces the blob with **per-session SQLite**
-   inside a **selectable store**, and splits the persistence into the
-   agent view and the immutable display view. Reasons: (1) the display
+   ADR 020 (proposed) replaces the blob with **one SQLite database per
+   selectable store** (many sessions inside), and splits the persistence
+   into the agent view and the immutable display view. Reasons: (1) the display
    view is reconstructed from the compaction-mutable agent view today,
    so reasoning is lost on resume and compaction erases visible history
    — a violation of the dual-view pattern below; (2) cross-session
@@ -99,14 +99,15 @@ archaeology). Revisit any of these only with a new ADR.
 .. note::
    These principles were written against opencode's concrete failure
    modes, not against databases as such. ADR 020 revisits the *format*
-   (per-session SQLite within a selectable store) and, crucially,
+   (one SQLite database per selectable store) and, crucially,
    promotes the missing concern to the lead requirement: **R0 — session
    management is a first-class product surface.** The opencode objection
    was an API objection (a hidden directory as a password; SQL as the
    only lens), not an engine objection. The principles below are
    unchanged in intent; principle 2's "no opaque database blob" is
-   refined to "one session = one portable unit = one ``rm``", and the
-   size guard in principle 4 is now concrete.
+   refined to "one *store* = one portable unit = one ``rm``" (the
+   per-*session* file split was revisited on 2026-09-20 — see ADR 020),
+   and the size guard in principle 4 is now concrete.
 
 0. **The verbs are the product (R0).** A store without the operations
    to list, filter, search, size, delete (by id, age, size or
@@ -117,13 +118,14 @@ archaeology). Revisit any of these only with a new ADR.
    the repo scope root is *data inside the session*, not the storage
    key. Moving/renaming a directory orphans nothing; resuming from
    elsewhere is possible (with the scope as recorded). A *store* is a
-   directory the user selects (ADR 020, R16).
+   database file the user selects (ADR 020, R16).
 
-2. **One session = one portable unit = one ``rm``.** No single
-   aggregated blob that hides sessions. Cleanup stays a file operation,
-   discoverable via the TUI session picker, never schema archaeology. A
-   per-session database satisfies this; one database for all sessions
-   does not.
+2. **One *store* = one portable unit = one ``rm``.** Cleanup stays
+   discoverable via the TUI session picker, never schema archaeology.
+   The store is the file you ``rm``/``du``; deleting one *session* is a
+   transactional ``DELETE`` and single-session portability is
+   ``--export``. (An earlier draft put one session per file; the
+   aggregated-per-store choice is recorded in ADR 020, with its costs.)
 
 3. **Lifecycle commands are first-class verbs.** Listing is not
    enough: deleting, pruning (age/size), deleting by directory and

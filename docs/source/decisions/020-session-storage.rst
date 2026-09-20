@@ -1,7 +1,7 @@
 :orphan:
 
-Session storage: selectable stores, per-session SQLite, two explicit views
-===========================================================================
+Session storage: selectable stores, per-store SQLite, two explicit views
+========================================================================
 
 .. adr::
    :id: 020
@@ -175,67 +175,104 @@ filter in memory, directory from the loaded field) and delivers the
 opencode complaint's fix before any format change. It also forces the
 UI to stop assuming "sessions are everywhere and opaque".
 
-**Then the engine: a *store* is a directory of *per-session SQLite
-databases*, with the agent view and the display view as separate
-tables.**
+**Then the engine: a *store* is one SQLite database that holds many
+sessions**, with the agent view and the display view as separate tables
+keyed by session id.
 
 ```
-<store>/<id>.session          # a SQLite database
+<store>.db          # one SQLite database; several sessions inside
 ```
 
-This is deliberately *not* opencode's single aggregated database. It
-keeps the property that mattered — **one session = one portable unit =
-one ``rm``** — while gaining SQL, indexes and transactions, and it makes
-stores a first-class, selectable grouping.
+.. note::
+   **Reversal, recorded (2026-09-20).** The earlier draft of this ADR
+   chose *a directory of per-session SQLite files*, preserving
+   "one session = one portable unit = one ``rm``". The owner chose the
+   opposite for now: **one DB per store, many sessions inside.** ADR
+   020's own reasoning licenses the change — the opencode objection was
+   an *API* objection (missing verbs), not an engine one — and an
+   aggregated store makes cross-session search (``S1``), aggregation
+   (``S2``) and the future ticket/coordination store native. The costs
+   are stated plainly under *Consequences of aggregation* below; the
+   property "one session = one file = one ``rm``" is **dropped** in
+   favour of "one *store* = one file = one ``rm``", with single-session
+   portability moved to ``--export``.
 
-Schema (indicative, not final):
+Schema (indicative, not final); every session-scoped table carries the
+session id, which is the grouping key:
 
 .. code-block:: sql
 
-   -- format and lifecycle
-   meta(key TEXT PRIMARY KEY, value)   -- schema_version, id, model, status,
-                                       -- scope_root, usage, policy, agent,
-                                       -- mounts, turn_agents, saved_at
+   -- per-session lifecycle/metadata (one row per session)
+   sessions(id TEXT PRIMARY KEY, schema_version, model, status,
+            scope_root, usage, policy, agent, mounts, turn_agents,
+            saved_at, size_bytes)
    -- agent view: what the model sees; compaction mutates THIS table
-   messages(seq INTEGER PRIMARY KEY, role, name, tool_call_id,
-            content, tool_calls, reasoning_details)
+   messages(session_id, seq, role, name, tool_call_id,
+            content, tool_calls, reasoning_details,
+            PRIMARY KEY(session_id, seq))
    -- display view: what the user sees; APPEND-ONLY, never compacted
-   display(seq INTEGER PRIMARY KEY, kind, text, agent, meta)
+   display(session_id, seq, kind, text, agent, meta,
+           PRIMARY KEY(session_id, seq))
                                        -- kind: user|assistant|reasoning|
                                        -- tool|info
    -- gate state across an interruption
-   pending(round_calls, round_results, tool_calls)
-   -- search within this session
+   pending(session_id, round_calls, round_results, tool_calls)
+   -- search within the store
    display_fts (content='display')     -- FTS5 external content
 
-Compaction ``DELETE``s and re-``INSERT``s in ``messages`` only;
-``display`` grows by append and is the immutable record. Resume renders
-``display`` directly; the agent view is only for the next request. This
-is the dual-view pattern made structural.
+Compaction ``DELETE``s and re-``INSERT``s in ``messages`` only (scoped to
+one ``session_id``); ``display`` grows by append and is the immutable
+record. Resume renders ``display`` directly; the agent view is only for
+the next request. This is the dual-view pattern made structural.
+
+Consequences of aggregation (stated, not hidden)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- **Per-session portability is a verb, not a file copy.** Exporting one
+  session becomes ``--session-export`` (a portable JSON document, or a
+  small standalone DB), not "hand someone the file".
+- **Size honesty is a query.** Each session's footprint is a stored
+  ``size_bytes`` (updated on write) or ``SUM(length(...))`` over its
+  rows, rather than a ``File.stat``; the store's own ``du`` is the whole
+  DB including indexes.
+- **Deletion is transactional.** ``DELETE FROM ... WHERE session_id = ?``
+  across tables in one transaction, plus FTS maintenance — replacing the
+  single ``rm``.
+- **One writer.** SQLite's single-writer model is a good fit (``S5``:
+  single writer per session already assumed); concurrent sessions in one
+  store share the connection policy and must handle ``SQLITE_BUSY``.
+
+**A store is a DB file, not a directory.** ``--store`` / ``AGENT_STORE``
+/ ``config.toml store =`` resolve to a ``.db`` path. There is deliberately
+**no UI to browse or rename stores**: the app knows only the *active*
+store's path; other stores are just other files the user points at.
 
 Store selection (R16)
 ---------------------
 
-A store is a named directory. Selection is explicit, never guessed:
+A store is a database **file** (``<name>.db``). Selection is explicit,
+never guessed:
 
-- **Default store**: the existing XDG location
-  (``~/.local/state/coding_agent/sessions``).
+- **Default store**: ``~/.local/state/coding_agent/store.db``.
 - **Named stores**: ``config.toml`` gains a ``[stores]`` table mapping a
-  name to a path; ``store = "work"`` selects the default.
+  name to a ``.db`` path; ``store = "work"`` selects one.
 - **Per-invocation**: ``--store <name|path>`` and the ``AGENT_STORE``
   environment variable override the default.
 
 No verb resolves one session across multiple stores (the user's explicit
 choice): you select a store, then list/search/prune within it. Switching
-stores is a selection, not a query.
+stores is a selection, not a query. **The app knows only the active
+store's path** — there is deliberately no store browser, rename or
+"where are my other stores" surface; another store is just another file
+the user points at.
 
 The *location* of a store is not special-cased. Pointing one at a path
-inside a repository is possible because a store is just a directory, but
-it is not part of this design and has no dedicated verb: tool output can
-contain secrets and runs to hundreds of KB, so auto-committing sessions
-would leak and bloat. A repo store would only make sense as a
-deliberate, gitignored choice, and that is exactly the kind of
-functionality this project does not build before it is needed.
+inside a repository is possible because a store is just a file, but it is
+not part of this design and has no dedicated verb: tool output can
+contain secrets and runs to hundreds of KB, so committing a store would
+leak and bloat. A repo store would only make sense as a deliberate,
+gitignored choice, and that is exactly the kind of functionality this
+project does not build before it is needed.
 
 Why SQLite over the alternatives
 --------------------------------
@@ -254,10 +291,17 @@ Why SQLite over the alternatives
 - **vs. ``:mnesia`` / ``:dets``** — pure BEAM, but neither is a portable
   single file with SQL/FTS; ``dets`` has a 2 GB limit and repair
   archaeology, ``mnesia`` is node-oriented. Rejected.
-- **vs. one global database** — violates *one session = one file* and
-  *size honesty*, and is the opencode failure mode this project already
-  documented. Rejected. (A *store* is a directory of files, not one
-  file; the difference is exactly the unit you can ``rm`` and ``du``.)
+- **vs. one global database** — **chosen, with a correction.** The
+  original draft rejected a single aggregated DB as opencode's failure
+  mode. The rejection conflated *aggregation* with *the missing verbs*:
+  per-session SQLite files answered the opencode complaint only because
+  the listing/pruning surface was added alongside them, not because of
+  the file split. The owner's decision (2026-09-20) is **one DB per
+  store** — aggregation at the *store* level, several stores selectable
+  — which keeps the unit you can ``rm`` and ``du`` (the store file)
+  while making cross-session search/aggregation native. The rejected
+  thing is the *single global* DB with no store boundary and no verbs,
+  not aggregation itself.
 
 Trade-off accepted: SQLite files are **not** ``cat``/``git``-readable
 (``S4`` downgraded to a bonus). That is bought back by a JSON
@@ -269,18 +313,23 @@ Reconciliation with the existing principles
 
 The five "Session storage principles" (``memory.rst``) were written
 against opencode's concrete failure modes, not against databases as
-such. Per-session SQLite *within a selectable store* satisfies them:
+such. **One SQLite DB per selectable *store*** satisfies them, with one
+principle deliberately reinterpreted:
 
 1. **Portability over project-binding** — unchanged; ``scope_root`` is a
-   column, and a store is a directory you choose. A session is never
-   bound to the directory it was opened in.
-2. **One session = one file = one ``rm``** — unchanged in substance: one
-   SQLite file, still discoverable and deletable. "Plaintext" is dropped.
+   column, and a store is a file you choose. A session is never bound to
+   the directory it was opened in.
+2. **One *store* = one file = one ``rm``** — **reinterpreted** (was "one
+   *session* = one file"). The unit you can ``rm``/``du`` is now the
+   store file; per-session deletability is a transactional ``DELETE``,
+   and single-session portability moves to ``--export``. "Plaintext"
+   stays dropped. See *Consequences of aggregation*.
 3. **Lifecycle verbs first-class** — strengthened: this is now ``R0``,
-   with delete-by-directory and footprint in the first slice, and
-   prune-by-size/export/import following.
-4. **Size honesty** — *better*: each session's footprint is shown, and
-   the store's ``du`` is truthful; growth is not hidden in an aggregate.
+   with delete-one / delete-by-directory / prune-by-age already in the
+   picker, and prune-by-size/export/import following.
+4. **Size honesty** — preserved via a per-session ``size_bytes`` (or
+   ``SUM`` over rows); the store's own ``du`` covers indexes too. Growth
+   is not hidden in an opaque global blob.
 5. **Retention is a decision** — a default size guard is added (see
    *Retention*), documented here as this principle requires.
 
