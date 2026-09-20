@@ -140,6 +140,15 @@ defmodule CodingAgent.UI.TuiPickerTest do
       assert Path.expand(entry.scope_root) == Path.expand(root)
     end
 
+    test "the picker names the active store (ADR 020 R16)", %{root: root} do
+      pid = start_picker(root)
+      joined = Enum.join(buffer(pid), "\n")
+
+      # the header states which store these sessions belong to
+      assert joined =~ "store: "
+      assert joined =~ CodingAgent.Core.Session.Store.dir()
+    end
+
     test "`a` widens the source to the whole store and names the scope column", %{root: root} do
       pid = start_picker(root)
       assert sync(pid).picker_all? == false

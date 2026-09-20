@@ -254,11 +254,15 @@ leverage.
       Slice 1 shipped: the TUI picker now shows storage footprint per
       session and a total, filters live, toggles this-dir/whole-store,
       and bulk-deletes the visible set (delete-by-directory). `Store.list`
-      entries carry `:size` and `:scope_root`. Not yet done: the engine
-      change, store selection (`--store`/`AGENT_STORE`), export/import,
-      migration of existing blobs. The opencode objection was an API
-      objection — missing verbs — which this slice addresses before any
-      format change.
+      entries carry `:size` and `:scope_root`. Slice 2 shipped: store
+      selection — `config.toml [stores]` (name → path), `--store` on
+      `mix agent`/`mix tui`, `AGENT_STORE`, and `config.toml store =`,
+      resolved in one `Core.Config` reader (`resolve_store/2`,
+      `select_store!/2`); the picker names the active store. Not yet
+      done: the engine change (per-session SQLite, agent/display tables),
+      export/import, migration of existing blobs. The opencode objection
+      was an API objection — missing verbs — which these slices address
+      before any format change.
 - [ ] **P4 — Split `tui.ex` along its own comment sections**; single state
       struct definition. (Grew to ~3200 lines; the mount state is still
       defined twice.)

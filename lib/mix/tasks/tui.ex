@@ -5,6 +5,11 @@ defmodule Mix.Tasks.Tui do
       mix tui                          # fresh session, empty transcript
       mix tui "run the test suite"     # fresh session + initial prompt
       mix tui --resume <id>            # continue a persisted session
+      mix tui --store <name|path>      # use a specific session store
+
+  The session store (ADR 020 R16) is a directory; `--store` names one
+  from config.toml `[stores]` or gives a path (`AGENT_STORE` and
+  `config.toml store =` do the same without the flag).
   """
 
   use Mix.Task
@@ -42,9 +47,13 @@ defmodule Mix.Tasks.Tui do
 
     {opts, args} =
       OptionParser.parse!(args,
-        strict: [resume: :string, agent: :string],
+        strict: [resume: :string, agent: :string, store: :string],
         aliases: [r: :resume]
       )
+
+    # Pin the store before the TUI mounts: the picker, the log path and
+    # every session read `Store.dir/0` (the flag, else AGENT_STORE/config).
+    CodingAgent.Core.Config.select_store!(opts[:store])
 
     prompt =
       case args do

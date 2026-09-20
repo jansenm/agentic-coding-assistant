@@ -363,8 +363,18 @@ Slice order
 
 1. **TUI session manager** on the current store: footprint, search/filter,
    delete-by-directory (``R0``, ``R10``, ``R13``, ``S1`` within memory).
+   **Shipped.**
 2. **Store selection** (``R16``): config ``[stores]``, ``--store``,
    ``AGENT_STORE``; picker shows and switches the active store.
+   **Shipped** (selection, not runtime switching — resolve at launch).
+   ``Core.Config.resolve_store/2`` maps a selector (a ``[stores]`` name
+   or an absolute/``~`` path) to a directory; ``select_store!/2`` sets
+   the ``:store_dir`` seam; ``--store`` on ``mix agent``/``mix tui``,
+   ``AGENT_STORE`` and ``config.toml store =`` are one reader with a
+   strict precedence (explicit override > ``AGENT_STORE`` > config >
+   default). An unresolvable selector raises rather than silently
+   falling back to the default store. ``config.toml store =`` is the
+   third fallback (the ``[stores]`` table only defines names).
 3. **SQLite format + two views** (``R1``–``R9``, ``R2``), with lazy
    migration of existing blobs.
 4. **CLI verbs**: ``--session-delete-dir``, ``--session-prune-size``,
@@ -375,6 +385,11 @@ Open questions
 --------------
 
 1. Store selection in the TUI: switch at runtime, or only at launch?
+   **Resolved in slice 2: at launch.** The selector resolves once
+   (``select_store!/2`` sets the seam before the TUI mounts); the picker
+   *names* the active store but does not switch it. Runtime switching
+   would have to re-point ``Store.dir/0`` under live sessions and is
+   deliberately out of scope (S5: single writer per session).
 2. Exact retention defaults: warning threshold value; whether a
    size-prune verb is in the first slice.
 3. Does the display view need tool *arguments* (not only results) for a

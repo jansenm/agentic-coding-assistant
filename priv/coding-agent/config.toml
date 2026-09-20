@@ -68,3 +68,19 @@ rw = [
 ]
 ro = []
 hide = []
+
+# Session stores (ADR 020 R16). A store is a directory of session files;
+# keep several (one per client/project) and choose one explicitly.
+#
+#   store = "<name|path>"   the default store for every run
+#   [stores]                named stores: name -> absolute path
+#
+# Selection precedence: `--store` flag > AGENT_STORE env > `store =` here
+# > the default (~/.local/state/coding_agent/sessions). A selector that
+# cannot be resolved is an error, never a silent fallback.
+#
+# Example:
+#   store = "work"
+#   [stores]
+#   work    = "~/.local/state/coding_agent/work"
+#   private = "/data/agent-private"

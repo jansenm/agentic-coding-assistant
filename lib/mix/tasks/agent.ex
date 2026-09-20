@@ -9,6 +9,11 @@ defmodule Mix.Tasks.Agent do
       mix agent --resume <id>           # continue a persisted session
       mix agent --session-delete <id>   # delete one session
       mix agent --session-prune <days>  # delete sessions older than N days
+      mix agent --store <name|path>     # use a specific session store
+
+  The session store (ADR 020 R16) is a directory. `--store` names one
+  from config.toml `[stores]` or gives a path; `AGENT_STORE` and
+  `config.toml store =` are the same selector without the flag.
   """
 
   use Mix.Task
@@ -44,10 +49,16 @@ defmodule Mix.Tasks.Agent do
           agent: :string,
           sessions: :boolean,
           session_delete: :string,
-          session_prune: :integer
+          session_prune: :integer,
+          store: :string
         ],
         aliases: [c: :chat, r: :resume]
       )
+
+    # Pin the store BEFORE any session verb (list/resume/delete all read
+    # `Store.dir/0`): the `--store` flag, else AGENT_STORE / config. A bad
+    # selector raises here, loudly.
+    CodingAgent.Core.Config.select_store!(opts[:store])
 
     chat? = opts[:chat] == true
     resume_id = opts[:resume]
@@ -86,7 +97,8 @@ defmodule Mix.Tasks.Agent do
           "usage: mix agent \"prompt\" | mix agent --chat | " <>
             "mix agent --agent <name> | " <>
             "mix agent --sessions | mix agent --resume <id> | " <>
-            "mix agent --session-delete <id> | mix agent --session-prune <days>"
+            "mix agent --session-delete <id> | mix agent --session-prune <days> | " <>
+            "mix agent --store <name|path>"
         )
     end
   end

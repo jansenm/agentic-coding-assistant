@@ -3078,10 +3078,13 @@ defmodule CodingAgent.UI.Tui do
       end)
 
     header = picker_header(state, visible)
+    # the header may be one line (a prompt) or several (store + summary +
+    # hints); size the box from its actual line count + 2 border + 1 slack
+    header_lines = length(String.split(header, "\n"))
 
     body = ([header] ++ rows) |> Enum.join("\n")
 
-    h = min(length(rows) + 4, area.height - 4)
+    h = min(length(rows) + header_lines + 3, area.height - 4)
     w = min(78, area.width - 4)
     x = div(max(area.width - w, 0), 2)
     y = div(max(area.height - h, 0), 2)
@@ -3130,7 +3133,12 @@ defmodule CodingAgent.UI.Tui do
             f -> "  filter: #{f}"
           end
 
-        " #{length(visible)} session(s), #{format_bytes(total)}  [#{scope}]#{filter}\n" <>
+        # the ACTIVE store names itself (ADR 020 R16): sessions from
+        # different stores must never be confused for one another
+        store = Store.dir()
+
+        " store: #{store}\n" <>
+          " #{length(visible)} session(s), #{format_bytes(total)}  [#{scope}]#{filter}\n" <>
           "  (enter=resume, n=new, a=all/dir, /=filter, d=delete, D=delete all, r=rename, q=quit)"
     end
   end

@@ -97,6 +97,93 @@ defmodule CodingAgent.Core.ConfigTest do
     end
   end
 
+  describe "store selection (ADR 020 R16)" do
+    setup do
+      # never let a test leave a global :store_dir / AGENT_STORE behind
+      prev_dir = Application.get_env(:coding_agent, :store_dir)
+      prev_env = System.get_env("AGENT_STORE")
+
+      on_exit(fn ->
+        Application.put_env(:coding_agent, :store_dir, prev_dir)
+
+        if prev_env,
+          do: System.put_env("AGENT_STORE", prev_env),
+          else: System.delete_env("AGENT_STORE")
+      end)
+
+      :ok
+    end
+
+    test "an absolute path resolves as-is" do
+      assert {:ok, "/abs/store"} = Config.resolve_store("/abs/store")
+    end
+
+    test "a ~-rooted path expands against HOME" do
+      assert {:ok, expanded} = Config.resolve_store("~/mystore")
+      assert expanded == Path.join(System.user_home!(), "mystore")
+    end
+
+    test "a name resolves through config.toml [stores]" do
+      File.write!(Path.join(UserConfig.global_dir(), "config.toml"), """
+      [stores]
+      work = "/data/work-sessions"
+      """)
+
+      assert {:ok, "/data/work-sessions"} = Config.resolve_store("work")
+      assert Config.stores()["work"] == "/data/work-sessions"
+    end
+
+    test "an unknown name is an error, not a guessed path" do
+      assert {:error, {:unknown_store, "nope"}} = Config.resolve_store("nope")
+      assert {:error, {:unknown_store, _}} = Config.resolve_store("relative/path")
+    end
+
+    test "select_store! sets the :store_dir seam so Store.dir follows" do
+      assert "/abs/loud" = Config.select_store!("/abs/loud")
+      assert Application.get_env(:coding_agent, :store_dir) == "/abs/loud"
+      assert CodingAgent.Core.Session.Store.dir() == "/abs/loud"
+    end
+
+    test "select_store!(nil) keeps an already-pinned store (no clobber)" do
+      Application.put_env(:coding_agent, :store_dir, "/pinned/store")
+      assert "/pinned/store" = Config.select_store!(nil)
+    end
+
+    test "select_store! pins the default when nothing is configured" do
+      Application.delete_env(:coding_agent, :store_dir)
+      System.delete_env("AGENT_STORE")
+
+      dir = Config.select_store!(nil)
+      assert dir == Path.join(Config.state_dir(), "sessions")
+      assert Application.get_env(:coding_agent, :store_dir) == dir
+    end
+
+    test "select_store! raises with an actionable message on a bad selector" do
+      assert_raise RuntimeError, ~r/unknown_store|resolve session store/, fn ->
+        Config.select_store!("definitely-not-a-store")
+      end
+    end
+
+    test "store_dir honours AGENT_STORE (path) when no explicit override is set" do
+      Application.delete_env(:coding_agent, :store_dir)
+      System.put_env("AGENT_STORE", "/env/store")
+
+      assert Config.store_dir() == "/env/store"
+
+      # and config.toml `store =` is the next fallback
+      System.delete_env("AGENT_STORE")
+      File.write!(Path.join(UserConfig.global_dir(), "config.toml"), ~s(store = "/cfg/store"))
+      assert Config.store_dir() == "/cfg/store"
+    end
+
+    test "the :store_dir override wins over AGENT_STORE (the test seam is strongest)" do
+      System.put_env("AGENT_STORE", "/env/store")
+      Application.put_env(:coding_agent, :store_dir, "/override/store")
+
+      assert Config.store_dir() == "/override/store"
+    end
+  end
+
   describe "runtime knobs" do
     test "defaults are defined here, not duplicated in config.exs" do
       assert Config.max_tool_rounds() == 100

@@ -163,15 +163,157 @@ defmodule CodingAgent.Core.Config do
   end
 
   @doc """
-  The session storage directory. The `:store_dir` app-env override (a
-  test seam) points here directly; otherwise `state_dir()/sessions`.
+  The session storage directory (ADR 020 R16: a *store* is a directory).
+
+  Precedence, strongest first:
+
+    1. the `:store_dir` application-env value — the test seam, and what
+       the `--store` flag sets after resolving a selector;
+    2. `AGENT_STORE` (a name or a path);
+    3. `config.toml` `store = "<name|path>"`;
+    4. the default `state_dir()/sessions`.
+
+  A configured selector that cannot be resolved **raises** rather than
+  silently falling back — a store is a deliberate choice, and quietly
+  writing sessions to the wrong directory is worse than a loud failure.
   """
   @spec store_dir() :: String.t()
   def store_dir do
     case app(:store_dir, nil) do
-      dir when is_binary(dir) -> dir
-      _ -> Path.join(state_dir(), "sessions")
+      dir when is_binary(dir) ->
+        dir
+
+      _ ->
+        # No explicit override: resolve the ambient selector. This reads
+        # config, so the CLI tasks PIN the store at startup
+        # (`select_store!/1`) and the hot paths never reach here.
+        case ambient_store_dir() do
+          {:ok, dir} -> dir
+          {:error, reason} -> raise store_error(ambient_selector(), reason)
+        end
     end
+  end
+
+  @doc """
+  The ambient store selector (no CLI flag): `AGENT_STORE`, then
+  `config.toml store =`. `nil` means the default location.
+  """
+  @spec ambient_selector() :: String.t() | nil
+  def ambient_selector do
+    case System.get_env("AGENT_STORE") || snapshot(nil).config["store"] do
+      selector when is_binary(selector) and selector != "" -> selector
+      _ -> nil
+    end
+  end
+
+  defp ambient_store_dir do
+    case ambient_selector() do
+      nil -> {:ok, Path.join(state_dir(), "sessions")}
+      selector -> resolve_store(selector)
+    end
+  end
+
+  @doc """
+  Resolves a store selector — a name from `config.toml`'s `[stores]`
+  table, or an absolute / `~`-rooted path — to a directory. Names are
+  looked up; anything that is neither a known name nor a path is an
+  error (never guessed). Relative paths are refused for the same reason
+  sandbox mounts are: they would resolve against a varying CWD.
+  """
+  @spec resolve_store(String.t(), String.t() | nil) :: {:ok, String.t()} | {:error, term()}
+  def resolve_store(selector, scope_root \\ nil) when is_binary(selector) do
+    selector = String.trim(selector)
+    stores = snapshot(scope_root).config["stores"] || %{}
+
+    case Map.get(stores, selector) do
+      # a named store's *value* may still be a bad path (relative)
+      path when is_binary(path) ->
+        expand_store_path(path)
+
+      # not a known name: accept a path, else name the missing store
+      _ ->
+        if store_path?(selector),
+          do: expand_store_path(selector),
+          else: {:error, {:unknown_store, selector}}
+    end
+  end
+
+  @doc "The configured named stores (`config.toml [stores]`)."
+  @spec stores(String.t() | nil) :: %{String.t() => String.t()}
+  def stores(scope_root \\ nil) do
+    case snapshot(scope_root).config["stores"] do
+      %{} = stores -> stores
+      _ -> %{}
+    end
+  end
+
+  @doc """
+  Pins the active store for the process and returns the directory,
+  setting the `:store_dir` app env (the same seam `store_dir/0`, `Store`
+  and the test suite read).
+
+  With a `selector` (a `--store` flag value), that choice wins and an
+  unresolvable one **raises** — a flag that silently fell back would
+  write sessions somewhere the user did not choose. With `nil`, the
+  ambient selector (`AGENT_STORE` / `config.toml store =`) is resolved,
+  falling back to the default location.
+
+  Entry points call this **once at startup**, so `store_dir/0` stays a
+  cheap app-env read on hot paths (the config is not re-read per frame —
+  the per-frame `UserConfig.load` CPU-storm lesson).
+  """
+  @spec select_store!(String.t() | nil, String.t() | nil) :: String.t()
+  def select_store!(selector, scope_root \\ nil)
+
+  # An explicit selector always re-pins (the flag is the user's choice).
+  def select_store!(selector, scope_root) when is_binary(selector) do
+    pin_store!(selector, scope_root)
+  end
+
+  # No flag: keep an already-pinned store (the strongest layer), else
+  # resolve the ambient selector / default and pin that.
+  def select_store!(nil, scope_root) do
+    case app(:store_dir, nil) do
+      dir when is_binary(dir) -> dir
+      _ -> pin_store!(ambient_selector(), scope_root)
+    end
+  end
+
+  defp pin_store!(nil, _scope_root) do
+    dir = Path.join(state_dir(), "sessions")
+    Application.put_env(:coding_agent, :store_dir, dir)
+    dir
+  end
+
+  defp pin_store!(selector, scope_root) do
+    case resolve_store(selector, scope_root) do
+      {:ok, dir} ->
+        Application.put_env(:coding_agent, :store_dir, dir)
+        dir
+
+      {:error, reason} ->
+        raise store_error(selector, reason)
+    end
+  end
+
+  defp store_path?(selector) do
+    String.starts_with?(selector, "/") or selector == "~" or String.starts_with?(selector, "~/")
+  end
+
+  # Absolute or `~`-rooted only: `Path.expand/1` resolves `~` against
+  # HOME and leaves absolute paths alone; a relative path would resolve
+  # against a varying CWD, so it is refused.
+  defp expand_store_path(path) do
+    if store_path?(path) do
+      {:ok, Path.expand(path)}
+    else
+      {:error, {:relative_store_path, path}}
+    end
+  end
+
+  defp store_error(selector, reason) do
+    "cannot resolve session store #{inspect(selector)}: #{inspect(reason)}. " <>
+      "Define it in config.toml [stores] or pass an absolute path."
   end
 
   defp app(key, default), do: Application.get_env(:coding_agent, key, default)
