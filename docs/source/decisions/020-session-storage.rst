@@ -204,7 +204,7 @@ keyed by session id.
    are stated plainly under *Consequences of aggregation* below; the
    property "one session = one file = one ``rm``" is **dropped** in
    favour of "one *store* = one file = one ``rm``", with single-session
-   portability moved to ``--export``.
+   portability moved to the export verb (a readable transcript).
 
 Schema (indicative, not final); every session-scoped table carries the
 session id, which is the grouping key:
@@ -262,8 +262,8 @@ Greppability is served by the **display view**, which is *text by nature*
 (it is what was rendered), so no encoder is needed to search a session:
 ``SELECT … WHERE text LIKE …`` runs in SQLite. ``display_fts`` is the
 later upgrade if a store-wide scan proves slow. The trade-off accepted:
-the agent view is not human-readable in the DB; ``--export`` covers the
-"hand someone a readable session" case.
+the agent view is not human-readable in the DB; the export (``e``/``E``)
+covers the "hand someone a readable session" case.
 
 Schema versioning (implemented 2026-09-21)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -325,8 +325,8 @@ Consequences of aggregation (stated, not hidden)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 - **Per-session portability is a verb, not a file copy.** Exporting one
-  session becomes ``--session-export`` (a portable JSON document, or a
-  small standalone DB), not "hand someone the file".
+  session is the picker's ``e``/``E`` — a readable transcript, not "hand
+  someone the store file" (and not a resumable session; see *Export*).
 - **Size honesty is a query.** Each session's footprint is a stored
   ``size_bytes`` (updated on write) or ``SUM(length(...))`` over its
   rows, rather than a ``File.stat``; the store's own ``du`` is the whole
@@ -463,16 +463,36 @@ are trivially distinguishable by magic bytes (``term_to_binary`` begins
 - A ``--session-migrate`` verb can convert a whole store explicitly;
   the lazy path keeps individual resumes working meanwhile.
 
-Export/import
--------------
+Export (``S3``)
+---------------
 
-``S3``. Export writes a portable JSON document (``--session-export <id>``)
-with the display view, meta and the agent view as plain arrays; import
-validates the schema and writes a fresh session DB. **Redaction is part
-of export**: ``meta.provider_config`` may carry user-written connection
-info and must not ship secrets. This also retires the trust caveat: once
-the store is SQL values, the ``binary_to_term`` atom-exhaustion vector
-(``Store.safe_binary_to_term/1``) disappears.
+**Shipped, narrowed from the original plan.** Export writes a *readable
+transcript*, not a resumable session: the display view (reasoning,
+answers, tool results **with the arguments each tool was called with**)
+plus redacted metadata, as Markdown or JSON. The picker's ``e``/``E``
+writes ``<id>.md``/``<id>.json`` into the session's scope root.
+
+Two corrections to the original design, both found by trying it:
+
+- **The agent view is not exported.** It is ReqLLM wire data; a JSON
+  round-trip fails outright (tool-role messages are not reconstructable
+  by ``Context.normalize/2`` — measured: 33 of 54 messages in a real
+  session are tool results). Making it lossless would need the
+  hand-written exactness encoder this ADR already rejected. And an
+  exported agent view is only meaningful to *this* harness anyway, so it
+  serves no hand-off — the readable transcript does.
+- **Tool arguments had to be recorded first.** The display view held a
+  tool's *output* and name, so a transcript could not say which file was
+  read. ``run_one`` now carries the call's arguments on the result, the
+  ``{:tool_executed, …}`` event carries them, and the display meta is
+  ``{:tool, name, args}``. Old rows (``{:tool, name}``) still render.
+
+**No import.** Without a resumable format there is nothing to import;
+``S3``'s portability goal is met by the transcript, and the
+``binary_to_term`` atom-exhaustion trust caveat never arises because no
+binary is decoded. **Redaction is still part of export**:
+``provider_config`` (user-written connection info) is simply not
+included.
 
 Cross-session search and aggregation
 ------------------------------------
@@ -551,16 +571,18 @@ Slice order
    so a pre-3b-ii session is deleted rather than read with an empty
    context (one user, unreleased — no migration reader).
 4. **Management verbs** (in the TUI, per the "TUI is the only surface"
-   decision): delete-by-directory, prune-by-size, store-wide search,
-   export/import. Delete-one, delete-visible, prune-by-age and
-   prune-by-size (``d``/``D``/``P``/``S``) and **store-wide content
-   search** (``s``) ship in the picker. Search runs ``Store.search/1``
+   decision): **shipped in the picker** — delete-one / delete-visible /
+   delete-by-directory (``d``/``D``), prune-by-age (``P``),
+   prune-by-size (``S``), store-wide content search (``s``, ``S1``) and
+   transcript export (``e``/``E``, ``S3``). Search runs ``Store.search/1``
    against the display view (SQL ``LIKE`` with escaped wildcards),
    newest session first, showing each session's matching rows. The
    picker's ``/`` filter stays the metadata-only narrowing; ``s`` is the
-   content query (``S1``). Prunes act on the picker's *source* (this dir
-   or the whole store), not a filtered subset — cleanup is orthogonal to
-   display — and both confirm before deleting. Remaining: export/import.
+   content query. Prunes act on the picker's *source* (this dir or the
+   whole store), not a filtered subset — cleanup is orthogonal to
+   display — and both confirm before deleting. Export is a readable
+   transcript, not a resumable session (see *Export* above); there is no
+   import.
 5. **Derived store index** only if store-wide search proves slow.
 
 Open questions
@@ -577,5 +599,8 @@ Open questions
 3. Does the display view need tool *arguments* (not only results) for a
    faithful resume? Today the UI shows results; the request that
    produced them lives in the agent view.
-4. ``--export`` format: the JSON document above, or a self-contained
-   ``.session`` (SQLite) file that is simply copied?
+4. Export format. **Resolved**: a readable transcript (Markdown/JSON) of
+   the display view, not a resumable session — see *Export* above. A
+   resumable/self-contained format would need the exactness encoder and
+   would reintroduce the ``binary_to_term`` trust caveat on import; it is
+   deliberately out of scope until a use for it exists.

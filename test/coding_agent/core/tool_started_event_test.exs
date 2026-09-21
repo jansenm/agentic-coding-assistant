@@ -43,7 +43,7 @@ defmodule CodingAgent.Core.ToolStartedEventTest do
 
     executed =
       Enum.find_index(events, fn
-        {:tool_executed, "read_file", _} -> true
+        {:tool_executed, "read_file", _, _} -> true
         _ -> false
       end)
 
@@ -51,10 +51,34 @@ defmodule CodingAgent.Core.ToolStartedEventTest do
     assert started < executed, "tool_started must precede tool_executed"
   end
 
+  test "tool_executed carries the call arguments, recorded in the display view" do
+    # the display view must say WHAT a tool was asked to do, not just its
+    # output — otherwise an exported transcript cannot name the file read
+    id = "tool-args-#{System.unique_integer()}"
+
+    {:ok, _} =
+      Supervisor.start_session(id: id, scope_root: @tmp_root, test_mode: true)
+
+    :ok = Session.subscribe(id)
+
+    :ok =
+      Session.debug_gate(id, [
+        %{id: "c1", name: "read_file", arguments: %{"path" => "target.txt"}}
+      ])
+
+    # the event carries the arguments
+    assert_receive {:agent, {:tool_executed, "read_file", _content, args}}, 1_000
+    assert args == %{"path" => "target.txt"}
+
+    # and they are persisted on the display row
+    assert [%{kind: :tool, meta: {:tool, "read_file", %{"path" => "target.txt"}}}] =
+             CodingAgent.Core.Session.Store.display(id)
+  end
+
   defp collect_tool_events(acc) do
     receive do
       {:agent, {:tool_started, _} = ev} -> collect_tool_events([ev | acc])
-      {:agent, {:tool_executed, _, _} = ev} -> collect_tool_events([ev | acc])
+      {:agent, {:tool_executed, _, _, _} = ev} -> collect_tool_events([ev | acc])
       {:agent, _other} -> collect_tool_events(acc)
     after
       200 -> Enum.reverse(acc)

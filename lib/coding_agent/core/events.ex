@@ -25,7 +25,9 @@ defmodule CodingAgent.Core.Events do
     * `{:turn_started, agent_name | nil}` — the agent handling the turn
     * `{:status_changed, status}` / `{:status_changed, status, detail}`
     * `{:tool_started, name}` — one tool call about to run (before result)
-    * `{:tool_executed, name, content}` — one finished tool result
+    * `{:tool_executed, name, content, args}` — one finished tool result
+      with the arguments it was called with (the display view records
+      them, so an export can say *what* a tool was asked to do)
     * `{:usage_updated, usage}` — cumulative token/cost accounting
     * `{:info, text}` — a dim one-line note (compaction, notices)
     * `{:context_compacted, keep_recent}`

@@ -200,9 +200,12 @@ a candidate for its own ADR (principle 5: "revisit only with a new ADR"):
 
 4. **`binary_to_term` without `[:safe]`** (`store.ex:255`) is a conscious
    choice for user-local files (same trust domain as `.env`). It stops
-   being safe the moment sessions are *shared or imported* — an export
-   feature turns a foreign session file into an atom-exhaustion /
-   code-exec vector. Fix the trust boundary before shipping export.
+   being safe the moment sessions are *shared or imported* — an import
+   feature would turn a foreign session file into an atom-exhaustion /
+   code-exec vector. **Resolved by scope, not by hardening**: export
+   ships as a readable text/JSON transcript (no `binary_to_term`), and
+   there is no import, so no foreign binary is ever decoded. A resumable
+   import would need the safe-decoding work first (ADR 020, *Export*).
 
 Retention is now explicit, not automatic: the picker offers prune-by-age
 (`P`) and prune-by-size (`S`), each on the active source and each

@@ -622,7 +622,7 @@ defmodule CodingAgent.Core.Session do
     executed_results = execute_tools(state, to_run)
 
     Enum.each(executed_results, fn r ->
-      broadcast(state, {:tool_executed, r.name, r.content})
+      broadcast(state, {:tool_executed, r.name, r.content, Map.get(r, :arguments, %{})})
     end)
 
     # A session persisted before the round carry existed has no
@@ -1120,9 +1120,9 @@ defmodule CodingAgent.Core.Session do
     by_id = Map.new(results, &{&1.id, &1.content})
 
     Enum.each(calls, fn call ->
-      {id, name, _args} = ToolCall.normalize(call)
+      {id, name, args} = ToolCall.normalize(call)
       content = Map.get(by_id, id, "")
-      broadcast(state, {:tool_executed, name, content})
+      broadcast(state, {:tool_executed, name, content, args})
     end)
   end
 
@@ -1507,8 +1507,13 @@ defmodule CodingAgent.Core.Session do
   defp record_display_event(state, {:info, text}) when is_binary(text),
     do: _ = Store.append_display(state.id, :info, text, agent: state.agent && state.agent.name)
 
+  defp record_display_event(state, {:tool_executed, name, content, args}),
+    do: _ = Store.append_display(state.id, :tool, content, meta: {:tool, name, args})
+
+  # older/synthetic events without arguments (a resumed or hand-built
+  # event) still record; the meta simply carries no args
   defp record_display_event(state, {:tool_executed, name, content}),
-    do: _ = Store.append_display(state.id, :tool, content, meta: {:tool, name})
+    do: _ = Store.append_display(state.id, :tool, content, meta: {:tool, name, %{}})
 
   defp record_display_event(_state, _event), do: :ok
 end

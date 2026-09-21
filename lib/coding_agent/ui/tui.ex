@@ -560,6 +560,13 @@ defmodule CodingAgent.UI.Tui do
   defp display_entry(%{kind: :reasoning, text: t}), do: {:reasoning, t}
   defp display_entry(%{kind: :info, text: t}), do: {:info, t}
 
+  # tool rows: the meta now carries the call arguments too
+  # ({:tool, name, args}); the old 2-tuple form stays for rows written
+  # before arguments were recorded. The transcript shows the result, not
+  # the args (args live in the export and the approval dialog).
+  defp display_entry(%{kind: :tool, text: t, meta: {:tool, name, _args}}),
+    do: {:tool, tool_id(), name, t}
+
   defp display_entry(%{kind: :tool, text: t, meta: {:tool, name}}),
     do: {:tool, tool_id(), name, t}
 
@@ -847,6 +854,48 @@ defmodule CodingAgent.UI.Tui do
     %{state | picker: sessions, picker_index: max(idx, 0), picker_op: nil}
   end
 
+  # Export the selected session's display view to a file (ADR 020 S3).
+  # Destination: the session's scope root when it still exists (the work
+  # context, and where a human would look), else the state dir. The name
+  # is derived from the session id, which is already a safe filename.
+  defp export_selected(state, format) do
+    case picker_selected(state) do
+      nil ->
+        {:noreply, state}
+
+      %{id: id} = meta ->
+        case CodingAgent.Core.Session.Export.data(id) do
+          {:ok, data} ->
+            {ext, body} = render_export(data, format)
+            dir = export_dir(meta)
+            path = Path.join(dir, "#{id}.#{ext}")
+
+            case File.write(path, body) do
+              :ok ->
+                {:noreply, status_note(state, "exported #{id} → #{path}")}
+
+              {:error, reason} ->
+                {:noreply, status_note(state, "export failed: #{inspect(reason)}")}
+            end
+
+          {:error, reason} ->
+            {:noreply, status_note(state, "export failed: #{inspect(reason)}")}
+        end
+    end
+  end
+
+  defp render_export(data, :markdown),
+    do: {"md", CodingAgent.Core.Session.Export.to_markdown(data)}
+
+  defp render_export(data, :json),
+    do: {"json", CodingAgent.Core.Session.Export.to_json(data) <> "\n"}
+
+  defp export_dir(%{scope_root: root}) when is_binary(root) and root != "" do
+    if File.dir?(root), do: root, else: CodingAgent.Core.Config.state_dir()
+  end
+
+  defp export_dir(_), do: CodingAgent.Core.Config.state_dir()
+
   # Live search as the query is typed: reload the picker source from the
   # display view on every keystroke (cheap at this scale).
   defp picker_reload_live_search(state, query) do
@@ -973,6 +1022,18 @@ defmodule CodingAgent.UI.Tui do
   # the filtered/search view (cleanup is orthogonal to display).
   defp handle_picker_key(%Event.Key{code: "S"}, %{picker_op: nil} = state) do
     {:noreply, %{state | picker_op: {:prune_size, ""}}}
+  end
+
+  # `e` / `E`: export the SELECTED session as a readable transcript
+  # (ADR 020 S3) — Markdown by default, JSON with shift. The file lands
+  # in the session's own scope root (where the work happened), named
+  # after the session id, so it sits beside the repo it describes.
+  defp handle_picker_key(%Event.Key{code: "e"}, %{picker_op: nil} = state) do
+    export_selected(state, :markdown)
+  end
+
+  defp handle_picker_key(%Event.Key{code: "E"}, %{picker_op: nil} = state) do
+    export_selected(state, :json)
   end
 
   defp handle_picker_key(%Event.Key{code: "enter"}, %{picker_op: nil} = state) do
@@ -2066,6 +2127,13 @@ defmodule CodingAgent.UI.Tui do
   # reads "running mix" until the matching {:tool_executed, ...}.
   def handle_info({:agent, {:tool_started, name}}, state) do
     {:noreply, %{touch(state) | active_tool: name, tool_started_at: now_ms()}}
+  end
+
+  # The event carries the call's arguments (4-tuple) so the display view
+  # can record them; the live transcript shows the result only, exactly as
+  # before. The 3-tuple clause below stays for hand-built/test events.
+  def handle_info({:agent, {:tool_executed, name, content, _args}}, state) do
+    handle_info({:agent, {:tool_executed, name, content}}, state)
   end
 
   def handle_info({:agent, {:tool_executed, name, content}}, state) do
@@ -3425,7 +3493,8 @@ defmodule CodingAgent.UI.Tui do
         " store: #{store}\n" <>
           " #{length(visible)} session(s), #{format_bytes(total)}  [#{scope}]#{filter}\n" <>
           "  enter=resume  n=new  a=all/dir  /=filter  s=search  q=quit\n" <>
-          "  d=delete  D=delete all  r=rename  P=prune age  S=prune size"
+          "  d=delete  D=delete all  r=rename  e=export md  E=export json\n" <>
+          "  P=prune age  S=prune size"
     end
   end
 

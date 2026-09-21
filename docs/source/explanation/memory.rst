@@ -174,8 +174,10 @@ archaeology). Revisit any of these only with a new ADR.
 
 0. **The verbs are the product (R0).** A store without the operations
    to list, filter, search, size, delete (by id, age, size or
-   directory), export and import is unusable regardless of its engine.
-   The UI surface ships with — or before — the engine change.
+   directory) and export is unusable regardless of its engine. The UI
+   surface ships with — or before — the engine change. (All of these now
+   ship in the picker; there is no import — export is a readable
+   transcript, not a resumable session.)
 
 1. **Portability over project-binding.** A session belongs to itself;
    the repo scope root is *data inside the session*, not the storage
@@ -186,9 +188,10 @@ archaeology). Revisit any of these only with a new ADR.
 2. **One *store* = one portable unit = one ``rm``.** Cleanup stays
    discoverable via the TUI session picker, never schema archaeology.
    The store is the file you ``rm``/``du``; deleting one *session* is a
-   transactional ``DELETE`` and single-session portability is
-   ``--export``. (An earlier draft put one session per file; the
-   aggregated-per-store choice is recorded in ADR 020, with its costs.)
+   transactional ``DELETE`` and single-session portability is the
+   export verb (a readable transcript). (An earlier draft put one
+   session per file; the aggregated-per-store choice is recorded in
+   ADR 020, with its costs.)
 
 3. **Lifecycle commands are first-class verbs.** Listing is not
    enough: deleting, pruning (age/size), deleting by directory and

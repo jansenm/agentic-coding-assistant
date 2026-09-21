@@ -41,6 +41,22 @@ defmodule CodingAgent.UI.TuiPickerTest do
     })
   end
 
+  # Move the picker selection onto the row for `id` (rows are newest-first,
+  # so walk down until the visible row matches).
+  defp select_row(pid, id) do
+    st = sync(pid)
+    target = find_index(picker_visible(st), id)
+    current = st.picker_index
+
+    cond do
+      target == current -> :ok
+      target > current -> Enum.each(1..(target - current), fn _ -> key(pid, "down") end)
+      true -> Enum.each(1..(current - target), fn _ -> key(pid, "up") end)
+    end
+  end
+
+  defp find_index(rows, id), do: Enum.find_index(rows, &(&1.id == id))
+
   test "picker shows the cwd's sessions, enter resumes the selected one", %{root: root} do
     pid = start_picker(root)
 
@@ -201,6 +217,48 @@ defmodule CodingAgent.UI.TuiPickerTest do
       st2 = sync(pid)
       assert st2.picker_search == nil
       assert length(picker_visible(st2)) == 2
+    end
+
+    test "`e` exports the selected session as Markdown into its scope root", %{
+      root: root,
+      ids: ids
+    } do
+      [a, _b] = ids
+      :ok = CodingAgent.Core.Session.Store.append_display(a, :user, "please export me")
+
+      pid = start_picker(root)
+      # select the row for `a` (rows are newest-first; find its index)
+      select_row(pid, a)
+
+      key(pid, "e")
+
+      path = Path.join(root, "#{a}.md")
+      wait_until(fn -> File.exists?(path) end)
+      body = File.read!(path)
+      assert body =~ "# Session #{a}"
+      assert body =~ "please export me"
+      assert body =~ "not a resumable session"
+    end
+
+    test "`E` exports JSON with tool arguments", %{root: root, ids: ids} do
+      [a, _b] = ids
+
+      :ok =
+        CodingAgent.Core.Session.Store.append_display(a, :tool, "output",
+          meta: {:tool, "read_file", %{"path" => "lib/x.ex"}}
+        )
+
+      pid = start_picker(root)
+      select_row(pid, a)
+
+      key(pid, "E")
+
+      path = Path.join(root, "#{a}.json")
+      wait_until(fn -> File.exists?(path) end)
+      decoded = path |> File.read!() |> Jason.decode!()
+      tool = Enum.find(decoded["entries"], &(&1["kind"] == "tool"))
+      assert tool["tool"] == "read_file"
+      assert tool["arguments"] == %{"path" => "lib/x.ex"}
     end
 
     test "`s` with no matches shows an empty picker", %{root: root} do

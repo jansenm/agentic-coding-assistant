@@ -46,7 +46,10 @@ defmodule CodingAgent.Core.Session.ToolRunner do
     {results, _stopped?} =
       Enum.reduce(calls, {[], false}, fn call, {acc, stopped?} ->
         {id, name, args} = ToolCall.normalize(call)
-        executing = %{id: id, name: name}
+        # `arguments` rides along on the result so the display view can
+        # record what a tool was ASKED to do (a transcript that shows only
+        # the output — "read_file -> text" — cannot say which file).
+        executing = %{id: id, name: name, arguments: args}
 
         cond do
           stopped? or Interrupt.requested?(session_id) ->
