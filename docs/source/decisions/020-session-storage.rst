@@ -263,6 +263,55 @@ later upgrade if a store-wide scan proves slow. The trade-off accepted:
 the agent view is not human-readable in the DB; ``--export`` covers the
 "hand someone a readable session" case.
 
+Schema versioning (gap found 2026-09-21)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The slice-3a schema ships with ``CREATE TABLE IF NOT EXISTS`` and no
+version marker. That is **additive-safe** (a store written before the
+``display`` table simply gains it on the next ``open/0``) but blind to
+every change that is not a pure addition: a column rename, a type change,
+an index that must be rebuilt. Such a change would run against an old
+store with no way to know it is old, and fail at query time — violating
+``R8`` ("schema evolution must not crash old or new readers").
+
+There are **two independent version axes**, and conflating them is the
+trap:
+
+=================  =======================================  ==================
+Axis               What it versions                           Where it lives
+=================  =======================================  ==================
+Agent-view format  the ``term_to_binary`` payload shape      ``format_version``
+                   (``{version, %State{}}``)                  in each row's BLOB
+Schema             the SQLite tables/columns/indexes        **missing**
+=================  =======================================  ==================
+
+``@format_version`` already guards the first (a mismatched BLOB fails
+closed). Nothing guards the second.
+
+**Decision: use SQLite's own ``PRAGMA user_version`` as the schema
+version, plus an ordered migration list — a few lines, not Flyway.**
+
+- ``user_version`` is a 32-bit integer stored in the DB header. Measured:
+  it round-trips across close/reopen and costs one pragma read. No extra
+  table, no extra file — the idiomatic SQLite slot for exactly this.
+- On ``open/0``: read ``user_version``; if it is below the code's
+  ``@schema_version``, run the pending migrations **in order**, inside a
+  transaction, then set ``user_version`` to the target. If it is **above**
+  the code's version, the store was written by a newer build → fail
+  closed with a clear message (do not guess).
+- Migrations are a list of `{version, fun(db)}`, appended, never edited:
+  ``@migrations [{1, &create_v1_tables/1}, {2, &add_x/1}, ...]``. The
+  first entry is the current schema as ``CREATE TABLE IF NOT EXISTS``, so
+  a fresh store and an old store converge.
+- Additive changes still work as they do today (``IF NOT EXISTS``), but
+  they get a version number so the *next* non-additive change has a
+  place to go.
+
+This is deliberately not a migration framework: no checksums, no
+rollback, no down-migrations, no CLI. The store is a user-local artifact
+whose failure mode is "resume fails loudly", not "production outage" —
+the honest scope is forward-only, in-process, tested migrations.
+
 Consequences of aggregation (stated, not hidden)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -480,6 +529,10 @@ Slice order
    per-message rows** (3b-ii) — a storage-efficiency change; the BLOB is
    still lossless today. Blob migration is intentionally ignored
    (unreleased).
+   **Before** 3b-ii (which changes the schema non-additively), add the
+   ``PRAGMA user_version`` migration list described under *Schema
+   versioning* — otherwise there is no way to migrate an old store to the
+   new shape (``R8``).
 4. **Management verbs** (in the TUI, per the "TUI is the only surface"
    decision): delete-by-directory, prune-by-size, store-wide search,
    export/import. Delete-one, delete-visible, and prune-by-age already
