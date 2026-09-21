@@ -379,17 +379,20 @@ how the agent *behaves*; the rest are surface area.
       change), code intelligence (definitions/references/hover), skills
       (`SKILL.md`), and MCP/custom-tool extension without a rebuild. The
       `edit` tool is exact-match only today.
-- [ ] **T11 — Two async test-isolation races (urgent, concrete).** Not an
-      opencode gap — found while chasing the current flake, but the same
-      bug class as the one just fixed, and it makes `make commit`
-      non-deterministic: (a) `compaction_test.exs:210` is `async: true`
-      and sets the global `:compaction_wall_clock_ms` to **50ms**;
-      (b) `coding_agent_test.exs:8` is `async: true` and overwrites the
-      global `AGENT_MODEL`. Any concurrent test that compacts or resolves
-      a model can observe the other's value. Fix by `async: false` or a
-      per-test seam. (The live flake reproduces ~1 in 6 full runs and I
-      did not yet capture the failing test name — these are the prime
-      suspects and are wrong regardless.)
+- [x] **T11 — The store flake (done 2026-09-21).** Chasing the flake
+      found the real root cause, which was NOT the async env races I first
+      suspected (those were real but incidental; fixed by `async: false`).
+      The store opened a **new SQLite connection per call** — a leftover
+      from the FILE store it replaced, where one action was one
+      `File.read`/`write`. The suite's many processes then raced one DB
+      file, and SQLite's unfair busy handler starved waiters (29/32
+      writers failed), surfacing as `"database is locked"` and silent
+      empty listings (`menu_popup == nil`, a renamed session missing from
+      the list). `Store` is now a GenServer that owns one connection per
+      store path (`81c5c8b`). A stale ctrl-x menu timer (cancelled when
+      the prefix is consumed, `b9a1ceb`) and one test that polled a file's
+      existence instead of its content were the other two flakes. 0
+      failures in 60 full-suite runs.
 
 Surface already present (so not listed): mouse-wheel scroll, alt-enter
 send, Tab agent switch, model menu, session picker/search/export, status
