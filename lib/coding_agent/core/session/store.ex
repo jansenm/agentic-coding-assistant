@@ -77,6 +77,20 @@ defmodule CodingAgent.Core.Session.Store do
   );
   CREATE INDEX IF NOT EXISTS sessions_saved_at ON sessions(saved_at DESC);
   CREATE INDEX IF NOT EXISTS sessions_scope ON sessions(scope_root);
+
+  -- The display view (ADR 020): what the USER saw, append-only, never
+  -- touched by compaction. Plain TEXT (searchable with SQL LIKE); the
+  -- agent view lives in sessions.state and is never grepped.
+  CREATE TABLE IF NOT EXISTS display (
+    session_id TEXT NOT NULL,
+    seq        INTEGER NOT NULL,
+    kind       TEXT NOT NULL,   -- user|assistant|reasoning|tool|info
+    text       TEXT NOT NULL,
+    agent      TEXT,
+    meta       TEXT,            -- kind-specific extras (e.g. tool name), as a term
+    PRIMARY KEY (session_id, seq)
+  );
+  CREATE INDEX IF NOT EXISTS display_session ON display(session_id, seq);
   """
 
   # -- Persistence ------------------------------------------------------------
@@ -183,6 +197,121 @@ defmodule CodingAgent.Core.Session.Store do
     end
   end
 
+  # -- The display view (ADR 020) ---------------------------------------------
+
+  @typedoc "A display-view kind. `text` is plain text (the rendered form)."
+  @type display_kind :: :user | :assistant | :reasoning | :tool | :info
+
+  @doc """
+  Appends one display event to a session, append-only (ADR 020). The
+  display view is the immutable record of what the user saw; compaction
+  never touches it. `meta` is an optional term for kind-specific extras
+  (e.g. a tool name).
+
+  Best-effort like `save/1`: a write failure logs and returns
+  `{:error, _}`, never crashing the turn (``R7``).
+  """
+  @spec append_display(String.t(), display_kind(), String.t(), keyword()) ::
+          :ok | {:error, term()}
+  def append_display(session_id, kind, text, opts \\ []) do
+    agent = Keyword.get(opts, :agent)
+    meta = Keyword.get(opts, :meta)
+    meta_bin = if meta == nil, do: nil, else: :erlang.term_to_binary(meta)
+
+    with {:ok, db} <- open() do
+      result =
+        exec(
+          db,
+          """
+          INSERT INTO display (session_id, seq, kind, text, agent, meta)
+          VALUES (?, (SELECT COALESCE(MAX(seq), -1) + 1 FROM display WHERE session_id = ?), ?, ?, ?, ?)
+          """,
+          [session_id, session_id, to_string(kind), text, agent, meta_bin]
+        )
+
+      close(db)
+
+      case result do
+        :ok ->
+          :ok
+
+        {:error, reason} ->
+          Logger.warning("display append failed: #{inspect(reason)}")
+          {:error, reason}
+      end
+    end
+  end
+
+  @doc """
+  The display view for a session, oldest first. The `text` is plain
+  text; `meta` is decoded back to a term. Reads the immutable record —
+  used to render a resumed transcript.
+  """
+  @spec display(String.t()) :: [map()]
+  def display(session_id) do
+    case open() do
+      {:ok, db} ->
+        result =
+          case fetch_all(
+                 db,
+                 "SELECT seq, kind, text, agent, meta FROM display WHERE session_id = ? ORDER BY seq",
+                 [session_id]
+               ) do
+            {:ok, rows} -> Enum.map(rows, &to_display_entry/1)
+            {:error, _} -> []
+          end
+
+        close(db)
+        result
+
+      {:error, _} ->
+        []
+    end
+  end
+
+  # Test seam: write a display row with an arbitrary kind, to exercise
+  # the unknown-kind degrade path.
+  @doc false
+  @spec debug_put_display(String.t(), String.t(), String.t()) :: :ok | {:error, term()}
+  def debug_put_display(session_id, kind, text) do
+    with {:ok, db} <- open() do
+      result =
+        exec(
+          db,
+          "INSERT INTO display (session_id, seq, kind, text) VALUES (?, (SELECT COALESCE(MAX(seq), -1) + 1 FROM display WHERE session_id = ?), ?, ?)",
+          [session_id, session_id, kind, text]
+        )
+
+      close(db)
+      result
+    end
+  end
+
+  defp to_display_entry([seq, kind, text, agent, meta_bin]) do
+    %{
+      seq: seq,
+      kind: to_display_kind(kind),
+      text: text,
+      agent: agent,
+      meta: decode_meta(meta_bin)
+    }
+  end
+
+  # an unknown kind must not mint an atom from stored text; degrade to
+  # :info (the harmless display kind) instead
+  defp to_display_kind(kind) when kind in ~w(user assistant reasoning tool info),
+    do: String.to_existing_atom(kind)
+
+  defp to_display_kind(_), do: :info
+
+  defp decode_meta(nil), do: nil
+
+  defp decode_meta(bin) when is_binary(bin) do
+    :erlang.binary_to_term(bin)
+  rescue
+    _ -> nil
+  end
+
   @doc """
   Loads a persisted session. Fail-closed: anything unexpected — missing
   row, corrupt BLOB, wrong version — is an error tuple, never a half
@@ -253,12 +382,13 @@ defmodule CodingAgent.Core.Session.Store do
   end
 
   @doc """
-  Deletes a persisted session (best effort), including its session
-  scratch directory (ADR 022).
+  Deletes a persisted session (best effort): its row, its display view
+  (no orphans), and its scratch directory (ADR 022).
   """
   @spec delete(String.t()) :: :ok
   def delete(id) do
     with {:ok, db} <- open() do
+      _ = exec(db, "DELETE FROM display WHERE session_id = ?", [id])
       _ = exec(db, "DELETE FROM sessions WHERE id = ?", [id])
       close(db)
     end
@@ -319,6 +449,10 @@ defmodule CodingAgent.Core.Session.Store do
         new_state = struct!(state, id: new_id)
 
         with :ok <- write(db, new_state, :erlang.term_to_binary({@format_version, new_state})),
+             # the display view is keyed by session_id too: re-key it so
+             # a rename never orphans the transcript
+             :ok <-
+               exec(db, "UPDATE display SET session_id = ? WHERE session_id = ?", [new_id, id]),
              :ok <- exec(db, "DELETE FROM sessions WHERE id = ?", [id]) do
           Scratch.move(Scratch.path(id), Scratch.path(new_id))
           CodingAgent.Core.Session.notify_renamed(id, new_id)

@@ -529,4 +529,77 @@ defmodule CodingAgent.Core.Session.StoreTest do
     assert {:error, :enoent} = Store.load("ren-live")
     assert {:ok, %{id: "ren-live2"}} = Store.load("ren-live2")
   end
+
+  describe "display view (ADR 020)" do
+    test "appends in order with dense seq, and reads back oldest-first" do
+      id = "disp-#{System.unique_integer([:positive])}"
+      :ok = Store.save(build_state(id))
+
+      :ok = Store.append_display(id, :user, "hello")
+      :ok = Store.append_display(id, :reasoning, "hmm")
+      :ok = Store.append_display(id, :assistant, "hi back")
+
+      assert [
+               %{seq: 0, kind: :user, text: "hello"},
+               %{seq: 1, kind: :reasoning, text: "hmm"},
+               %{seq: 2, kind: :assistant, text: "hi back"}
+             ] = Store.display(id)
+    end
+
+    test "carries agent attribution and kind-specific meta" do
+      id = "disp-meta-#{System.unique_integer([:positive])}"
+      :ok = Store.save(build_state(id))
+
+      :ok = Store.append_display(id, :assistant, "answer", agent: "plan")
+      :ok = Store.append_display(id, :tool, "exit 0", meta: {:tool, "shell"})
+
+      [a, t] = Store.display(id)
+      assert a.agent == "plan"
+      assert t.agent == nil
+      assert t.meta == {:tool, "shell"}
+    end
+
+    test "is append-only and independent of the agent view" do
+      id = "disp-indep-#{System.unique_integer([:positive])}"
+      :ok = Store.save(build_state(id))
+
+      :ok = Store.append_display(id, :user, "first")
+      :ok = Store.append_display(id, :reasoning, "thought")
+
+      # a compaction-like rewrite of the agent view must not touch display
+      compacted = build_state(id) |> Map.put(:context, ReqLLM.Context.new())
+      :ok = Store.save(compacted)
+
+      assert length(Store.display(id)) == 2
+    end
+
+    test "delete removes the session's display rows (no orphans)" do
+      id = "disp-del-#{System.unique_integer([:positive])}"
+      :ok = Store.save(build_state(id))
+      :ok = Store.append_display(id, :user, "x")
+
+      Store.delete(id)
+      assert Store.display(id) == []
+    end
+
+    test "rename re-keys the display rows" do
+      id = "disp-ren-#{System.unique_integer([:positive])}"
+      new_id = id <> "-b"
+      :ok = Store.save(build_state(id))
+      :ok = Store.append_display(id, :user, "kept")
+
+      assert {:ok, ^new_id} = Store.rename(id, new_id)
+      assert Store.display(id) == []
+      assert [%{text: "kept"}] = Store.display(new_id)
+    end
+
+    test "an unknown kind degrades to :info (never mints an atom)" do
+      id = "disp-kind-#{System.unique_integer([:positive])}"
+      :ok = Store.save(build_state(id))
+      # write a row with a kind the loader has never seen
+      :ok = Store.debug_put_display(id, "from_the_future", "x")
+
+      assert [%{kind: :info}] = Store.display(id)
+    end
+  end
 end

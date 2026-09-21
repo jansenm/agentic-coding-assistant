@@ -46,10 +46,12 @@ retired 2026-09-20; the TUI is the only surface.)
 
 .. note::
    ADR 020 (in progress) chose the SQLite engine and **one database per
-   selectable store** (many sessions inside); the remaining slice splits
-   the persistence into the agent view and the immutable display view
-   (normalized, session-keyed tables) — the state BLOB above is still
-   the agent view only. Reasons: (1) the display
+   selectable store** (many sessions inside). The **display view now
+   persists separately** (slice 3b-i): an append-only, session-keyed
+   ``display`` table of plain text, so reasoning survives a resume and
+   compaction cannot erase visible history (the two bugs below). The
+   state BLOB above is the agent view; the remaining slice normalizes it
+   into per-message rows (a storage-efficiency change). Reasons: (1) the display
    view is reconstructed from the compaction-mutable agent view today,
    so reasoning is lost on resume and compaction erases visible history
    — a violation of the dual-view pattern below; (2) cross-session
@@ -246,13 +248,14 @@ Design notes:
   over next; losing it to summary would blind it mid-task.
 - **Failure degrades, never errors**: if the summary call fails, the
   full (oversized) context is kept and the turn proceeds.
-- **v1 rewrites the agent view only**: compaction mutates the agent
+- **Compaction rewrites the agent view only**: it mutates the agent
   view and nothing else. The display view is the immutable record
   compaction must never touch — the principles above and the mermaid
-  diagram in this page fix that boundary. Today the display view is not
-  yet persisted separately (it is reconstructed from the agent view, so
-  reasoning is lost on resume and compaction erases visible history);
-  ADR 020 makes the two views structural.
+  diagram in this page fix that boundary. The display view is now
+  persisted separately (ADR 020 slice 3b-i), so compaction cannot erase
+  visible history and reasoning survives a resume; a test asserts the
+  display view is byte-identical across a compaction-like rewrite of the
+  agent view.
 - Verified live: a 238k-char tool result triggered compaction on the
   next call, and the model still answered a question about the
   compacted-away content correctly from the summary.

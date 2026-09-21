@@ -14,9 +14,12 @@ defmodule CodingAgent.Core.SessionTest do
         ReqLLM.StreamEvent.new(:finish, %{reason: :stop})
       ]
 
-      {text, calls} = Session.consume_stream(events, "test-session")
+      {text, calls, blocks} = Session.consume_stream(events, "test-session")
       assert text == "Hello world"
       assert calls == []
+      # contiguous text deltas fold into ONE assistant block (the display
+      # view is one block per run, not one row per delta)
+      assert blocks == [{:assistant, "Hello world"}]
     end
 
     test "collects tool call events" do
@@ -28,7 +31,7 @@ defmodule CodingAgent.Core.SessionTest do
         ReqLLM.StreamEvent.new(:finish, %{reason: :tool_calls})
       ]
 
-      {text, [collected]} = Session.consume_stream(events, "test-session")
+      {text, [collected], _blocks} = Session.consume_stream(events, "test-session")
       assert text == "let me check"
       assert collected.id == "c1"
     end
@@ -40,9 +43,32 @@ defmodule CodingAgent.Core.SessionTest do
         ReqLLM.StreamEvent.new(:warning, "hm")
       ]
 
-      {text, calls} = Session.consume_stream(events, "test-session")
+      {text, calls, _blocks} = Session.consume_stream(events, "test-session")
       assert text == "ok"
       assert calls == []
+    end
+
+    test "reasoning and answer deltas interleave as ordered display blocks" do
+      # ADR 020: the session owns the ordered display view, so a thought
+      # that arrives between two answer runs keeps its position.
+      events = [
+        ReqLLM.StreamEvent.new(:reasoning_delta, "first thought "),
+        ReqLLM.StreamEvent.new(:reasoning_delta, "continued"),
+        ReqLLM.StreamEvent.new(:text_delta, "an answer"),
+        ReqLLM.StreamEvent.new(:reasoning_delta, "second thought"),
+        ReqLLM.StreamEvent.new(:text_delta, " more answer")
+      ]
+
+      {text, [], blocks} = Session.consume_stream(events, "blocks-session")
+
+      assert text == "an answer more answer"
+
+      assert blocks == [
+               {:reasoning, "first thought continued"},
+               {:assistant, "an answer"},
+               {:reasoning, "second thought"},
+               {:assistant, " more answer"}
+             ]
     end
 
     test "user interrupt stops the stream early, keeping the partial text" do
@@ -124,7 +150,7 @@ defmodule CodingAgent.Core.SessionTest do
         ReqLLM.StreamEvent.new(:text_delta, "b")
       ]
 
-      {text, calls} = Session.consume_stream(events, "clean-session")
+      {text, calls, _blocks} = Session.consume_stream(events, "clean-session")
       assert text == "ab"
       assert calls == []
     end

@@ -307,11 +307,12 @@ defmodule CodingAgent.UI.Tui do
         CodingAgent.UI.ProviderHealth.check_async(model, effective_id)
       end
 
-      # resumed sessions render their history: the persisted context
-      # becomes transcript lines (system prompts stay hidden). A failed
-      # resume fell back to a fresh session; its notice goes on top so
-      # the user knows why the old conversation is not there.
-      history = (restored && restored_history(restored)) || []
+      # Resumed sessions render the persisted DISPLAY view (ADR 020):
+      # the immutable record including reasoning, which the agent view
+      # never held. Old sessions (written before the display view) have
+      # no rows and fall back to reconstructing from the context — the
+      # lossy behaviour this slice replaces.
+      history = (restored && resumed_history(restored.id, restored)) || []
       history = if notice, do: [{:info, notice} | history], else: history
 
       # ctrl-p recall seeds from the restored context's user prompts
@@ -528,6 +529,40 @@ defmodule CodingAgent.UI.Tui do
     end)
   end
 
+  # The resumed transcript (ADR 020): the persisted display view when the
+  # session has one, else the old reconstruction from the agent view.
+  # The display view is authoritative — it is the record of what the user
+  # saw, including reasoning and the pre-compaction history.
+  defp resumed_history(session_id, %{id: _} = restored) do
+    case Store.display(session_id) do
+      [] ->
+        restored_history(restored)
+
+      entries ->
+        # drop any entry a future kind does not map (display_entry -> nil)
+        entries
+        |> Enum.map(&display_entry/1)
+        |> Enum.reject(&is_nil/1)
+        |> Enum.reject(fn entry -> entry_text(entry) == "" end)
+    end
+  end
+
+  # One stored display row -> a transcript entry. Kinds mirror the live
+  # transcript shapes so the render layer treats resumed and live entries
+  # identically. `agent` attribution rides the 3-tuple forms.
+  defp display_entry(%{kind: :user, text: t, agent: agent}), do: {:user, t, agent}
+  defp display_entry(%{kind: :assistant, text: t, agent: agent}), do: {:assistant, t, agent}
+  defp display_entry(%{kind: :reasoning, text: t}), do: {:reasoning, t}
+  defp display_entry(%{kind: :info, text: t}), do: {:info, t}
+
+  defp display_entry(%{kind: :tool, text: t, meta: {:tool, name}}),
+    do: {:tool, tool_id(), name, t}
+
+  defp display_entry(%{kind: :tool, text: t}), do: {:tool, tool_id(), "tool", t}
+  defp display_entry(_), do: nil
+
+  defp tool_id, do: "tool-r#{System.unique_integer([:positive])}"
+
   # Context messages -> transcript lines. System messages (the framework
   # prompt, AGENTS.md memory) stay hidden; compaction summaries surface
   # as an info line so the user knows the visible history is partial.
@@ -698,6 +733,7 @@ defmodule CodingAgent.UI.Tui do
   defp maybe_blank_after(acc, _), do: acc
 
   defp entry_text({:tool, _id, _name, content}), do: content
+  defp entry_text({_role, text, _agent}), do: text
   defp entry_text({_role, text}), do: text
 
   # -- Terminal events -------------------------------------------------------

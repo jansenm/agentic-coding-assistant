@@ -469,10 +469,17 @@ Slice order
    ``sessions`` table whose metadata columns (model, status, scope_root,
    saved_at, size_bytes) answer listings **without decoding a state**
    (``R9``); the full ``%State{}`` rides a BLOB column, so the round-trip
-   stays lossless. Remaining in slice 3: **normalize the agent view and
-   the display view into session-keyed tables** (``R2``) — the display
-   write path touches ``session.ex``. Blob migration is intentionally
-   ignored (unreleased).
+   stays lossless. **Slice 3b-i shipped** (2026-09-20): the **display
+   view** is a separate, append-only, session-keyed ``display`` table of
+   plain text, written by the session at the loop boundaries (user prompt,
+   ordered reasoning/answer blocks, tool results, info notes). Resume
+   renders it directly, so reasoning now survives and compaction cannot
+   erase visible history. The session owns the ordered block list
+   (``consume_stream`` returns it), since the display view is persisted
+   core data. Remaining in slice 3: **normalize the agent view into
+   per-message rows** (3b-ii) — a storage-efficiency change; the BLOB is
+   still lossless today. Blob migration is intentionally ignored
+   (unreleased).
 4. **Management verbs** (in the TUI, per the "TUI is the only surface"
    decision): delete-by-directory, prune-by-size, store-wide search,
    export/import. Delete-one, delete-visible, and prune-by-age already
@@ -486,7 +493,7 @@ Open questions
    **Resolved in slice 2: at launch.** The selector resolves once
    (``select_store!/2`` sets the seam before the TUI mounts); the picker
    *names* the active store but does not switch it. Runtime switching
-   would have to re-point ``Store.dir/0`` under live sessions and is
+   would have to re-point ``Store.path/0`` under live sessions and is
    deliberately out of scope (S5: single writer per session).
 2. Exact retention defaults: warning threshold value; whether a
    size-prune verb is in the first slice.

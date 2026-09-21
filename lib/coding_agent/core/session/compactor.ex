@@ -333,5 +333,24 @@ defmodule CodingAgent.Core.Session.Compactor do
 
   # Broadcast to the session's event subscribers — same channel as the
   # session loop; compaction progress must be visible while it runs.
-  defp broadcast(state, event), do: CodingAgent.Core.Events.publish(state.id, event)
+  #
+  # Also record the display view (ADR 020): compaction notes and the
+  # "context compacted" marker are part of what the user SAW, and the
+  # display view is the immutable record compaction must never touch.
+  # (The agent view is rewritten by apply_summary; this is the other
+  # view, and it only grows.)
+  defp broadcast(state, event) do
+    case event do
+      {:info, text} ->
+        _ = CodingAgent.Core.Session.Store.append_display(state.id, :info, text)
+
+      {:context_compacted, _keep} ->
+        _ = CodingAgent.Core.Session.Store.append_display(state.id, :info, "· context compacted")
+
+      _ ->
+        :ok
+    end
+
+    CodingAgent.Core.Events.publish(state.id, event)
+  end
 end

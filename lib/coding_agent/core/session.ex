@@ -262,6 +262,13 @@ defmodule CodingAgent.Core.Session do
 
   defp via(id), do: {:via, Registry, {CodingAgent.Registry, {:session, id}}}
 
+  # Test-only handle on the turn-completion path, so a test can drive a
+  # streamed turn (ordered reasoning/answer blocks) without a provider.
+  # Used from a `turn_runner` closure. Not part of the driver contract.
+  @doc false
+  @spec debug_complete_turn(State.t(), String.t(), [{atom(), String.t()}]) :: State.t()
+  def debug_complete_turn(state, text, blocks), do: complete_turn(state, text, blocks)
+
   # -- Server -----------------------------------------------------------------
 
   @impl true
@@ -782,6 +789,10 @@ defmodule CodingAgent.Core.Session do
           turn_agents: state.turn_agents ++ [agent]
       }
 
+    # the display view records the user prompt (ADR 020); the agent view
+    # already has it in the context
+    _ = Store.append_display(state.id, :user, prompt, agent: agent)
+
     broadcast(state, {:turn_started, agent})
     broadcast(state, {:status_changed, :running})
     state
@@ -939,19 +950,19 @@ defmodule CodingAgent.Core.Session do
       if changed?, do: persist(state)
 
       case call_llm(state) do
-        {:ok, %{type: :final_answer, text: text, usage: usage}} ->
-          state = state |> add_usage(usage) |> drop_interrupt() |> complete_turn(text)
+        {:ok, %{type: :final_answer, text: text, blocks: blocks, usage: usage}} ->
+          state = state |> add_usage(usage) |> drop_interrupt() |> complete_turn(text, blocks)
           {state, {:ok, state}}
 
-        {:ok, %{type: :tool_calls, tool_calls: calls, usage: usage}} ->
-          state = state |> add_usage(usage) |> drop_interrupt()
+        {:ok, %{type: :tool_calls, tool_calls: calls, blocks: blocks, usage: usage}} ->
+          state = state |> add_usage(usage) |> drop_interrupt() |> record_display_blocks(blocks)
           gate_tools(state, calls)
 
         # user stop (Interrupt.request/1): the partial text streamed so
         # far becomes the turn's answer (opencode esc parity — nothing
         # lost, the model can be nudged on from there)
         {:interrupted, partial} ->
-          state = state |> drop_interrupt() |> complete_turn(partial)
+          state = state |> drop_interrupt() |> complete_turn(partial, [])
           {state, {:ok, state}}
 
         {:error, reason} ->
@@ -1204,13 +1215,19 @@ defmodule CodingAgent.Core.Session do
             {:interrupted, partial} ->
               {:interrupted, partial}
 
-            {text, tool_calls} ->
+            {text, tool_calls, blocks} ->
               # real token accounting (sidebar, token-based compaction):
               # the metadata task resolves after the stream is fully consumed
               usage = ReqLLM.StreamResponse.usage(stream_response)
 
               {:ok,
-               %{type: classify(tool_calls), text: text, tool_calls: tool_calls, usage: usage}}
+               %{
+                 type: classify(tool_calls),
+                 text: text,
+                 tool_calls: tool_calls,
+                 blocks: blocks,
+                 usage: usage
+               }}
           end
         catch
           {:stream_error, error} -> {:error, {:stream_error, error}}
@@ -1228,7 +1245,7 @@ defmodule CodingAgent.Core.Session do
 
     try do
       events
-      |> Enum.reduce_while({:streaming, "", []}, fn event, acc ->
+      |> Enum.reduce_while({:streaming, "", [], []}, fn event, acc ->
         event
         |> handle_event(acc, session_id, partial_key)
         |> interrupt_check(session_id)
@@ -1253,9 +1270,10 @@ defmodule CodingAgent.Core.Session do
     end
   end
 
-  defp interrupt_result({:interrupted, text, _calls}, _session_id), do: {:interrupted, text}
+  defp interrupt_result({:interrupted, text, _calls, _blocks}, _session_id),
+    do: {:interrupted, text}
 
-  defp interrupt_result({:streaming, text, calls}, session_id) do
+  defp interrupt_result({:streaming, text, calls, blocks}, session_id) do
     # A hard cancel (Interrupt fires StreamResponse.close) empties the
     # provider queue and ends the stream with a plain `:halt` — no
     # further event reaches interrupt_check. Classify that as an
@@ -1264,7 +1282,9 @@ defmodule CodingAgent.Core.Session do
     if Interrupt.requested?(session_id) do
       {:interrupted, text}
     else
-      {text, Enum.reverse(calls)}
+      # blocks are accumulated in prepend order; reverse to stream order
+      # so the display view reads as it was written (ADR 020)
+      {text, Enum.reverse(calls), Enum.reverse(blocks)}
     end
   end
 
@@ -1272,26 +1292,42 @@ defmodule CodingAgent.Core.Session do
   # flag check lives in interrupt_check/2 applied after EVERY event (not
   # per clause): a non-delta event after a hard cancel must also halt, or
   # the next pull would hit the already-stopped StreamServer and exit.
-  defp handle_event(%{type: :text_delta, data: delta}, {:streaming, acc, calls}, session_id, key) do
+  #
+  # The accumulator also folds an ORDERED block list (the display view:
+  # reasoning and answer text in the order the provider streamed them,
+  # one block per contiguous run, NOT one row per delta). This is core
+  # data now (ADR 020): the display view is persisted, so the session
+  # owns its shape. The UI renders from it; it does not invent it.
+  defp handle_event(
+         %{type: :text_delta, data: delta},
+         {:streaming, acc, calls, blocks},
+         session_id,
+         key
+       ) do
     broadcast_text(session_id, delta)
     partial = acc <> delta
     Process.put(key, partial)
-    {:streaming, partial, calls}
+    {:streaming, partial, calls, append_block(blocks, :assistant, delta)}
   end
 
   defp handle_event(
          %{type: :reasoning_delta, data: delta},
-         {:streaming, acc, calls},
+         {:streaming, acc, calls, blocks},
          session_id,
          key
        ) do
     broadcast_reasoning(session_id, delta)
     Process.put(key, acc)
-    {:streaming, acc, calls}
+    {:streaming, acc, calls, append_block(blocks, :reasoning, delta)}
   end
 
-  defp handle_event(%{type: :tool_call, data: call}, {:streaming, acc, calls}, _session_id, _key) do
-    {:streaming, acc, [call | calls]}
+  defp handle_event(
+         %{type: :tool_call, data: call},
+         {:streaming, acc, calls, blocks},
+         _session_id,
+         _key
+       ) do
+    {:streaming, acc, [call | calls], blocks}
   end
 
   defp handle_event(%{type: :error, data: error}, _acc, _session_id, _key) do
@@ -1300,16 +1336,25 @@ defmodule CodingAgent.Core.Session do
 
   defp handle_event(_event, acc, _session_id, _key), do: acc
 
+  # One block per contiguous run of the same kind: a delta extends the
+  # last block when its kind matches, else starts a new one. `\r` is
+  # stripped (reasoning arrives with CRLF from some providers).
+  defp append_block([{kind, text} | rest], kind, delta),
+    do: [{kind, text <> String.replace(delta, "\r", "")} | rest]
+
+  defp append_block(blocks, kind, delta),
+    do: [{kind, String.replace(delta, "\r", "")} | blocks]
+
   # The user's stop request lands in the coordinator's ETS flag
   # (`Interrupt.request/1` cannot GenServer.call the session — it is busy
   # consuming this very stream). Checked after every stream event; stop
   # early keeping the partial text as the turn's answer (opencode esc
   # parity).
-  defp interrupt_check({:streaming, acc, calls}, session_id) do
+  defp interrupt_check({:streaming, acc, calls, blocks}, session_id) do
     if Interrupt.requested?(session_id) do
-      {:halt, {:interrupted, acc, calls}}
+      {:halt, {:interrupted, acc, calls, blocks}}
     else
-      {:cont, {:streaming, acc, calls}}
+      {:cont, {:streaming, acc, calls, blocks}}
     end
   end
 
@@ -1337,16 +1382,60 @@ defmodule CodingAgent.Core.Session do
     end
   end
 
-  defp complete_turn(state, text) do
+  defp complete_turn(state, text, blocks) do
     context =
       state.context
       |> Context.append(ReqLLM.Context.assistant(text))
 
     state = %{state | context: context, status: :idle}
+    # the display view (ADR 020): the ordered reasoning/answer blocks the
+    # stream produced, plus the full answer when nothing streamed (a
+    # non-streamed or resumed turn produces no deltas)
+    state = record_display_blocks(state, blocks)
+    state = ensure_display_answer(state, text, blocks)
+
     broadcast(state, {:llm_message, text})
     broadcast(state, {:status_changed, :idle})
     persist(state)
     state
+  end
+
+  # Append the streamed reasoning/answer blocks in order. Reasoning is the
+  # thing the old store could not keep: it lives only here, never in the
+  # agent view (ADR 020).
+  defp record_display_blocks(state, blocks) do
+    agent = state.agent && state.agent.name
+
+    Enum.reduce(blocks, state, fn {kind, text}, acc ->
+      case display_kind(kind) do
+        nil -> acc
+        dk -> append_display(acc, dk, text, agent)
+      end
+    end)
+  end
+
+  # When no assistant DELTA streamed but there is a final answer (a
+  # resumed/non-streamed turn), the answer would otherwise be missing
+  # from the display view: append it as one assistant block.
+  defp ensure_display_answer(state, text, blocks) do
+    if text != "" and not Enum.any?(blocks, fn {k, _} -> k == :assistant end) do
+      append_display(state, :assistant, text, state.agent && state.agent.name)
+    else
+      state
+    end
+  end
+
+  defp display_kind(:assistant), do: :assistant
+  defp display_kind(:reasoning), do: :reasoning
+  defp display_kind(_), do: nil
+
+  defp append_display(state, kind, text, agent) do
+    if String.trim(text) == "" do
+      state
+    else
+      _ = Store.append_display(state.id, kind, text, agent: agent)
+      state
+    end
   end
 
   # Compaction is delegated to `CodingAgent.Core.Session.Compactor`
@@ -1398,5 +1487,21 @@ defmodule CodingAgent.Core.Session do
   defp broadcast_text(session_id, delta),
     do: Events.publish(session_id, {:llm_deltas, delta})
 
-  defp broadcast(state, event), do: Events.publish(state.id, event)
+  # The single publish point, and now also the display-view write point
+  # for the events that are part of what the user SAW but live nowhere
+  # else: info notes (compaction, stops, gate refusals) and tool results.
+  # Reasoning/answer/user are appended by their own paths (they carry the
+  # ordered blocks); broadcasting here would double-record them.
+  defp broadcast(state, event) do
+    record_display_event(state, event)
+    Events.publish(state.id, event)
+  end
+
+  defp record_display_event(state, {:info, text}) when is_binary(text),
+    do: _ = Store.append_display(state.id, :info, text, agent: state.agent && state.agent.name)
+
+  defp record_display_event(state, {:tool_executed, name, content}),
+    do: _ = Store.append_display(state.id, :tool, content, meta: {:tool, name})
+
+  defp record_display_event(_state, _event), do: :ok
 end
