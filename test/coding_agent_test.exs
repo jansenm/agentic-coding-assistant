@@ -1,5 +1,8 @@
 defmodule CodingAgentTest do
-  use ExUnit.Case, async: true
+  # async: false — this test mutates the GLOBAL `AGENT_MODEL` env var that
+  # every session start reads. Sync modules run after all async ones, so
+  # this cannot race a concurrently-starting session.
+  use ExUnit.Case, async: false
 
   test "model resolution: env override wins over config.toml, nil when both absent" do
     prev = System.get_env("AGENT_MODEL")

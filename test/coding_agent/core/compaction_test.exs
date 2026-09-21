@@ -1,5 +1,10 @@
 defmodule CodingAgent.Core.CompactionTest do
-  use ExUnit.Case, async: true
+  # async: false — the wall-clock-budget test mutates the GLOBAL
+  # `:compaction_wall_clock_ms` app env. ExUnit runs all async modules
+  # first, then sync modules serially, so a sync module cannot race an
+  # async one. Was `async: true`, which let a concurrent compaction see
+  # the 50ms budget and fail.
+  use ExUnit.Case, async: false
 
   import ExUnit.CaptureLog
 
