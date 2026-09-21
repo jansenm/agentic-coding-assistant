@@ -1,7 +1,9 @@
 # UI redesign — Befunde, Entscheidungen, Umsetzung
 
-Stand: **Runde 1 umgesetzt und grün** (640 Tests). Dieses Dokument hält
-fest, was gemessen wurde, was entschieden ist und was noch offen ist.
+Stand: **Runde 1 und 2 umgesetzt und grün** (691 Tests). Dieses Dokument
+hält fest, was gemessen wurde, was entschieden ist und was noch offen ist.
+Runde 2 (unten, Abschnitt 6) zieht die Konsequenz aus F6: die Meta-Zeile ist
+kein `Block`-Titel mehr, sondern echter Inhalt im eigenen Modul `UI.Composer`.
 
 Leitregel (Owner-Entscheidung):
 
@@ -178,3 +180,69 @@ als Liste geführt, nicht stillschweigend verworfen.
   die die App selbst malt, sind gefüllt.
 * Farb-Asserts nur über `CellSession` — `get_buffer_content/1` kann keine
   Farbe prüfen, und ein Text-Assert kann eine Farb-Regression nicht fangen.
+* Zusammengehöriges wird getrennt implementiert (Owner-Entscheidung): was
+  eigene Daten *und* eigene Funktionen hat, bekommt ein eigenes Modul.
+
+---
+
+## 6. Runde 2 — der Composer als eigenes Panel (`UI.Composer`)
+
+### 6.1 Befund (live, nicht geraten)
+
+Zwei Beobachtungen am gerenderten Frame (Zellpuffer, 120×30):
+
+* „Das sieht so gepresst aus da unten." — Der Composer war *eine* Textarea mit
+  einem `Block`, dessen zwei Titel auf der **letzten Zeile** saßen (F6). Text
+  und Meta teilten sich also eine Zeile, und der Text begann in Spalte 1 direkt
+  an der Fill-Kante.
+* „Die Statuszeile ist auch nicht links ein Zeichen eingerückt." — Der rechte
+  Titel hatte gar kein Padding; der linke nur `{1, 0, 0, 0}` (F7), also nur
+  links, nicht unten.
+
+Zusätzlich: die Meta-Zeile war ein `bottom`-Titel auf dem Textfeld — also
+ständig in Kollisionsgefahr mit dem getippten Text (genau das Problem, für das
+`input_height/1` eine Zeile freihielt).
+
+### 6.2 Entscheidung
+
+* **Kein Rahmen** (Owner: „definitiv keine Rahmen"). Das Panel ist eine reine
+  **Fill-Fläche**; sie geht eine Zelle **über die Felder hinaus**, damit der
+  Hintergrund als Fläche lesbar ist und die Felder *darin* stehen.
+* **Echtes Padding rundum** (1 Zelle) — links/rechts/oben/unten. Der Text
+  berührt keine Kante mehr.
+* **Eigene Modul** `CodingAgent.UI.Composer` (Owner: „sofort dabei"). Alles,
+  was zusammengehört — Geometrie, Aussehen, die Meta-Daten — liegt dort; `Tui`
+  reicht nur die **Werte** durch.
+
+Layout (Höhe = Padding(2) + Zeilen + Luft(1) + Meta(1)):
+
+```
+      +------------------------------------------+  Fill :chrome, ganzes Rect
+      |  <Textarea>                               |  1 Zelle Einzug
+      |                                           |  eine Leerzeile
+      |  you → build · model …          ○ idle    |  Meta: Identity | Status
+      +------------------------------------------+
+```
+
+### 6.3 Umsetzung
+
+* `lib/coding_agent/ui/composer.ex` (**neu**): `new/1` (Struct), `height/1`
+  (die Measure-Seite), `min_height/0` (State-Mathe ohne Render), `placements/2`
+  (Fill + Textarea + Meta-Zeile als `{widget, rect}`). Die Meta-Zeile ist ein
+  borderless `Block`-Titelpaar (links/rechts) auf einer **eigenen** Zeile, nicht
+  mehr auf dem Textfeld. Die Uhr bleibt in `Tui` (silence/tool_elapsed werden
+  als Werte übergeben), damit `Composer` Layout und nichts Zeitliches kennt.
+* `tui.ex`: `input_widget/1` + `status_line_for_input/1` entfernt;
+  `composer/1` baut nur noch das Struct aus dem State, `render_main` ruft
+  `Composer.placements/2`. `@layout_overhead` und `input_height/1` rechnen über
+  `Composer` (`measure = paint`). Tote Aliase (`Style`, `Textarea`) entfernt.
+* `test/coding_agent/ui/composer_test.exs` (**neu**): Höhe (Floor, Wachstum,
+  Cap), Reihenfolge und Einzug der Platzierungen, der rahmenlose Fill, der
+  sichtbare Cursor, Aufbau der Meta-Zeile (Identity links, Status rechts,
+  Rollen pro Span).
+
+Die bestehenden Farb-/Geometrie-Tests (`tui_cells_test`, `tui_agent_test`,
+`track_b_status_test`, `tui_cursor_test`) bleiben unverändert grün — die
+Form (gefülltes Feld, gestellte Farbe, Identity+Status auf einer Zeile) ist
+dieselbe, die Mechanik darunter ist jetzt getrennt.
+
