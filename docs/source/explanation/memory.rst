@@ -64,6 +64,15 @@ Design points worth knowing:
 
 - **Fail-closed loading**: corrupt bytes, wrong format version or a
   foreign payload error out — never a half-restored session.
+- **The stored model wins on resume.** A session carries its own model
+  as durable state; ``resume_opts/1`` passes the persisted ``state.model``
+  through, so a resumed session is not silently reset to the current
+  ``config.toml`` default (per-session continuity; a deliberately chosen
+  model sticks). A fresh session follows the configured default. An idle
+  model switch is persisted immediately — the same rule as an idle
+  ``set_agent`` — so switching between turns and quitting does not
+  resurrect the old model (this was a live bug: the menu showed the new
+  model, the resumed session ran the old one).
 - **Runtime-only fields do not resurrect**: subscribers are dropped,
   a saved ``:running``/``:error`` session resumes as ``:idle``
   (paused work, not a fake stream). ``:interrupted`` resumes as
