@@ -204,8 +204,10 @@ a candidate for its own ADR (principle 5: "revisit only with a new ADR"):
    feature turns a foreign session file into an atom-exhaustion /
    code-exec vector. Fix the trust boundary before shipping export.
 
-Retention is also unowned: prune-by-age exists (now the picker's `P`),
-but there is no size cap and no documented policy (principle 5).
+Retention is now explicit, not automatic: the picker offers prune-by-age
+(`P`) and prune-by-size (`S`), each on the active source and each
+confirmed. There is deliberately no automatic cap (ADR 020 `S6`: explicit
+pruning is enough unless sessions can plausibly exhaust disk).
 
 ---
 

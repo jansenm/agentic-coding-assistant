@@ -421,8 +421,9 @@ principle deliberately reinterpreted:
    and single-session portability moves to ``--export``. "Plaintext"
    stays dropped. See *Consequences of aggregation*.
 3. **Lifecycle verbs first-class** — strengthened: this is now ``R0``,
-   with delete-one / delete-by-directory / prune-by-age already in the
-   picker, and prune-by-size/export/import following.
+   with delete-one / delete-by-directory / prune-by-age / prune-by-size
+   and content search already in the picker, and export/import
+   following.
 4. **Size honesty** — preserved via a per-session ``size_bytes`` (or
    ``SUM`` over rows); the store's own ``du`` covers indexes too. Growth
    is not hidden in an opaque global blob.
@@ -551,13 +552,15 @@ Slice order
    context (one user, unreleased — no migration reader).
 4. **Management verbs** (in the TUI, per the "TUI is the only surface"
    decision): delete-by-directory, prune-by-size, store-wide search,
-   export/import. Delete-one, delete-visible, prune-by-age (``d``/``D``/
-   ``P``) and **store-wide content search** (``s``) ship in the picker.
-   Search runs ``Store.search/1`` against the display view (SQL
-   ``LIKE`` with escaped wildcards), newest session first, showing each
-   session's matching rows. The picker's ``/`` filter stays the
-   metadata-only narrowing; ``s`` is the content query (``S1``).
-   Remaining: prune-by-size and export/import.
+   export/import. Delete-one, delete-visible, prune-by-age and
+   prune-by-size (``d``/``D``/``P``/``S``) and **store-wide content
+   search** (``s``) ship in the picker. Search runs ``Store.search/1``
+   against the display view (SQL ``LIKE`` with escaped wildcards),
+   newest session first, showing each session's matching rows. The
+   picker's ``/`` filter stays the metadata-only narrowing; ``s`` is the
+   content query (``S1``). Prunes act on the picker's *source* (this dir
+   or the whole store), not a filtered subset — cleanup is orthogonal to
+   display — and both confirm before deleting. Remaining: export/import.
 5. **Derived store index** only if store-wide search proves slow.
 
 Open questions

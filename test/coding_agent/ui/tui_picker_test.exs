@@ -162,7 +162,8 @@ defmodule CodingAgent.UI.TuiPickerTest do
             "d=delete",
             "D=delete all",
             "r=rename",
-            "P=prune"
+            "P=prune age",
+            "S=prune size"
           ] do
         assert joined =~ verb, "missing hint #{verb}"
       end
@@ -268,7 +269,7 @@ defmodule CodingAgent.UI.TuiPickerTest do
       key(pid, "0")
 
       key(pid, "enter")
-      assert match?({:prune_confirm, [^old_id]}, sync(pid).picker_op)
+      assert match?({:prune_confirm, [^old_id], _why}, sync(pid).picker_op)
       assert {:ok, _} = CodingAgent.Core.Session.Store.load(old_id)
 
       key(pid, "y")
@@ -276,6 +277,62 @@ defmodule CodingAgent.UI.TuiPickerTest do
       # the fresh session survives; the picker reloaded and closed the prompt
       assert sync(pid).picker_op == nil
       assert Enum.any?(CodingAgent.Core.Session.Store.list_in(root), &(&1.id != old_id))
+    end
+
+    test "`S` prunes sessions larger than N MB after confirmation", %{root: root, ids: ids} do
+      # one seeded session is padded past 1 MB; the other stays tiny
+      [big_id, small_id] = ids
+
+      big_messages =
+        for i <- 1..80, do: ReqLLM.Context.user(String.duplicate("x", 16_000) <> "#{i}")
+
+      big_context = ReqLLM.Context.new(big_messages)
+
+      big_state =
+        CodingAgent.Core.Session.State.new(
+          id: big_id,
+          context: big_context,
+          model: "m",
+          status: :idle,
+          scope_root: root,
+          policy: CodingAgent.Core.Permissions.load(nil, nil)
+        )
+
+      :ok = CodingAgent.Core.Session.Store.save(big_state)
+
+      pid = start_picker(root)
+
+      key(pid, "S")
+      assert match?({:prune_size, ""}, sync(pid).picker_op)
+
+      # threshold 1 MB
+      key(pid, "1")
+      key(pid, "enter")
+
+      assert match?({:prune_confirm, [^big_id], _why}, sync(pid).picker_op)
+      # not yet deleted
+      assert {:ok, _} = CodingAgent.Core.Session.Store.load(big_id)
+
+      key(pid, "y")
+      assert {:error, :enoent} = CodingAgent.Core.Session.Store.load(big_id)
+      # the small session survives
+      assert {:ok, _} = CodingAgent.Core.Session.Store.load(small_id)
+      assert sync(pid).picker_op == nil
+    end
+
+    test "`S` with nothing large enough reports and deletes nothing", %{root: root, ids: ids} do
+      pid = start_picker(root)
+
+      key(pid, "S")
+      key(pid, "9")
+      key(pid, "9")
+      key(pid, "enter")
+
+      assert sync(pid).picker_op == nil
+
+      for id <- ids do
+        assert {:ok, _} = CodingAgent.Core.Session.Store.load(id)
+      end
     end
 
     test "`P` with nothing old enough reports and deletes nothing", %{root: root, ids: ids} do

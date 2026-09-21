@@ -888,6 +888,24 @@ defmodule CodingAgent.UI.Tui do
     |> Enum.map(& &1.id)
   end
 
+  # The sessions LARGER than `max_bytes`, over the picker's SOURCE (this
+  # dir / whole store), like prune-by-age — a management action orthogonal
+  # to a display filter or content search. Sorted LARGEST first, so the
+  # biggest offenders go first and the deletion order is honest.
+  defp size_prune_candidates(state, max_bytes) do
+    source =
+      if Map.get(state, :picker_all?, false) do
+        Store.list()
+      else
+        Store.list_in(state.picker_scope)
+      end
+
+    source
+    |> Enum.filter(&(Map.get(&1, :size, 0) > max_bytes))
+    |> Enum.sort_by(&Map.get(&1, :size, 0), :desc)
+    |> Enum.map(& &1.id)
+  end
+
   # -- Picker keys -----------------------------------------------------------
   # up/down move; enter resumes; n starts fresh; q quits; d deletes one
   # (y confirms); r renames; `a` toggles this-dir vs whole-store; `/`
@@ -948,6 +966,13 @@ defmodule CodingAgent.UI.Tui do
   # be a trap.
   defp handle_picker_key(%Event.Key{code: "P"}, %{picker_op: nil} = state) do
     {:noreply, %{state | picker_op: {:prune, ""}}}
+  end
+
+  # `S`: prune by SIZE — the retention counterpart to `P` (age). Opens an
+  # MB prompt, then confirms. Also operates on the picker's SOURCE, not
+  # the filtered/search view (cleanup is orthogonal to display).
+  defp handle_picker_key(%Event.Key{code: "S"}, %{picker_op: nil} = state) do
+    {:noreply, %{state | picker_op: {:prune_size, ""}}}
   end
 
   defp handle_picker_key(%Event.Key{code: "enter"}, %{picker_op: nil} = state) do
@@ -1017,14 +1042,19 @@ defmodule CodingAgent.UI.Tui do
     {:noreply, picker_reload(state)}
   end
 
-  # y confirms a prune: delete the sessions older than `days`.
-  defp handle_picker_key(%Event.Key{code: "y"}, %{picker_op: {:prune_confirm, ids}} = state) do
+  # y confirms a prune (by age or by size): delete the armed set. The
+  # reason is only used for the (already-shown) prompt text.
+  defp handle_picker_key(%Event.Key{code: "y"}, %{picker_op: {:prune_confirm, ids, _why}} = state) do
     Enum.each(ids, &Store.delete/1)
     {:noreply, status_note(picker_reload(state), "pruned #{length(ids)} session(s)")}
   end
 
   # y with no armed prune is a no-op (mirrors the other confirm clauses).
   defp handle_picker_key(%Event.Key{code: "y"}, %{picker_op: {:prune, _buf}} = state) do
+    {:noreply, state}
+  end
+
+  defp handle_picker_key(%Event.Key{code: "y"}, %{picker_op: {:prune_size, _buf}} = state) do
     {:noreply, state}
   end
 
@@ -1096,7 +1126,38 @@ defmodule CodingAgent.UI.Tui do
             {:noreply, status_note(%{state | picker_op: nil}, "nothing older than #{days}d")}
 
           _ ->
-            {:noreply, %{state | picker_op: {:prune_confirm, ids}}}
+            {:noreply, %{state | picker_op: {:prune_confirm, ids, "older than #{days}d"}}}
+        end
+
+      _ ->
+        {:noreply, %{state | picker_op: nil}}
+    end
+  end
+
+  # Size-prune prompt: digits build the MB threshold; enter arms the same
+  # confirmation the age prompt uses (with a size-flavoured reason).
+  defp handle_picker_key(%Event.Key{code: code}, %{picker_op: {:prune_size, buf}} = state)
+       when code in ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"] do
+    {:noreply, %{state | picker_op: {:prune_size, buf <> code}}}
+  end
+
+  defp handle_picker_key(%Event.Key{code: "backspace"}, %{picker_op: {:prune_size, buf}} = state) do
+    {:noreply,
+     %{state | picker_op: {:prune_size, String.slice(buf, 0, max(String.length(buf) - 1, 0))}}}
+  end
+
+  defp handle_picker_key(%Event.Key{code: "enter"}, %{picker_op: {:prune_size, buf}} = state) do
+    case Integer.parse(String.trim(buf)) do
+      {mb, ""} when mb > 0 ->
+        max_bytes = mb * 1024 * 1024
+        ids = size_prune_candidates(state, max_bytes)
+
+        case ids do
+          [] ->
+            {:noreply, status_note(%{state | picker_op: nil}, "nothing larger than #{mb} MB")}
+
+          _ ->
+            {:noreply, %{state | picker_op: {:prune_confirm, ids, "larger than #{mb} MB"}}}
         end
 
       _ ->
@@ -3333,8 +3394,11 @@ defmodule CodingAgent.UI.Tui do
       {:prune, buf} ->
         " Prune sessions older than N days: #{buf}▌  (enter=confirm, esc=cancel)"
 
-      {:prune_confirm, ids} ->
-        " Delete #{length(ids)} session(s) older than the chosen age?  (y=confirm, any other key cancels)"
+      {:prune_size, buf} ->
+        " Prune sessions larger than N MB: #{buf}▌  (enter=confirm, esc=cancel)"
+
+      {:prune_confirm, ids, why} ->
+        " Delete #{length(ids)} session(s) #{why}?  (y=confirm, any other key cancels)"
 
       nil ->
         total = visible |> Enum.map(&Map.get(&1, :size, 0)) |> Enum.sum()
@@ -3361,7 +3425,7 @@ defmodule CodingAgent.UI.Tui do
         " store: #{store}\n" <>
           " #{length(visible)} session(s), #{format_bytes(total)}  [#{scope}]#{filter}\n" <>
           "  enter=resume  n=new  a=all/dir  /=filter  s=search  q=quit\n" <>
-          "  d=delete  D=delete all  r=rename  P=prune by age"
+          "  d=delete  D=delete all  r=rename  P=prune age  S=prune size"
     end
   end
 
