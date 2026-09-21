@@ -146,10 +146,15 @@ Consequences
 Implementation decisions (2026-09-17)
 -------------------------------------
 
-1. **``plan`` denial strength:** ``deny``. The write/exec tools
-   (``edit``, ``write_file``, ``shell``, ``git``) are removed from the
-   ``plan`` agent's tool set entirely, so it cannot even attempt a
-   change. Revisit only if this proves inconvenient in use.
+1. **``plan`` denial strength:** ``deny`` **and a read-only shell**
+   (revised 2026-09-21, see below). ``edit``, ``write_file`` and the
+   ``git`` tool are removed from ``plan``'s tool set entirely. ``shell``
+   is *kept* but marked read-only: the sandbox binds the scope root
+   ``--ro-bind``, so ``plan`` can do archaeology (``git log``/``blame``/
+   ``diff``, ``grep``, ``cat``) but cannot write the tree — builds that
+   write in-tree fail. The original ``disallowedTools: … shell`` blocked
+   the archaeology too, which made ``plan`` unable to investigate the
+   repository it was asked to plan against.
 2. **Frontmatter parse failures:** fail closed, but **aggregate** — the
    loader parses *every* definition file, collects all errors (file,
    line, reason), prints them as one numbered list, and then refuses to
@@ -162,6 +167,48 @@ Implementation decisions (2026-09-17)
    list (not a silent filesystem-order pick).
 4. **YAML parser:** see :doc:`019-yaml-dependency` — ``yamerl`` directly,
    one dependency, with a hard size limit and the core schema.
+
+### Read-only shell (``shell: read_only``, 2026-09-21)
+
+Both reference tools keep a *read-only shell* in plan (opencode allows
+read-only ``bash`` by default; Claude Code has a built-in read-only
+command set). This project's earlier design removed ``shell`` wholesale,
+which cost the archaeology. The replacement is a **capability qualifier**
+on the shell key:
+
+.. code-block:: yaml
+
+   permission:
+     shell: read_only     # allowed, but the scope root is bound read-only
+
+It is deliberately **not** a fourth decision. ``allow | ask | deny``
+answer *"prompt or not"* (the gate, ADR 010); read-only-ness is
+**confinement** (what the process may reach, ADR 015). So the value
+resolves to ``:allow`` for the gate plus a policy-level ``shell_mode``
+that flows into the sandbox profile as ``root_ro: true``. The layers
+merge like a decision: **``:ro`` wins**, a lower layer can never widen it
+back to ``:rw``, and ``read_only`` on any tool other than ``shell`` is a
+load error (only ``shell`` has a rw/ro root).
+
+Two properties worth stating:
+
+- **It closes a real bypass.** ``plan`` denied ``edit``/``write_file``
+  but, given a writable ``shell``, could still ``echo > src/f.ex``. The
+  read-only root makes the sandbox enforce what the policy only gestured
+  at. Measured under bwrap: ``cat``/``git log``/``git diff``/``git
+  status``/``git blame``/``grep`` succeed; ``touch``/``mkdir``/``rm``
+  fail with *Read-only file system*.
+- **It refuses rather than degrades.** ``Sandbox.None`` (macOS, Windows,
+  no bwrap) cannot make a root read-only, so it returns
+  ``{:error, :root_ro_unavailable}`` and the shell call fails with a
+  message pointing at the read tools. Silently running read-write would
+  reinstate the bypass on exactly the hosts where the gate is the only
+  boundary.
+
+The cost accepted: **in-tree builds fail for ``plan``** (``mix compile``,
+``cargo build``, ``mvn``). The owner's call is to try this before
+conceding, since most planning is reading and reasoning; a planner that
+truly needs to build is a named future agent, not ``plan``.
 
 Still open (subagent slice)
 

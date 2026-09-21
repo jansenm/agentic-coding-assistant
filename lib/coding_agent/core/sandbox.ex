@@ -28,6 +28,10 @@ defmodule CodingAgent.Core.Sandbox do
 
     * `:network` — may the process use the network (default false).
     * `:git_write` — may the process write `.git` (default false).
+    * `:root_ro` — bind the scope root READ-ONLY (default false). An agent
+      with only read tools sets this so `shell` cannot bypass the file-tool
+      deny (`echo > f`). A non-confining implementation must REFUSE it,
+      never silently run read-write (`None` returns `{:error, :root_ro}`).
     * `:scratch` — a host directory to bind over `/tmp` for the session
       (ADR 022); `nil` keeps the per-call tmpfs, so a scope without a
       session id is unchanged.
@@ -37,6 +41,7 @@ defmodule CodingAgent.Core.Sandbox do
           required(:root) => String.t(),
           optional(:network) => boolean(),
           optional(:git_write) => boolean(),
+          optional(:root_ro) => boolean(),
           optional(:scratch) => String.t() | nil,
           optional(:rw) => [String.t()],
           optional(:ro) => [String.t()],

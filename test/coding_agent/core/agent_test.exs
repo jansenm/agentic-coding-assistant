@@ -137,6 +137,17 @@ defmodule CodingAgent.Core.AgentTest do
       fm = %Frontmatter{description: "d", mode: "subagent", permission: %{"edit" => "deny"}}
       assert :ok = Agent.validate(fm, "x.md")
     end
+
+    test "`shell: read_only` is valid" do
+      fm = %Frontmatter{description: "d", permission: %{"shell" => "read_only"}}
+      assert :ok = Agent.validate(fm, "x.md")
+    end
+
+    test "`read_only` on a non-shell tool is rejected" do
+      fm = %Frontmatter{description: "d", permission: %{"edit" => "read_only"}}
+      assert {:error, msg} = Agent.validate(fm, "x.md")
+      assert msg =~ "only valid on the shell key"
+    end
   end
 
   describe "Agent.load/1 layering" do

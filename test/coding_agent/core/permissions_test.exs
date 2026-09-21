@@ -98,6 +98,68 @@ defmodule CodingAgent.Core.PermissionsTest do
     end
   end
 
+  describe "shell read-only mode" do
+    test "defaults to read-write" do
+      assert Permissions.shell_mode(Permissions.load(nil, nil)) == :rw
+    end
+
+    test "`shell = \"read_only\"` means allow + a read-only root" do
+      path =
+        write_policy("shell-ro.toml", """
+        [permissions]
+        shell = "read_only"
+        """)
+
+      policy = Permissions.load(nil, path)
+
+      assert Permissions.shell_mode(policy) == :ro
+      # and it IS allowed (not ask): the RO confinement is the boundary
+      assert Permissions.effective(policy, "shell", "anything") == :allow
+    end
+
+    test "`read_only` on any other tool is an error" do
+      path =
+        write_policy("ro-wrong-tool.toml", """
+        [permissions]
+        edit = "read_only"
+        """)
+
+      assert_raise ArgumentError, ~r/only valid on the shell key/, fn ->
+        Permissions.load(nil, path)
+      end
+    end
+
+    test "a :ro layer cannot be widened back to :rw by another layer" do
+      ro = write_policy("ro.toml", "[permissions]\nshell = \"read_only\"\n")
+      rw = write_policy("rw.toml", "[permissions.shell]\n\"*\" = \"allow\"\n")
+
+      assert Permissions.shell_mode(Permissions.load(nil, ro)) == :ro
+      assert Permissions.shell_mode(Permissions.load(rw, ro)) == :ro
+      assert Permissions.shell_mode(Permissions.load(ro, rw)) == :ro
+    end
+
+    test "an agent definition can set the read-only shell mode" do
+      base = Permissions.load(nil, nil)
+
+      assert Permissions.shell_mode(
+               Permissions.apply_agent(base, %{permission: %{"shell" => "read_only"}})
+             ) == :ro
+    end
+
+    test "an agent definition cannot widen a :ro policy back to :rw" do
+      ro =
+        Permissions.load(nil, write_policy("ro2.toml", "[permissions]\nshell = \"read_only\"\n"))
+
+      # the definition says nothing about shell mode (defaults :rw)
+      applied = Permissions.apply_agent(ro, %{tools: ["read_file"]})
+      assert Permissions.shell_mode(applied) == :ro
+
+      # even an explicit allow does not widen it
+      applied2 = Permissions.apply_agent(ro, %{permission: %{"shell" => "allow"}})
+      assert Permissions.shell_mode(applied2) == :ro
+    end
+  end
+
   describe "layer merging (most restrictive wins)" do
     test "repo tighter than user is kept, repo looser than user is ignored (non-elevation)" do
       user =

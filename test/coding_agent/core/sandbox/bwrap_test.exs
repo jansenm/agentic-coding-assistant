@@ -57,6 +57,30 @@ defmodule CodingAgent.Core.Sandbox.BwrapTest do
       assert triple_in(argv, {"--bind", git, git})
     end
 
+    test "binds the scope root read-only when root_ro is set", %{root: root} do
+      argv = Bwrap.argv(root, {:shell, "echo hi"}, %{root: root, root_ro: true})
+
+      assert triple_in(argv, {"--ro-bind", root, root})
+      # and NOT the read-write root bind
+      refute triple_in(argv, {"--bind", root, root})
+    end
+
+    test "binds the scope root read-write by default", %{root: root} do
+      argv = Bwrap.argv(root, {:shell, "echo hi"}, %{root: root})
+
+      assert triple_in(argv, {"--bind", root, root})
+    end
+
+    test "root_ro keeps .git read-only (and git_write cannot widen it)", %{root: root} do
+      init_git!(root)
+      argv = Bwrap.argv(root, {:shell, "echo hi"}, %{root: root, root_ro: true, git_write: true})
+      git = Path.join(root, ".git")
+
+      assert triple_in(argv, {"--ro-bind", root, root})
+      assert triple_in(argv, {"--ro-bind", git, git})
+      refute triple_in(argv, {"--bind", git, git})
+    end
+
     test "a git worktree binds its gitdir AND common dir read-write (git_write)", %{root: root} do
       # A worktree's `.git` is a gitfile pointing OUTSIDE the scope root;
       # a commit also writes objects/refs in the shared common dir. Both

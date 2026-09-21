@@ -39,15 +39,23 @@ defmodule CodingAgent.Core.Permissions do
   @typedoc "One policy layer: per-tool entries."
   @type layer :: %{String.t() => entries()}
 
+  @typedoc """
+  How read-write `shell` is: `:rw` (the scope root is writable, today's
+  behaviour) or `:ro` (allowed, but the sandbox binds the root read-only).
+  Written in a policy/definition as `shell = "read_only"`.
+  """
+  @type shell_mode :: :rw | :ro
+
   @typedoc "A complete policy: merged layers + enablement."
   @type t :: %__MODULE__{
           entries: %{String.t() => entries()},
           enabled: [String.t()],
-          disabled: [String.t()]
+          disabled: [String.t()],
+          shell_mode: shell_mode()
         }
 
   @enforce_keys [:entries, :enabled]
-  defstruct entries: %{}, enabled: [], disabled: []
+  defstruct entries: %{}, enabled: [], disabled: [], shell_mode: :rw
 
   # Class defaults when no policy entry matches. Read-only tools
   # allow-by-policy (slice 2a); every addition must be safe by
@@ -76,7 +84,8 @@ defmodule CodingAgent.Core.Permissions do
 
     %__MODULE__{
       entries: merge_layers([user_layer, repo_layer]),
-      enabled: enabled_tools([user_layer, repo_layer])
+      enabled: enabled_tools([user_layer, repo_layer]),
+      shell_mode: merge_shell_mode([user_layer, repo_layer])
     }
   end
 
@@ -102,25 +111,33 @@ defmodule CodingAgent.Core.Permissions do
   end
 
   def apply_agent(%__MODULE__{} = policy, agent) when is_map(agent) do
+    layer = agent_layer(agent)
+
     %__MODULE__{
-      entries: merge_layers([%{"__entries" => policy.entries}, agent_layer(agent)]),
+      entries: merge_layers([%{"__entries" => policy.entries}, layer]),
       enabled: narrow_enabled(enabled(policy), agent),
-      disabled: (policy.disabled ++ agent_disabled(agent)) |> Enum.uniq() |> Enum.sort()
+      disabled: (policy.disabled ++ agent_disabled(agent)) |> Enum.uniq() |> Enum.sort(),
+      # a definition asking for a read-only shell root narrows the policy's;
+      # it can never widen a `:ro` back to `:rw` (most-restrictive wins)
+      shell_mode: merge_shell_mode([%{"__shell_mode" => policy.shell_mode}, layer])
     }
   end
 
   def apply_agent(policy, _agent), do: policy
 
+  # A definition's `permission` table, in the same shape as a policy layer
+  # (`shell = "read_only"` included), so the two merge identically.
   defp agent_layer(agent) do
+    raw = agent[:permission] || agent["permission"] || %{}
+    {raw, shell_mode} = split_shell_mode(raw, "agent definition")
+
     entries =
-      (agent[:permission] || agent["permission"] || %{})
-      |> Map.new(fn {tool, rules} ->
+      Map.new(raw, fn {tool, rules} ->
         tool = CodingAgent.Core.Agent.canonical_tool(to_string(tool))
         {tool, normalize_agent_rules(rules)}
       end)
 
-    enabled = agent_enabled(agent)
-    %{"__entries" => entries, "__enabled" => enabled}
+    %{"__entries" => entries, "__enabled" => agent_enabled(agent), "__shell_mode" => shell_mode}
   end
 
   # A definition's permission entry is either a bare decision string or a
@@ -223,15 +240,51 @@ defmodule CodingAgent.Core.Permissions do
     end
 
     enabled = validate_enabled(doc, path)
+    {perms, shell_mode} = split_shell_mode(perms, path)
 
     entries =
       Map.new(perms, fn {tool, patterns} -> {tool, validate_entries(tool, patterns, path)} end)
 
-    %{"__entries" => entries, "__enabled" => enabled}
+    %{"__entries" => entries, "__enabled" => enabled, "__shell_mode" => shell_mode}
   end
 
   defp validate_layer(other, path) do
     raise ArgumentError, "invalid policy #{path}: expected a table, got #{inspect(other)}"
+  end
+
+  # `shell = "read_only"` is a bare value on the shell key, not a decision:
+  # it means "allowed, but the sandbox binds the scope root read-only".
+  # It is the ONLY key that accepts it (only shell has a rw/ro root).
+  # Pulled out here so the rest of the table stays pattern => decision.
+  defp split_shell_mode(perms, path) do
+    validate_read_only_keys(perms, path)
+
+    case Map.get(perms, "shell") do
+      "read_only" ->
+        # `read_only` means "allowed, but confined to a read-only root" —
+        # an explicit allow entry plus the mode. If it could not be honoured
+        # (no confining sandbox) the shell tool REFUSES at execution rather
+        # than silently running read-write.
+        {Map.put(perms, "shell", %{"*" => "allow"}), :ro}
+
+      _other ->
+        {perms, :rw}
+    end
+  end
+
+  defp validate_read_only_keys(perms, path) do
+    Enum.each(perms, fn
+      {"shell", _} ->
+        :ok
+
+      {_tool, "read_only"} ->
+        raise ArgumentError,
+              "invalid policy #{path}: `read_only` is only valid on the shell key " <>
+                "(no other tool has a read-write/read-only root)"
+
+      _ ->
+        :ok
+    end)
   end
 
   defp validate_enabled(doc, path) do
@@ -288,6 +341,13 @@ defmodule CodingAgent.Core.Permissions do
   defp rank(:allow), do: 0
   defp rank(:ask), do: 1
   defp rank(:deny), do: 2
+
+  # The shell root mode merges restrictively like a decision: any layer
+  # asking for `:ro` wins, because read-write is the wider grant. A layer
+  # silent on it (`:rw` default) never widens a `:ro` from another layer.
+  defp merge_shell_mode(layers) do
+    if Enum.any?(layers, &(Map.get(&1, "__shell_mode", :rw) == :ro)), do: :ro, else: :rw
+  end
 
   # Enablement merges by INTERSECTION, not union: a layer may only
   # narrow the enabled set, never widen it. Union would let a project
@@ -393,4 +453,11 @@ defmodule CodingAgent.Core.Permissions do
   """
   @spec disabled(t()) :: [String.t()]
   def disabled(%__MODULE__{disabled: list}), do: list
+
+  @doc """
+  How read-write `shell` is for this policy: `:rw` (the scope root is
+  writable) or `:ro` (allowed, but the sandbox binds the root read-only).
+  """
+  @spec shell_mode(t()) :: shell_mode()
+  def shell_mode(%__MODULE__{shell_mode: mode}), do: mode
 end

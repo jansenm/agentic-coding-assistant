@@ -37,7 +37,8 @@ defmodule CodingAgent.Core.Tools do
   @type scope :: %{
           required(:root) => String.t(),
           optional(:mounts) => CodingAgent.Core.Sandbox.Mounts.t(),
-          optional(:session_id) => String.t() | nil
+          optional(:session_id) => String.t() | nil,
+          optional(:shell_mode) => CodingAgent.Core.Permissions.shell_mode()
         }
 
   @doc """

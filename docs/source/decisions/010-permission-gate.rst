@@ -123,6 +123,16 @@ every pending call and resumes only when every call has a decision.
    escalations (network, ``.git`` write) remain ``:ask``. Retained here
    for the record.
 
+6. **Shell read-only mode** (2026-09-21). A policy or agent definition
+   may write ``shell = "read_only"``: the gate resolves it to ``:allow``
+   AND the sandbox binds the scope root read-only (``root_ro``). This is
+   not a fourth decision — decisions answer "prompt or not", confinement
+   answers "what may the process reach" (ADR 015) — but it *is* part of
+   the permission table the author writes, because it is a narrowing of
+   the shell capability. It merges most-restrictively (``:ro`` wins) and
+   is shell-only. ``Sandbox.None`` must REFUSE it (``:root_ro_unavailable``),
+   never silently run read-write. See ADR 017 for the ``plan`` use.
+
 **6. Approval surface in 2b is a stub.** ``mix agent`` prints the
 pending call and reads a line (``y`` / ``e`` / ``n``); edit prompts for
 new arguments. The real TUI approval flow is phase 4. The contract

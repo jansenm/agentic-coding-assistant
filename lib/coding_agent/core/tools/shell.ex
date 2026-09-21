@@ -180,19 +180,23 @@ defmodule CodingAgent.Core.Tools.Shell do
   """
   @spec profile(map() | String.t(), term()) :: CodingAgent.Core.Sandbox.profile()
   def profile(scope, args) do
-    {root, mounts} =
+    {root, mounts, shell_mode} =
       case scope do
         %{root: root} = s ->
-          {root, Map.get(s, :mounts) || CodingAgent.Core.Sandbox.Mounts.empty()}
+          {root, Map.get(s, :mounts) || CodingAgent.Core.Sandbox.Mounts.empty(),
+           Map.get(s, :shell_mode, :rw)}
 
         root when is_binary(root) ->
-          {root, CodingAgent.Core.Sandbox.Mounts.empty()}
+          {root, CodingAgent.Core.Sandbox.Mounts.empty(), :rw}
       end
 
     %{
       root: root,
       network: truthy?(Map.get(args, :network) || Map.get(args, "network")),
       git_write: truthy?(Map.get(args, :git_write) || Map.get(args, "git_write")),
+      # a read-only agent's shell cannot write the source either; an
+      # unconfined sandbox refuses this rather than running read-write
+      root_ro: shell_mode == :ro,
       scratch: scratch(scope),
       rw: Map.get(mounts, :rw, []),
       ro: Map.get(mounts, :ro, []),
@@ -300,6 +304,13 @@ defmodule CodingAgent.Core.Tools.Shell do
 
       {:error, reason} ->
         Tools.error("cannot run #{inspect(command)}: #{:file.format_error(reason)}")
+
+      {:sandbox_error, :root_ro_unavailable} ->
+        Tools.error(
+          "this agent's shell is read-only, but no confining sandbox is available " <>
+            "on this machine — refusing rather than running it read-write. Use the " <>
+            "read_file/grep/glob tools instead."
+        )
 
       {:sandbox_error, reason} ->
         Tools.error("cannot confine #{inspect(command)}: #{inspect(reason)}")

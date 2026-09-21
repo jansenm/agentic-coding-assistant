@@ -99,13 +99,18 @@ defmodule CodingAgent.Core.Session.ToolRunner do
   and the session id (ADR 022 — the id lets the sandbox bind a
   session-persistent scratch over `/tmp`).
   """
-  @spec scope(String.t() | nil, Sandbox.Mounts.t() | nil, String.t() | nil) ::
-          CodingAgent.Core.Tools.scope()
-  def scope(scope_root, mounts, session_id \\ nil) do
+  @spec scope(
+          String.t() | nil,
+          Sandbox.Mounts.t() | nil,
+          String.t() | nil,
+          Permissions.shell_mode()
+        ) :: CodingAgent.Core.Tools.scope()
+  def scope(scope_root, mounts, session_id \\ nil, shell_mode \\ :rw) do
     %{
       root: scope_root || File.cwd!(),
       mounts: mounts || Sandbox.Mounts.empty(),
-      session_id: session_id
+      session_id: session_id,
+      shell_mode: shell_mode
     }
   end
 end

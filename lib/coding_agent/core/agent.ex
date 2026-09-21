@@ -196,8 +196,8 @@ defmodule CodingAgent.Core.Agent do
   end
 
   defp validate_permission(perm, path) when is_map(perm) do
-    Enum.reduce_while(perm, :ok, fn {_tool, entries}, :ok ->
-      case validate_entries(entries) do
+    Enum.reduce_while(perm, :ok, fn {tool, entries}, :ok ->
+      case validate_entries(tool, entries) do
         :ok -> {:cont, :ok}
         {:error, msg} -> {:halt, {:error, "#{path}: permission #{msg}"}}
       end
@@ -208,9 +208,18 @@ defmodule CodingAgent.Core.Agent do
     {:error, "#{path}: `permission` must be a mapping of tool -> decision"}
   end
 
-  defp validate_entries(decision) when decision in ["allow", "ask", "deny"], do: :ok
+  # `shell = "read_only"` is the one non-decision value: allowed, but the
+  # scope root is bound read-only. It is shell-only (no other tool has a
+  # read-write/read-only root), so anywhere else it is an error.
+  defp validate_entries("shell", "read_only"), do: :ok
 
-  defp validate_entries(entries) when is_map(entries) do
+  defp validate_entries(_tool, "read_only") do
+    {:error, "`read_only` is only valid on the shell key"}
+  end
+
+  defp validate_entries(_tool, decision) when decision in ["allow", "ask", "deny"], do: :ok
+
+  defp validate_entries(_tool, entries) when is_map(entries) do
     Enum.reduce_while(entries, :ok, fn {pattern, decision}, :ok ->
       if decision in ["allow", "ask", "deny"] do
         {:cont, :ok}
@@ -221,7 +230,7 @@ defmodule CodingAgent.Core.Agent do
     end)
   end
 
-  defp validate_entries(other) do
+  defp validate_entries(_tool, other) do
     {:error, "must be allow, ask or deny (or a glob table of those), got #{inspect(other)}"}
   end
 

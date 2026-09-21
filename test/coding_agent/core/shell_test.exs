@@ -154,6 +154,35 @@ defmodule CodingAgent.Core.Tools.ShellTest do
       # a bare root scope has no session id and keeps the tmpfs
       assert Shell.profile(%{root: @tmp_root}, %{}).scratch == nil
     end
+
+    test "profile/2 marks the root read-only for a read-only shell scope" do
+      rw = Shell.profile(%{root: @tmp_root}, %{})
+      ro = Shell.profile(%{root: @tmp_root, shell_mode: :ro}, %{})
+
+      assert rw.root_ro == false
+      assert ro.root_ro == true
+    end
+  end
+
+  describe "read-only root (shell: read_only)" do
+    test "an unconfined sandbox refuses root_ro rather than running read-write" do
+      # None cannot make the root read-only; silently running read-write
+      # would let a read-only agent bypass its file-tool deny.
+      assert {:error, :root_ro_unavailable} =
+               CodingAgent.Core.Sandbox.None.wrap(
+                 {:shell, "echo hi"},
+                 %{root: @tmp_root, root_ro: true}
+               )
+
+      # without root_ro it runs as before
+      assert {:ok, "/bin/sh", ["-c", "echo hi"]} =
+               CodingAgent.Core.Sandbox.None.wrap({:shell, "echo hi"}, %{root: @tmp_root})
+    end
+
+    # The LIVE read-only-root run mutates the global `:sandbox` app env, so
+    # it lives in a dedicated `async: false` module
+    # (`Sandbox.ReadOnlyRootTest`) — here it would race other sandbox tests.
+    # This module stays async and asserts the pure/None behaviour only.
   end
 
   describe "gate integration (ADR 010, LLM-free)" do

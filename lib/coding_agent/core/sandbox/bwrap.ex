@@ -212,15 +212,22 @@ defmodule CodingAgent.Core.Sandbox.Bwrap do
 
     network = Map.get(profile, :network, false)
     git_write = Map.get(profile, :git_write, false)
+    root_ro = Map.get(profile, :root_ro, false)
 
-    # Order matters: scratch first, then the read-write scope bind *over*
-    # it, so a scope root that happens to live under /tmp is still visible
-    # (the scratch is the lower layer for the rest of /tmp).
+    # Order matters: scratch first, then the scope bind *over* it, so a
+    # scope root that happens to live under /tmp is still visible (the
+    # scratch is the lower layer for the rest of /tmp). With `root_ro` the
+    # scope is bound read-only: an agent that denies the write tools gets a
+    # shell that cannot write the source either (`echo > f` bypass).
+    # A read-only root keeps .git read-only too: `git_write` is an
+    # escalation that re-binds `.git` writable OVER the root, so allowing
+    # it here would re-open the very path `root_ro` closes. The narrower
+    # grant wins (a read-only agent cannot write .git, period).
     base ++
       scratch_args(profile) ++
       rw_args(profile) ++
-      ["--bind", root, root] ++
-      git_args(root, git_write) ++
+      [root_bind(root_ro), root, root] ++
+      git_args(root, git_write and not root_ro) ++
       ro_args(profile) ++
       hide_args(profile) ++
       ["--dev", "/dev", "--proc", "/proc"] ++
@@ -287,6 +294,9 @@ defmodule CodingAgent.Core.Sandbox.Bwrap do
 
   defp git_bind(true), do: "--bind"
   defp git_bind(false), do: "--ro-bind"
+
+  defp root_bind(true), do: "--ro-bind"
+  defp root_bind(false), do: "--bind"
 
   # Every real git directory for `root`, de-duplicated, common dir
   # included. Empty when there is no git metadata.

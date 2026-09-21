@@ -37,26 +37,25 @@ defmodule CodingAgent.Core.Session.AgentWiringTest do
     assert state.agent.mode == :primary
   end
 
-  test "the plan agent removes write/exec tools from the registry" do
+  test "the plan agent removes the write tools but keeps a read-only shell" do
     start("wiring-plan", agent: "plan")
     {:ok, state} = Session.state("wiring-plan")
 
     assert state.agent.name == "plan"
 
-    # disallowedTools: edit, write_file, shell, git
+    # disallowedTools: edit, write_file, git — shell stays, but read-only
     disabled = Permissions.disabled(state.policy)
     assert "edit" in disabled
     assert "write_file" in disabled
-    assert "shell" in disabled
     assert "git" in disabled
+    refute "shell" in disabled
+    assert Permissions.shell_mode(state.policy) == :ro
   end
 
-  test "the plan agent's tool set has no write/exec tools" do
+  test "the plan agent keeps read tools and a shell, but no write tools" do
     start("wiring-plan-tools", agent: "plan")
     {:ok, state} = Session.state("wiring-plan-tools")
 
-    # current_tools/1 is private; assert on the policy + the registry the
-    # session would expose: disabled names are filtered from Tools.all/1.
     tools = CodingAgent.Core.Tools.all(%{root: @tmp_root})
     disabled = Permissions.disabled(state.policy)
     visible = Enum.reject(tools, &(&1.name in disabled))
@@ -64,8 +63,8 @@ defmodule CodingAgent.Core.Session.AgentWiringTest do
 
     refute "edit" in names
     refute "write_file" in names
-    refute "shell" in names
     refute "git" in names
+    assert "shell" in names
     assert "read_file" in names
     assert "grep" in names
     assert "glob" in names
@@ -102,7 +101,7 @@ defmodule CodingAgent.Core.Session.AgentWiringTest do
 
       assert s.agent.name == "plan"
       assert "edit" in Permissions.disabled(s.policy)
-      assert "shell" in Permissions.disabled(s.policy)
+      assert Permissions.shell_mode(s.policy) == :ro
     end
 
     test "switching back does not compound restrictions" do
@@ -110,9 +109,9 @@ defmodule CodingAgent.Core.Session.AgentWiringTest do
       {:ok, _} = Session.set_agent("switch-b", "build")
       {:ok, s} = Session.set_agent("switch-b", "plan")
 
-      # exactly plan's four tools, not plan-on-plan accumulation
-      assert Enum.sort(Permissions.disabled(s.policy)) ==
-               ["edit", "git", "shell", "write_file"]
+      # exactly plan's three denied tools, not plan-on-plan accumulation
+      assert Enum.sort(Permissions.disabled(s.policy)) == ["edit", "git", "write_file"]
+      assert Permissions.shell_mode(s.policy) == :ro
     end
 
     test "clearing the agent restores the base policy" do
@@ -121,6 +120,8 @@ defmodule CodingAgent.Core.Session.AgentWiringTest do
 
       assert s.agent == nil
       assert Permissions.disabled(s.policy) == []
+      # the read-only shell was the DEFINITION's, not the session's
+      assert Permissions.shell_mode(s.policy) == :rw
     end
 
     test "the system prompt follows the agent" do
