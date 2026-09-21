@@ -175,8 +175,12 @@ defmodule CodingAgent.UI.Tui5bTest do
 
       type(pid, "y")
 
-      wait_until(fn -> File.exists?(Path.join(root, "y.txt")) end)
-      assert File.read!(Path.join(root, "y.txt")) == "yes"
+      # poll on CONTENT, not existence: `File.write/2` creates the file
+      # (O_CREAT) before it writes the bytes, so `File.exists?` can return
+      # while the file is still empty — a read race, not a product bug.
+      path = Path.join(root, "y.txt")
+      wait_until(fn -> File.exists?(path) and File.read!(path) == "yes" end)
+      assert File.read!(path) == "yes"
 
       # status settles via the {:__decided__} reply (races the file write)
       wait_until(fn -> sync(pid).status == :idle end)
