@@ -210,6 +210,26 @@ The cost accepted: **in-tree builds fail for ``plan``** (``mix compile``,
 conceding, since most planning is reading and reasoning; a planner that
 truly needs to build is a named future agent, not ``plan``.
 
+### Where a definition's prompt goes (a fork worth naming)
+
+This ADR composes the definition body onto the **system** prompt
+(``Prompt.compose_agent/2``: framework + project memory + agent body).
+opencode does something different for its plan mode: it appends a
+``plan.txt`` fragment to the **last user message**, and on a
+plan→build switch appends a separate ``build-switch.txt`` (with the
+plan file path interpolated). Its built-in agents with their own prompt
+file (``explore``, ``compaction``) *replace* the provider prompt
+entirely rather than appending.
+
+The systems-array approach has one clear advantage — the definition
+stays stable across turns, so it is prompt-cacheable, whereas a
+fragment appended to a user message changes with the message. The
+message-fragment approach has another — the mode instruction sits
+immediately next to the request it governs, and switching modes does
+not rewrite (and thus uncache) the whole system prefix. We are on the
+system-array side; whether plan should be, too, is open. See
+``code_review.md`` T12/T13 for the related prompt gaps.
+
 Still open (subagent slice)
 
 5. **Model precedence** for subagents: definition ``model`` vs. session

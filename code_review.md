@@ -373,7 +373,41 @@ how the agent *behaves*; the rest are surface area.
       capability opencode has: patch-based edits (one atomic multi-file
       change), code intelligence (definitions/references/hover), skills
       (`SKILL.md`), and MCP/custom-tool extension without a rebuild. The
-      `edit` tool is exact-match only today.
+      `edit` tool is exact-match only today; opencode runs the model's
+      `oldString` through a chain of NINE increasingly fuzzy replacer
+      strategies (exact → line-trimmed → whitespace-normalized →
+      indentation-flexible → escape-normalized → block-anchor with
+      Levenshtein), and reports LSP diagnostics inline after every edit.
+- [ ] **T12 — Provider-specific prompt files + an environment block.**
+      From the opencode prompt-construction write-up (rmk40 gist,
+      2026-09-11): opencode ships several static prompt files and selects
+      one by model ID (`anthropic.txt`, `gemini.txt`, `qwen.txt`,
+      `beast.txt` for GPT/o-series, `codex_header.txt` for GPT-5), and it
+      generates a per-call **environment block** (model name, working
+      directory, platform, today's date) into the system prompt. We send
+      ONE five-line framework prompt to every model, local Ollama models
+      included, and NO environment block (verified) — so the model does
+      not know its cwd, platform, or the date. A small, high-leverage
+      sibling of T1: per-model prompt selection + a generated env block.
+- [ ] **T13 — Incremental instruction discovery (nested `AGENTS.md`).**
+      opencode injects instruction files not only at session start but
+      DURING tool execution: when `read` touches a file, it walks up from
+      that file's directory for instruction files not yet loaded and
+      injects them as `<system-reminder>` blocks, with a per-message
+      dedupe. We read the scope root's `AGENTS.md` ONCE at session start
+      (`Core.ProjectMemory`), so in a monorepo with per-package
+      `AGENTS.md` the inner ones are silently invisible. The discovery
+      walk is shared with the initial load (`ProjectMemory` already holds
+      the file policy).
+- [ ] **T14 — Tool-output truncation should spill to a retrievable file.**
+      opencode's universal truncation (2000 lines / 50KB) writes the full
+      output to a temp file and tells the model to `Grep`/`Read` it or
+      delegate to an explore subagent. We truncate and DISCARD: `shell`
+      keeps head+tail, `grep` caps at `@max_results`, `webfetch` at
+      128 KiB. The elided content is unrecoverable — the model cannot go
+      back for the part that was cut. The session scratch (ADR 022)
+      already exists as a place to spill, so this is a change to the
+      truncation path, not new infrastructure.
 - [x] **T11 — The store flake (done 2026-09-21).** Chasing the flake
       found the real root cause, which was NOT the async env races I first
       suspected (those were real but incidental; fixed by `async: false`).
