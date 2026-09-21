@@ -2,11 +2,11 @@ defmodule CodingAgent.UI.Tui do
   @moduledoc """
   The phase-5 terminal UI driver (5a render foundation + 5b interaction).
 
-  Layout: transcript pane (scrollable) / input area / status line.
-  Input is an ExRatatui Textarea — enter inserts a newline (ADR 011
-  composition-first default); alt-enter sends the buffer to the agent.
-  The ADR 011 keymap is the action table; UI.Bridge translates
-  terminal events; UI.Keymap resolves actions.
+  Layout: transcript pane (scrollable) / composer panel (input field +
+  its meta row). Input is an ExRatatui Textarea — enter inserts a
+  newline (ADR 011 composition-first default); alt-enter sends the
+  buffer to the agent. The ADR 011 keymap is the action table;
+  UI.Bridge translates terminal events; UI.Keymap resolves actions.
 
   Approval flow (ADR 010): when the gate interrupts, the pending calls
   render as a dialog; y approves, n rejects, e edits — per-key editing
@@ -28,7 +28,6 @@ defmodule CodingAgent.UI.Tui do
   alias ExRatatui.Event
   alias ExRatatui.Layout
   alias ExRatatui.Layout.Rect
-  alias ExRatatui.Text
   alias ExRatatui.Widgets.{Block, Clear, Markdown, Paragraph}
 
   @tool_cap 30
@@ -56,16 +55,17 @@ defmodule CodingAgent.UI.Tui do
   @spin_tick :__spin__
 
   # rows the transcript pane loses to chrome: app margin top+bottom (2)
-  # + spacing above/below it (2) + composer panel + status line. Kept
-  # in one place so the manual dimension math (mount/poller/resize/clamp)
-  # agrees with the layout; render-side and live handlers use
-  # layout_overhead(state). The composer's own height lives in
-  # `UI.Composer.height/1` (measure = paint).
-  @layout_overhead 2 + 2 + Composer.min_height() + 1
+  # + spacing above/below it (2) + composer panel. Kept in one place so
+  # the manual dimension math (mount/poller/resize/clamp) agrees with
+  # the layout; render-side and live handlers use layout_overhead(state).
+  # The composer's own height lives in `UI.Composer.height/1`
+  # (measure = paint). There is no bottom status row any more: the
+  # transient text it carried lives on the composer's meta row.
+  @layout_overhead 2 + 2 + Composer.min_height()
 
   defp input_height(state), do: Composer.height(composer(state))
 
-  defp layout_overhead(state), do: 2 + 2 + input_height(state) + 1
+  defp layout_overhead(state), do: 2 + 2 + input_height(state)
 
   # columns the transcript loses: app margin left+right (2) + the
   # 1-cell inner inset the renderer uses (pane.x + 1 and width - 2)
@@ -176,8 +176,9 @@ defmodule CodingAgent.UI.Tui do
       # none — lets the status read "running mix".
       active_tool: nil,
       tool_started_at: nil,
-      # scroll diagnostics in the status line are developer output; off
-      # by default, toggled with ctrl-x d.
+      # scroll diagnostics are developer output (they render in the
+      # composer's meta row when on); off by default, toggled with
+      # ctrl-x d.
       debug_visible?: false,
       textarea: ExRatatui.textarea_new(),
       history: [],
@@ -1291,7 +1292,8 @@ defmodule CodingAgent.UI.Tui do
     end
   end
 
-  # Menu popup overlay (pending note is on the status line, popup is
+  # Menu popup overlay (the pending note is on the composer's meta
+  # row, popup is
   # a Clear-backed list box — same pattern as the picker).
   defp menu_widgets(%{menu_popup: nil}, _area), do: []
 
@@ -1352,7 +1354,7 @@ defmodule CodingAgent.UI.Tui do
   end
 
   # -- Menu helpers -----------------------------------------------------------
-  # transient note on the status line (menu prompts); cleared on the
+  # transient note in the composer's meta row (menu prompts); cleared on the
   # next key event
   defp status_note(state, text), do: %{state | menu_note: text}
 
@@ -1518,7 +1520,7 @@ defmodule CodingAgent.UI.Tui do
         {:noreply, %{state | menu_pending: false}}
 
       item ->
-        # clear the "press a letter…" note so the status line returns to
+        # clear the "press a letter…" note so the meta row returns to
         # its normal content (else the note masks the debug line, etc.)
         state = %{state | menu_pending: false, menu_note: nil}
 
@@ -1766,7 +1768,7 @@ defmodule CodingAgent.UI.Tui do
   end
 
   # esc while busy, double-press to stop. First esc arms (status stays
-  # put; the status line shows the hint), second esc within the window
+  # put; the composer's meta row shows the hint), second esc within the window
   # requests the stop. A stale arm counts as a fresh first press.
   defp esc_stop(state) do
     armed? =
@@ -2369,17 +2371,13 @@ defmodule CodingAgent.UI.Tui do
     area = %Rect{x: 0, y: 0, width: frame.width, height: frame.height}
 
     # breathing: 1 cell of background visible on every side of the app
-    # and between the three regions (opencode-comparison lesson: crammed
-    # vs airy is margins + spacing, not line height)
-    # status row on the very bottom; sidebar + input span the full
-    # height (sidebar: whole window per user feedback), the input pane
-    # is only as wide as the input (not full width) and grows with the
-    # typed lines (opencode-style)
-    [main_area, status_area] =
-      Layout.split(area, :vertical, [{:min, 0}, {:length, 1}],
-        margin: 1,
-        spacing: 1
-      )
+    # and between the two regions (opencode-comparison lesson: crammed
+    # vs airy is margins + spacing, not line height). There is NO bottom
+    # status row: the composer's meta row already answers "what is
+    # happening now" next to the input (the transient text moved there),
+    # so the window's last row was pure repetition.
+    [main_area] =
+      Layout.split(area, :vertical, [{:min, 0}], margin: 1, spacing: 1)
 
     # sidebar hidden: give the whole width to the transcript instead of
     # painting an empty column (the pane stays usable on narrow panes)
@@ -2411,8 +2409,7 @@ defmodule CodingAgent.UI.Tui do
     widgets =
       transcript_widgets(state, transcript_area) ++
         sidebar_widgets ++
-        Composer.placements(composer(state), input_area) ++
-        [{status_widget(state), status_area}]
+        Composer.placements(composer(state), input_area)
 
     widgets ++ menu_widgets(state, area) ++ dialog_widgets(state, area)
   end
@@ -2898,10 +2895,10 @@ defmodule CodingAgent.UI.Tui do
   defp composer(state) do
     # The composer panel (UI.Composer): the input field plus its meta row
     # on ONE chrome surface. All the geometry and the look live there —
-    # this module only resolves the VALUES (identity, status) and hands
-    # them over. Layout and time are separated: the elapsed seconds are
-    # computed here (this module owns the clock), the composer only
-    # formats them.
+    # this module only resolves the VALUES (identity, status, the
+    # transient note) and hands them over. Layout and time are separated:
+    # the elapsed seconds are computed here (this module owns the clock),
+    # the composer only formats them.
     Composer.new(
       textarea: state.textarea,
       placeholder: "Message the agent… (alt-enter sends)",
@@ -2914,8 +2911,22 @@ defmodule CodingAgent.UI.Tui do
       spin: Map.get(state, :spin, 0),
       active_tool: Map.get(state, :active_tool),
       tool_elapsed_s: tool_elapsed_s(state),
-      silence_s: silence_s(state)
+      silence_s: silence_s(state),
+      note: esc_hint(state) || Map.get(state, :menu_note),
+      diagnostics: if(Map.get(state, :debug_visible?, false), do: scroll_diagnostics(state))
     )
+  end
+
+  # The esc-confirm hints ("esc again to quit/stop"): the armed double
+  # press is the ONE thing the composer must say out loud, because
+  # nothing else on screen shows that the app is waiting for a second
+  # esc.
+  defp esc_hint(state) do
+    cond do
+      Map.get(state, :quit_confirm?, false) -> "esc again to quit"
+      Map.get(state, :stop_confirm?, false) -> "esc again to stop"
+      true -> nil
+    end
   end
 
   defp tool_elapsed_s(state) do
@@ -3210,55 +3221,10 @@ defmodule CodingAgent.UI.Tui do
     end
   end
 
-  defp status_widget(state) do
-    note = Map.get(state, :menu_note)
-    if note, do: status_widget_note(state, note), else: status_widget_plain(state)
-  end
-
-  defp status_widget_note(_state, note) do
-    # menu prompt replaces the scroll diagnostics while visible
-    line = Text.Line.new([Text.Span.new(note, style: Styles.role(:warning, :chrome))])
-    %Paragraph{text: [line], style: Styles.surface_bg(:chrome), block: nil}
-  end
-
-  # The bottom line. The user-facing status now lives on the input box's
-  # top border (near the question it answers); this row carries the
-  # esc-confirm hints and, behind `debug_visible?` (ctrl-x d), the scroll
-  # diagnostics that used to be shown to every user.
-  defp status_widget_plain(state) do
-    down? = Map.get(state, :provider_down?, false)
-    badge = Styles.status_badge(state.status, down?, :chrome)
-
-    hint =
-      cond do
-        Map.get(state, :quit_confirm?, false) -> "esc again to quit"
-        Map.get(state, :stop_confirm?, false) -> "esc again to stop"
-        true -> ""
-      end
-
-    # geometric `▲`, not the emoji warning sign (width-safe)
-    spans =
-      [Text.Span.new("#{state.session_id}  ", style: Styles.role(:muted, :chrome))] ++
-        if(hint == "",
-          do: [],
-          else: [Text.Span.new("▲ #{hint}  ", style: Styles.role(:warning, :chrome))]
-        ) ++
-        [Text.Span.new(badge.label, style: badge.style)] ++
-        if(Map.get(state, :debug_visible?, false),
-          do: [
-            Text.Span.new(
-              "  " <> scroll_diagnostics(state),
-              style: Styles.role(:muted, :chrome)
-            )
-          ],
-          else: []
-        )
-
-    %Paragraph{text: [Text.Line.new(spans)], style: Styles.surface_bg(:chrome), block: nil}
-  end
-
-  # Scroll diagnostics (developer output, ctrl-x d): entries / measured
-  # total / offset / expand state.
+  # Scroll diagnostics (DEVELOPER output, behind `debug_visible?` /
+  # ctrl-x d): entries / measured total / offset / expand state. It is
+  # resolved HERE (this module owns the pane math) and handed to the
+  # composer as a plain string — the same division as the clock.
   defp scroll_diagnostics(state) do
     entries = display_entries(state)
 

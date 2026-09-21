@@ -70,8 +70,9 @@ defmodule CodingAgent.UI.Styles do
 
   @doc """
   Background only: the surface's fill, no foreground, so a line's spans
-  keep their own roles. Use as the widget style of a bar (e.g. the
-  status row) whose spans are already role-styled.
+  keep their own roles. Use as the widget style of a bar whose spans are
+  already role-styled (a caller-composed row); a whole surface body uses
+  `surface/1` instead.
   """
   @spec surface_bg(surface()) :: Style.t()
   def surface_bg(name), do: %Style{bg: Palette.fill(palette(), name)}
@@ -298,10 +299,11 @@ defmodule CodingAgent.UI.Styles do
   def busy?(status), do: status in [:running, :interrupting]
 
   @doc """
-  The status line for the input box's top border: `⠋ running · 12s`.
+  The status line for the composer's meta row: `⠋ running · 12s`.
   `elapsed_s` is nil (not shown) when the turn just started, so a fast
   turn never flashes a duration. `label` overrides the badge's default
-  text (e.g. `"running mix"` while a tool is in flight).
+  text (e.g. `"running mix"` while a tool is in flight, or a transient
+  hint like an esc confirm).
 
   Returns a `%Text.Line{}` so it composes in a `Block.Title`, the same
   way the identity footer does.

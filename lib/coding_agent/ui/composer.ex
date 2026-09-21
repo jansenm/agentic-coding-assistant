@@ -16,7 +16,7 @@ defmodule CodingAgent.UI.Composer do
       +--------------------------------------------+  <- chrome fill, WHOLE rect
       |  <textarea>                                 |  <- 1-cell padding
       |                                             |  <- one blank row of air
-      |  build · model …                  ○ idle    |  <- meta row: identity | status
+      |  build · model …                  ○ idle    |  <- meta row: identity | slot
       +--------------------------------------------+
 
   There is deliberately NO border — a frame around the field read as
@@ -29,8 +29,22 @@ defmodule CodingAgent.UI.Composer do
   The meta row is REAL content on its own row, not a `Block` title on
   the field: a title paints over the last row of its rect (F6), which is
   the collision this layout removes. It renders as a borderless block
-  title pair (left identity, right status) on a dedicated, otherwise
+  title pair (left identity, right slot) on a dedicated, otherwise
   empty row, so both halves share one line without fighting the text.
+
+  The right half of that row is the composer's OUTERMOST row, so it is
+  where transient text lives: the caller's `note` (an esc confirm, the
+  menu prompt, a one-off "model → …" report, or — behind a debug flag —
+  the scroll diagnostics). This is why the layout has no separate status
+  row at the window bottom any more: the composer answers "what is
+  happening now" next to the input, and the window's last row was pure
+  repetition of it.
+
+  A note does not hide the status glyph: the badge's glyph stays (only
+  its word is dropped) so a running turn stays visible while a hint is
+  on screen. The word goes because the two would collide on a narrow
+  pane — and a hint ("esc again to stop") is more urgent than the word
+  "thinking".
   """
   alias CodingAgent.UI.Styles
   alias ExRatatui.Layout
@@ -62,6 +76,8 @@ defmodule CodingAgent.UI.Composer do
           active_tool: String.t() | nil,
           tool_elapsed_s: non_neg_integer() | nil,
           silence_s: non_neg_integer() | nil,
+          note: String.t() | nil,
+          diagnostics: String.t() | nil,
           max_lines: pos_integer()
         }
 
@@ -75,6 +91,8 @@ defmodule CodingAgent.UI.Composer do
             active_tool: nil,
             tool_elapsed_s: nil,
             silence_s: nil,
+            note: nil,
+            diagnostics: nil,
             max_lines: @max_lines
 
   @doc "Builds a composer from resolved values (see the moduledoc)."
@@ -158,9 +176,10 @@ defmodule CodingAgent.UI.Composer do
     }
   end
 
-  # the meta row: identity left, status right, on their own row (a block
-  # title pair with no border, over an empty paragraph — the fill comes
-  # from the layer below, the per-span roles from the lines themselves)
+  # the meta row: identity left, the slot right, on their own row (a
+  # block title pair with no border, over an empty paragraph — the fill
+  # comes from the layer below, the per-span roles from the lines
+  # themselves)
   defp meta_widget(composer) do
     %Paragraph{
       text: "",
@@ -170,7 +189,7 @@ defmodule CodingAgent.UI.Composer do
         title_style: nil,
         titles: [
           %Block.Title{content: identity(composer), position: :bottom, alignment: :left},
-          %Block.Title{content: status(composer), position: :bottom, alignment: :right}
+          %Block.Title{content: slot(composer), position: :bottom, alignment: :right}
         ]
       }
     }
@@ -202,35 +221,64 @@ defmodule CodingAgent.UI.Composer do
     |> Text.Line.new()
   end
 
+  # The right half of the meta row: the composer's OUTERMOST row, so the
+  # one place transient text can live without reflowing anything. The
+  # `note` (esc confirm, menu prompt, a report like "model → …") wins
+  # over a bare debug `diagnostics` dump; with neither, the row shows
+  # the status. Only the status' WORD is dropped when a note is on
+  # screen: its glyph stays, so a running turn is still visible under a
+  # hint, and the row cannot overflow.
+  defp slot(composer) do
+    cond do
+      is_binary(composer.note) ->
+        Styles.status_line(
+          composer.status,
+          composer.provider_down?,
+          nil,
+          nil,
+          composer.note,
+          :chrome
+        )
+
+      is_binary(composer.diagnostics) ->
+        Text.Line.new([
+          Text.Span.new(composer.diagnostics, style: Styles.role(:muted, :chrome))
+        ])
+
+      true ->
+        status(composer)
+    end
+  end
+
   # the status answers "is the model still working?", asked at the input.
   # The active tool names itself; a busy-but-silent turn shows the silence
-  # duration; idle shows the badge so the row is never bare.
+  # duration.
   defp status(composer) do
     step = if Styles.busy?(composer.status), do: composer.spin, else: nil
 
-    cond do
-      is_binary(composer.active_tool) ->
+    case composer.active_tool do
+      tool when is_binary(tool) ->
         Styles.status_line(
           composer.status,
           composer.provider_down?,
           step,
           composer.tool_elapsed_s,
-          "running #{composer.active_tool}",
+          "running #{tool}",
           :chrome
         )
 
-      Styles.busy?(composer.status) ->
+      nil ->
+        label = if Styles.busy?(composer.status), do: "thinking", else: nil
+        elapsed = if label, do: composer.silence_s, else: nil
+
         Styles.status_line(
           composer.status,
           composer.provider_down?,
           step,
-          composer.silence_s,
-          "thinking",
+          elapsed,
+          label,
           :chrome
         )
-
-      true ->
-        Styles.status_line(composer.status, composer.provider_down?, nil, nil, nil, :chrome)
     end
   end
 end

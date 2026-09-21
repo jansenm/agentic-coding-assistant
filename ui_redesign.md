@@ -1,9 +1,10 @@
 # UI redesign — Befunde, Entscheidungen, Umsetzung
 
-Stand: **Runde 1 und 2 umgesetzt und grün** (691 Tests). Dieses Dokument
-hält fest, was gemessen wurde, was entschieden ist und was noch offen ist.
-Runde 2 (unten, Abschnitt 6) zieht die Konsequenz aus F6: die Meta-Zeile ist
-kein `Block`-Titel mehr, sondern echter Inhalt im eigenen Modul `UI.Composer`.
+Stand: **Runde 1–3 umgesetzt und grün** (714 Tests). Dieses Dokument hält
+fest, was gemessen wurde, was entschieden ist und was noch offen ist.
+Runde 2 (Abschnitt 6) zieht die Konsequenz aus F6: die Meta-Zeile ist kein
+`Block`-Titel mehr, sondern echter Inhalt im eigenen Modul `UI.Composer`.
+Runde 3 (Abschnitt 7) entfernt die Bottom-Row ersatzlos und zieht F11 nach.
 
 Leitregel (Owner-Entscheidung):
 
@@ -37,7 +38,8 @@ behaupten; sie ist jetzt als Test-Helfer vorhanden
 | F8 | Sidebar-Titel | `" status "` liegt bei `borders: [:right]` auf Zeile 0 **ohne obere Border** → es sieht wie eine Listenzeile aus, nicht wie ein Titel. |
 | F9 | Markdown-Renderer | `# `-Präfix bleibt sichtbar; H1 bekommt einen **cyan Hintergrundbalken** (Theme ist in der Crate fest verdrahtet); ` ``` `-Fences bleiben stehen; Inline-Code bg ist hart `:black`; Tabellenrahmen `:dark_gray`; HR als literales `---`. |
 | F10 | `effort` | Wird aus der Config gelesen und in der Sidebar gezeigt, aber **nie** an `Request.build/2` oder die Agent-Definition gegeben — reine Dekoration. |
-| F11 | Bottom-Row | Dialog und Picker rechnen gegen `area.height - h - 3`; beim Entfernen der Zeile muss diese Geometrie mitziehen (ein Test prüft, dass die Statuszeile unter dem Dialog sichtbar bleibt). |
+| F11 | Bottom-Row | Dialog und Picker rechnen gegen `area.height - h - 3` — 3 Zeilen „unter sich", weil die Statuszeile am Fensterboden lag. Beim Entfernen der Zeile (Runde 3) muss diese Geometrie mitziehen: sonst steht ein Dialog **auf** der Composer-Meta-Zeile und verdeckt genau den Status, den er erklärt. Ein Test prüft, dass die Meta-Zeile unter dem Dialog sichtbar bleibt. |
+| F13 | Notes vs. Status | Ein `note` (esc-Hinweis, Menü-Prompt) **ersetzt** die Status-Worte, aber nicht den Glyph: `⠋ esc again to stop` — der laufende Turn bleibt sichtbar, der Hinweis ist dringlicher als das Wort „thinking". Auf einer schmalen Pane (100 Spalten) kollidieren beide sonst: Identity + `⏸ approval needed (y/n/e)` füllen die Zeile bereits. |
 | F12 | Placeholder | Der alte Placeholder war länger als die Input-Breite und wurde abgeschnitten (`… ctrl-t o│`). |
 
 ---
@@ -156,7 +158,7 @@ als Liste geführt, nicht stillschweigend verworfen.
 
 | # | Punkt | Stand |
 |---|---|---|
-| O1 | Bottom-Row ersatzlos entfernen; Dialog-/Picker-Geometrie nachziehen (F11); `menu_note` umziehen | entschieden, nicht gebaut |
+| O1 | ~~Bottom-Row ersatzlos entfernen; Dialog-/Picker-Geometrie nachziehen (F11); `menu_note` umziehen~~ | **umgesetzt in Runde 3** (Abschnitt 7) |
 | O2 | Air pro Eintrag (Vorschlag: tool 1 / info 1 / reasoning 2 / assistant 3) statt `@air 3` überall | Vorschlag offen |
 | O3 | Sidebar-Werte rechtsbündig: Padding im `Paragraph` oder echte `Table` | offen |
 | O4 | Sidebar-Titel `" status "` entfernen (F8); oberer Slot: leer oder Scope | „Wort weg" entschieden, Slot offen |
@@ -246,3 +248,83 @@ Die bestehenden Farb-/Geometrie-Tests (`tui_cells_test`, `tui_agent_test`,
 Form (gefülltes Feld, gestellte Farbe, Identity+Status auf einer Zeile) ist
 dieselbe, die Mechanik darunter ist jetzt getrennt.
 
+---
+
+## 7. Runde 3 — die Bottom-Row fällt ersatzlos weg
+
+### 7.1 Befund
+
+Die Statuszeile am Fensterboden war **reine Wiederholung**: die Meta-Zeile im
+Composer trug bereits Glyph + Spinner + Label + Elapsed. Vier Dinge hatte die
+Bottom-Row noch zu sagen: Session-Id, esc-Hinweise, das debug-gestellte
+Diagnose-Text und das statische `badge.label`.
+
+Gemessen (Zellpuffer, 110×30) hieß das: `⠋ thinking` stand zweimal auf dem
+Schirm, und die Statuszeile war nicht auf den Composer eingerückt (sie lief
+über die ganze Breite, während das Feld bei Spalte 37 begann) — der
+„links ein Zeichen eingerückt"-Befund aus Runde 2.
+
+### 7.2 Entscheidung
+
+* **Zeile weg**, nicht umgebaut. Der Composer beantwortet „was passiert
+  gerade" direkt bei der Eingabe; der Fensterboden ist dafür der falsche Ort.
+* Der transiente Text zieht in die **rechte Hälfte der Meta-Zeile** (den
+  äußersten Row des Composers) — als zwei neue Werte im Struct:
+  * `note` — esc-Hinweis (`esc again to quit` / `esc again to stop`) oder
+    `menu_note` (Menü-Prompt, `model → …`, `agent → …`);
+  * `diagnostics` — die Scroll-Diagnostik, nur bei `debug_visible?`
+    (ctrl-x d).
+  Priorität: `note` → `diagnostics` → Status. Das Modul kennt weiterhin
+  **keine** Zeit und **keine** Config: `Tui` reicht die Strings durch, genau
+  wie die Uhr.
+* Das **statische `badge.label`** fällt ersatzlos weg — es war genau die
+  Duplikation. Damit die Zeile bei einem Hinweis nicht überläuft, wird bei
+  gesetztem `note` nur das **Wort** des Status weggelassen, **nicht der
+  Glyph** (F13): `⠋ esc again to stop` zeigt weiterhin, dass ein Turn läuft.
+
+### 7.3 F11 — die Geometrie, die mitziehen muss
+
+Dialog und Picker rechneten gegen `area.height - h - 3` (drei Zeilen
+„unter sich": Margin + Spacing + Statuszeile). Ohne Nachziehen hätte der
+Dialog auf der Meta-Zeile gesessen und den Status verdeckt, den er erklärt.
+
+Nachgerechnet statt geraten: die Composer-Meta-Zeile liegt bei 30 Zeilen auf
+**27**; `area.height - h - 3` setzt den Dialog jetzt mit seiner Unterkante auf
+**26**, also *eine* Zeile darüber. Gemessen bei 100/110/160 Spalten (der
+Dialog bleibt auf Zeile 19–26, die Meta-Zeile bei 27). Der Picker war schon
+zentriert (`div(area.height - h, 2)`) und bleibt es; der Menü-Popup rechnet
+gegen `area.height - h - 3` weiterhin richtig, weil die drei Zeilen unter dem
+Popup jetzt *Composer*-Zeilen sind (Composer + Rand) statt Composer + Status.
+
+### 7.4 Geändert
+
+* `lib/coding_agent/ui/composer.ex`: Felder `note` / `diagnostics`; `slot/1`
+  (Priorität `note` → `diagnostics` → Status); `status/1` liefert jetzt auch
+  idle einen `nil`-Label-Lauf, damit der Glyph-Rest der Note-Regel gilt.
+* `lib/coding_agent/ui/tui.ex`: `@layout_overhead` und `layout_overhead/1`
+  ohne `+1`; `render_main/2` splittet nur noch `[{:min, 0}]`; die ganze
+  `status_widget*`-Familie entfernt; `esc_hint/1` neu (die Hinweise, die
+  vorher in `status_widget_plain/1` standen); `scroll_diagnostics/1` liefert
+  jetzt einen String an den Composer statt ein Widget zu bauen.
+* `lib/coding_agent/ui/styles.ex`: `surface_bg/1`-Doc auf „eine Zeile, deren
+  Spans schon Rollen tragen" — die Bottom-Row als Beispiel ist weg.
+* Tests:
+  * `composer_test`: die **Not-Regel** als Unit-Test (Wort weg, Glyph bleibt;
+    `note` schlägt `diagnostics` schlägt Status) — inkl. Gate-Fall `⏸ esc again
+    to quit`, damit die gepausete Zeile sichtbar bleibt.
+  * `tui_cells_test`: die Status-Zeilen-Asserts zeigen jetzt auf die
+    **Meta-Zeile** (`meta_row/1` nimmt die *letzte* `model `-Zeile, weil die
+    Sidebar auch ein Modell nennt); ein neuer Test pinnt den Composer bis zur
+    letzten Chrome-Zeile fest (Padding-Zeile trägt den Fill, die Fensterzeile
+    selbst ist Rand und bleibt `:reset`).
+  * `tui_visual_test`: der feste `Enum.at(28)`-Index ist weg — der Assert
+    sucht den letzten `approval needed`-Treffer und prüft dort die Identity,
+    also genau „der Dialog verdeckt den Status nicht".
+
+### 7.5 Was jetzt fehlt (bewusst)
+
+Die **Session-Id** ist aus dem Sichtfeld verschwunden. Sie war in der
+Bottom-Row sichtbar; sie bleibt im State und im Picker (ADR 020), aber nicht
+mehr im Composer — die Meta-Zeile ist voll (Identity links, Status/Note
+rechts). Wenn sie zurück soll, dann als eigenes Entscheidungsstück (Sidebar-
+Slot oder Picker-Kopf), nicht als weitere Spans in diese Zeile.

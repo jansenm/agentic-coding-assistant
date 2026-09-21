@@ -88,8 +88,8 @@ Glossary
 
    Surface (UI)
       A region the interface paints on — ``base`` (the transcript, terminal
-      default), ``chrome`` (overlays: menu, picker, dialog, status row,
-      input box), ``sidebar`` — each with its own background. A role
+      default), ``chrome`` (overlays: menu, picker, dialog, and the
+      composer panel), ``sidebar`` — each with its own background. A role
       resolves *on* a surface.
 
    Role (UI)

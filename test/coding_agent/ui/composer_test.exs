@@ -133,5 +133,48 @@ defmodule CodingAgent.UI.ComposerTest do
       assert text =~ "thinking"
       assert text =~ "12s"
     end
+
+    test "a note replaces the status WORD but keeps its glyph" do
+      [_left, right] = titles(status: :running, spin: 0, note: "esc again to stop")
+      text = Enum.map_join(right.content.spans, "", & &1.content)
+
+      assert text =~ "esc again to stop"
+      # the running turn stays visible: the spinner is still there, only
+      # the word "thinking" is dropped (the two would collide on a narrow
+      # pane, and the hint is the more urgent of the two)
+      assert text =~ Styles.spinner(0)
+      refute text =~ "thinking"
+      # the note carries no elapsed time — it is not the turn clock
+      refute text =~ "12s"
+    end
+
+    test "a note also wins while the gate is open (its badge glyph stays)" do
+      [_left, right] = titles(status: :interrupted, note: "esc again to quit")
+      text = Enum.map_join(right.content.spans, "", & &1.content)
+
+      # the gate's own glyph survives the hint, so the pause stays visible
+      assert text =~ "⏸"
+      assert text =~ "esc again to quit"
+      refute text =~ "approval needed"
+    end
+
+    test "the debug diagnostics show only when there is no note" do
+      [_left, right] = titles(status: :idle, diagnostics: "scroll: 3/120")
+      assert Enum.map_join(right.content.spans, "", & &1.content) =~ "scroll: 3/120"
+
+      [_left, right] =
+        titles(status: :idle, note: "esc again to quit", diagnostics: "scroll: 3/120")
+
+      text = Enum.map_join(right.content.spans, "", & &1.content)
+      assert text =~ "esc again to quit"
+      refute text =~ "scroll:"
+    end
+
+    test "with neither note nor diagnostics the status itself shows" do
+      [_left, right] = titles(status: :running, spin: 0, diagnostics: nil, note: nil)
+      text = Enum.map_join(right.content.spans, "", & &1.content)
+      assert text =~ Styles.spinner(0)
+      assert text =~ "thinking"
+    end
   end
 end

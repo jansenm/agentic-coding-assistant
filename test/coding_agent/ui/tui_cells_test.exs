@@ -116,14 +116,35 @@ defmodule CodingAgent.UI.TuiCellsTest do
     assert composer_bg == fill
   end
 
-  test "the status row keeps the fill under its role-coloured spans" do
+  test "the composer's meta row keeps the fill under its role-coloured spans" do
     {pid, session} = start_cell_tui([scope_root: File.cwd!()], {100, 30})
     fire(pid, :__resize_poll__)
     snapshot = cells(session)
 
     fill = Palette.fill(Styles.palette(), :chrome)
-    row = snapshot.height - 2
+    row = meta_row(snapshot)
     assert cell(snapshot, row, 3).bg == fill
+  end
+
+  test "every row of the composer is filled, down to the window's last chrome row" do
+    {pid, session} = start_cell_tui([scope_root: File.cwd!()], {100, 30})
+    fire(pid, :__resize_poll__)
+    snapshot = cells(session)
+
+    fill = Palette.fill(Styles.palette(), :chrome)
+    meta = meta_row(snapshot)
+
+    # the window's bottom is the composer's own padding row now (the
+    # bottom status row is gone): it still carries the fill — the panel
+    # ends visually with its surface, not mid-air
+    assert cell(snapshot, meta + 1, 3).bg == fill
+    # (the sidebar's own border crosses that row; the composer's pane is
+    # what must be empty)
+    pane = Enum.map_join(37..(snapshot.width - 2), "", &cell(snapshot, meta + 1, &1).symbol)
+    assert String.trim(pane) == ""
+
+    # ...and the last row of the window is the app margin (no fill)
+    assert cell(snapshot, snapshot.height - 1, 3).bg == :reset
   end
 
   test "the transcript body is NOT filled: the terminal's own background shows through" do

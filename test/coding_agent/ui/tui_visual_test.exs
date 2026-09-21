@@ -382,8 +382,18 @@ defmodule CodingAgent.UI.TuiVisualTest do
       |> Enum.drop_while(fn r -> not String.contains?(r, "APPROVAL") end)
       |> Enum.take(5)
 
-    # the status line must stay visible below the dialog
-    assert rows |> Enum.at(28) |> String.contains?("approval needed")
+    # the status must stay visible below the dialog: the composer's meta
+    # row is the LAST row of the window now (there is no bottom status
+    # row any more), so this asserts the dialog did not cover it. The
+    # LAST match is the composer (the sidebar names a model too).
+    status_row =
+      rows
+      |> Enum.with_index()
+      |> Enum.filter(fn {r, _} -> String.contains?(r, "approval needed") end)
+      |> List.last()
+      |> elem(1)
+
+    assert rows |> Enum.at(status_row) |> String.contains?("model ")
 
     # y = approve line present
     assert Enum.any?(dialog_rows, &String.contains?(&1, "y = approve"))

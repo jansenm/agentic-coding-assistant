@@ -277,18 +277,13 @@ leverage.
       clamp, hit-test and status all use it.
 - [ ] **P4 — Replace `test_mode?` branches with injected behaviours** where it
       has already let bugs slip.
-- [ ] **P4 (cosmetic, review F3) — the bottom status row duplicates the
-      composer's status.** The composer's own title row already renders the
-      full live status (glyph + spinner + label + elapsed) via
-      `status_line_for_input/1`; `status_widget_plain/1` additionally keeps
-      the static `badge.label` in a full-width bottom row. Deliberate and
-      provisional (option A/B), but two renderers of one concept. The row's
-      only unique content now is session id, esc hints and the
-      debug-gated diagnostics. When the layout is next touched: drop the
-      duplicate label (or the whole row, folding the hints into the composer
-      title row) to free a terminal row, and if the label is kept make the row
-      consume `Styles.status_line/5` instead of `badge.label` directly so
-      there is one source.
+- [ ] **P4 (cosmetic) — the session id left the frame with the bottom row.**
+      The row was dropped (2026, `ui_redesign.md` §7): the composer's meta row
+      already answered "what is happening now", and the row's own label was a
+      second renderer of the same status. With it went the visible session id.
+      The id still lives in the state and in the picker (ADR 020). If it should
+      be visible while typing, it needs its own slot (a sidebar row or the
+      picker head) — not more spans on the meta row.
 - [ ] **P4 (cosmetic, Track B step 6/E) — glyph passes.** The status
       vocabulary is centralized (`Styles.status_badge/1`), but three
       surfaces still use plain text or ad-hoc glyphs:
@@ -715,6 +710,11 @@ so activity must be visible.**
 
 ## Where things are today
 
+(The state this review was written against. What shipped since: the row is
+gone — `ui_redesign.md` §6 and §7. The composer is a filled, borderless panel
+in its own module, and its meta row carries identity, status and the transient
+text; the window's last row is the composer's own bottom padding.)
+
 Layout (`render_main/2`, `tui.ex:1810-1861`):
 
 ```
@@ -749,7 +749,13 @@ Layout (`render_main/2`, `tui.ex:1810-1861`):
 ## A. Move the status to the input footer
 
 The status answers "is the model still working on what I asked?". That question
-is asked *at the input box*. Put it on the input box's top border, opposite the
+is asked *at the input box*.
+
+*(Shipped, in a later shape: the status glyph + spinner + label sit on the
+composer's meta row, and the bottom row was dropped entirely —
+`ui_redesign.md` §6/§7. The text below is the original proposal.)*
+
+Put it on the input box's top border, opposite the
 existing bottom footer:
 
 - Input box `Block` gets two titles: bottom-right keeps
@@ -767,6 +773,10 @@ Alternative if you want the status to also be visible while scrolling the
 transcript: keep a 1-line row but place it directly *above* the input box rather
 than at the window bottom, and narrow it to the input width. Either way the key
 change is "attached to the input", not "pinned to the screen bottom".
+
+**Shipped, one round later:** the row is gone entirely, and the transient text
+(esc hints, menu note, debug diagnostics) moved onto the composer's meta row —
+which is why it kept a spare *right half*. See `ui_redesign.md` §7.
 
 ## B. Status as a traffic-light badge
 
@@ -892,7 +902,8 @@ error, approval) and leave prose alone.
   visual pass the composer is a borderless filled field and the two share
   its bottom row — see `ui_redesign.md`);
 - step 3 (D): the scroll diagnostics are behind `debug_visible?`
-  (`ctrl-x d`); the bottom row now carries esc hints + the status label;
+  (`ctrl-x d`); the esc hints live on the composer's meta row now, the
+  diagnostics beside them (the bottom row was dropped — `ui_redesign.md` §7);
 - step 4 (C.1/C.2): a `subscriptions/1` spinner (`:spinner`, 120ms) runs
   only while `Styles.busy?/1`, and `last_activity_at` tracks silence —
   the status reads `⠋ thinking` or `⠋ thinking · 12s`;
