@@ -106,16 +106,18 @@ defmodule CodingAgent.UI.ComposerTest do
       assert right.alignment == :right
 
       text = Enum.map_join(left.content.spans, "", & &1.content)
-      assert text == "you → build · model glm"
+      # no "you" and no arrow: the field IS the input, the agent names
+      # what will handle it
+      assert text == "build · model glm"
 
       # every span names the chrome surface (the fill is explicit there)
       assert Enum.all?(left.content.spans, &(&1.style.bg == Styles.surface_bg(:chrome).bg))
     end
 
-    test "no agent: the identity reads 'you · model', no '(none)' arrow" do
+    test "no agent: the identity reads 'model …', with no placeholder arrow" do
       [left, _right] = titles(agent: nil, model: "glm")
       text = Enum.map_join(left.content.spans, "", & &1.content)
-      assert text == "you · model glm"
+      assert text == "model glm"
     end
 
     test "the active tool names itself in the status" do

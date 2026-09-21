@@ -88,7 +88,7 @@ und sich vom Fill unterscheidet.
 * `padding: {1, 0, 0, 0}` — eine Spalte Einzug links, damit der Text die
   linke Kante nicht berührt (F7).
 * Titel auf dem Block statt auf der Border:
-  * **bottom-left** — die Identity-Zeile (`you → agent · model …`),
+  * **bottom-left** — die Identity-Zeile (`agent · model …`),
   * **bottom-right** — Status/Spinner (vorher top-right).
 * `title_style: nil`, damit jeder Span seine eigene Rolle trägt.
 * Der Composer-Text ist `Styles.role(:text, :chrome)` — dieselbe Weiß-Stufe
@@ -220,7 +220,7 @@ Layout (Höhe = Padding(2) + Zeilen + Luft(1) + Meta(1)):
       +------------------------------------------+  Fill :chrome, ganzes Rect
       |  <Textarea>                               |  1 Zelle Einzug
       |                                           |  eine Leerzeile
-      |  you → build · model …          ○ idle    |  Meta: Identity | Status
+      |  build · model …                  ○ idle    |  Meta: Identity | Status
       +------------------------------------------+
 ```
 

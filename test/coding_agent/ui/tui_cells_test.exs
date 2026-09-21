@@ -20,6 +20,14 @@ defmodule CodingAgent.UI.TuiCellsTest do
 
   alias CodingAgent.UI.{Palette, Styles}
 
+  # The composer's meta row: the LAST row naming a model — the sidebar
+  # also names one near the top, the composer lives at the bottom.
+  defp meta_row(snapshot) do
+    0..(snapshot.height - 1)
+    |> Enum.filter(&String.contains?(row_text(snapshot, &1), "model "))
+    |> List.last()
+  end
+
   test "the composer is a filled field with stated text, not a themed box" do
     {pid, session} = start_cell_tui([scope_root: File.cwd!()], {100, 30})
     fire(pid, :__resize_poll__)
@@ -30,13 +38,8 @@ defmodule CodingAgent.UI.TuiCellsTest do
     fill = Palette.fill(Styles.palette(), :chrome)
     assert {:indexed, _} = fill
 
-    input_rows =
-      for row <- 0..(snapshot.height - 1),
-          String.contains?(row_text(snapshot, row), "you · model"),
-          do: row
-
-    assert [_] = input_rows
-    row = hd(input_rows)
+    row = meta_row(snapshot)
+    assert row != nil
 
     filled_cols =
       for col <- 0..(snapshot.width - 1), cell(snapshot, row, col).bg == fill, do: col
@@ -86,17 +89,13 @@ defmodule CodingAgent.UI.TuiCellsTest do
 
     snapshot = cells(session)
 
-    row =
-      Enum.find(
-        0..(snapshot.height - 1),
-        &String.contains?(row_text(snapshot, &1), "you · model")
-      )
+    row = meta_row(snapshot)
 
     text = row_text(snapshot, row)
 
     assert text =~ "thinking"
     # left half: identity; right half: status — one band, not two rows
-    assert :binary.match(text, "you") |> elem(0) < div(snapshot.width, 2)
+    assert :binary.match(text, "model ") |> elem(0) < div(snapshot.width, 2)
     assert :binary.match(text, "thinking") |> elem(0) > div(snapshot.width, 2)
   end
 
@@ -110,7 +109,7 @@ defmodule CodingAgent.UI.TuiCellsTest do
     # the sidebar column and the composer row carry the SAME fill: the
     # chrome reads as one material painted by the app
     sidebar_bg = cell(snapshot, 3, 2).bg
-    composer_row = Enum.find(0..29, &String.contains?(row_text(snapshot, &1), "you · model"))
+    composer_row = meta_row(snapshot)
     composer_bg = cell(snapshot, composer_row, 40).bg
 
     assert sidebar_bg == fill

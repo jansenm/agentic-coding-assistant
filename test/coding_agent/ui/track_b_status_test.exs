@@ -96,7 +96,8 @@ defmodule CodingAgent.UI.TrackBStatusTest do
       rows = buffer(pid)
 
       # ONE row carries both halves: identity (left) and status (right)
-      footer = Enum.find(rows, &String.contains?(&1, "you"))
+      # (the LAST "model " row is the composer's meta row)
+      footer = rows |> Enum.filter(&String.contains?(&1, "model ")) |> List.last()
       assert footer != nil
       assert String.contains?(footer, "thinking")
       assert String.contains?(footer, Styles.spinner(sync(pid).spin))

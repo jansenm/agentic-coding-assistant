@@ -16,7 +16,7 @@ defmodule CodingAgent.UI.Composer do
       +--------------------------------------------+  <- chrome fill, WHOLE rect
       |  <textarea>                                 |  <- 1-cell padding
       |                                             |  <- one blank row of air
-      |  you -> build · model …            ○ idle    |  <- meta row: identity | status
+      |  build · model …                  ○ idle    |  <- meta row: identity | status
       +--------------------------------------------+
 
   There is deliberately NO border — a frame around the field read as
@@ -176,27 +176,29 @@ defmodule CodingAgent.UI.Composer do
     }
   end
 
-  # `you → agent · model <id>` — the identity relationship keeps its
-  # arrow shape; every span names the `:chrome` surface (the fill is
-  # explicit there, so a role resolved against another surface would be
-  # chosen for the wrong background)
+  # `agent · model <id>` — the identity of what will handle the next
+  # input. No "you" and no arrow (owner decision: the input IS the user's,
+  # saying so is noise; the arrow was visual clutter). Every span names
+  # the `:chrome` surface (the fill is explicit there, so a role resolved
+  # against another surface would be chosen for the wrong background).
   defp identity(composer) do
-    [
-      Text.Span.new("you", style: Styles.role(:user, :chrome)),
-      if(composer.agent,
-        do: [
-          Text.Span.new(" → ", style: Styles.role(:muted, :chrome)),
-          Text.Span.new(composer.agent, style: Styles.role(:agent, :chrome))
-        ],
-        else: []
-      ),
-      Text.Span.new(" · ", style: Styles.role(:muted, :chrome)),
-      Text.Span.new("model ", style: Styles.role(:muted, :chrome)),
-      # the WHOLE id: a hard cap hid the version that distinguishes one
-      # model from another; the surface clips if the pane is too narrow
-      Text.Span.new(composer.model || "?", style: Styles.role(:model, :chrome))
-    ]
-    |> List.flatten()
+    prefix =
+      if composer.agent do
+        [
+          Text.Span.new(composer.agent, style: Styles.role(:agent, :chrome)),
+          Text.Span.new(" · ", style: Styles.role(:muted, :chrome))
+        ]
+      else
+        []
+      end
+
+    (prefix ++
+       [
+         Text.Span.new("model ", style: Styles.role(:muted, :chrome)),
+         # the WHOLE id: a hard cap hid the version that distinguishes one
+         # model from another; the surface clips if the pane is too narrow
+         Text.Span.new(composer.model || "?", style: Styles.role(:model, :chrome))
+       ])
     |> Text.Line.new()
   end
 

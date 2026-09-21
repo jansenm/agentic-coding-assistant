@@ -1791,8 +1791,8 @@ defmodule CodingAgent.UI.Tui do
     else
       # attribute THIS turn to the agent the input was prepared for: the
       # `next` slot. It stays in sync with what Session.run resolves
-      # (the next_agent at send time), so the "you → agent" footer is
-      # correct even while a prior turn streams.
+      # (the next_agent at send time), so the composer's identity footer
+      # is correct even while a prior turn streams.
       next_agent = Map.get(state, :next_agent)
 
       run_prompt(state, value)

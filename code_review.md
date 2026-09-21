@@ -414,7 +414,7 @@ and commits `7a055ac`/`3e4c6c3`. What remains from that review:
 now owns roles (`role/1`), badges (`badge/2`), a definition list
 (`definition_list/1`), panels (`panel/1`), section headers, chrome fills
 and `status_badge/1`. (`badge_list/1` from the original sketch was
-dropped: the input footer needs the `you → agent · model` arrow shape,
+dropped: the input footer needs the `agent · model` identity shape,
 not a `·`-joined list, so `badge/2` composed inline is the real
 primitive.) The ~35 inline `%Style{}`
 sites in `tui.ex`/`transcript_view.ex` are gone (only genuinely-empty

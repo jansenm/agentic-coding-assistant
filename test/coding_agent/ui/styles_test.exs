@@ -155,7 +155,7 @@ defmodule CodingAgent.UI.StylesTest do
     test "title position/alignment and border type are options (review A)" do
       block =
         Styles.panel(
-          title: "you → build",
+          title: "build · model glm",
           title_position: :bottom,
           title_alignment: :right,
           border_type: :double

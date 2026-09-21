@@ -69,12 +69,13 @@ defmodule CodingAgent.UI.TuiAgentTest do
   # Attribution lives at the message-box footers and the input footer
   # (the shared "agent box" design): the sidebar no longer carries
   # running/next/model slots. The input footer shows the target of the
-  # NEXT input ("you → agent") plus the effective model.
+  # NEXT input ("agent · model") — and NOT the word "you" (owner
+  # decision: the input IS the user's, the label was noise).
   test "the agent surfaces on the input footer, not the sidebar" do
     pid = start_app(agent: "build")
     buffer = Enum.join(buffer(pid), "\n")
 
-    assert buffer =~ "you → build"
+    assert buffer =~ "build · model "
     # the sidebar no longer renders "running:"/"next:" label slots (the
     # shared agent-box redesign); identity is a badge
     refute buffer =~ "running:"
@@ -98,7 +99,7 @@ defmodule CodingAgent.UI.TuiAgentTest do
     footer_row =
       rows
       |> Enum.with_index()
-      |> Enum.find(fn {r, _} -> String.contains?(r, "you → build") end)
+      |> Enum.find(fn {r, _} -> String.contains?(r, "build · model") end)
 
     assert {row_text, idx} = footer_row
     # no box glyphs: the frame is gone (the "c64" report)
@@ -110,8 +111,8 @@ defmodule CodingAgent.UI.TuiAgentTest do
 
     # and the identity row is BELOW everything else in the input rect:
     # the row above it carries no identity and no typed text
-    refute String.contains?(rows |> Enum.at(idx - 1), "you → build")
-    refute String.contains?(rows |> Enum.at(idx + 1), "you → build")
+    refute String.contains?(rows |> Enum.at(idx - 1), "build · model")
+    refute String.contains?(rows |> Enum.at(idx + 1), "build · model")
   end
 
   # B4: the status panel answers "which agent handles what I type, and
@@ -167,19 +168,20 @@ defmodule CodingAgent.UI.TuiAgentTest do
     pid = start_app(agent: "build")
     buffer = Enum.join(buffer(pid), "\n")
 
-    # the footer carries "you → agent · model"; no agent-less "default"
-    assert buffer =~ "you → build · "
-    refute buffer =~ "you → default"
+    # the footer carries "agent · model"; not the generic agent fallback
+    assert buffer =~ "build · model "
+    refute buffer =~ "build · default"
   end
 
-  test "with no agent the input footer shows just 'you', not a (none) label" do
+  test "with no agent the input footer shows just the model, not a (none) label" do
     pid = start_app(agent: nil)
     buffer = Enum.join(buffer(pid), "\n")
 
-    # no agent target: the footer reads "you · model" with no "→ (none)"
-    assert buffer =~ "you · "
-    refute buffer =~ "you → (none)"
-    refute buffer =~ "you → default"
+    # no agent target: the footer reads "model …" with no "→ (none)"
+    assert buffer =~ "model "
+    refute buffer =~ "(none)"
+    refute buffer =~ "→"
+    refute buffer =~ "you"
   end
 
   describe "resume restores the agent (regression)" do
