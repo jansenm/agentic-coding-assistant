@@ -302,6 +302,101 @@ leverage.
 
 ---
 
+# TODO — rival opencode (strategic gaps)
+
+Observed 2026-09-21 by running this harness **and** opencode side by side
+on the *same model*. The conclusion that prompted this list: the TUI
+agent is not a worse model, it is the same model in a chassis with no
+steering. Its whole system prompt is two sentences, its toolbelt is nine
+tools with no planning or delegation, several parsed agent fields are
+never consumed, and a repeated-failure loop surfaces as a confusing
+error rather than steering. Ordered by leverage — the top three change
+how the agent *behaves*; the rest are surface area.
+
+- [ ] **T1 — Write the real framework prompt + per-agent role prompts.**
+      `Core.Session.Prompt`'s built-in layer is two sentences
+      (`prompt.ex:20-23`), and `build.md`/`plan.md` bodies are a short
+      paragraph each. opencode ships a large, opinionated system prompt;
+      the difference in behavior is not subtle. This is the single
+      highest-leverage change and is really the "seed the agents with
+      harness + role guidance" discussion: (a) the framework layer should
+      state the harness contract (you are in a TUI agent; a human reads
+      the stream and answers the gate; how to behave, when to ask), and
+      (b) each definition body should say how to *live* the role (what
+      "plan" means, what evidence "build" must produce). Keep role
+      specifics in the definition (ADR 017), harness facts in the
+      framework layer.
+- [ ] **T2 — A doom-loop guard.** opencode detects the same tool call
+      repeated (its `doom_loop` permission, default `ask`) and re-prompts
+      with a nudge. This harness has only a per-turn `max_tool_rounds`
+      cap, and when it trips the live report is that the agent "complained
+      about flaky parallel calls" (`session.ex:62-76`). Detect N identical
+      calls within a turn and inject steering ("you have called X with the
+      same args three times; change approach or ask") *before* the cap.
+      This is precisely the five-minutes-in-circles failure mode.
+- [ ] **T3 — Consume the agent fields we already parse.** `temperature`,
+      `max_turns` and `hidden` are read from frontmatter into
+      `Core.Agent` and then **never used anywhere in `lib/`** (verified).
+      A `maxTurns` that does nothing is worse than none (it is a lie in
+      the docs). Either wire them (per-agent temperature into the request;
+      `max_turns` as a real round budget with a summarizing stop) or
+      remove them from the honoured-fields list in ADR 017.
+- [ ] **T4 — `todowrite` / a plan tool.** opencode's `todowrite` is how
+      the model organises multi-step work and stays on task across a long
+      turn. This harness has no equivalent, so long tasks drift. Backlog
+      B6 explicitly named "add a `todo`/`plan` tool" as an option; the
+      plan agent now produces no durable artifact, so this is also the
+      natural place a plan could live. Needs a small UI surface too.
+- [ ] **T5 — `task` / subagent execution (the ADR 017 seam).** Defined in
+      ADR 017 and ADR 018 (tab per subagent, summary-only return,
+      depth 1) but never implemented. This is the biggest *architectural*
+      gap: without it there is no delegation, no parallel exploration, and
+      no context isolation. It is also the prerequisite for the
+      specialist/repository matrix (ADR 007) that is the product thesis.
+- [ ] **T6 — `question` tool.** opencode lets the model ask the user a
+      structured multiple-choice question mid-task; ADR 018 and the gate
+      have no channel for it. Cheap to add (the approval dialog already
+      exists as a pattern) and removes a real failure mode: the agent
+      guessing instead of clarifying. Note ADR 017 says a *subagent* may
+      not ask; a primary may.
+- [ ] **T7 — Slash commands / a command palette.** opencode's `/new`,
+      `/sessions`, `/models`, `/compact`, `/export`, `/editor`, `/undo`,
+      `/redo`, `/help` are a discovery surface we have as scattered keys.
+      The picker covers sessions; export shipped. A small `/` palette that
+      names the existing actions (and becomes the home for future ones)
+      would make the tool legible instead of keybinding-archaeology.
+- [ ] **T8 — Undo / redo (git checkpointing).** opencode's `/undo` reverts
+      the last message *and* its file changes, via git. This harness has
+      "Git is the undo" as an ADR 015 principle but no user-facing verb;
+      the user must know git. A checkpoint per turn + `/undo` is a
+      meaningful safety net that pairs with the permission story.
+- [ ] **T9 — `websearch` (discovery) alongside `webfetch` (retrieval).**
+      ADR 013 shipped `webfetch` only. opencode distinguishes search from
+      fetch; without search the agent cannot find *which* URL to read.
+- [ ] **T10 — Richer tools: `apply_patch`, LSP, skills, MCP/custom
+      tools.** Lower leverage for this project's dogfooding, but each is a
+      capability opencode has: patch-based edits (one atomic multi-file
+      change), code intelligence (definitions/references/hover), skills
+      (`SKILL.md`), and MCP/custom-tool extension without a rebuild. The
+      `edit` tool is exact-match only today.
+- [ ] **T11 — Two async test-isolation races (urgent, concrete).** Not an
+      opencode gap — found while chasing the current flake, but the same
+      bug class as the one just fixed, and it makes `make commit`
+      non-deterministic: (a) `compaction_test.exs:210` is `async: true`
+      and sets the global `:compaction_wall_clock_ms` to **50ms**;
+      (b) `coding_agent_test.exs:8` is `async: true` and overwrites the
+      global `AGENT_MODEL`. Any concurrent test that compacts or resolves
+      a model can observe the other's value. Fix by `async: false` or a
+      per-test seam. (The live flake reproduces ~1 in 6 full runs and I
+      did not yet capture the failing test name — these are the prime
+      suspects and are wrong regardless.)
+
+Surface already present (so not listed): mouse-wheel scroll, alt-enter
+send, Tab agent switch, model menu, session picker/search/export, status
+spinner, reasoning display, esc-to-stop/quit.
+
+---
+
 # TODO — dog-fooding blockers (urgent)
 
 Found by using the TUI on real work. None of these are architectural; they
@@ -341,13 +436,13 @@ mechanism is not pinned, that is said plainly instead of guessed.
       (Rust NIF, not landable in this repo); (c) a horizontal "more text
       right" indicator (does not solve the review's symptom alone).
 
-- [~] **B6 — Plan mode is useless in its current configuration.**
-      Direction settled (user decision), implementation pending. Build/plan
-      is a SIGNAL to the agent, not a sandbox/mode state: read-only is not
-      "plan" (build legitimately needs `.git/` writes), so the fix is the
-      plan *definition* (what tools it gets, whether it may write a durable
-      plan artifact, whether it needs read-only network/subagents), not
-      mode chrome. The original finding text follows.
+- [x] **B6 — Plan mode is useless in its current configuration.** **Done
+      (2026-09-21).** Direction: build/plan is a SIGNAL to the agent, not a
+      sandbox/mode state. Plan now keeps `shell` as `shell: read_only`
+      (scope root bound `--ro-bind`), disallows `edit`/`write_file`/`git`,
+      and produces no durable artifact (the plan IS the transcript). All
+      three questions answered; see ADR 017 "Read-only shell". The original
+      finding text follows.
 
       Symptom: switching to plan gives no practical value in a normal session.
       Root cause: `priv/coding-agent/agents/plan.md` denies
@@ -369,14 +464,14 @@ mechanism is not pinned, that is said plainly instead of guessed.
       tools (`webfetch`) and subagents to be worth entering. Until (1) and (2)
       are answered, plan stays decorative.
 
-**Status (2026-09-20).** B1, B2, B4 and **B7 are done**; the `Styles`
+**Status (2026-09-21).** B1, B2, B4, **B6 and B7 are done**; the `Styles`
 vocabulary, the one-authority input executor (ADR 021) and the
 status/activity spinner (Track B) shipped, and B7 shipped via ADR 022
 (`Scratch` module, `session_id` scope seam, `Bwrap` bind over `/tmp`,
 store cleanup). B5 (input wrap) is **deferred by owner decision**; B3
-(file picker) is the only open B-item. B6's direction is settled (plan is
-a signal to the agent, not a sandbox mode) and needs only the plan
-definition decided. The glyph passes (E) are the remaining cosmetic work.
+(file picker) is the only open B-item. B6 shipped: plan is a
+permission-defined agent with a read-only shell (no mode chrome, no
+durable artifact). The glyph passes (E) are the remaining cosmetic work.
 
 <details>
 <summary>B7 finding (resolved) — kept for the record</summary>
