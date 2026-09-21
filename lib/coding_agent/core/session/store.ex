@@ -162,13 +162,36 @@ defmodule CodingAgent.Core.Session.Store do
     base = %{state | context: Context.new()}
     payload = :erlang.term_to_binary({@format_version, base})
 
-    with {:ok, db} <- open(),
-         :ok <- Sqlite3.execute(db, "BEGIN"),
-         :ok <- write(db, state, payload, encoded),
-         :ok <- sync_messages(db, state.id, encoded),
-         :ok <- Sqlite3.execute(db, "COMMIT") do
-      close(db)
-    else
+    case open() do
+      {:ok, db} ->
+        # The metadata row and the message rows must land together or not
+        # at all (a half-save is a session that lists but loads with an
+        # empty/partial context). Any failure ROLLBACKs and closes the
+        # handle: an abandoned open write transaction holds a lock and
+        # would make every later save fail after busy_timeout.
+        result =
+          with :ok <- Sqlite3.execute(db, "BEGIN"),
+               :ok <- write(db, state, payload, encoded),
+               :ok <- sync_messages(db, state.id, encoded),
+               :ok <- Sqlite3.execute(db, "COMMIT") do
+            :ok
+          else
+            {:error, reason} ->
+              _ = Sqlite3.execute(db, "ROLLBACK")
+              {:error, reason}
+          end
+
+        close(db)
+
+        case result do
+          :ok ->
+            :ok
+
+          {:error, reason} ->
+            Logger.warning("session store save failed: #{inspect(reason)}")
+            {:error, reason}
+        end
+
       {:error, reason} ->
         Logger.warning("session store save failed: #{inspect(reason)}")
         {:error, reason}
@@ -470,6 +493,95 @@ defmodule CodingAgent.Core.Session.Store do
       {:error, _} ->
         []
     end
+  end
+
+  @doc """
+  Store-wide full-text search over the display view (ADR 020 ``S1``: "in
+  which sessions did I touch X"). Case-insensitive substring match
+  (SQLite ``LIKE``), newest session first, matches oldest-first within a
+  session. Returns one entry per MATCHING session:
+
+      %{id, saved_at, model, status, scope_root, size, matches: [%{seq, kind, text, agent}]}
+
+  Only the display view is searched — the immutable, plain-text record
+  the user actually saw. The agent view is not grepped by design
+  (``S4``/*encoding decision*). An empty/blank query returns `[]` rather
+  than every row.
+  """
+  @spec search(String.t()) :: [map()]
+  def search(query) when is_binary(query) do
+    case String.trim(query) do
+      "" ->
+        []
+
+      needle ->
+        pattern = "%" <> escape_like(needle) <> "%"
+
+        case open() do
+          {:ok, db} ->
+            result =
+              case fetch_all(
+                     db,
+                     """
+                     SELECT s.id, s.saved_at, s.model, s.status, s.scope_root, s.size_bytes,
+                            d.seq, d.kind, d.text, d.agent
+                     FROM display d
+                     JOIN sessions s ON s.id = d.session_id
+                     WHERE d.text LIKE ? ESCAPE '\\'
+                     ORDER BY s.saved_at DESC, d.seq ASC
+                     """,
+                     [pattern]
+                   ) do
+                {:ok, rows} -> group_matches(rows)
+                {:error, _} -> []
+              end
+
+            close(db)
+            result
+
+          {:error, _} ->
+            []
+        end
+    end
+  end
+
+  # LIKE wildcards in the QUERY are literals, not operators: a search for
+  # "100%" must not match everything. Escape the wildcard and the escape
+  # char itself (paired with the ESCAPE '\' clause).
+  defp escape_like(text) do
+    text
+    |> String.replace("\\", "\\\\")
+    |> String.replace("%", "\\%")
+    |> String.replace("_", "\\_")
+  end
+
+  defp group_matches(rows) do
+    rows
+    |> Enum.reduce([], fn [id, saved_at, model, status, scope_root, size, seq, kind, text, agent],
+                          acc ->
+      match = %{seq: seq, kind: to_display_kind(kind), text: text, agent: agent}
+
+      case acc do
+        [%{id: ^id} = head | rest] ->
+          [%{head | matches: head.matches ++ [match]} | rest]
+
+        _ ->
+          [to_search_entry(id, saved_at, model, status, scope_root, size, match) | acc]
+      end
+    end)
+    |> Enum.reverse()
+  end
+
+  defp to_search_entry(id, saved_at, model, status, scope_root, size, match) do
+    %{
+      id: id,
+      saved_at: DateTime.from_unix!(saved_at, :millisecond),
+      model: model,
+      status: to_status(status),
+      scope_root: scope_root,
+      size: size || 0,
+      matches: [match]
+    }
   end
 
   # Test seam: write a display row with an arbitrary kind, to exercise
@@ -919,13 +1031,24 @@ defmodule CodingAgent.Core.Session.Store do
   defp close(db), do: Sqlite3.close(db)
 
   # Write (insert/update/delete) with params; returns :ok or {:error, _}.
+  #
+  # A constraint violation makes `step/2` return `{:error, reason}`, NOT
+  # `:done` — so it must be matched, not asserted. Asserting (`:done =`)
+  # raised a MatchError that a caller's `with` could not catch, leaving a
+  # transaction open (found by forcing a NOT NULL violation: the leaked
+  # write lock then failed every later save after busy_timeout).
   defp exec(db, sql, params) do
     case Sqlite3.prepare(db, sql) do
       {:ok, stmt} ->
         try do
-          :ok = Sqlite3.bind(stmt, params)
-          :done = Sqlite3.step(db, stmt)
-          :ok
+          with :ok <- Sqlite3.bind(stmt, params) do
+            case Sqlite3.step(db, stmt) do
+              :done -> :ok
+              {:row, _} -> :ok
+              {:error, reason} -> {:error, reason}
+              other -> {:error, {:unexpected_step_result, other}}
+            end
+          end
         after
           Sqlite3.release(db, stmt)
         end
@@ -938,8 +1061,10 @@ defmodule CodingAgent.Core.Session.Store do
   defp fetch_all(db, sql, params) do
     with {:ok, stmt} <- Sqlite3.prepare(db, sql) do
       try do
-        :ok = Sqlite3.bind(stmt, params)
-        Sqlite3.fetch_all(db, stmt)
+        case Sqlite3.bind(stmt, params) do
+          :ok -> Sqlite3.fetch_all(db, stmt)
+          {:error, reason} -> {:error, reason}
+        end
       after
         Sqlite3.release(db, stmt)
       end

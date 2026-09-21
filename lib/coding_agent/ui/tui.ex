@@ -227,6 +227,11 @@ defmodule CodingAgent.UI.Tui do
       # printable keys into the query.
       picker_all?: false,
       picker_filter: "",
+      # store-wide content search (ADR 020 S1): `S` opens a query prompt;
+      # while it is committed, the picker source is `Store.search/1`
+      # results (sessions with their matching display rows) instead of
+      # the metadata listing. `picker_op` is `{:search, buf}` while typing.
+      picker_search: nil,
       # sidebar panel: visible by default; toggled at runtime
       # (Menu :toggle_sidebar) or seeded off via `sidebar: false`
       # (tests read a clean transcript buffer without a 36-col panel)
@@ -833,18 +838,36 @@ defmodule CodingAgent.UI.Tui do
     Enum.at(picker_visible(state), state.picker_index)
   end
 
-  # Reload the source for the current scope flag (this dir vs whole store),
-  # clear the prompt, and clamp the selection into range.
+  # Reload the source for the current mode: a committed content search
+  # (ADR 020 S1) takes precedence; otherwise this dir vs whole store.
+  # Clears the prompt and clamps the selection into range.
   defp picker_reload(state) do
-    sessions =
-      if Map.get(state, :picker_all?, false) do
-        Store.list()
-      else
-        Store.list_in(state.picker_scope)
-      end
-
+    sessions = picker_source(state)
     idx = min(state.picker_index, max(length(sessions) - 1, 0))
     %{state | picker: sessions, picker_index: max(idx, 0), picker_op: nil}
+  end
+
+  # Live search as the query is typed: reload the picker source from the
+  # display view on every keystroke (cheap at this scale).
+  defp picker_reload_live_search(state, query) do
+    sessions = Store.search(query)
+    %{state | picker: sessions, picker_search: query, picker_index: 0}
+  end
+
+  # The picker's unfiltered source: the search results when a content
+  # query is committed, else the metadata listing for the scope.
+  defp picker_source(state) do
+    case Map.get(state, :picker_search) do
+      query when is_binary(query) and query != "" ->
+        Store.search(query)
+
+      _ ->
+        if Map.get(state, :picker_all?, false) do
+          Store.list()
+        else
+          Store.list_in(state.picker_scope)
+        end
+    end
   end
 
   # The ids older than `days`, over the picker's SOURCE (this dir or the
@@ -893,6 +916,14 @@ defmodule CodingAgent.UI.Tui do
   # (the list is already live-filtered as you type), esc clears+closes.
   defp handle_picker_key(%Event.Key{code: "/"}, %{picker_op: nil} = state) do
     {:noreply, %{state | picker_op: {:filter, ""}, picker_index: 0}}
+  end
+
+  # `s`: store-wide CONTENT search (ADR 020 S1) — "in which sessions did I
+  # touch X". Distinct from `/` (which narrows the metadata listing): this
+  # queries the display view and shows the matching rows. Live as you
+  # type (the source reloads each keystroke, cheap at this scale).
+  defp handle_picker_key(%Event.Key{code: "s"}, %{picker_op: nil} = state) do
+    {:noreply, %{state | picker_op: {:search, ""}, picker_search: "", picker_index: 0}}
   end
 
   # `D`: delete every VISIBLE session (bulk). This is the directory
@@ -1009,6 +1040,14 @@ defmodule CodingAgent.UI.Tui do
     {:noreply, %{state | picker_op: nil, picker_filter: "", picker_index: 0}}
   end
 
+  # Search prompt esc: like the filter, esc clears the query and closes,
+  # restoring the metadata listing (this is a live query, not a pending
+  # decision). Must precede the generic prompt-esc below.
+  defp handle_picker_key(%Event.Key{code: code}, %{picker_op: {:search, _buf}} = state)
+       when code in ["escape", "esc"] do
+    {:noreply, picker_reload(%{state | picker_op: nil, picker_search: nil, picker_index: 0})}
+  end
+
   defp handle_picker_key(%Event.Key{code: "escape"}, %{picker_op: prompt} = state)
        when prompt != nil do
     {:noreply, %{state | picker_op: nil}}
@@ -1074,6 +1113,25 @@ defmodule CodingAgent.UI.Tui do
        when binary_part(code, 0, 1) == code and byte_size(code) == 1 do
     next = buf <> code
     {:noreply, %{state | picker_op: {:filter, next}, picker_filter: next, picker_index: 0}}
+  end
+
+  # Search prompt: enter commits the query (already live); printable
+  # keys and backspace rebuild the query and reload the source live. The
+  # search esc clause lives up beside the filter esc (both clear their
+  # query), before the generic prompt-esc.
+  defp handle_picker_key(%Event.Key{code: "enter"}, %{picker_op: {:search, _buf}} = state) do
+    {:noreply, %{state | picker_op: nil, picker_index: 0}}
+  end
+
+  defp handle_picker_key(%Event.Key{code: "backspace"}, %{picker_op: {:search, buf}} = state) do
+    next = String.slice(buf, 0, max(String.length(buf) - 1, 0))
+    {:noreply, picker_reload_live_search(%{state | picker_op: {:search, next}}, next)}
+  end
+
+  defp handle_picker_key(%Event.Key{code: code}, %{picker_op: {:search, buf}} = state)
+       when binary_part(code, 0, 1) == code and byte_size(code) == 1 do
+    next = buf <> code
+    {:noreply, picker_reload_live_search(%{state | picker_op: {:search, next}}, next)}
   end
 
   defp handle_picker_key(%Event.Key{code: code}, %{picker_op: {:rename, id, buf}} = state)
@@ -3204,18 +3262,33 @@ defmodule CodingAgent.UI.Tui do
             do: "  " <> short_scope(s.scope_root),
             else: ""
 
-        "#{marker}#{String.slice(s.id, 0, 22)}  #{status}  " <>
-          "#{size}  #{format_age(s.saved_at)}#{scope}"
+        base =
+          "#{marker}#{String.slice(s.id, 0, 22)}  #{status}  " <>
+            "#{size}  #{format_age(s.saved_at)}#{scope}"
+
+        # in search mode, show the first matching display row so the hit is
+        # legible without opening the session (the match count when >1)
+        case Map.get(s, :matches) do
+          [%{text: text} | _] = matches ->
+            more = if length(matches) > 1, do: " (+#{length(matches) - 1})", else: ""
+            base <> "\n     ↳ " <> String.slice(text, 0, 60) <> more
+
+          _ ->
+            base
+        end
       end)
 
     header = picker_header(state, visible)
     # the header may be one line (a prompt) or several (store + summary +
-    # hints); size the box from its actual line count + 2 border + 1 slack
+    # hints); size the box from its actual line count + 2 border + 1 slack.
+    # Rows are one line normally but two in search mode (the match line),
+    # so count actual lines, not rows.
     header_lines = length(String.split(header, "\n"))
+    row_lines = Enum.reduce(rows, 0, fn r, acc -> acc + length(String.split(r, "\n")) end)
 
     body = ([header] ++ rows) |> Enum.join("\n")
 
-    h = min(length(rows) + header_lines + 3, area.height - 4)
+    h = min(row_lines + header_lines + 3, area.height - 4)
     w = min(78, area.width - 4)
     x = div(max(area.width - w, 0), 2)
     y = div(max(area.height - h, 0), 2)
@@ -3254,6 +3327,9 @@ defmodule CodingAgent.UI.Tui do
       {:filter, buf} ->
         " Filter: #{buf}▌  (enter=apply, esc=clear)"
 
+      {:search, buf} ->
+        " Search content: #{buf}▌  (enter=apply, esc=clear)"
+
       {:prune, buf} ->
         " Prune sessions older than N days: #{buf}▌  (enter=confirm, esc=cancel)"
 
@@ -3264,10 +3340,18 @@ defmodule CodingAgent.UI.Tui do
         total = visible |> Enum.map(&Map.get(&1, :size, 0)) |> Enum.sum()
         scope = if Map.get(state, :picker_all?, false), do: "all", else: "this dir"
 
+        query = Map.get(state, :picker_search)
+
+        {scope, filter} =
+          case query do
+            q when is_binary(q) and q != "" -> {"search", "  search: #{q}"}
+            _ -> {scope, ""}
+          end
+
         filter =
           case String.trim(Map.get(state, :picker_filter, "")) do
-            "" -> ""
-            f -> "  filter: #{f}"
+            "" -> filter
+            f -> filter <> "  filter: #{f}"
           end
 
         # the ACTIVE store names itself (ADR 020 R16): sessions from
@@ -3276,7 +3360,7 @@ defmodule CodingAgent.UI.Tui do
 
         " store: #{store}\n" <>
           " #{length(visible)} session(s), #{format_bytes(total)}  [#{scope}]#{filter}\n" <>
-          "  enter=resume  n=new  a=all/dir  /=filter  q=quit\n" <>
+          "  enter=resume  n=new  a=all/dir  /=filter  s=search  q=quit\n" <>
           "  d=delete  D=delete all  r=rename  P=prune by age"
     end
   end

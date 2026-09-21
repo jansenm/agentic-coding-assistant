@@ -149,7 +149,7 @@ defmodule CodingAgent.UI.TuiPickerTest do
       assert joined =~ CodingAgent.Core.Session.Store.path()
     end
 
-    test "the picker advertises every management verb, incl. prune", %{root: root} do
+    test "the picker advertises every management verb, incl. prune and search", %{root: root} do
       pid = start_picker(root)
       joined = Enum.join(buffer(pid), "\n")
 
@@ -157,6 +157,8 @@ defmodule CodingAgent.UI.TuiPickerTest do
             "enter=resume",
             "n=new",
             "a=all/dir",
+            "/=filter",
+            "s=search",
             "d=delete",
             "D=delete all",
             "r=rename",
@@ -164,6 +166,49 @@ defmodule CodingAgent.UI.TuiPickerTest do
           ] do
         assert joined =~ verb, "missing hint #{verb}"
       end
+    end
+
+    test "`s` searches the display view and shows the matching text", %{root: root, ids: ids} do
+      [a, _b] = ids
+      :ok = CodingAgent.Core.Session.Store.append_display(a, :assistant, "the widget factory")
+
+      pid = start_picker(root)
+
+      key(pid, "s")
+      assert match?({:search, ""}, sync(pid).picker_op)
+
+      Enum.each(String.graphemes("widget"), &key(pid, &1))
+
+      st = sync(pid)
+      assert st.picker_search == "widget"
+      visible_ids = Enum.map(picker_visible(st), & &1.id)
+      assert visible_ids == [a]
+
+      # the matching display row renders beneath the session row
+      joined = Enum.join(buffer(pid), "\n")
+      assert joined =~ "widget factory"
+
+      # enter commits the query: the prompt closes and the header names the
+      # scope "search" (the summary line replaces the prompt)
+      key(pid, "enter")
+      assert sync(pid).picker_op == nil
+      assert Enum.join(buffer(pid), "\n") =~ "[search]"
+
+      # esc in the prompt clears the query and restores the listing
+      key(pid, "s")
+      key(pid, "escape")
+      st2 = sync(pid)
+      assert st2.picker_search == nil
+      assert length(picker_visible(st2)) == 2
+    end
+
+    test "`s` with no matches shows an empty picker", %{root: root} do
+      pid = start_picker(root)
+
+      key(pid, "s")
+      Enum.each(String.graphemes("nothingmatchesthis"), &key(pid, &1))
+
+      assert picker_visible(sync(pid)) == []
     end
 
     test "`a` widens the source to the whole store and names the scope column", %{root: root} do

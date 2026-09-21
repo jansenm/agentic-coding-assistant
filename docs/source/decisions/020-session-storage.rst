@@ -476,14 +476,15 @@ the store is SQL values, the ``binary_to_term`` atom-exhaustion vector
 Cross-session search and aggregation
 ------------------------------------
 
-``S1``/``S2``, within the active store. Each database carries an FTS5
-table over its display view. For a store-wide query the first
-implementation scans the store's session DBs (open, query, close) — no
-second artifact, cost scales with session count, acceptable for an
-explicit verb. A derived store-level index (``index.sqlite``, rebuilt by
-``--session-reindex``) is a **cache** that must never be the source of
-truth; this ADR defers it. The picker's own listing needs only ``meta``
-(``R9``), so it needs no index at all.
+``S1``/``S2``, within the active store. **Shipped** (``Store.search/1``,
+the picker's ``s``): a case-insensitive ``LIKE`` over the display view,
+joined to the session metadata, with the query's ``%``/``_`` escaped to
+literals. No second artifact and no FTS index — a single-store scan of
+plain text is fast at any plausible session count, and correctness came
+first. ``display_fts`` (an FTS5 external-content table) is the upgrade
+**if** a scan proves slow; it stays a cache, never the source of truth.
+The picker's own listing needs only the metadata columns (``R9``), so it
+needs no index at all.
 
 Implementation boundaries
 -------------------------
@@ -550,8 +551,13 @@ Slice order
    context (one user, unreleased — no migration reader).
 4. **Management verbs** (in the TUI, per the "TUI is the only surface"
    decision): delete-by-directory, prune-by-size, store-wide search,
-   export/import. Delete-one, delete-visible, and prune-by-age already
-   ship in the picker (``d``/``D``/``P``).
+   export/import. Delete-one, delete-visible, prune-by-age (``d``/``D``/
+   ``P``) and **store-wide content search** (``s``) ship in the picker.
+   Search runs ``Store.search/1`` against the display view (SQL
+   ``LIKE`` with escaped wildcards), newest session first, showing each
+   session's matching rows. The picker's ``/`` filter stays the
+   metadata-only narrowing; ``s`` is the content query (``S1``).
+   Remaining: prune-by-size and export/import.
 5. **Derived store index** only if store-wide search proves slow.
 
 Open questions

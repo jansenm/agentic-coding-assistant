@@ -1,6 +1,8 @@
 defmodule CodingAgent.Core.Session.StoreTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   # Persistence (4a): round-trip, fail-closed corruption handling, and
   # the resume semantics (running → idle, subscribers dropped).
 
@@ -201,6 +203,33 @@ defmodule CodingAgent.Core.Session.StoreTest do
       assert {:ok, loaded} = Store.load(id)
       assert loaded.id == id
       assert loaded.model == "ollama:test-model"
+    end
+  end
+
+  describe "save failure is contained" do
+    test "a failed save returns an error and leaves no open transaction" do
+      # regression: exec/3 asserted `:done = step(...)`, so a constraint
+      # violation RAISED a MatchError instead of returning {:error, _}.
+      # save/1's `with` never caught it, and the abandoned write
+      # transaction held a lock — every later save then failed after
+      # busy_timeout. Found by forcing a NOT NULL violation.
+      good =
+        CodingAgent.Core.Session.State.new(
+          id: "savefail-#{System.unique_integer([:positive])}",
+          context: Context.new([Context.user("hi")]),
+          model: "m",
+          status: :idle
+        )
+
+      # a nil session id violates the messages NOT NULL constraint; the
+      # warning is expected, so capture it to keep the output clean
+      log = capture_log(fn -> assert {:error, _} = Store.save(%{good | id: nil}) end)
+      assert log =~ "session store save failed"
+
+      # the store is not wedged: a valid save still works
+      assert :ok = Store.save(good)
+      assert {:ok, loaded} = Store.load(good.id)
+      assert length(Context.to_list(loaded.context)) == 1
     end
   end
 
@@ -609,6 +638,84 @@ defmodule CodingAgent.Core.Session.StoreTest do
       :ok = Store.debug_put_display(id, "from_the_future", "x")
 
       assert [%{kind: :info}] = Store.display(id)
+    end
+  end
+
+  # ADR 020 S1: cross-session search within the active store. Searches the
+  # display view (the plain-text, immutable record) only — the agent view
+  # is not grepped by design.
+  describe "search/1 (store-wide, S1)" do
+    test "finds matching sessions with their matches, newest first" do
+      a = "search-a-#{System.unique_integer([:positive])}"
+      b = "search-b-#{System.unique_integer([:positive])}"
+
+      :ok = Store.save(build_state(a))
+      :ok = Store.append_display(a, :user, "let us talk about the widget factory")
+      :ok = Store.append_display(a, :assistant, "the widget is here")
+
+      :ok = Store.save(build_state(b))
+      :ok = Store.append_display(b, :user, "unrelated note")
+      :ok = Store.append_display(b, :reasoning, "a widget thought")
+
+      now = DateTime.to_unix(DateTime.utc_now(), :millisecond)
+      :ok = Store.debug_set_saved_at(a, now - 60_000)
+      :ok = Store.debug_set_saved_at(b, now)
+
+      results = Store.search("widget")
+      ids = Enum.map(results, & &1.id)
+
+      # newest first
+      assert Enum.find_index(ids, &(&1 == b)) < Enum.find_index(ids, &(&1 == a))
+
+      # each entry carries only its own matches, oldest-first within
+      entry_a = Enum.find(results, &(&1.id == a))
+
+      assert Enum.map(entry_a.matches, & &1.text) == [
+               "let us talk about the widget factory",
+               "the widget is here"
+             ]
+
+      entry_b = Enum.find(results, &(&1.id == b))
+      assert [%{kind: :reasoning, text: "a widget thought"}] = entry_b.matches
+    end
+
+    test "is case-insensitive" do
+      id = "search-case-#{System.unique_integer([:positive])}"
+      :ok = Store.save(build_state(id))
+      :ok = Store.append_display(id, :assistant, "The Widget Factory")
+
+      assert [%{id: ^id}] = Store.search("widget factory")
+    end
+
+    test "a blank query returns nothing, not everything" do
+      id = "search-blank-#{System.unique_integer([:positive])}"
+      :ok = Store.save(build_state(id))
+      :ok = Store.append_display(id, :user, "anything")
+
+      assert Store.search("") == []
+      assert Store.search("   ") == []
+    end
+
+    test "LIKE wildcards in the query are literals, not operators" do
+      # a query of "%" must not match every row; it matches only a literal %
+      id_pct = "search-pct-#{System.unique_integer([:positive])}"
+      :ok = Store.save(build_state(id_pct))
+      :ok = Store.append_display(id_pct, :user, "coverage hit 100% today")
+
+      id_plain = "search-plain-#{System.unique_integer([:positive])}"
+      :ok = Store.save(build_state(id_plain))
+      :ok = Store.append_display(id_plain, :user, "no percent here")
+
+      assert [%{id: ^id_pct}] = Store.search("100%")
+      assert Store.search("%") |> Enum.map(& &1.id) == [id_pct]
+    end
+
+    test "no matches returns an empty list" do
+      id = "search-none-#{System.unique_integer([:positive])}"
+      :ok = Store.save(build_state(id))
+      :ok = Store.append_display(id, :user, "hello")
+
+      assert Store.search("zzz-not-present") == []
     end
   end
 
