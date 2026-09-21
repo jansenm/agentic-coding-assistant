@@ -162,35 +162,23 @@ defmodule CodingAgent.Core.Session.Store do
     base = %{state | context: Context.new()}
     payload = :erlang.term_to_binary({@format_version, base})
 
-    case open() do
-      {:ok, db} ->
-        # The metadata row and the message rows must land together or not
-        # at all (a half-save is a session that lists but loads with an
-        # empty/partial context). Any failure ROLLBACKs and closes the
-        # handle: an abandoned open write transaction holds a lock and
-        # would make every later save fail after busy_timeout.
-        result =
-          with :ok <- Sqlite3.execute(db, "BEGIN"),
-               :ok <- write(db, state, payload, encoded),
-               :ok <- sync_messages(db, state.id, encoded),
-               :ok <- Sqlite3.execute(db, "COMMIT") do
+    # The metadata row and the message rows must land together or not at
+    # all (a half-save is a session that lists but loads with an
+    # empty/partial context). Any failure ROLLBACKs: an abandoned open
+    # write transaction holds a lock and would wedge later writes.
+    result =
+      with_db(fn db ->
+        transaction(db, fn ->
+          with :ok <- write(db, state, payload, encoded),
+               :ok <- sync_messages(db, state.id, encoded) do
             :ok
-          else
-            {:error, reason} ->
-              _ = Sqlite3.execute(db, "ROLLBACK")
-              {:error, reason}
           end
+        end)
+      end)
 
-        close(db)
-
-        case result do
-          :ok ->
-            :ok
-
-          {:error, reason} ->
-            Logger.warning("session store save failed: #{inspect(reason)}")
-            {:error, reason}
-        end
+    case result do
+      :ok ->
+        :ok
 
       {:error, reason} ->
         Logger.warning("session store save failed: #{inspect(reason)}")
@@ -308,31 +296,27 @@ defmodule CodingAgent.Core.Session.Store do
 
     saved_at = Keyword.get(opts, :saved_at, now_ms())
 
-    with {:ok, db} <- open() do
-      result =
-        exec(
-          db,
-          """
-          INSERT INTO sessions
-            (id, format_version, saved_at, model, status, scope_root, size_bytes, state)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(id) DO UPDATE SET saved_at = excluded.saved_at, state = excluded.state
-          """,
-          [
-            id,
-            Keyword.get(opts, :format_version, @format_version),
-            saved_at,
-            Keyword.get(opts, :model),
-            "idle",
-            Keyword.get(opts, :scope_root),
-            byte_size(blob),
-            {:blob, blob}
-          ]
-        )
-
-      close(db)
-      result
-    end
+    with_db(fn db ->
+      exec(
+        db,
+        """
+        INSERT INTO sessions
+          (id, format_version, saved_at, model, status, scope_root, size_bytes, state)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET saved_at = excluded.saved_at, state = excluded.state
+        """,
+        [
+          id,
+          Keyword.get(opts, :format_version, @format_version),
+          saved_at,
+          Keyword.get(opts, :model),
+          "idle",
+          Keyword.get(opts, :scope_root),
+          byte_size(blob),
+          {:blob, blob}
+        ]
+      )
+    end)
   end
 
   # Test seam (ADR 020 3b-ii): the stored message-row count, so a test can
@@ -340,16 +324,12 @@ defmodule CodingAgent.Core.Session.Store do
   @doc false
   @spec debug_message_count(String.t()) :: non_neg_integer()
   def debug_message_count(id) do
-    with {:ok, db} <- open() do
-      result =
-        case fetch_one(db, "SELECT count(*) FROM messages WHERE session_id = ?", [id]) do
-          {:ok, [n]} -> n
-          _ -> 0
-        end
-
-      close(db)
-      result
-    end
+    with_db(fn db ->
+      case fetch_one(db, "SELECT count(*) FROM messages WHERE session_id = ?", [id]) do
+        {:ok, [n]} -> n
+        _ -> 0
+      end
+    end)
   end
 
   # Test seam (ADR 020 3b-ii): the metadata state exactly as stored, with
@@ -357,13 +337,7 @@ defmodule CodingAgent.Core.Session.Store do
   # the agent view). Not part of the store contract.
   @doc false
   @spec debug_raw_state(String.t()) :: {:ok, State.t()} | {:error, term()}
-  def debug_raw_state(id) do
-    with {:ok, db} <- open() do
-      result = decode_row(db, id)
-      close(db)
-      result
-    end
-  end
+  def debug_raw_state(id), do: with_db(fn db -> decode_row(db, id) end)
 
   # Test seam (ADR 020 3b-ii): write a raw message row, to exercise a
   # corrupt agent view without hand-editing a SQLite file.
@@ -377,50 +351,39 @@ defmodule CodingAgent.Core.Session.Store do
         false -> payload
       end
 
-    with {:ok, db} <- open() do
-      result =
-        exec(
-          db,
-          "INSERT OR REPLACE INTO messages (session_id, seq, data) VALUES (?, ?, ?)",
-          [session_id, seq, {:blob, blob}]
-        )
-
-      close(db)
-      result
-    end
+    with_db(fn db ->
+      exec(
+        db,
+        "INSERT OR REPLACE INTO messages (session_id, seq, data) VALUES (?, ?, ?)",
+        [session_id, seq, {:blob, blob}]
+      )
+    end)
   end
 
   # Test seam: set a session's `saved_at` (unix ms) for list ordering.
   @doc false
   @spec debug_set_saved_at(String.t(), integer()) :: :ok | {:error, term()}
   def debug_set_saved_at(id, saved_at_ms) do
-    with {:ok, db} <- open() do
-      result = exec(db, "UPDATE sessions SET saved_at = ? WHERE id = ?", [saved_at_ms, id])
-      close(db)
-      result
-    end
+    with_db(fn db ->
+      exec(db, "UPDATE sessions SET saved_at = ? WHERE id = ?", [saved_at_ms, id])
+    end)
   end
 
   # Test seams for the schema version (ADR 020, "Schema versioning"). They
   # let a test plant an old/new store without hand-editing a SQLite file.
   @doc false
   @spec debug_user_version() :: {:ok, non_neg_integer()} | {:error, term()}
-  def debug_user_version do
-    with {:ok, db} <- open() do
-      result = user_version(db)
-      close(db)
-      result
-    end
-  end
+  def debug_user_version, do: with_db(fn db -> user_version(db) end)
 
   @doc false
   @spec debug_set_user_version(non_neg_integer()) :: :ok | {:error, term()}
   def debug_set_user_version(version) when is_integer(version) and version >= 0 do
-    with {:ok, db} <- open() do
-      result = set_user_version(db, version)
-      close(db)
-      result
-    end
+    result = with_db(fn db -> set_user_version(db, version) end)
+    # the migration check runs at OPEN; drop the cached handle so the next
+    # operation reopens and reacts to the planted version (the seam's whole
+    # point: "an old/new version is seen on the next open")
+    invalidate()
+    result
   end
 
   # -- The display view (ADR 020) ---------------------------------------------
@@ -444,8 +407,8 @@ defmodule CodingAgent.Core.Session.Store do
     meta = Keyword.get(opts, :meta)
     meta_bin = if meta == nil, do: nil, else: :erlang.term_to_binary(meta)
 
-    with {:ok, db} <- open() do
-      result =
+    result =
+      with_db(fn db ->
         exec(
           db,
           """
@@ -454,17 +417,15 @@ defmodule CodingAgent.Core.Session.Store do
           """,
           [session_id, session_id, to_string(kind), text, agent, meta_bin]
         )
+      end)
 
-      close(db)
+    case result do
+      :ok ->
+        :ok
 
-      case result do
-        :ok ->
-          :ok
-
-        {:error, reason} ->
-          Logger.warning("display append failed: #{inspect(reason)}")
-          {:error, reason}
-      end
+      {:error, reason} ->
+        Logger.warning("display append failed: #{inspect(reason)}")
+        {:error, reason}
     end
   end
 
@@ -475,23 +436,15 @@ defmodule CodingAgent.Core.Session.Store do
   """
   @spec display(String.t()) :: [map()]
   def display(session_id) do
-    case open() do
-      {:ok, db} ->
-        result =
-          case fetch_all(
-                 db,
-                 "SELECT seq, kind, text, agent, meta FROM display WHERE session_id = ? ORDER BY seq",
-                 [session_id]
-               ) do
-            {:ok, rows} -> Enum.map(rows, &to_display_entry/1)
-            {:error, _} -> []
-          end
-
-        close(db)
-        result
-
-      {:error, _} ->
-        []
+    case with_db(fn db ->
+           fetch_all(
+             db,
+             "SELECT seq, kind, text, agent, meta FROM display WHERE session_id = ? ORDER BY seq",
+             [session_id]
+           )
+         end) do
+      {:ok, rows} -> Enum.map(rows, &to_display_entry/1)
+      _ -> []
     end
   end
 
@@ -517,30 +470,22 @@ defmodule CodingAgent.Core.Session.Store do
       needle ->
         pattern = "%" <> escape_like(needle) <> "%"
 
-        case open() do
-          {:ok, db} ->
-            result =
-              case fetch_all(
-                     db,
-                     """
-                     SELECT s.id, s.saved_at, s.model, s.status, s.scope_root, s.size_bytes,
-                            d.seq, d.kind, d.text, d.agent
-                     FROM display d
-                     JOIN sessions s ON s.id = d.session_id
-                     WHERE d.text LIKE ? ESCAPE '\\'
-                     ORDER BY s.saved_at DESC, d.seq ASC
-                     """,
-                     [pattern]
-                   ) do
-                {:ok, rows} -> group_matches(rows)
-                {:error, _} -> []
-              end
-
-            close(db)
-            result
-
-          {:error, _} ->
-            []
+        case with_db(fn db ->
+               fetch_all(
+                 db,
+                 """
+                 SELECT s.id, s.saved_at, s.model, s.status, s.scope_root, s.size_bytes,
+                        d.seq, d.kind, d.text, d.agent
+                 FROM display d
+                 JOIN sessions s ON s.id = d.session_id
+                 WHERE d.text LIKE ? ESCAPE '\\'
+                 ORDER BY s.saved_at DESC, d.seq ASC
+                 """,
+                 [pattern]
+               )
+             end) do
+          {:ok, rows} -> group_matches(rows)
+          _ -> []
         end
     end
   end
@@ -589,17 +534,13 @@ defmodule CodingAgent.Core.Session.Store do
   @doc false
   @spec debug_put_display(String.t(), String.t(), String.t()) :: :ok | {:error, term()}
   def debug_put_display(session_id, kind, text) do
-    with {:ok, db} <- open() do
-      result =
-        exec(
-          db,
-          "INSERT INTO display (session_id, seq, kind, text) VALUES (?, (SELECT COALESCE(MAX(seq), -1) + 1 FROM display WHERE session_id = ?), ?, ?)",
-          [session_id, session_id, kind, text]
-        )
-
-      close(db)
-      result
-    end
+    with_db(fn db ->
+      exec(
+        db,
+        "INSERT INTO display (session_id, seq, kind, text) VALUES (?, (SELECT COALESCE(MAX(seq), -1) + 1 FROM display WHERE session_id = ?), ?, ?)",
+        [session_id, session_id, kind, text]
+      )
+    end)
   end
 
   defp to_display_entry([seq, kind, text, agent, meta_bin]) do
@@ -633,13 +574,7 @@ defmodule CodingAgent.Core.Session.Store do
   state.
   """
   @spec load(String.t()) :: {:ok, State.t()} | {:error, term()}
-  def load(id) do
-    with {:ok, db} <- open() do
-      result = decode_row_with_context(db, id)
-      close(db)
-      result
-    end
-  end
+  def load(id), do: with_db(fn db -> decode_row_with_context(db, id) end)
 
   # The stored BLOB is the term_to_binary of {version, state}, where the
   # state carries NO context (ADR 020 3b-ii): the messages live in their
@@ -713,30 +648,26 @@ defmodule CodingAgent.Core.Session.Store do
   """
   @spec resolve_id(String.t()) :: {:ok, String.t()} | {:error, term()}
   def resolve_id(id) do
-    with {:ok, db} <- open() do
-      result =
-        case fetch_all(db, "SELECT id FROM sessions", []) do
-          {:ok, rows} ->
-            ids = Enum.map(rows, fn [id] -> id end)
+    with_db(fn db ->
+      case fetch_all(db, "SELECT id FROM sessions", []) do
+        {:ok, rows} ->
+          ids = Enum.map(rows, fn [id] -> id end)
 
-            matching =
-              Enum.filter(ids, fn s ->
-                s == id or String.starts_with?(s, id) or String.ends_with?(s, id)
-              end)
+          matching =
+            Enum.filter(ids, fn s ->
+              s == id or String.starts_with?(s, id) or String.ends_with?(s, id)
+            end)
 
-            case matching do
-              [found] -> {:ok, found}
-              [] -> {:error, :enoent}
-              many -> {:error, {:ambiguous_id, many}}
-            end
+          case matching do
+            [found] -> {:ok, found}
+            [] -> {:error, :enoent}
+            many -> {:error, {:ambiguous_id, many}}
+          end
 
-          {:error, reason} ->
-            {:error, reason}
-        end
-
-      close(db)
-      result
-    end
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end)
   end
 
   @doc """
@@ -745,12 +676,12 @@ defmodule CodingAgent.Core.Session.Store do
   """
   @spec delete(String.t()) :: :ok
   def delete(id) do
-    with {:ok, db} <- open() do
+    with_db(fn db ->
       _ = exec(db, "DELETE FROM messages WHERE session_id = ?", [id])
       _ = exec(db, "DELETE FROM display WHERE session_id = ?", [id])
       _ = exec(db, "DELETE FROM sessions WHERE id = ?", [id])
-      close(db)
-    end
+      :ok
+    end)
 
     Scratch.remove(Scratch.path(id))
     :ok
@@ -784,22 +715,18 @@ defmodule CodingAgent.Core.Session.Store do
   # state, upsert under the new id, delete the old row, move the scratch
   # and tell a live process (via Session) so its next save follows.
   defp do_rename(id, new_id) do
-    with {:ok, db} <- open() do
-      result =
-        case fetch_one(db, "SELECT 1 FROM sessions WHERE id = ?", [new_id]) do
-          {:ok, row} when row != nil ->
-            {:error, :exists}
+    with_db(fn db ->
+      case fetch_one(db, "SELECT 1 FROM sessions WHERE id = ?", [new_id]) do
+        {:ok, row} when row != nil ->
+          {:error, :exists}
 
-          {:ok, nil} ->
-            rename_row(db, id, new_id)
+        {:ok, nil} ->
+          rename_row(db, id, new_id)
 
-          {:error, reason} ->
-            {:error, reason}
-        end
-
-      close(db)
-      result
-    end
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end)
   end
 
   defp rename_row(db, id, new_id) do
@@ -875,19 +802,9 @@ defmodule CodingAgent.Core.Session.Store do
 
   @spec list_summaries(String.t(), [term()]) :: [map()]
   defp list_summaries(sql, params \\ []) do
-    case open() do
-      {:ok, db} ->
-        result =
-          case fetch_all(db, sql, params) do
-            {:ok, rows} -> Enum.map(rows, &to_summary/1)
-            {:error, _} -> []
-          end
-
-        close(db)
-        result
-
-      {:error, _} ->
-        []
+    case with_db(fn db -> fetch_all(db, sql, params) end) do
+      {:ok, rows} -> Enum.map(rows, &to_summary/1)
+      _ -> []
     end
   end
 
@@ -911,15 +828,113 @@ defmodule CodingAgent.Core.Session.Store do
 
   defp to_status(_), do: :idle
 
-  # -- The one place Exqlite is touched ---------------------------------------
+  # -- The store process: connection ownership --------------------------------
 
-  defp open do
-    db_path = path()
+  # This module is a GenServer that OWNS one SQLite connection per store
+  # path, and all DB work runs inside it (`with_db/1`). That is the fix for
+  # the flaky `"database is locked"` failures.
+  #
+  # Why: the store began as a stateless module (a port of the earlier FILE
+  # store, where one action was one `File.read`/`write`). The port kept the
+  # shape — `open()` per call, statements, close — so every call opened its
+  # OWN connection and the test suite's many processes raced one file.
+  # SQLite's busy handler is unfair, so waiters starved even after a 5s
+  # `busy_timeout` (measured: 29 of 32 concurrent writers failed). Owning
+  # one connection removes the race by construction: this VM never presents
+  # SQLite a second connection.
+  #
+  # It also removes real overhead: `open`+pragmas+`close` measured ~335us
+  # against ~14us for a statement on a warm handle.
+  #
+  # The connection is opened LAZILY and cached, keyed by `(path, inode)`:
+  # a changed path (a test switches `:store_path`) or a REPLACED file (a
+  # test `rm -rf`s a path that stays constant across tests) is detected and
+  # the handle reopened, so a stale handle never serves a deleted inode.
+  #
+  # The store is low-frequency, so one serialisation point is not a
+  # throughput concern.
+
+  use GenServer
+
+  @doc false
+  def start_link(_opts \\ []) do
+    GenServer.start_link(__MODULE__, nil, name: __MODULE__)
+  end
+
+  @impl true
+  def init(nil), do: {:ok, %{path: nil, db: nil, inode: nil}}
+
+  @impl true
+  def handle_call({:with_db, fun}, _from, state) do
+    case ensure_open(state) do
+      {:ok, db, state} -> {:reply, run_fun(fun, db), state}
+      {:error, reason, state} -> {:reply, {:error, {:store_open_failed, reason}}, state}
+    end
+  end
+
+  # Drop the cached handle so the next operation reopens (and re-runs
+  # `migrate/1`). Used by the debug seams that tamper with the store file
+  # underneath the cache — the schema-version seams plant a version and
+  # expect the NEXT open to react to it.
+  @impl true
+  def handle_call(:invalidate, _from, state) do
+    close_current(state)
+    {:reply, :ok, %{state | path: nil, db: nil, inode: nil}}
+  end
+
+  # Run a store operation with the cached connection, INSIDE the store
+  # process (so access is serialised). Returns the fun's value, or an error
+  # tuple when the store cannot be opened or the fun raises.
+  defp with_db(fun), do: GenServer.call(__MODULE__, {:with_db, fun}, :infinity)
+
+  @doc false
+  def invalidate, do: GenServer.call(__MODULE__, :invalidate, :infinity)
+
+  defp run_fun(fun, db) do
+    fun.(db)
+  rescue
+    e ->
+      Logger.error("store operation raised: #{Exception.message(e)}")
+      {:error, {:store_exception, Exception.message(e)}}
+  end
+
+  defp ensure_open(%{path: p, db: db, inode: cached} = state) do
+    current = path()
+
+    if db != nil and p == current and cached == inode_of(current) do
+      {:ok, db, state}
+    else
+      close_current(state)
+
+      case open(current) do
+        {:ok, db} ->
+          {:ok, db, %{state | path: current, db: db, inode: inode_of(current)}}
+
+        {:error, reason} ->
+          {:error, reason, %{state | path: nil, db: nil, inode: nil}}
+      end
+    end
+  end
+
+  defp close_current(%{db: nil}), do: :ok
+  defp close_current(%{db: db}), do: Sqlite3.close(db)
+
+  # Identity of the file at `path`: its inode, or `:missing`. A replaced
+  # file gets a new inode, so a cached handle is not reused for the deleted
+  # one. `nil` on a platform that reports no inode — then only the path
+  # identity applies.
+  defp inode_of(path) do
+    case File.stat(path) do
+      {:ok, stat} -> stat.inode
+      {:error, _} -> :missing
+    end
+  end
+
+  defp open(db_path) do
     File.mkdir_p!(Path.dirname(db_path))
 
     # busy_timeout FIRST: it is per-connection and must be in force before
-    # any statement that can block. Setting journal_mode (a write) before
-    # it let concurrent opens hit "database is locked" with no timeout.
+    # any statement that can block.
     case Sqlite3.open(db_path) do
       {:ok, db} ->
         case setup(db) do
@@ -929,11 +944,11 @@ defmodule CodingAgent.Core.Session.Store do
           {:error, reason} ->
             # don't leak a half-opened handle (it can hold a lock)
             Sqlite3.close(db)
-            {:error, {:store_open_failed, reason}}
+            {:error, reason}
         end
 
       {:error, reason} ->
-        {:error, {:store_open_failed, reason}}
+        {:error, reason}
     end
   end
 
@@ -1028,7 +1043,37 @@ defmodule CodingAgent.Core.Session.Store do
     Sqlite3.execute(db, "PRAGMA user_version = #{version}")
   end
 
-  defp close(db), do: Sqlite3.close(db)
+  # Run `fun` inside a write transaction. `fun` returns `:ok` or
+  # `{:error, _}`; on any other result (or failure) we ROLLBACK, so the
+  # connection never keeps an open write transaction — that leak is what
+  # once made every later write fail.
+  defp transaction(db, fun) do
+    case Sqlite3.execute(db, "BEGIN IMMEDIATE") do
+      :ok ->
+        case fun.() do
+          :ok ->
+            case Sqlite3.execute(db, "COMMIT") do
+              :ok ->
+                :ok
+
+              {:error, reason} ->
+                _ = Sqlite3.execute(db, "ROLLBACK")
+                {:error, reason}
+            end
+
+          {:error, reason} ->
+            _ = Sqlite3.execute(db, "ROLLBACK")
+            {:error, reason}
+
+          other ->
+            _ = Sqlite3.execute(db, "ROLLBACK")
+            {:error, {:unexpected_tx_result, other}}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
 
   # Write (insert/update/delete) with params; returns :ok or {:error, _}.
   #

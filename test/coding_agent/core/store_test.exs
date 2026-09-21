@@ -231,6 +231,54 @@ defmodule CodingAgent.Core.Session.StoreTest do
       assert {:ok, loaded} = Store.load(good.id)
       assert length(Context.to_list(loaded.context)) == 1
     end
+
+    test "many concurrent writers all succeed, with no write-lock starvation" do
+      # Regression for the store flake. The store used to open a NEW SQLite
+      # connection per call (a leftover from the FILE-store shape — one
+      # action was one File.read/write). The suite's many processes then
+      # raced one DB file, and SQLite's unfair busy handler starved waiters:
+      # `{:store_open_failed, "database is locked"}` and silent empty
+      # listings. The store now OWNS one connection (a GenServer), so this
+      # VM never presents a second one. Measured before: 29/32 writers
+      # failed; the burst below is well past that point.
+      parent = self()
+
+      ids =
+        for i <- 1..60 do
+          id = "concurrent-#{System.unique_integer([:positive])}-#{i}"
+
+          spawn(fn ->
+            state =
+              State.new(
+                id: id,
+                context: Context.new([Context.user("hi #{i}")]),
+                model: "m",
+                status: :idle
+              )
+
+            send(parent, {id, Store.save(state)})
+          end)
+
+          id
+        end
+
+      results =
+        for _ <- 1..60,
+            do:
+              (receive do
+                 r -> r
+               after
+                 15_000 -> {:timeout, {:error, :timeout}}
+               end)
+
+      bad = Enum.reject(results, fn {_id, r} -> r == :ok end)
+      assert bad == [], "writers failed: #{inspect(Enum.take(bad, 5))}"
+
+      # and every one is really listed (a silent empty listing was the
+      # other symptom)
+      listed = Store.list() |> Enum.map(& &1.id) |> MapSet.new()
+      for id <- ids, do: assert(MapSet.member?(listed, id))
+    end
   end
 
   describe "list/0" do

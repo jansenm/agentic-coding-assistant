@@ -334,9 +334,20 @@ Consequences of aggregation (stated, not hidden)
 - **Deletion is transactional.** ``DELETE FROM ... WHERE session_id = ?``
   across tables in one transaction, plus FTS maintenance — replacing the
   single ``rm``.
-- **One writer.** SQLite's single-writer model is a good fit (``S5``:
-  single writer per session already assumed); concurrent sessions in one
-  store share the connection policy and must handle ``SQLITE_BUSY``.
+- **One writer — and one connection, owned by the store process.**
+  SQLite's single-writer model is a good fit (``S5``). The first cut
+  opened a NEW connection per call, which was a leftover from the
+  FILE-store shape (there, one action was one ``File.read``/``write``);
+  a SQLite connection is a long-lived object, and reopening per call made
+  the BEAM's own callers race one file, where SQLite's *unfair* busy
+  handler starved waiters (measured: 29 of 32 concurrent writers failed
+  with ``SQLITE_BUSY`` even at a 5s timeout, surfacing as flaky
+  ``"database is locked"`` errors and silent empty listings). ``Store`` is
+  now a GenServer that owns exactly one connection per store path, so this
+  VM never presents SQLite a second one — the race is gone by
+  construction, and ``open``+``pragmas``+``close`` (~335µs vs ~14µs per
+  statement on a warm handle) is paid once. The generous ``busy_timeout``
+  remains for the genuine cross-process case (two worktrees on one store).
 
 **A store is a DB file, not a directory.** ``--store`` / ``AGENT_STORE``
 / ``config.toml store =`` resolve to a ``.db`` path. There is deliberately
