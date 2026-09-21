@@ -92,4 +92,47 @@ defmodule CodingAgent.Core.Session.ResumeTest do
       assert live.model == "ollama:test-model"
     end
   end
+
+  describe "the persisted model (resume semantics)" do
+    setup do
+      # this suite persists; isolate the store (one SQLite DB, ADR 020)
+      prev = Application.get_env(:coding_agent, :store_path)
+      Application.put_env(:coding_agent, :store_path, Path.join(@tmp_root, "store.db"))
+      on_exit(fn -> if prev, do: Application.put_env(:coding_agent, :store_path, prev) end)
+      :ok
+    end
+
+    test "an idle model switch is persisted (survives a resume)" do
+      # Regression, found live: switching the model between turns showed
+      # the new model in the menu but was NOT persisted, so quitting
+      # before the next turn resumed the OLD model ("it always resets to
+      # glm"). set_agent/2 persisted at idle; set_model/2 did not.
+      id = "resume-model-#{System.unique_integer([:positive])}"
+
+      {:ok, _} =
+        CodingAgent.Core.Session.Supervisor.start_session(
+          id: id,
+          scope_root: @tmp_root,
+          test_mode: true,
+          model: "ollama:old-model"
+        )
+
+      # write the row first, so the assertion below is about the model
+      # CHANGING (not about a row appearing)
+      {:ok, initial} = Session.state(id)
+      :ok = CodingAgent.Core.Session.Store.save(initial)
+      assert {:ok, %{model: "ollama:old-model"}} = CodingAgent.Core.Session.Store.load(id)
+
+      :ok = Session.set_model(id, "ollama:new-model")
+
+      # persisted immediately, not only after the next turn
+      assert {:ok, stored} = CodingAgent.Core.Session.Store.load(id)
+      assert stored.model == "ollama:new-model"
+
+      # and a resume of that snapshot keeps it
+      assert {:ok, _} = Session.resume(stored)
+      assert {:ok, live} = Session.state(id)
+      assert live.model == "ollama:new-model"
+    end
+  end
 end

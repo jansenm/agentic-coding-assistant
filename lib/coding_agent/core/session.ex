@@ -451,7 +451,14 @@ defmodule CodingAgent.Core.Session do
   end
 
   def handle_call({:set_model, model}, _from, state) do
-    {:reply, :ok, struct!(state, model: model)}
+    # Persist like the idle `set_agent` path: a switch between turns is
+    # durable state. Without it, quitting before the next turn lost the
+    # switch and a resume came back on the OLD model (found live: "it
+    # always resets to glm" — the menu showed deepseek, the resumed
+    # session ran glm again).
+    new_state = struct!(state, model: model)
+    persist(new_state)
+    {:reply, :ok, new_state}
   end
 
   def handle_call({:set_agent, name}, _from, %{worker_ref: ref} = state)
