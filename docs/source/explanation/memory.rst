@@ -33,12 +33,14 @@ and after interruptions). A session that outlives a process restart is a
 hard requirement for a coding assistant.
 
 **Implemented** (:mod:`CodingAgent.Core.Session.Store`): a *store* is
-**one SQLite database file** holding many sessions (ADR 020/023); the
-full state is one ``term_to_binary`` BLOB in the ``sessions`` row, with
-metadata columns (model, status, scope_root, saved_at, size) alongside
-so listing reads columns, never decodes a state. Writes are an atomic
-upsert at every turn boundary (turn complete, turn error, gate
-interruption, decision applied). The TUI session picker lists them and
+**one SQLite database file** holding many sessions (ADR 020/023). The
+context is now **per-message rows** in a ``messages`` table (each that
+message's ``term_to_binary``), so appending a turn inserts rows rather
+than rewriting the whole conversation; the ``sessions`` row holds the
+rest of the state as a BLOB plus metadata columns (model, status,
+scope_root, saved_at, size) so listing reads columns, never decodes a
+state. Writes are an atomic transaction at every turn boundary (turn
+complete, turn error, gate interruption, decision applied). The TUI session picker lists them and
 ``mix tui --resume <id>`` continues one — the model retains the full
 previous context, verified live (a codeword given in one process was
 answered from the resumed one). (The one-shot CLI ``mix agent`` was
@@ -50,15 +52,18 @@ retired 2026-09-20; the TUI is the only surface.)
    persists separately** (slice 3b-i): an append-only, session-keyed
    ``display`` table of plain text, so reasoning survives a resume and
    compaction cannot erase visible history (the two bugs below). The
-   state BLOB above is the agent view; the remaining slice normalizes it
-   into per-message rows (a storage-efficiency change). Reasons: (1) the display
-   view is reconstructed from the compaction-mutable agent view today,
-   so reasoning is lost on resume and compaction erases visible history
-   — a violation of the dual-view pattern below; (2) cross-session
-   search, aggregation and export are wanted and the blob can answer
-   none of them; (3) the real pain in opencode was the missing verbs
-   (R0), which this project addresses first-class. The ``Store`` API is
-   unchanged by that ADR, so the two coexist.
+   **agent view is now per-message rows too** (slice 3b-ii): the context
+   is one ``messages`` table row per message, so appending a turn is one
+   ``INSERT`` and compaction rewrites only the changed suffix rather than
+   the whole context. The ``sessions.state`` BLOB keeps everything else
+   (policy, pending calls, usage). Reasons: (1) the display view was
+   reconstructed from the compaction-mutable agent view, so reasoning was
+   lost on resume and compaction erased visible history — a violation of
+   the dual-view pattern below; (2) cross-session search, aggregation and
+   export are wanted and the blob could answer none of them; (3) the real
+   pain in opencode was the missing verbs (R0), which this project
+   addresses first-class. The ``Store`` API is unchanged by that ADR, so
+   the two coexist.
 
 Design points worth knowing:
 

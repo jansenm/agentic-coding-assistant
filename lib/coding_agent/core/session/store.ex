@@ -13,28 +13,36 @@ defmodule CodingAgent.Core.Session.Store do
   NIF, isolated behind this module (ADR 023). Every `Exqlite` call stays
   in here; nothing else references it.
 
-  The schema is small and deliberately not normalized yet:
+  The schema is the dual view from ADR 020:
 
-      sessions(
+      sessions(                        -- one row per session (metadata)
         id TEXT PRIMARY KEY,
         format_version INTEGER,
         saved_at INTEGER,       -- unix seconds (list ordering, prune by age)
         model TEXT, status TEXT, scope_root TEXT,   -- the picker's columns
-        size_bytes INTEGER,     -- the state blob's length (R13)
-        state BLOB              -- the exact term_to_binary state
+        size_bytes INTEGER,     -- whole footprint incl. message rows (R13)
+        state BLOB              -- the %State{} WITHOUT its context
       )
+      messages(session_id, seq, data BLOB)  -- the agent view: one row per
+                                            -- context message; compaction
+                                            -- mutates THIS
+      display(session_id, seq, kind, text, agent, meta)  -- immutable record
 
-  The full `%State{}` (context messages with their structs, policy,
-  pending calls) round-trips as one BLOB, so the encoding is lossless
-  without custom encoders. The metadata columns exist so that **listing
-  reads columns, never decodes a state** — the ADR 020 ``R9``
-  requirement (today's blob store decodes every session just to list
-  four fields). The picker's ``:size`` is ``size_bytes``, not a
-  ``File.stat``.
+  The **agent view** (the context the next request is built from) is one
+  `messages` row per `ReqLLM.Message`, each that message's exact
+  `term_to_binary`. The row is the appendable/addressable unit: appending
+  a turn is one `INSERT`, compaction a seq-range rewrite of the changed
+  suffix, instead of re-serializing the whole context at every boundary.
+  The `sessions.state` BLOB holds the rest of `%State{}` (policy, pending
+  calls, usage) — small and rarely the bulk.
 
-  Slice 4 normalizes the agent view and the display view into their own
-  session-keyed tables (ADR 020); this slice keeps the state as a BLOB
-  and changes only the *store shape* (one DB, columns for listing).
+  The metadata columns exist so that **listing reads columns, never
+  decodes a state** — the ADR 020 ``R9`` requirement. The picker's
+  ``:size`` is ``size_bytes``, not a ``File.stat``.
+
+  ``@format_version`` 2 is this split: a v1 blob (context inside) fails
+  closed on load, so a pre-3b-ii session is deleted, not silently read
+  with an empty context (one user, unreleased).
 
   ## Fail-closed
 
@@ -45,10 +53,18 @@ defmodule CodingAgent.Core.Session.Store do
 
   alias CodingAgent.Core.Session.{Scratch, State}
   alias Exqlite.Sqlite3
+  alias ReqLLM.Context
 
   require Logger
 
-  @format_version 1
+  # Versions the agent-view encoding. v2 (ADR 020 slice 3b-ii) moves the
+  # context messages OUT of the state BLOB into the `messages` table, so
+  # a `sessions.state` BLOB is now the state WITHOUT its context. A v1
+  # blob therefore fails closed (its context would be silently empty);
+  # there is no compatibility reader — a pre-v2 session is deleted, not
+  # migrated (one user, unreleased). The messages' own encoding is that
+  # message's term_to_binary, versioned by this same constant.
+  @format_version 2
 
   # Columns read for a listing; deliberately no `state`.
   @summary_columns "id, saved_at, model, status, scope_root, size_bytes"
@@ -57,7 +73,7 @@ defmodule CodingAgent.Core.Session.Store do
   # of @format_version, which versions the agent-view BLOB's shape. This
   # one is stored in the DB header via `PRAGMA user_version` — the
   # idiomatic SQLite slot, no extra table.
-  @schema_version 1
+  @schema_version 2
 
   # -- Store location ---------------------------------------------------------
 
@@ -76,7 +92,10 @@ defmodule CodingAgent.Core.Session.Store do
   # original slice-3a schema (idempotent, so it also converges an old store
   # that predates the version marker).
   defp migrations do
-    [{1, &migrate_v1/1}]
+    [
+      {1, &migrate_v1/1},
+      {2, &migrate_v2/1}
+    ]
   end
 
   @schema """
@@ -108,19 +127,46 @@ defmodule CodingAgent.Core.Session.Store do
   CREATE INDEX IF NOT EXISTS display_session ON display(session_id, seq);
   """
 
+  # The agent view (ADR 020 slice 3b-ii): the context messages, one row
+  # PER MESSAGE, each the exact `term_to_binary` of that `ReqLLM.Message`.
+  # This is the compaction-mutable side (the display view above is the
+  # immutable record). The row is the appendable/addressable unit, so
+  # appending a turn is one INSERT and compaction is a seq-range delete,
+  # instead of rewriting the whole context on every boundary.
+  @messages_schema """
+  CREATE TABLE IF NOT EXISTS messages (
+    session_id TEXT NOT NULL,
+    seq        INTEGER NOT NULL,
+    data       BLOB NOT NULL,
+    PRIMARY KEY (session_id, seq)
+  );
+  """
+
   # -- Persistence ------------------------------------------------------------
 
   @doc """
   Persists the session state (atomic upsert). Returns `:ok` or
   `{:error, reason}` — persistence failure never crashes the session;
   the in-memory session stays usable (``R7``).
+
+  ADR 020 slice 3b-ii: the agent view's context lives in the
+  `messages` table (one row per message) and the `sessions.state` BLOB
+  holds everything BUT the context. Appending a turn writes one message
+  row; compaction deletes a seq range. Both the metadata row and the
+  message rows are written in ONE transaction, so a crash never leaves
+  them disagreeing.
   """
   @spec save(State.t()) :: :ok | {:error, term()}
   def save(%State{} = state) do
-    payload = :erlang.term_to_binary({@format_version, state})
+    encoded = state.context |> Context.to_list() |> Enum.map(&:erlang.term_to_binary/1)
+    base = %{state | context: Context.new()}
+    payload = :erlang.term_to_binary({@format_version, base})
 
     with {:ok, db} <- open(),
-         :ok <- write(db, state, payload) do
+         :ok <- Sqlite3.execute(db, "BEGIN"),
+         :ok <- write(db, state, payload, encoded),
+         :ok <- sync_messages(db, state.id, encoded),
+         :ok <- Sqlite3.execute(db, "COMMIT") do
       close(db)
     else
       {:error, reason} ->
@@ -129,7 +175,11 @@ defmodule CodingAgent.Core.Session.Store do
     end
   end
 
-  defp write(db, state, payload) do
+  # size_bytes is the whole session footprint: the metadata BLOB PLUS the
+  # message rows it no longer contains (the picker's R13 figure).
+  defp write(db, state, payload, encoded_messages) do
+    message_bytes = Enum.reduce(encoded_messages, 0, fn b, acc -> acc + byte_size(b) end)
+
     sql = """
     INSERT INTO sessions
       (id, format_version, saved_at, model, status, scope_root, size_bytes, state)
@@ -151,11 +201,72 @@ defmodule CodingAgent.Core.Session.Store do
       state.model,
       to_string(state.status),
       state.scope_root,
-      byte_size(payload),
+      byte_size(payload) + message_bytes,
       {:blob, payload}
     ]
 
     exec(db, sql, params)
+  end
+
+  # Bring the stored message rows in line with the in-memory list. The
+  # common PREFIX (unchanged bytes at unchanged indexes) is left on disk;
+  # everything from the first difference is rewritten with DENSE seqs.
+  #
+  # Rewriting from the first difference (not just the changed span) keeps
+  # `seq` dense and monotonic, which is what ORDER BY seq requires. The
+  # rewrite is bounded by the changed suffix: an append rewrites nothing
+  # (prefix = all stored rows) and writes only the new messages, while
+  # compaction rewrites one summary plus the recent tail (kept short by
+  # the compaction boundary). The bulk history — the prefix — is never
+  # touched. Correct for every mutation (append, compaction's prefix
+  # rewrite, an agent switch replacing the system message in place),
+  # because it compares actual bytes.
+  defp sync_messages(db, session_id, encoded) do
+    case fetch_all(db, "SELECT data FROM messages WHERE session_id = ? ORDER BY seq", [session_id]) do
+      {:ok, rows} ->
+        stored = Enum.map(rows, fn [data] -> data end)
+        prefix = common_prefix_len(stored, encoded)
+        tail = Enum.slice(encoded, prefix, length(encoded) - prefix)
+
+        with :ok <- delete_message_range(db, session_id, prefix, length(stored)),
+             :ok <- insert_messages(db, session_id, prefix, tail) do
+          :ok
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp common_prefix_len(old, new), do: common_prefix_len(old, new, 0)
+
+  defp common_prefix_len([a | old], [a | new], n), do: common_prefix_len(old, new, n + 1)
+  defp common_prefix_len(_old, _new, n), do: n
+
+  # [from, to) — an empty range is a no-op
+  defp delete_message_range(_db, _session_id, from, to) when to <= from, do: :ok
+
+  defp delete_message_range(db, session_id, from, to) do
+    exec(
+      db,
+      "DELETE FROM messages WHERE session_id = ? AND seq >= ? AND seq < ?",
+      [session_id, from, to]
+    )
+  end
+
+  defp insert_messages(_db, _session_id, _start, []), do: :ok
+
+  defp insert_messages(db, session_id, start, blobs) do
+    Enum.reduce_while(Enum.with_index(blobs, start), :ok, fn {blob, seq}, _acc ->
+      case exec(
+             db,
+             "INSERT OR REPLACE INTO messages (session_id, seq, data) VALUES (?, ?, ?)",
+             [session_id, seq, {:blob, blob}]
+           ) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
   end
 
   defp now_ms, do: DateTime.to_unix(DateTime.utc_now(), :millisecond)
@@ -194,6 +305,61 @@ defmodule CodingAgent.Core.Session.Store do
             byte_size(blob),
             {:blob, blob}
           ]
+        )
+
+      close(db)
+      result
+    end
+  end
+
+  # Test seam (ADR 020 3b-ii): the stored message-row count, so a test can
+  # assert one row per message and that delete/rename keep them consistent.
+  @doc false
+  @spec debug_message_count(String.t()) :: non_neg_integer()
+  def debug_message_count(id) do
+    with {:ok, db} <- open() do
+      result =
+        case fetch_one(db, "SELECT count(*) FROM messages WHERE session_id = ?", [id]) do
+          {:ok, [n]} -> n
+          _ -> 0
+        end
+
+      close(db)
+      result
+    end
+  end
+
+  # Test seam (ADR 020 3b-ii): the metadata state exactly as stored, with
+  # NO context reattached — proves the split (the BLOB no longer carries
+  # the agent view). Not part of the store contract.
+  @doc false
+  @spec debug_raw_state(String.t()) :: {:ok, State.t()} | {:error, term()}
+  def debug_raw_state(id) do
+    with {:ok, db} <- open() do
+      result = decode_row(db, id)
+      close(db)
+      result
+    end
+  end
+
+  # Test seam (ADR 020 3b-ii): write a raw message row, to exercise a
+  # corrupt agent view without hand-editing a SQLite file.
+  @doc false
+  @spec debug_put_message(String.t(), non_neg_integer(), term(), keyword()) ::
+          :ok | {:error, term()}
+  def debug_put_message(session_id, seq, payload, opts \\ []) do
+    blob =
+      case Keyword.get(opts, :encode, true) do
+        true -> :erlang.term_to_binary(payload)
+        false -> payload
+      end
+
+    with {:ok, db} <- open() do
+      result =
+        exec(
+          db,
+          "INSERT OR REPLACE INTO messages (session_id, seq, data) VALUES (?, ?, ?)",
+          [session_id, seq, {:blob, blob}]
         )
 
       close(db)
@@ -357,14 +523,17 @@ defmodule CodingAgent.Core.Session.Store do
   @spec load(String.t()) :: {:ok, State.t()} | {:error, term()}
   def load(id) do
     with {:ok, db} <- open() do
-      result = decode_row(db, id)
+      result = decode_row_with_context(db, id)
       close(db)
       result
     end
   end
 
-  # The stored BLOB is the term_to_binary of {version, state}. Anything
-  # else (corrupt bytes, foreign payload, wrong version) fails closed.
+  # The stored BLOB is the term_to_binary of {version, state}, where the
+  # state carries NO context (ADR 020 3b-ii): the messages live in their
+  # own rows and are reattached by `decode_row/2`. Anything else (corrupt
+  # bytes, foreign payload, wrong version — including a pre-3b-ii v1 blob
+  # whose context would otherwise be silently empty) fails closed.
   # No [:safe]: a saved session legitimately contains provider atoms a new
   # VM has not interned (see the 4a lesson) — the trust domain is the
   # user's own store file, like .env/.bashrc.
@@ -384,6 +553,46 @@ defmodule CodingAgent.Core.Session.Store do
   end
 
   defp decode(_), do: {:error, :corrupt_session}
+
+  # Rebuild a session: the metadata state from its BLOB, the context from
+  # the message rows. A message row that will not decode is a corrupt
+  # session (fail closed) — never a silently truncated context.
+  defp decode_row_with_context(db, id) do
+    with {:ok, state} <- decode_row(db, id),
+         {:ok, messages} <- read_messages(db, id) do
+      {:ok, %{state | context: Context.new(messages)}}
+    end
+  end
+
+  defp read_messages(db, id) do
+    case fetch_all(db, "SELECT data FROM messages WHERE session_id = ? ORDER BY seq", [id]) do
+      {:ok, rows} ->
+        Enum.reduce_while(rows, {:ok, []}, fn [blob], {:ok, acc} ->
+          case decode_message(blob) do
+            {:ok, msg} -> {:cont, {:ok, [msg | acc]}}
+            {:error, reason} -> {:halt, {:error, reason}}
+          end
+        end)
+        |> case do
+          {:ok, rev} -> {:ok, Enum.reverse(rev)}
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp decode_message(blob) when is_binary(blob) do
+    case :erlang.binary_to_term(blob) do
+      %ReqLLM.Message{} = msg -> {:ok, msg}
+      other -> {:error, {:corrupt_message, inspect(other, printable_limit: 60)}}
+    end
+  rescue
+    e -> {:error, {:corrupt_message, Exception.message(e)}}
+  end
+
+  defp decode_message(_), do: {:error, :corrupt_message}
 
   @doc """
   Resolves a session id that may be a PREFIX (unique): "1730" matches
@@ -419,12 +628,13 @@ defmodule CodingAgent.Core.Session.Store do
   end
 
   @doc """
-  Deletes a persisted session (best effort): its row, its display view
-  (no orphans), and its scratch directory (ADR 022).
+  Deletes a persisted session (best effort): its row, its message rows
+  and display rows (no orphans), and its scratch directory (ADR 022).
   """
   @spec delete(String.t()) :: :ok
   def delete(id) do
     with {:ok, db} <- open() do
+      _ = exec(db, "DELETE FROM messages WHERE session_id = ?", [id])
       _ = exec(db, "DELETE FROM display WHERE session_id = ?", [id])
       _ = exec(db, "DELETE FROM sessions WHERE id = ?", [id])
       close(db)
@@ -481,13 +691,21 @@ defmodule CodingAgent.Core.Session.Store do
   end
 
   defp rename_row(db, id, new_id) do
-    case decode_row(db, id) do
+    case decode_row_with_context(db, id) do
       {:ok, state} ->
         new_state = struct!(state, id: new_id)
 
-        with :ok <- write(db, new_state, :erlang.term_to_binary({@format_version, new_state})),
-             # the display view is keyed by session_id too: re-key it so
-             # a rename never orphans the transcript
+        encoded =
+          new_state.context |> Context.to_list() |> Enum.map(&:erlang.term_to_binary/1)
+
+        base = %{new_state | context: Context.new()}
+
+        with :ok <-
+               write(db, new_state, :erlang.term_to_binary({@format_version, base}), encoded),
+             # the messages and display views are keyed by session_id too:
+             # re-key them so a rename never orphans either view
+             :ok <-
+               exec(db, "UPDATE messages SET session_id = ? WHERE session_id = ?", [new_id, id]),
              :ok <-
                exec(db, "UPDATE display SET session_id = ? WHERE session_id = ?", [new_id, id]),
              :ok <- exec(db, "DELETE FROM sessions WHERE id = ?", [id]) do
@@ -679,6 +897,10 @@ defmodule CodingAgent.Core.Session.Store do
   end
 
   defp migrate_v1(db), do: Sqlite3.execute(db, @schema)
+
+  # v2 adds the per-message agent-view table. Purely additive DDL; no
+  # data move (there is no v1 reader — see @format_version).
+  defp migrate_v2(db), do: Sqlite3.execute(db, @messages_schema)
 
   defp user_version(db) do
     case fetch_one(db, "PRAGMA user_version", []) do

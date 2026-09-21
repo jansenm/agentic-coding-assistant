@@ -21,10 +21,12 @@ Session storage: selectable stores, per-store SQLite, two explicit views
    with this ADR.
 
    Shipped so far: slice 1 (picker as session manager), slice 2 (store
-   selection), and slice 3a (SQLite engine — one DB per store, metadata
-   columns for listing, state BLOB for the lossless round-trip; driver
-   chosen in ADR 023). Remaining: the normalized agent/display view
-   tables.
+   selection), slice 3a (SQLite engine — one DB per store, metadata
+   columns for listing; driver chosen in ADR 023), schema versioning,
+   slice 3b-i (the immutable display view) and slice 3b-ii (the agent
+   view as per-message rows; ``sessions.state`` keeps the rest of
+   ``%State{}``). Remaining: management verbs (slice 4) and store-wide
+   search.
 
 Context
 -------
@@ -266,13 +268,13 @@ the agent view is not human-readable in the DB; ``--export`` covers the
 Schema versioning (implemented 2026-09-21)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The slice-3a schema ships with ``CREATE TABLE IF NOT EXISTS`` and no
+The slice-3a schema shipped with ``CREATE TABLE IF NOT EXISTS`` and no
 version marker. That is **additive-safe** (a store written before the
 ``display`` table simply gains it on the next ``open/0``) but blind to
 every change that is not a pure addition: a column rename, a type change,
-an index that must be rebuilt. Such a change would run against an old
-store with no way to know it is old, and fail at query time — violating
-``R8`` ("schema evolution must not crash old or new readers").
+an index that must be rebuilt. Slice 3b-ii is exactly such a change (the
+agent view moves into a new table and the state BLOB changes shape), so
+the marker had to land first.
 
 There are **two independent version axes**, and conflating them is the
 trap:
@@ -282,11 +284,11 @@ Axis               What it versions                           Where it lives
 =================  =======================================  ==================
 Agent-view format  the ``term_to_binary`` payload shape      ``format_version``
                    (``{version, %State{}}``)                  in each row's BLOB
-Schema             the SQLite tables/columns/indexes        **missing**
+Schema             the SQLite tables/columns/indexes        ``PRAGMA user_version``
 =================  =======================================  ==================
 
-``@format_version`` already guards the first (a mismatched BLOB fails
-closed). Nothing guards the second.
+``@format_version`` guards the first (a mismatched BLOB fails closed);
+``user_version`` guards the second.
 
 **Decision: use SQLite's own ``PRAGMA user_version`` as the schema
 version, plus an ordered migration list — a few lines, not Flyway.**
@@ -300,9 +302,9 @@ version, plus an ordered migration list — a few lines, not Flyway.**
   the code's version, the store was written by a newer build → fail
   closed with a clear message (do not guess).
 - Migrations are a list of `{version, fun(db)}`, appended, never edited
-  (``migrations/0``). The first entry re-states the current schema as
-  ``CREATE TABLE IF NOT EXISTS``, so a fresh store and an old store
-  (``user_version`` = 0, written before the marker) converge on v1.
+  (``migrations/0``). v1 creates the slice-3a tables and v2 adds the
+  ``messages`` table, so a fresh store and an old store (``user_version``
+  = 0, written before the marker) converge by running the chain.
 - Additive changes still work as they do today (``IF NOT EXISTS``), but
   they get a version number so the *next* non-additive change has a
   place to go.
@@ -486,13 +488,17 @@ truth; this ADR defers it. The picker's own listing needs only ``meta``
 Implementation boundaries
 -------------------------
 
-- The format change is **inside ``Core.Session.Store``** plus a new
-  encoder for the ReqLLM message list. ``State`` keeps its shape;
-  ``Store.save/1``/``load/1`` keep their contracts, so ``Session``,
-  ``State.restore/1`` (healing shrinks to a migration concern) and most
-  of the UI are untouched.
+- The format change is **inside ``Core.Session.Store``**: the agent view
+  is shredded into per-message rows, and ``save/1``/``load/1`` keep their
+  contracts, so ``Session``, ``State.restore/1`` and the UI are
+  untouched. **No custom encoder**: each row is that
+  ``ReqLLM.Message``'s own ``term_to_binary``, so wire edges are
+  preserved without a hand-written ReqLLM↔row mapping (the same reason
+  the encoding decision rejected column shredding).
 - The session's ``persist/1`` call sites remain; only the write strategy
-  changes from full-blob rewrite to table upserts.
+  changes from a whole-state rewrite to a diffed message-row sync
+  (untouched prefix stays on disk; the changed suffix is rewritten with
+  dense ``seq``).
 - ``restored_history/1`` switches its source from ``state.context`` to
   the persisted display view.
 - ``session.ex`` must append display events (user, assistant, reasoning,
@@ -533,12 +539,15 @@ Slice order
    erase visible history. The session owns the ordered block list
    (``consume_stream`` returns it), since the display view is persisted
    core data. Schema versioning (``PRAGMA user_version`` + the ordered
-   migration list, *Schema versioning* above) landed as the prerequisite
-   for the next step. Remaining in slice 3: **normalize the agent view
-   into per-message rows** (3b-ii) — a storage-efficiency change; the
-   BLOB is still lossless today. It ships as migration v2, so old stores
-   upgrade in place. Blob-format migration is intentionally ignored
-   (unreleased).
+   migration list, *Schema versioning* above) landed as the prerequisite,
+   then **slice 3b-ii shipped**: the agent view is now one ``messages``
+   row per message (that message's exact ``term_to_binary``), so
+   appending a turn is one ``INSERT`` and compaction rewrites only the
+   changed suffix, not the whole context. The ``sessions.state`` BLOB
+   holds the rest of ``%State{}`` (context excluded). The agent-view
+   encoding is bumped to ``format_version`` 2: a v1 blob fails closed,
+   so a pre-3b-ii session is deleted rather than read with an empty
+   context (one user, unreleased — no migration reader).
 4. **Management verbs** (in the TUI, per the "TUI is the only surface"
    decision): delete-by-directory, prune-by-size, store-wide search,
    export/import. Delete-one, delete-visible, and prune-by-age already

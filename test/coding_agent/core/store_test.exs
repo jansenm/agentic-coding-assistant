@@ -142,7 +142,7 @@ defmodule CodingAgent.Core.Session.StoreTest do
       # drop those keys entirely
       older = Map.drop(state, [:base_policy, :base_prompt, :agent])
 
-      :ok = Store.debug_put(id, {1, older})
+      :ok = Store.debug_put(id, {2, older})
 
       assert {:ok, loaded} = Store.load(id)
       assert loaded.base_policy == nil
@@ -165,7 +165,7 @@ defmodule CodingAgent.Core.Session.StoreTest do
       old_policy = %{enabled: [], entries: %{}} |> Map.put(:__struct__, Permissions)
       older = %{state | policy: old_policy}
 
-      :ok = Store.debug_put(id, {1, older})
+      :ok = Store.debug_put(id, {2, older})
 
       assert {:ok, loaded} = Store.load(id)
       assert %Permissions{} = loaded.policy
@@ -182,7 +182,7 @@ defmodule CodingAgent.Core.Session.StoreTest do
 
     test "foreign payload (not a state tuple) errors" do
       id = "foreign-#{System.unique_integer()}"
-      :ok = Store.debug_put(id, {1, :hello})
+      :ok = Store.debug_put(id, {2, :hello})
       assert {:error, _} = Store.load(id)
     end
 
@@ -195,7 +195,7 @@ defmodule CodingAgent.Core.Session.StoreTest do
       # unknown keys, so the old binary must drop them, not crash
       newer = state |> Map.put(:a_field_from_the_future, 42) |> Map.put(:another_future_key, "x")
 
-      :ok = Store.debug_put(id, {1, newer})
+      :ok = Store.debug_put(id, {2, newer})
 
       # must not raise; unknown keys dropped, known state restored
       assert {:ok, loaded} = Store.load(id)
@@ -346,6 +346,15 @@ defmodule CodingAgent.Core.Session.StoreTest do
     CodingAgent.Core.Session.State.new(
       id: id,
       context: Context.new(),
+      model: "ollama:test-model",
+      status: :idle
+    )
+  end
+
+  defp state_with(id, messages) do
+    CodingAgent.Core.Session.State.new(
+      id: id,
+      context: Context.new(messages),
       model: "ollama:test-model",
       status: :idle
     )
@@ -603,6 +612,139 @@ defmodule CodingAgent.Core.Session.StoreTest do
     end
   end
 
+  # ADR 020 slice 3b-ii: the agent view is normalized into per-message
+  # rows. The context is no longer inside the state BLOB; it is one
+  # `messages` row per message, so append is one INSERT and compaction a
+  # seq-range delete (the display view stays the immutable record).
+  describe "agent view (per-message rows, ADR 020 3b-ii)" do
+    test "stores one row per message and reassembles the context on load" do
+      id = "msg-#{System.unique_integer([:positive])}"
+
+      messages = [
+        ReqLLM.Context.system("sys"),
+        ReqLLM.Context.user("hello"),
+        ReqLLM.Context.assistant("hi")
+      ]
+
+      :ok = Store.save(state_with(id, messages))
+      assert Store.debug_message_count(id) == 3
+
+      assert {:ok, loaded} = Store.load(id)
+      assert Context.to_list(loaded.context) == messages
+    end
+
+    test "the state BLOB no longer carries the context" do
+      # the split itself: the stored state has an empty context; the
+      # messages live only in their rows
+      id = "msg-split-#{System.unique_integer([:positive])}"
+
+      :ok = Store.save(state_with(id, [ReqLLM.Context.system("sys"), ReqLLM.Context.user("hi")]))
+
+      assert {:ok, raw} = Store.debug_raw_state(id)
+      assert Context.to_list(raw.context) == []
+      # ...and the full load reattaches it
+      assert {:ok, loaded} = Store.load(id)
+      assert length(Context.to_list(loaded.context)) == 2
+    end
+
+    test "appending grows the rows by exactly the appended messages" do
+      id = "msg-append-#{System.unique_integer([:positive])}"
+      base = [ReqLLM.Context.system("sys"), ReqLLM.Context.user("one")]
+
+      :ok = Store.save(state_with(id, base))
+      assert Store.debug_message_count(id) == 2
+
+      grown = base ++ [ReqLLM.Context.assistant("two"), ReqLLM.Context.user("three")]
+      :ok = Store.save(state_with(id, grown))
+
+      assert Store.debug_message_count(id) == 4
+      assert {:ok, loaded} = Store.load(id)
+      assert Context.to_list(loaded.context) == grown
+    end
+
+    test "a compaction-like prefix rewrite replaces, not duplicates, rows" do
+      # compaction replaces the old prefix with one summary message while
+      # keeping the tail. The diff must delete the old span and insert the
+      # summary, leaving no stale rows.
+      id = "msg-compact-#{System.unique_integer([:positive])}"
+
+      original =
+        [ReqLLM.Context.system("sys")] ++
+          for(i <- 1..6, do: ReqLLM.Context.user("m#{i}")) ++ [ReqLLM.Context.user("tail-a")]
+
+      :ok = Store.save(state_with(id, original))
+      before = Store.debug_message_count(id)
+
+      summary = ReqLLM.Context.user("[summary of earlier messages]")
+      compacted = [ReqLLM.Context.system("sys"), summary, ReqLLM.Context.user("tail-a")]
+
+      :ok = Store.save(state_with(id, compacted))
+
+      assert Store.debug_message_count(id) == 3
+      assert before == 8
+
+      assert {:ok, loaded} = Store.load(id)
+      assert Context.to_list(loaded.context) == compacted
+    end
+
+    test "an append after a compaction keeps a dense, ordered sequence" do
+      # regression for the seq-density trap: if compaction leaves the kept
+      # tail at its old (higher) seqs, a later append at the old length
+      # collides or orders wrong. The stored seqs must stay dense.
+      id = "msg-seq-#{System.unique_integer([:positive])}"
+
+      original =
+        [ReqLLM.Context.system("sys")] ++
+          for(i <- 1..8, do: ReqLLM.Context.user("m#{i}"))
+
+      :ok = Store.save(state_with(id, original))
+
+      compacted = [ReqLLM.Context.system("sys"), ReqLLM.Context.user("[summary]")]
+      :ok = Store.save(state_with(id, compacted))
+      assert Store.debug_message_count(id) == 2
+
+      # append two more messages after the compaction
+      grown = compacted ++ [ReqLLM.Context.assistant("answer"), ReqLLM.Context.user("next")]
+      :ok = Store.save(state_with(id, grown))
+
+      assert {:ok, loaded} = Store.load(id)
+      assert Context.to_list(loaded.context) == grown
+      assert Store.debug_message_count(id) == 4
+    end
+
+    test "delete removes the message rows (no orphans)" do
+      id = "msg-del-#{System.unique_integer([:positive])}"
+      :ok = Store.save(state_with(id, [ReqLLM.Context.user("x")]))
+      assert Store.debug_message_count(id) == 1
+
+      Store.delete(id)
+      assert Store.debug_message_count(id) == 0
+      assert {:error, :enoent} = Store.load(id)
+    end
+
+    test "rename re-keys the message rows" do
+      id = "msg-ren-#{System.unique_integer([:positive])}"
+      new_id = id <> "-b"
+      msgs = [ReqLLM.Context.system("sys"), ReqLLM.Context.user("kept")]
+      :ok = Store.save(state_with(id, msgs))
+
+      assert {:ok, ^new_id} = Store.rename(id, new_id)
+      assert Store.debug_message_count(id) == 0
+      assert Store.debug_message_count(new_id) == 2
+
+      assert {:ok, loaded} = Store.load(new_id)
+      assert Context.to_list(loaded.context) == msgs
+    end
+
+    test "a corrupt message row fails the load closed" do
+      id = "msg-corrupt-#{System.unique_integer([:positive])}"
+      :ok = Store.save(state_with(id, [ReqLLM.Context.user("ok")]))
+      :ok = Store.debug_put_message(id, 0, <<1, 2, 3>>, encode: false)
+
+      assert {:error, {:corrupt_message, _}} = Store.load(id)
+    end
+  end
+
   # ADR 020, "Schema versioning": PRAGMA user_version + an ordered,
   # forward-only migration list. The agent-view format_version is a
   # separate axis (covered under the load/corruption tests).
@@ -611,7 +753,7 @@ defmodule CodingAgent.Core.Session.StoreTest do
       # touch the store (open runs the migrations)
       assert [] = Store.list()
 
-      assert {:ok, 1} = Store.debug_user_version()
+      assert {:ok, 2} = Store.debug_user_version()
     end
 
     test "an unversioned store is migrated up and stamped" do
@@ -623,7 +765,7 @@ defmodule CodingAgent.Core.Session.StoreTest do
 
       # next open sees 0 < target and runs the (idempotent) migrations
       assert [%{id: ^id}] = Store.list()
-      assert {:ok, 1} = Store.debug_user_version()
+      assert {:ok, 2} = Store.debug_user_version()
       assert {:ok, _} = Store.load(id)
     end
 
@@ -633,7 +775,7 @@ defmodule CodingAgent.Core.Session.StoreTest do
 
       :ok = Store.debug_set_user_version(999)
 
-      assert {:error, {:store_open_failed, {:store_schema_too_new, 999, 1}}} =
+      assert {:error, {:store_open_failed, {:store_schema_too_new, 999, 2}}} =
                Store.load(id)
     end
 
