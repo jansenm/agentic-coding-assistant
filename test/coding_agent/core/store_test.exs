@@ -602,4 +602,46 @@ defmodule CodingAgent.Core.Session.StoreTest do
       assert [%{kind: :info}] = Store.display(id)
     end
   end
+
+  # ADR 020, "Schema versioning": PRAGMA user_version + an ordered,
+  # forward-only migration list. The agent-view format_version is a
+  # separate axis (covered under the load/corruption tests).
+  describe "schema versioning" do
+    test "a fresh store is stamped at the current schema version" do
+      # touch the store (open runs the migrations)
+      assert [] = Store.list()
+
+      assert {:ok, 1} = Store.debug_user_version()
+    end
+
+    test "an unversioned store is migrated up and stamped" do
+      id = "ver-up-#{System.unique_integer([:positive])}"
+      :ok = Store.save(build_state(id))
+
+      # a store written before the version marker: schema present, version 0
+      :ok = Store.debug_set_user_version(0)
+
+      # next open sees 0 < target and runs the (idempotent) migrations
+      assert [%{id: ^id}] = Store.list()
+      assert {:ok, 1} = Store.debug_user_version()
+      assert {:ok, _} = Store.load(id)
+    end
+
+    test "a store written by a newer build fails closed, not guessed" do
+      id = "ver-new-#{System.unique_integer([:positive])}"
+      :ok = Store.save(build_state(id))
+
+      :ok = Store.debug_set_user_version(999)
+
+      assert {:error, {:store_open_failed, {:store_schema_too_new, 999, 1}}} =
+               Store.load(id)
+    end
+
+    test "a too-new store does not crash a listing (degrades to empty)" do
+      :ok = Store.save(build_state("ver-list-#{System.unique_integer([:positive])}"))
+      :ok = Store.debug_set_user_version(999)
+
+      assert [] = Store.list()
+    end
+  end
 end

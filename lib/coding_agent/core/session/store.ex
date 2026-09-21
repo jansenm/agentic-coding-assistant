@@ -53,6 +53,12 @@ defmodule CodingAgent.Core.Session.Store do
   # Columns read for a listing; deliberately no `state`.
   @summary_columns "id, saved_at, model, status, scope_root, size_bytes"
 
+  # The SQLite SCHEMA version (ADR 020, "Schema versioning"). Independent
+  # of @format_version, which versions the agent-view BLOB's shape. This
+  # one is stored in the DB header via `PRAGMA user_version` — the
+  # idiomatic SQLite slot, no extra table.
+  @schema_version 1
+
   # -- Store location ---------------------------------------------------------
 
   @doc """
@@ -63,6 +69,15 @@ defmodule CodingAgent.Core.Session.Store do
   def path, do: CodingAgent.Core.Config.store_path()
 
   # -- Schema -----------------------------------------------------------------
+
+  # Ordered, forward-only migrations (ADR 020, "Schema versioning").
+  # Append only; never edit a shipped entry. `migrate/1` runs the pending
+  # ones in a transaction, then stamps `PRAGMA user_version`. v1 is the
+  # original slice-3a schema (idempotent, so it also converges an old store
+  # that predates the version marker).
+  defp migrations do
+    [{1, &migrate_v1/1}]
+  end
 
   @schema """
   CREATE TABLE IF NOT EXISTS sessions (
@@ -192,6 +207,28 @@ defmodule CodingAgent.Core.Session.Store do
   def debug_set_saved_at(id, saved_at_ms) do
     with {:ok, db} <- open() do
       result = exec(db, "UPDATE sessions SET saved_at = ? WHERE id = ?", [saved_at_ms, id])
+      close(db)
+      result
+    end
+  end
+
+  # Test seams for the schema version (ADR 020, "Schema versioning"). They
+  # let a test plant an old/new store without hand-editing a SQLite file.
+  @doc false
+  @spec debug_user_version() :: {:ok, non_neg_integer()} | {:error, term()}
+  def debug_user_version do
+    with {:ok, db} <- open() do
+      result = user_version(db)
+      close(db)
+      result
+    end
+  end
+
+  @doc false
+  @spec debug_set_user_version(non_neg_integer()) :: :ok | {:error, term()}
+  def debug_set_user_version(version) when is_integer(version) and version >= 0 do
+    with {:ok, db} <- open() do
+      result = set_user_version(db, version)
       close(db)
       result
     end
@@ -572,10 +609,89 @@ defmodule CodingAgent.Core.Session.Store do
 
   defp setup(db) do
     with :ok <- Sqlite3.execute(db, "PRAGMA busy_timeout=5000"),
-         :ok <- Sqlite3.execute(db, "PRAGMA journal_mode=WAL"),
-         :ok <- Sqlite3.execute(db, @schema) do
-      :ok
+         :ok <- Sqlite3.execute(db, "PRAGMA journal_mode=WAL") do
+      migrate(db)
     end
+  end
+
+  # Bring the store up to @schema_version, or fail closed if it was
+  # written by a newer build (we cannot know how to read it). Additive
+  # migrations are idempotent, so a store predating the version marker
+  # (user_version = 0) and a fresh store both converge on v1.
+  defp migrate(db) do
+    with {:ok, version} <- user_version(db) do
+      cond do
+        version == @schema_version ->
+          :ok
+
+        version > @schema_version ->
+          {:error, {:store_schema_too_new, version, @schema_version}}
+
+        true ->
+          run_migrations(db, version)
+      end
+    end
+  end
+
+  defp run_migrations(db, from) do
+    pending = Enum.filter(migrations(), fn {v, _} -> v > from end)
+
+    # The list must cover every step from 1..@schema_version contiguously;
+    # otherwise we could stamp a version having skipped a migration (e.g.
+    # bumping @schema_version without appending, or leaving a gap).
+    if Enum.map(migrations(), fn {v, _} -> v end) != Enum.to_list(1..@schema_version) do
+      {:error, {:migration_list_incomplete, @schema_version}}
+    else
+      do_run_migrations(db, pending)
+    end
+  end
+
+  defp do_run_migrations(db, pending) do
+    with :ok <- Sqlite3.execute(db, "BEGIN"),
+         {:ok, _} <- run_each(db, pending),
+         :ok <- set_user_version(db, @schema_version),
+         :ok <- Sqlite3.execute(db, "COMMIT") do
+      :ok
+    else
+      {:error, reason} ->
+        Sqlite3.execute(db, "ROLLBACK")
+        {:error, {:store_migration_failed, reason}}
+    end
+  end
+
+  defp run_each(db, pending) do
+    Enum.reduce_while(pending, {:ok, nil}, fn {v, fun}, _acc ->
+      case run_one(db, v, fun) do
+        :ok -> {:cont, {:ok, nil}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp run_one(db, version, fun) do
+    case fun.(db) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        {:error, {:migration_at, version, reason}}
+    end
+  end
+
+  defp migrate_v1(db), do: Sqlite3.execute(db, @schema)
+
+  defp user_version(db) do
+    case fetch_one(db, "PRAGMA user_version", []) do
+      {:ok, [version]} when is_integer(version) -> {:ok, version}
+      {:ok, _} -> {:error, :unreadable_user_version}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp set_user_version(db, version) do
+    # PRAGMA does not accept bound params; @schema_version is a compile-time
+    # integer, so interpolation is safe here.
+    Sqlite3.execute(db, "PRAGMA user_version = #{version}")
   end
 
   defp close(db), do: Sqlite3.close(db)

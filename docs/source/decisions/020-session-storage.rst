@@ -263,8 +263,8 @@ later upgrade if a store-wide scan proves slow. The trade-off accepted:
 the agent view is not human-readable in the DB; ``--export`` covers the
 "hand someone a readable session" case.
 
-Schema versioning (gap found 2026-09-21)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Schema versioning (implemented 2026-09-21)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The slice-3a schema ships with ``CREATE TABLE IF NOT EXISTS`` and no
 version marker. That is **additive-safe** (a store written before the
@@ -299,13 +299,20 @@ version, plus an ordered migration list — a few lines, not Flyway.**
   transaction, then set ``user_version`` to the target. If it is **above**
   the code's version, the store was written by a newer build → fail
   closed with a clear message (do not guess).
-- Migrations are a list of `{version, fun(db)}`, appended, never edited:
-  ``@migrations [{1, &create_v1_tables/1}, {2, &add_x/1}, ...]``. The
-  first entry is the current schema as ``CREATE TABLE IF NOT EXISTS``, so
-  a fresh store and an old store converge.
+- Migrations are a list of `{version, fun(db)}`, appended, never edited
+  (``migrations/0``). The first entry re-states the current schema as
+  ``CREATE TABLE IF NOT EXISTS``, so a fresh store and an old store
+  (``user_version`` = 0, written before the marker) converge on v1.
 - Additive changes still work as they do today (``IF NOT EXISTS``), but
   they get a version number so the *next* non-additive change has a
   place to go.
+
+Two failure modes fail closed rather than silently stamping a version
+that was not earned: a store whose ``user_version`` is *higher* than
+``@schema_version`` (``{:store_schema_too_new, found, want}``), and a
+migration list that is not contiguous ``1..@schema_version`` — so
+bumping the version constant without appending a migration is caught in
+tests, not in a user's store.
 
 This is deliberately not a migration framework: no checksums, no
 rollback, no down-migrations, no CLI. The store is a user-local artifact
@@ -525,14 +532,13 @@ Slice order
    renders it directly, so reasoning now survives and compaction cannot
    erase visible history. The session owns the ordered block list
    (``consume_stream`` returns it), since the display view is persisted
-   core data. Remaining in slice 3: **normalize the agent view into
-   per-message rows** (3b-ii) — a storage-efficiency change; the BLOB is
-   still lossless today. Blob migration is intentionally ignored
+   core data. Schema versioning (``PRAGMA user_version`` + the ordered
+   migration list, *Schema versioning* above) landed as the prerequisite
+   for the next step. Remaining in slice 3: **normalize the agent view
+   into per-message rows** (3b-ii) — a storage-efficiency change; the
+   BLOB is still lossless today. It ships as migration v2, so old stores
+   upgrade in place. Blob-format migration is intentionally ignored
    (unreleased).
-   **Before** 3b-ii (which changes the schema non-additively), add the
-   ``PRAGMA user_version`` migration list described under *Schema
-   versioning* — otherwise there is no way to migrate an old store to the
-   new shape (``R8``).
 4. **Management verbs** (in the TUI, per the "TUI is the only surface"
    decision): delete-by-directory, prune-by-size, store-wide search,
    export/import. Delete-one, delete-visible, and prune-by-age already
