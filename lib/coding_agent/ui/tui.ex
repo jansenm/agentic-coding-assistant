@@ -219,6 +219,9 @@ defmodule CodingAgent.UI.Tui do
       # (tests read a clean transcript buffer without a 36-col panel)
       sidebar_visible?: Keyword.get(opts, :sidebar, true),
       menu_pending: false,
+      # the armed `:__menu_timeout__` timer ref (cancelled when the prefix
+      # is consumed), so a stale timer cannot steal a later ctrl-x window
+      menu_timer: nil,
       menu_popup: nil,
       menu_popup_id: nil,
       menu_index: 0,
@@ -412,6 +415,7 @@ defmodule CodingAgent.UI.Tui do
         # (tests read a clean transcript buffer without a 36-col panel)
         sidebar_visible?: Keyword.get(opts, :sidebar, true),
         menu_pending: false,
+        menu_timer: nil,
         menu_popup: nil,
         menu_popup_id: nil,
         menu_index: 0,
@@ -1489,20 +1493,26 @@ defmodule CodingAgent.UI.Tui do
            menu_popup: nil
          } = state
        ) do
-    # ctrl-x: enter pending mode; the timer turns it into the popup
-    Process.send_after(self(), :__menu_timeout__, @menu_timeout)
+    # ctrl-x: enter pending mode; the timer turns it into the popup.
+    # CANCEL any earlier timer first: a timer from a previous ctrl-x whose
+    # prefix was consumed (or whose popup was dismissed) must not fire
+    # during THIS window and steal it.
+    cancel_menu_timer(state)
+
+    ref = Process.send_after(self(), :__menu_timeout__, @menu_timeout)
 
     state =
-      %{state | menu_pending: true}
+      %{state | menu_pending: true, menu_timer: ref}
       |> status_note("menu: press a letter… (or wait for the list)")
 
     {:noreply, state}
   end
 
   defp handle_menu_or_normal_key(ev, %{menu_pending: true} = state) do
-    # any key while pending: consume the prefix. A letter with a
-    # command fires it directly; everything else falls through to
-    # normal handling (typing must not be eaten).
+    # any key while pending: consume the prefix and CANCEL its timer, so
+    # the popup cannot appear a moment later on top of the handled key.
+    state = cancel_menu_timer(state)
+
     case Menu.resolve(Menu.main_menu(), ev.code) do
       nil ->
         {:noreply, %{state | menu_pending: false}}
@@ -1530,6 +1540,14 @@ defmodule CodingAgent.UI.Tui do
     end
   end
 
+  # Cancel the armed menu timer, if any, and forget the ref.
+  defp cancel_menu_timer(%{menu_timer: ref} = state) when ref != nil do
+    Process.cancel_timer(ref)
+    %{state | menu_timer: nil}
+  end
+
+  defp cancel_menu_timer(state), do: %{state | menu_timer: nil}
+
   # timer fired: the owner waited -> show the popup instead of the
   # fast path (id nil: the MAIN menu, whose items carry actions)
   defp open_menu_popup(popup, state) do
@@ -1537,7 +1555,14 @@ defmodule CodingAgent.UI.Tui do
     # (switch_session) from plain menus (the main menu: nil)
     id = if Map.get(popup, :id) == :main, do: nil, else: Map.get(popup, :id)
 
-    %{state | menu_popup: popup, menu_popup_id: id, menu_index: 0, menu_pending: false}
+    %{
+      state
+      | menu_popup: popup,
+        menu_popup_id: id,
+        menu_index: 0,
+        menu_pending: false,
+        menu_timer: nil
+    }
   end
 
   # popup navigation
@@ -2185,7 +2210,8 @@ defmodule CodingAgent.UI.Tui do
 
   def handle_info(:__menu_timeout__, state) do
     # pending was consumed by a key that raced the timer — nothing to do
-    {:noreply, state}
+    # (the ref is spent; drop it so a later cancel is a no-op)
+    {:noreply, %{state | menu_timer: nil}}
   end
 
   def handle_info(:__resize_poll__, state) do

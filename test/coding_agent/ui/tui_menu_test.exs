@@ -111,6 +111,37 @@ defmodule CodingAgent.UI.TuiMenuTest do
     assert st2.menu_popup_id == nil
   end
 
+  test "a consumed ctrl-x prefix cancels its timer (stale timer regression)", %{
+    root: tmp_root
+  } do
+    # Found flaky: ctrl-x armed a 1s :__menu_timeout__ timer; pressing the
+    # letter consumed the prefix but did NOT cancel the timer. Under load
+    # the stale timer from the FIRST ctrl-x fired during the SECOND
+    # ctrl-x's pending window, opened the MAIN menu, and the following
+    # letter closed it (handle_menu_popup_key) instead of opening the
+    # target popup — surfacing as `menu_popup == nil` on the second open.
+    # The ref is now tracked on the state and cancelled on consumption.
+    seed_session("cancel-a", tmp_root)
+    pid = start_tui(tmp_root)
+
+    # arming ctrl-x records the timer ref
+    key(pid, "x", ["ctrl"])
+    assert sync(pid).menu_timer != nil
+
+    # consuming the prefix (any key) cancels and forgets it
+    key(pid, "s")
+    st = sync(pid)
+    assert st.menu_popup_id == :switch_session
+    assert st.menu_timer == nil, "the armed timer must be cancelled on consumption"
+
+    # and a fresh ctrl-x + letter still works end to end
+    key(pid, "esc")
+    key(pid, "x", ["ctrl"])
+    key(pid, "s")
+
+    assert sync(pid).menu_popup_id == :switch_session
+  end
+
   test "switching attaches the chosen session (keep-alive)", %{root: tmp_root} do
     a = seed_session("pick-a", tmp_root)
     b = seed_session("pick-b", tmp_root)
