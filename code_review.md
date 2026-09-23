@@ -795,6 +795,9 @@ Layout (`render_main/2`, `tui.ex:1810-1861`):
   that one line: session id, a glyph + status label, esc-confirm hints, and
   **scroll diagnostics** (`scroll: 3/120 (48 entries, tools shut, h: 22 w: 78)`).
   The diagnostics are debug output shown to the user.
+  *(Quoted as reviewed. ADR 028 later dropped the `/max` from that line: it
+  reports the clamped offset alone, and the format is now
+  `scroll: 3 (48 entries, tools shut, h: 22 w: 78)`.)*
 - The glyphs already exist but are not a system:
   `:running → "●"`, `:interrupting → "◐"`, `:idle → "○"`,
   `:interrupted → "⏸"`, `:error → "✖"` (`tui.ex:2690-2697`).

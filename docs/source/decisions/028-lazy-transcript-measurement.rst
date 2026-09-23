@@ -23,9 +23,11 @@ Transcript measurement: lazy, tail-first, not eager
    ``{clamped_offset, [{entry, pane_relative_top, height}]}`` —
    pane-relative, so the renderer and the hit-test no longer compute an
    absolute transcript total. ``TranscriptView.total_height/3`` stays as
-   the eager/diagnostic primitive; the render, clamp, hit-test and
-   diagnostics paths stopped calling it (the diagnostics line reports the
-   clamped offset). The stored ``max_scroll`` is gone: the viewport
+   the eager/test primitive: the render, clamp, hit-test and diagnostics
+   paths stopped calling it (the diagnostics line reports the clamped
+   offset, from the same lazy walk), so in the shipped tree its only
+   caller is the differential test that reconstructs the old eager
+   algorithm. The stored ``max_scroll`` is gone: the viewport
    returns the accepted offset, and the scroll handlers clamp through it.
 
    **Measured result** (live session, 1630 rows, cold cache):
@@ -141,9 +143,13 @@ warm frame cheap (9–21 ms) and a resize a cold miss. The lazy walk
 simply means a resize re-measures only the visible window (~67 ms), not
 the session.
 
-**5. `total_height/3` stays, as the eager/diagnostic primitive.** The
-scroll diagnostics line and existing tests use it. The render and clamp
-paths stop calling it.
+**5. `total_height/3` stays, as the eager/test primitive.** After this
+change nothing on a production path calls it — the diagnostics line
+reads the clamped offset from the lazy viewport like the render, clamp
+and hit-test do. What keeps it alive is the differential anchor: it is
+the reconstruction of the old eager algorithm that the lazy walk is
+checked against, so it must keep measuring the whole transcript, eagerly,
+by exactly the path the old code used.
 
 Consequences
 ------------
@@ -163,9 +169,9 @@ Consequences
 - The cache remains process-local ETS created lazily. A cold process
   still pays one probe per entry it actually displays; it no longer
   pays for the ones it does not.
-- The `max_scroll` field's role shrinks to "known when we have reached
-  the top"; the mouse/scroll-up handlers clamp through the lazy walk
-  instead of a stored maximum.
+- There is no `max_scroll` field: the maximum exists only as a local
+  value inside the walk that reached the top. The mouse/scroll-up
+  handlers clamp through the lazy walk instead of a stored maximum.
 
 Open questions
 --------------

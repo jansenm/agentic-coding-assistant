@@ -163,8 +163,15 @@ defmodule CodingAgent.UI.TranscriptView do
   def air, do: @air
 
   @doc """
-  Total estimated height of the transcript at the given width — the
-  scrollable extent.
+  Total height of the transcript at the given width, measured EAGERLY —
+  every entry is probed, the whole session on every call. This is the
+  algorithm ADR 028 replaced: nothing on a production path calls it any
+  more (the render, the clamp, the hit-test and the scroll diagnostics
+  all read `viewport/5`'s lazy tail-first walk). It is kept as the TEST
+  primitive — the differential anchor that the lazy walk's entries,
+  positions and clamping are checked against — and as the benchmark
+  baseline for the eager-vs-lazy comparison. Callers outside a test need
+  a reason to accept its cost: 8–12 s cold on a long session.
   """
   @spec total_height([entry()], pos_integer(), open_id()) :: non_neg_integer()
   def total_height(entries, width, open_id) do
