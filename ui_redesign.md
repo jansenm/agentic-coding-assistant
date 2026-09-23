@@ -273,6 +273,11 @@ Schirm, und die Statuszeile war nicht auf den Composer eingerückt (sie lief
 über die ganze Breite, während das Feld bei Spalte 37 begann) — der
 „links ein Zeichen eingerückt"-Befund aus Runde 2.
 
+Auch die **Session-Id** war dort schon die zweite Anzeige derselben Sache:
+die Sidebar nennt sie seit `f89dbf5` (2026-09-06). Die Streichung der Row hat
+sie nicht vom Schirm genommen — die Berichtigung steht in §7.5 (dort stand
+zeitweise das Gegenteil).
+
 ### 7.2 Entscheidung
 
 * **Zeile weg**, nicht umgebaut. Der Composer beantwortet „was passiert
@@ -332,17 +337,49 @@ Popup jetzt *Composer*-Zeilen sind (Composer + Rand) statt Composer + Status.
 
 ### 7.5 Was jetzt fehlt (bewusst)
 
-Die **Session-Id** ist aus dem Sichtfeld verschwunden. Sie war in der
-Bottom-Row sichtbar; sie bleibt im State und im Picker (ADR 020), aber nicht
-mehr im Composer — die Meta-Zeile ist voll (Identity links, Status/Note
-rechts). Wenn sie zurück soll, dann als eigenes Entscheidungsstück (Sidebar-
-Slot oder Picker-Kopf), nicht als weitere Spans in diese Zeile.
+**Berichtigung (nachgemessen).** ~~Die **Session-Id** ist aus dem Sichtfeld
+verschwunden. Sie war in der Bottom-Row sichtbar; sie bleibt im State und im
+Picker (ADR 020), aber nicht mehr im Composer — die Meta-Zeile ist voll
+(Identity links, Status/Note rechts). Wenn sie zurück soll, dann als eigenes
+Entscheidungsstück (Sidebar-Slot oder Picker-Kopf), nicht als weitere Spans in
+diese Zeile.~~ Der erste Satz war **falsch**, und die daraus gezogene
+Konsequenz („eigener Slot nötig") ebenso: die Id war nie nur in der Bottom-Row.
+
+Tatsächlich stand sie dort **und** gleichzeitig in der **Sidebar** — die führt
+sie seit deren erster Fassung (`f89dbf5`, 2026-09-06), heute als
+`definition_list`-Zeile `{"session", String.slice(state.session_id, 0, 22)}`
+(`tui.ex:3556`, im 36 breiten Panel `@sidebar_width`, `tui.ex:133`; als
+Definitionsliste seit `bbd7f2f`, 2026-09-19), also **vor** Runde 3 und
+unabhängig von ihr. Die Bottom-Row trug die **zweite** Anzeige derselben Id;
+Runde 3 hat nur diese zweite entfernt.
+
+Gemessen (Zellpuffer, 100×30, Id `tui-` + 30 Ziffern, Zeile 5):
+` session:     tui-999999999999999999│` — die Id ist also weiterhin auf dem
+Schirm, auf die 22 Zeichen des `String.slice/3` gekürzt. Sie verschwindet nur,
+wenn das Panel **abgeschaltet** ist: `ctrl-x p` (`Menu :toggle_sidebar`) oder
+`sidebar: false` beim Mount. Die Breite entscheidet nicht darüber — das Panel
+ist ein fester 36-Spalten-Split und bleibt auch auf 40 Spalten stehen
+(nachgemessen, 40×12: Spalte 37 ist die Trennkante, Zeile 5 trägt die Id).
+
+Damit ist die Frage **erledigt**, nicht offen: kein eigener Slot, kein
+Sidebar-Slot, kein Picker-Kopf. Der P4-Backlog-Eintrag in `code_review.md`
+(„the session id left the frame with the bottom row") ist gestrichen — er
+beschrieb dieselbe Fehlannahme. **Kein Code-Change**, nur die Korrektur der
+Aufzeichnung.
+
+Dieselbe Fehlannahme steht im Commit-Text von `53b5817` („Consequence worth
+naming: the session id is no longer on screen … it needs its own slot (sidebar
+or picker head)"). Git-History wird hier nicht umgeschrieben; korrigiert ist
+sie dort, wo sie gelesen wird — in diesem Dokument und im Backlog.
+
+Was bleibt, ist die **Entscheidung zur Meta-Zeile** (unabhängig von der
+Sidebar): die Id gehört **nicht** in die Composer-Meta-Zeile. Die Zeile
+beantwortet genau eine Frage („was nimmt der nächste Input"), und die Id ist
+keine — sie ist eine Kennung, kein Setup.
 
 **Nachtrag (Runde 4):** die Meta-Zeile ist *nicht mehr voll* — der Status ist
-aus ihr heraus in das Band gewandert (Abschnitt 8). Der Platz, der frei wurde,
-ist trotzdem **kein** Session-Id-Slot: die Zeile beantwortet weiter genau eine
-Frage („was nimmt der nächste Input"), und die Id ist keine. Es bleibt bei
-„eigenes Entscheidungsstück".
+aus ihr heraus in das Band gewandert (Abschnitt 8). Der frei gewordene Platz
+ist trotzdem kein Session-Id-Slot, aus demselben Grund.
 
 ---
 

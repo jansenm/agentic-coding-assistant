@@ -277,16 +277,6 @@ leverage.
       clamp, hit-test and status all use it.
 - [ ] **P4 — Replace `test_mode?` branches with injected behaviours** where it
       has already let bugs slip.
-- [ ] **P4 (cosmetic) — the session id left the frame with the bottom row.**
-      The row was dropped (2026, `ui_redesign.md` §7): the composer's meta row
-      already answered "what is happening now", and the row's own label was a
-      second renderer of the same status. With it went the visible session id.
-      The id still lives in the state and in the picker (ADR 020). If it should
-      be visible while typing, it needs its own slot (a sidebar row or the
-      picker head) — not more spans on the meta row. (Round 4 moved the status
-      out of that row into the live band, so the row is no longer crowded — but
-      it is still "setup for the next input", which the id is not: it stays a
-      separate decision, `ui_redesign.md` §8.)
 - [ ] **P4 (cosmetic, Track B step 6/E) — glyph passes.** The status
       vocabulary is centralized (`Styles.status_badge/1`), but three
       surfaces still use plain text or ad-hoc glyphs:
@@ -775,7 +765,10 @@ gone — `ui_redesign.md` §6 and §7. The composer is a filled, borderless pane
 in its own module, and its meta row carries the setup identity and the
 transient text; the window's last row is the composer's own bottom padding.
 Round 4 then moved the *status* out of that row into a permanent live band
-above the field — `ui_redesign.md` §8.)
+above the field — `ui_redesign.md` §8. Correction to an earlier claim here:
+the session id did **not** leave the screen with the row — the sidebar has
+listed it since `f89dbf5` (2026-09-06), so the row was only its *second*
+display; `ui_redesign.md` §7.5.)
 
 Layout (`render_main/2`, `tui.ex:1810-1861`):
 
