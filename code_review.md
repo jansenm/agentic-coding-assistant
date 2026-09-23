@@ -233,8 +233,8 @@ twice (`mount_picker` `tui.ex:141-195`, `mount_session` `tui.ex:287-381`).
 
 - `Interrupt` (`interrupt.ex`) — correct single owner; the scattered
   `requested?` checks are inherent to cooperative cancellation.
-- `Exec` — right shape (single Port, kill-on-timeout, truncation); its only
-  problem is that two tools do not use it.
+- `Exec` — right shape (single Port, kill-on-timeout, truncation); the two
+  tools that used to bypass it (`grep`/`glob`) now run through it too.
 - `Containment.walk/3` — correctly centralizes the walk discipline.
 - `Permissions` merge logic (most-restrictive, intersection enablement).
 - `Agent.Frontmatter` — clean isolation of YAML parsing and limits.

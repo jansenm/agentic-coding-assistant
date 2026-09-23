@@ -73,12 +73,16 @@ preserves that:
   file — measured, it ran. The environment must not be able to influence
   the invocation. ``--no-ignore`` is also set so our skip rules (not the
   repo's ``.gitignore``) decide what is searched;
+- the delegated process runs through ``Exec`` under the read-only sandbox
+  profile, the same ``Port.open`` + ``Sandbox.wrap`` path as
+  ``shell``/``git`` — not a bare ``System.cmd``;
 - excludes use ``!**/<dir>/**`` (``rg``) and ``--exclude **/<dir>/**``
   (``fd``) so a *nested* ``src/_build`` is pruned the way the Elixir walk
   prunes it — and, for ``fd``, so a same-named *file* is not pruned (a
   bare name prunes files too; measured);
-- for ``rg``, an **include glob precedes the excludes**: a later include
-  re-adds what an earlier exclude removed (measured), so excludes go last;
+- for ``rg``, an **include glob is not used at all** (see the 2026-09-23
+  amendment): ``rg`` searches wide and the result is filtered by the
+  reference rule, so its own glob dialect never decides what a match is;
 - ``rg`` does not follow symlinks in traversal (measured), and its
   explicit-file case is caught by the pre-check above; ``fd`` output is
   re-checked the same way;

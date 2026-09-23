@@ -140,6 +140,23 @@ same trajectory viewed from different ends.
      segments, braces, per-segment `*`/`?` — cap 500. Live-verified:
      the agent greps `in_scope?` usage and counts 14 matches across 6
      files, exact.
+     **Delegation corrected (2026-09-23, ADR 016 amendment):** with
+     `rg`/`fd` installed the tools were answering a *different*
+     question than the Elixir walk — every documented shape with a `/`
+     returned 0 files under `fd` (it matches the entry NAME unless
+     `--full-path`), both binaries are smart-case while the walk is
+     not, and `rg`'s own glob silently dropped matches. The reference
+     engine now defines the answer: fd is called root-anchored and
+     absolute for path patterns, `--case-sensitive` always, `rg` never
+     receives the caller's glob (it searches wide, the result is
+     filtered by the one rule `Glob.file_match?/3`), errors fall back
+     instead of being shown as results, and hidden entries have ONE
+     rule for files and dirs with *naming* as the opt-in
+     (`.gitignore`, `.*`). Both binaries now run through `Exec` under
+     the read-only sandbox profile, the same process path as
+     `shell`/`git`. Pinned by `SearchDelegationTest` "engine
+     agreement" — every documented shape run twice, binary and walk,
+     answers identical.
    - **2e. edit** ✅ — targeted string replacement (fail-closed:
      refuses on 0 or 2+ matches with re-read/widen guidance), gated
      like `write_file`; empty old_string creates a file. Ends the era

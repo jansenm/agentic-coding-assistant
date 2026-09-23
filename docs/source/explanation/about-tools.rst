@@ -95,14 +95,66 @@ expand. Elixir 1.20 removed ``Path.match/2``, so the matcher lives in
 :mod:`CodingAgent.Core.Tools.Glob` — plain functions, unit-tested
 against the classic glob table.
 
+Delegation: two engines, one answer (ADR 016)
+---------------------------------------------
+
+Both tools delegate to the native engine when it is on ``PATH``
+(``rg`` for grep, ``fd`` for glob) and keep the Elixir walk as the
+reference fallback (portability, and a machine with no ``rg``/``fd``
+and no network to install one). The delegated run goes through
+``Exec`` under the read-only sandbox profile — the same single
+execution path as ``shell`` and ``git``.
+
+The reference engine **defines** the answer; the native engine is
+measured against it. Measured, the two used to be two tools wearing
+one name: ``fd --glob`` matches the entry *name*, so every documented
+shape with a ``/`` (``lib/**/*.ex``) returned 0 files where the walk
+found 59; both binaries are smart-case by default; ``fd``'s dialect is
+richer (character classes, ``!`` negation, ``\`` quotes); ``rg``'s own
+glob was *narrower* than ours and silently dropped matches; a
+non-zero exit was formatted as a result (``Exec`` merges stderr into
+stdout). So:
+
+- a pattern with a ``/`` goes to ``fd`` root-anchored and absolute
+  (``--absolute-path --full-path``), and a pattern fd would read
+  differently stays on the reference engine (``fd_dialect?/1``);
+- ``rg`` never receives the caller's glob: it searches wide and every
+  match is re-filtered by ``Glob.file_match?/3`` — the one rule, in
+  one function, so a pattern means the same thing in ``glob`` and in
+  ``grep``'s ``glob`` argument;
+- errors are not results: a non-zero exit falls back to the walk
+  (``fd`` reports "no matches" with exit 0 — the 0/1 convention
+  belongs to its ``--quiet`` flag).
+
+``SearchDelegationTest`` "engine agreement" pins it: every documented
+shape runs twice, once with the binary and once with the probe forced
+off, and the two answers must be identical.
+
+Hidden entries: a default, not a wall
+-------------------------------------
+
+Hidden entries are skipped in both engines by the *same* rule
+(``Containment.hidden_entry?/1`` — any dot segment, files and
+directories alike; before it the walk pruned hidden *dirs* only, so a
+plain search saw dotfiles that ``rg``/``fd`` never returned), and the
+way to ask for them is to **name** them (``.gitignore``, ``.*``,
+``.idea/*``, ``path: ".github"``) — POSIX spelling, nothing new to
+remember. ``--hidden`` is passed to both binaries so a named entry can
+be found, and the result is filtered afterwards so a pattern that did
+not ask cannot gain one.
+
+The build/vendor list is separate and always applies: ``_build``,
+``deps``, ``.git``, ``doc``, ``cover``, ``.elixir_ls`` are never
+walked (never useful, always wasteful) — except when named as the
+target, because naming beats filtering at every layer.
+
 Caps bound the blast radius: 200 grep matches (capped message tells
 the model to narrow the pattern), 500 glob results, 2000 files per
 walk, 1 MiB per file, 500-char lines. Binary files are skipped by a
-NUL-byte sniff; hidden dirs, ``_build``, ``deps`` and ``.git`` are
-never walked (never useful, always wasteful).
+NUL-byte sniff.
 
 Editing: targeted replacement (slice 2e)
------------------------------------------
+----------------------------------------
 
 ``edit`` replaces an exact string: ``old_string`` must occur *exactly
 once*, else the tool refuses — a stale match ("not found") and an
