@@ -87,10 +87,22 @@ Glossary
       enforced before any read or write.
 
    Surface (UI)
-      A region the interface paints on — ``base`` (the transcript, terminal
-      default), ``chrome`` (overlays: menu, picker, dialog, and the
-      composer panel), ``sidebar`` — each with its own background. A role
-      resolves *on* a surface.
+      A region the interface paints on — ``base`` (the transcript and the
+      live band, terminal default), ``chrome`` (overlays: menu, picker,
+      dialog, and the composer panel), ``sidebar`` — each with its own
+      background. A role resolves *on* a surface. The ``base`` region is
+      not only the reading area: it also carries the status band above the
+      input, which is how that band stays distinguishable from the field
+      (``ui_redesign.md`` §8).
+
+   Live band (UI)
+      The permanent one-row status area between the transcript and the
+      input field: which agent and model are executing the *running* turn
+      (while one runs) plus the status glyph, word and elapsed context.
+      Distinct from the composer's setup row below the field, which names
+      what the *next* input will use — Tab switches the latter while a
+      running turn keeps its own (ADR 018 amendment). Painted on ``base``,
+      one cell of padding on all four sides.
 
    Role (UI)
       The meaning of a piece of text, independent of colour and surface:

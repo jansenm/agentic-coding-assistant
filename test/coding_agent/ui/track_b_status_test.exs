@@ -3,9 +3,12 @@ defmodule CodingAgent.UI.TrackBStatusTest do
   Track B: the status lives at the input, and a silent agent is visibly
   alive.
 
-  - `Styles.spinner/1` / `status_line/5` are pure (frame set + label).
+  - `Styles.spinner/1` / `status_line/6` are pure (frame set + label).
   - The TUI declares a spinner subscription only while a turn is busy.
-  - The status badge + spinner render on the input box's TOP-RIGHT border.
+  - The status renders in the live band ABOVE the input field
+    (`UI.LiveBand`), on the transcript's own surface, while the
+    composer's meta row below the field is SETUP (the agent and model the
+    next input will use).
   - `{:tool_started, name}` names the running tool; silence shows a
     duration so a stuck turn diverges from a healthy one.
   - The scroll diagnostics are developer output, hidden until ctrl-x d.
@@ -21,9 +24,20 @@ defmodule CodingAgent.UI.TrackBStatusTest do
     })
   end
 
+  # an explicit agent (the band's identity check): `start_tui/1` takes the
+  # SIZE, so the opts variant is a separate name
+  defp start_tui_with(agent) do
+    start_supervised!(%{
+      id: String.to_atom("trackb-#{System.unique_integer([:positive])}"),
+      start:
+        {Tui, :start_link,
+         [[name: nil, test_mode: {100, 30}, scope_root: File.cwd!(), agent: agent]]}
+    })
+  end
+
   defp joined(pid), do: pid |> buffer() |> Enum.join("\n")
 
-  describe "Styles.spinner/1 + status_line/5 (pure)" do
+  describe "Styles.spinner/1 + status_line/6 (pure)" do
     test "spinner cycles by remainder and accepts nil" do
       assert Styles.spinner(nil) == Styles.spinner(0)
       assert Styles.spinner(0) != Styles.spinner(1)
@@ -86,27 +100,63 @@ defmodule CodingAgent.UI.TrackBStatusTest do
     end
   end
 
-  describe "status at the input (A)" do
-    test "the status renders on the composer's identity row, right-aligned" do
+  describe "the live band (A)" do
+    # The band's own unit tests live in live_band_test.exs; these assert
+    # the TUI WIRES it — which values reach the band, and from where.
+
+    # The row carrying `needle`. The status words are unique in the frame
+    # now: the composer's meta row below the field is SETUP and paints no
+    # status, so a "thinking"/"○ idle" row IS the band.
+    defp row_with(pid, needle) do
+      rows = buffer(pid)
+
+      case Enum.find_index(rows, &String.contains?(&1, needle)) do
+        nil -> raise "no row contains #{inspect(needle)}\n#{Enum.join(rows, "\n")}"
+        i -> i
+      end
+    end
+
+    # The composer's SETUP row: the LAST row naming a model (the sidebar
+    # names one near the top; the composer sits at the bottom).
+    defp setup_row(pid) do
+      buffer(pid)
+      |> Enum.with_index()
+      |> Enum.filter(&String.contains?(elem(&1, 0), "model "))
+      |> List.last()
+      |> elem(1)
+    end
+
+    test "the status renders in the band above the field, with the running identity" do
       pid = start_tui()
 
       agent(pid, {:turn_started, "build"})
       agent(pid, {:status_changed, :running})
 
-      rows = buffer(pid)
+      row = Enum.at(buffer(pid), row_with(pid, "thinking"))
 
-      # ONE row carries both halves: identity (left) and status (right)
-      # (the LAST "model " row is the composer's meta row)
-      footer = rows |> Enum.filter(&String.contains?(&1, "model ")) |> List.last()
-      assert footer != nil
-      assert String.contains?(footer, "thinking")
-      assert String.contains?(footer, Styles.spinner(sync(pid).spin))
-      # no frame glyphs: the composer is a filled field, not a box
-      refute String.contains?(footer, "╰")
-      refute String.contains?(footer, "╭")
+      # the band carries the RUNNING identity and the live status; the
+      # composer's setup row below the field is a different row
+      assert String.contains?(row, "agent build")
+      assert String.contains?(row, Styles.spinner(sync(pid).spin))
+
+      # no frame glyphs: neither the band nor the composer is a box
+      refute String.contains?(row, "╰")
+      refute String.contains?(row, "╭")
+
+      # ...and the band sits ABOVE the composer's meta row
+      assert row_with(pid, "thinking") < setup_row(pid)
     end
 
-    test "a started tool is named in the status" do
+    test "an IDLE status is in the band too (the row is permanent)" do
+      pid = start_tui()
+
+      # idle is painted once, by the band: the setup row below the field
+      # carries no status word at all
+      assert Enum.at(buffer(pid), row_with(pid, "○ idle")) =~ "idle"
+      refute Enum.at(buffer(pid), setup_row(pid)) =~ "idle"
+    end
+
+    test "a started tool is named in the band" do
       pid = start_tui()
 
       agent(pid, {:turn_started, "build"})
@@ -114,7 +164,7 @@ defmodule CodingAgent.UI.TrackBStatusTest do
       agent(pid, {:tool_started, "mix"})
 
       assert sync(pid).active_tool == "mix"
-      assert joined(pid) =~ "running mix"
+      assert Enum.at(buffer(pid), row_with(pid, "running mix")) =~ "agent build"
     end
 
     test "tool_executed clears the running tool" do
@@ -127,6 +177,42 @@ defmodule CodingAgent.UI.TrackBStatusTest do
 
       assert sync(pid).active_tool == nil
       refute joined(pid) =~ "running mix"
+      # the band is back to the thinking word, still there
+      assert joined(pid) =~ "thinking"
+    end
+
+    test "the band's identity is the RUNNING agent, not the next one" do
+      pid = start_tui_with("build")
+
+      agent(pid, {:turn_started, "build"})
+      agent(pid, {:status_changed, :running})
+
+      # Tab switches what the NEXT input will use (the composer row); the
+      # running turn keeps its own agent (ADR 018) — which is the whole
+      # reason the band exists
+      key(pid, "tab")
+      assert sync(pid).next_agent != sync(pid).running_agent
+
+      band = Enum.at(buffer(pid), row_with(pid, "thinking"))
+      setup = buffer(pid) |> Enum.at(setup_row(pid))
+
+      assert band =~ "agent build"
+      assert setup =~ sync(pid).next_agent
+      refute setup =~ "agent build"
+    end
+
+    test "the band's identity goes away when the turn ends (idle repeats nothing)" do
+      pid = start_tui_with("build")
+
+      agent(pid, {:turn_started, "build"})
+      agent(pid, {:status_changed, :running})
+      assert Enum.at(buffer(pid), row_with(pid, "thinking")) =~ "agent build"
+
+      agent(pid, {:status_changed, :idle})
+      # idle: the setup row below the field already names the agent and
+      # model, so the band carries the status alone
+      assert Enum.at(buffer(pid), row_with(pid, "○ idle")) =~ "○ idle"
+      refute Enum.at(buffer(pid), row_with(pid, "○ idle")) =~ "agent "
     end
 
     test "activity resets the silence clock" do

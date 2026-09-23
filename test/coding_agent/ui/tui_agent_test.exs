@@ -94,11 +94,12 @@ defmodule CodingAgent.UI.TuiAgentTest do
   # agent_block/2 started delegating to Styles.panel/1.
   #
   # The composer has no frame any more (it is a filled field), so the
-  # "bottom border" is now the field's LAST row: identity on the left,
-  # status on the right. The regression this guards is the same one —
-  # the identity line must be at the BOTTOM of the input rect, not
-  # stacked above the text.
-  test "the input footer sits on the field's last row: identity left, status right" do
+  # "bottom border" is now the field's LAST row, carrying the setup
+  # identity ("agent · model") and nothing else: the status has moved
+  # OFF this row, up into the live band above the field. The regression
+  # this guards is unchanged — the identity line must be at the BOTTOM
+  # of the input rect, not stacked above the text.
+  test "the input footer sits on the field's last row and carries no status" do
     pid = start_app(agent: "build")
     rows = buffer(pid)
 
@@ -111,9 +112,24 @@ defmodule CodingAgent.UI.TuiAgentTest do
     # no box glyphs: the frame is gone (the "c64" report)
     refute row_text =~ "╰"
     refute row_text =~ "╭"
-    # the status rides the SAME row, hugging the right edge
-    assert row_text =~ "○ idle"
-    assert String.trim_trailing(row_text) |> String.ends_with?("idle")
+    # the status does NOT ride this row any more — it lives in the live
+    # band, which sits ABOVE the field and shows the RUNNING session
+    refute row_text =~ "idle"
+    refute row_text =~ "thinking"
+
+    band_row =
+      rows
+      |> Enum.with_index()
+      |> Enum.find(fn {r, _} -> String.contains?(r, "○ idle") end)
+
+    assert band_row != nil
+    assert {_band_text, band_idx} = band_row
+    assert band_idx < idx
+
+    # six rows apart: the band's own bottom padding, the air row between
+    # the band and the field, then the field's rows above its meta line
+    # (top padding, the textarea line, the meta gap)
+    assert idx - band_idx == 6
 
     # and the identity row is BELOW everything else in the input rect:
     # the row above it carries no identity and no typed text

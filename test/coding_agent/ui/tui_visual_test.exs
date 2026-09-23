@@ -382,18 +382,37 @@ defmodule CodingAgent.UI.TuiVisualTest do
       |> Enum.drop_while(fn r -> not String.contains?(r, "APPROVAL") end)
       |> Enum.take(5)
 
-    # the status must stay visible below the dialog: the composer's meta
-    # row is the LAST row of the window now (there is no bottom status
-    # row any more), so this asserts the dialog did not cover it. The
-    # LAST match is the composer (the sidebar names a model too).
-    status_row =
+    # The dialog must not cover the live band (the row above the field) nor
+    # the field itself: the pause it asks about IS the band's status. The
+    # band's "⏸ approval needed" row and the composer's own meta row (setup:
+    # agent · model) both sit BELOW the dialog's bottom border.
+    dialog_bottom =
+      rows
+      |> Enum.with_index()
+      |> Enum.filter(fn {r, _} -> String.contains?(r, "╚") end)
+      |> List.first()
+      |> elem(1)
+
+    band_row =
       rows
       |> Enum.with_index()
       |> Enum.filter(fn {r, _} -> String.contains?(r, "approval needed") end)
+      |> List.first()
+      |> elem(1)
+
+    setup_row =
+      rows
+      |> Enum.with_index()
+      |> Enum.filter(fn {r, _} -> String.contains?(r, "model ") end)
       |> List.last()
       |> elem(1)
 
-    assert rows |> Enum.at(status_row) |> String.contains?("model ")
+    # band above the field, field above the window's last row, both below
+    # the dialog — and the pause rides the band, not the setup row
+    assert band_row < setup_row
+    assert band_row > dialog_bottom
+    assert setup_row > dialog_bottom
+    refute rows |> Enum.at(setup_row) |> String.contains?("approval needed")
 
     # y = approve line present
     assert Enum.any?(dialog_rows, &String.contains?(&1, "y = approve"))

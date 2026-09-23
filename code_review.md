@@ -277,13 +277,6 @@ leverage.
       clamp, hit-test and status all use it.
 - [ ] **P4 — Replace `test_mode?` branches with injected behaviours** where it
       has already let bugs slip.
-- [ ] **P4 (cosmetic) — the session id left the frame with the bottom row.**
-      The row was dropped (2026, `ui_redesign.md` §7): the composer's meta row
-      already answered "what is happening now", and the row's own label was a
-      second renderer of the same status. With it went the visible session id.
-      The id still lives in the state and in the picker (ADR 020). If it should
-      be visible while typing, it needs its own slot (a sidebar row or the
-      picker head) — not more spans on the meta row.
 - [ ] **P4 (cosmetic, Track B step 6/E) — glyph passes.** The status
       vocabulary is centralized (`Styles.status_badge/1`), but three
       surfaces still use plain text or ad-hoc glyphs:
@@ -582,12 +575,18 @@ live feedback:
   (warning/error/agent/model/user/accent) stay named on purpose — their
   meaning is "whatever this terminal calls red/cyan".
 - the **composer is no longer a box**. It is a filled field on the chrome
-  grey with no border, its identity line and the status sharing one bottom
-  row (`Styles.panel(borders: [], surface: :chrome, titles: [...])`). The
-  frame read as "c64"; measuring showed a widget-level bg fills only the
-  rows the widget writes, so `Styles.panel/1` now defaults the block's
-  `style` to the surface fill. `input_height/1` reserves one line for the
-  bottom title (it used to reserve two border rows) — `measure = paint`.
+  grey with no border, its setup row below the field naming the agent and
+  model the *next* input will use (`Styles.panel(borders: [], surface:
+  :chrome, titles: [...])`). The frame read as "c64"; measuring showed a
+  widget-level bg fills only the rows the widget writes, so `Styles.panel/1`
+  now defaults the block's `style` to the surface fill. `input_height/1`
+  reserves one line for the bottom title (it used to reserve two border rows)
+  — `measure = paint`.
+- the **status left the field's row** (round 4): the glyph, word, spinner and
+  elapsed context live in a permanent **live band** above the input, on the
+  transcript's own `:base` surface, showing the *running* turn's agent and
+  model. What the row below the field says is only what the next input will
+  use. See `ui_redesign.md` §8 and the ADR 018 amendment.
 - colours are asserted through `ExRatatui.CellSession` (`TuiCase.start_cell_tui/2`,
   `cells/1`, `cell/3`): `buffer/1` carries symbols only and can never catch
   a colour regression (`test/coding_agent/ui/tui_cells_test.exs`).
@@ -767,8 +766,13 @@ so activity must be visible.**
 
 (The state this review was written against. What shipped since: the row is
 gone — `ui_redesign.md` §6 and §7. The composer is a filled, borderless panel
-in its own module, and its meta row carries identity, status and the transient
-text; the window's last row is the composer's own bottom padding.)
+in its own module, and its meta row carries the setup identity and the
+transient text; the window's last row is the composer's own bottom padding.
+Round 4 then moved the *status* out of that row into a permanent live band
+above the field — `ui_redesign.md` §8. Correction to an earlier claim here:
+the session id did **not** leave the screen with the row — the sidebar has
+listed it since `f89dbf5` (2026-09-06), so the row was only its *second*
+display; `ui_redesign.md` §7.5.)
 
 Layout (`render_main/2`, `tui.ex:1810-1861`):
 
@@ -777,7 +781,7 @@ Layout (`render_main/2`, `tui.ex:1810-1861`):
 │                   │   transcript (middle, reading measure)
 │                   │
 │                   │   ▏composer: a filled field, no frame
-│                   │   ▏you → plan · glm-5.3        ⠋ running mix
+│                   │   ▏build · model glm                  (setup only)
 └───────────────────┘   status row (bottom, full width, 1 line)
 ```
 
@@ -785,13 +789,19 @@ Layout (`render_main/2`, `tui.ex:1810-1861`):
   (`tui.ex:1820-1824`), while the composer is only reading-measure wide
   (`tui.ex:1840-1844`). So the status is visually detached from both the input
   and the transcript. (The composer is a **filled field with no frame** since
-  the visual pass — `borders: []`, the chrome grey, one bottom title row for
-  identity + status. The remaining duplication above still stands: the bottom
-  row repeats the label.)
+  the visual pass — `borders: []`, the chrome grey, one bottom title row. The
+  remaining duplication above still stands: the bottom row repeats the label.)
+  **Resolved in round 4** (`ui_redesign.md` §8): the bottom row stayed gone, and
+  the status moved up into a live band directly above the field, on the
+  transcript's own background — the "attached to the input" reading of this
+  section, without putting two subjects in one row.
 - `status_widget_plain/1` (`tui.ex:2671-2715`) packs four unrelated things into
   that one line: session id, a glyph + status label, esc-confirm hints, and
   **scroll diagnostics** (`scroll: 3/120 (48 entries, tools shut, h: 22 w: 78)`).
   The diagnostics are debug output shown to the user.
+  *(Quoted as reviewed. ADR 028 later dropped the `/max` from that line: it
+  reports the clamped offset alone, and the format is now
+  `scroll: 3 (48 entries, tools shut, h: 22 w: 78)`.)*
 - The glyphs already exist but are not a system:
   `:running → "●"`, `:interrupting → "◐"`, `:idle → "○"`,
   `:interrupted → "⏸"`, `:error → "✖"` (`tui.ex:2690-2697`).
@@ -806,9 +816,12 @@ Layout (`render_main/2`, `tui.ex:1810-1861`):
 The status answers "is the model still working on what I asked?". That question
 is asked *at the input box*.
 
-*(Shipped, in a later shape: the status glyph + spinner + label sit on the
+*(Shipped, in a later shape: the status glyph + spinner + label sat on the
 composer's meta row, and the bottom row was dropped entirely —
-`ui_redesign.md` §6/§7. The text below is the original proposal.)*
+`ui_redesign.md` §6/§7. Round 4 moved the status from that row into a live
+band above the field, which is the "directly above the input box" alternative
+this section names below — `ui_redesign.md` §8. The text here is the original
+proposal.)*
 
 Put it on the input box's top border, opposite the
 existing bottom footer:
@@ -953,9 +966,10 @@ error, approval) and leave prose alone.
 
 - step 1: `Styles.status_badge/1` + roles (in the `Styles` pass);
 - step 2 (A): the status badge + spinner render next to the composer's
-  identity line (originally the input box's TOP-RIGHT border; since the
-  visual pass the composer is a borderless filled field and the two share
-  its bottom row — see `ui_redesign.md`);
+  identity line (originally the input box's TOP-RIGHT border; the visual pass
+  made the composer a borderless filled field with the two sharing its bottom
+  row, and round 4 moved the status into the live band above the field —
+  see `ui_redesign.md` §6/§7/§8);
 - step 3 (D): the scroll diagnostics are behind `debug_visible?`
   (`ctrl-x d`); the esc hints live on the composer's meta row now, the
   diagnostics beside them (the bottom row was dropped — `ui_redesign.md` §7);
@@ -968,8 +982,9 @@ error, approval) and leave prose alone.
   done — cosmetic, tracked below.
 
 Tests: `track_b_status_test.exs` (pure frame set + status line, the
-subscription lifecycle, the input-border render, tool naming, the debug
-toggle) and `tool_started_event_test.exs` (core: start precedes result).
+subscription lifecycle, the live band's render, tool naming, the debug
+toggle), `live_band_test.exs` (the band's row composition, its own module
+now) and `tool_started_event_test.exs` (core: start precedes result).
 
 The spinner turned "the app might be hung" into "the tool has been
 running 38 s" — the single biggest perceived-responsiveness win after the

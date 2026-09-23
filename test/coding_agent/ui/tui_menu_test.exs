@@ -111,6 +111,57 @@ defmodule CodingAgent.UI.TuiMenuTest do
     assert st2.menu_popup_id == nil
   end
 
+  # The live band (and the input below it) must never be covered: a popup
+  # longer than the room above the band is WINDOWED around the selection,
+  # not truncated. Found by measuring: `overlay_rect/4` clamped the
+  # keymap list (21 rows) to 20, which silently dropped its last entries
+  # and would have walked the selection off the bottom.
+  test "a popup taller than the room windows around the selection", %{root: tmp_root} do
+    pid = start_tui(tmp_root)
+
+    key(pid, "x", ["ctrl"])
+    key(pid, "k")
+    assert sync(pid).menu_popup_id == :keymaps
+
+    items = sync(pid).menu_popup.items
+    assert length(items) > 17
+
+    # the marker follows the selection and the title names the window
+    key(pid, "down")
+
+    rows = buffer(pid)
+    title = Enum.find(rows, &String.contains?(&1, "keymaps"))
+    assert title =~ "1-17/#{length(items)}"
+    assert Enum.any?(rows, &String.contains?(&1, "❯"))
+
+    # walking to the last item scrolls the window to its end — the
+    # selection is never outside the painted range
+    Enum.each(1..(length(items) - 1), fn _ -> key(pid, "down") end)
+
+    assert sync(pid).menu_index == length(items) - 1
+
+    rows = buffer(pid)
+    title = Enum.find(rows, &String.contains?(&1, "keymaps"))
+    assert title =~ "-#{length(items)}/#{length(items)}"
+    assert Enum.any?(rows, &String.contains?(&1, "❯"))
+
+    # ...and the band + the input below it are still there (an overlay
+    # may cover the transcript, never the field)
+    assert buffer(pid) |> Enum.join("\n") =~ "○ idle"
+    assert buffer(pid) |> Enum.find(&String.contains?(&1, "model ")) != nil
+  end
+
+  test "a popup that fits is not titled with a range", %{root: tmp_root} do
+    pid = start_tui(tmp_root)
+
+    key(pid, "x", ["ctrl"])
+    fire(pid, :__menu_timeout__)
+
+    title = buffer(pid) |> Enum.find(&String.contains?(&1, "commands"))
+    refute title =~ ~r/\(\d+-\d+\/\d+\)/
+    assert title =~ "letter=run"
+  end
+
   test "a consumed ctrl-x prefix cancels its timer (stale timer regression)", %{
     root: tmp_root
   } do

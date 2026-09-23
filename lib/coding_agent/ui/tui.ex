@@ -2,11 +2,16 @@ defmodule CodingAgent.UI.Tui do
   @moduledoc """
   The phase-5 terminal UI driver (5a render foundation + 5b interaction).
 
-  Layout: transcript pane (scrollable) / composer panel (input field +
-  its meta row). Input is an ExRatatui Textarea — enter inserts a
-  newline (ADR 011 composition-first default); alt-enter sends the
-  buffer to the agent. The ADR 011 keymap is the action table;
-  UI.Bridge translates terminal events; UI.Keymap resolves actions.
+  Layout: transcript pane (scrollable) / live band (what the RUNNING turn
+  is doing) / composer panel (input field + its setup meta row). The band
+  and the composer are separate rows because they answer separate
+  questions: the band names the agent and model EXECUTING the turn, the
+  composer's row names the ones the NEXT input will use — Tab switches the
+  latter while a running turn keeps its own. Input is an ExRatatui
+  Textarea — enter inserts a newline (ADR 011 composition-first default);
+  alt-enter sends the buffer to the agent. The ADR 011 keymap is the
+  action table; UI.Bridge translates terminal events; UI.Keymap resolves
+  actions.
 
   Approval flow (ADR 010): when the gate interrupts, the pending calls
   render as a dialog; y approves, n rejects, e edits — per-key editing
@@ -24,7 +29,18 @@ defmodule CodingAgent.UI.Tui do
   alias CodingAgent.Core.Session.Store
   alias CodingAgent.Core.Session.Supervisor
   alias CodingAgent.Core.Session.Usage
-  alias CodingAgent.UI.{Bridge, Composer, Editor, Keymap, Menu, Styles, TranscriptView}
+
+  alias CodingAgent.UI.{
+    Bridge,
+    Composer,
+    Editor,
+    Keymap,
+    LiveBand,
+    Menu,
+    Styles,
+    TranscriptView
+  }
+
   alias ExRatatui.Event
   alias ExRatatui.Layout
   alias ExRatatui.Layout.Rect
@@ -55,17 +71,50 @@ defmodule CodingAgent.UI.Tui do
   @spin_tick :__spin__
 
   # rows the transcript pane loses to chrome: app margin top+bottom (2)
-  # + spacing above/below it (2) + composer panel. Kept in one place so
-  # the manual dimension math (mount/poller/resize/clamp) agrees with
-  # the layout; render-side and live handlers use layout_overhead(state).
-  # The composer's own height lives in `UI.Composer.height/1`
-  # (measure = paint). There is no bottom status row any more: the
-  # transient text it carried lives on the composer's meta row.
-  @layout_overhead 2 + 2 + Composer.min_height()
+  # + spacing above/below it (2) + the live band + composer panel. Kept
+  # in one place so the manual dimension math
+  # (mount/poller/resize/clamp) agrees with the layout; render-side and
+  # live handlers use layout_overhead(state). The heights live in
+  # `UI.LiveBand.height/0` and `UI.Composer.height/1` (measure = paint).
+  @layout_overhead 2 + 2 + LiveBand.height() + Composer.min_height()
 
   defp input_height(state), do: Composer.height(composer(state))
 
-  defp layout_overhead(state), do: 2 + 2 + input_height(state)
+  defp layout_overhead(state), do: 2 + 2 + LiveBand.height() + input_height(state)
+
+  # The room every OVERLAY (menu, approval, budget, doom, question) has:
+  # the rows above the live band. An overlay may cover the transcript (the
+  # least costly surface) but never the input field or the band — the band
+  # is the running turn's status, and a dialog that hid it would hide the
+  # one row the owner asked to keep in sight.
+  #
+  # One function for both the cap and the placement, because they are the
+  # same number: an overlay's height is clamped to this room and its
+  # bottom edge IS this room's last row. Two separate offsets is how the
+  # menu popup ended up placed at a negative row (a 26-row popup on a
+  # 30-row window, measured live as `draw error: rect.y unexpected
+  # value`).
+  #
+  # The heights are MEASURED, not assumed: a grown input pushes the band
+  # up and the overlays move with it. The fixed `area.height - 4` cap and
+  # `area.height - h - 3` offset this replaces only worked while the row
+  # they must not cover was the composer's own meta row.
+  defp overlay_room(state, area) do
+    max(area.height - input_height(state) - LiveBand.height() - 2, 1)
+  end
+
+  # an overlay's rect: bottom edge on the room's last row, centered
+  # horizontally, at most as tall as the room
+  defp overlay_rect(state, area, h, w) do
+    h = min(h, overlay_room(state, area))
+
+    %Rect{
+      x: div(max(area.width - w, 0), 2),
+      y: overlay_room(state, area) - h,
+      width: w,
+      height: h
+    }
+  end
 
   # columns the transcript loses: app margin left+right (2) + the
   # 1-cell inner inset the renderer uses (pane.x + 1 and width - 2)
@@ -1562,9 +1611,20 @@ defmodule CodingAgent.UI.Tui do
   defp menu_widgets(state, area) do
     items = state.menu_popup.items
 
+    # The popup must stay ABOVE the live band, so a list longer than the
+    # room has to become a WINDOW around the selection: truncating it
+    # would silently drop rows (the keymap list is 21 entries, the room
+    # 20 rows at 100x30) and the selection marker would walk off the
+    # bottom. The marker keeps the ABSOLUTE index, so navigation is
+    # unchanged — only what is painted moves.
+    room = overlay_room(state, area)
+    visible = max(room - 3, 1)
+    offset = window_offset(state.menu_index, length(items), visible)
+    window = Enum.slice(items, offset, visible)
+
     rows =
-      items
-      |> Enum.with_index()
+      window
+      |> Enum.with_index(offset)
       |> Enum.map(fn {item, i} ->
         marker = if i == state.menu_index, do: "❯ ", else: "  "
 
@@ -1581,13 +1641,15 @@ defmodule CodingAgent.UI.Tui do
         "#{marker}#{String.pad_trailing(key, 3)}#{label}"
       end)
 
-    body = ([" " <> state.menu_popup.title] ++ rows) |> Enum.join("\n")
+    body =
+      ([" " <> popup_title(state.menu_popup, offset, length(window), length(items))] ++ rows)
+      |> Enum.join("\n")
 
-    h = min(length(rows) + 3, area.height - 4)
+    # the popup and the band may not overlap, and the popup can be taller
+    # than the room above it: `overlay_rect/4` clamps it (a menu taller
+    # than the pane used to be placed at a negative row)
     w = min(60, area.width - 4)
-    x = div(max(area.width - w, 0), 2)
-    y = area.height - h - 3
-    rect = %Rect{x: x, y: y, width: w, height: h}
+    rect = overlay_rect(state, area, length(rows) + 3, w)
 
     widget = %Paragraph{
       text: body,
@@ -1601,6 +1663,27 @@ defmodule CodingAgent.UI.Tui do
     }
 
     [{%Clear{}, rect}, {widget, rect}]
+  end
+
+  # The window's first item: it follows the selection only when the
+  # selection would leave it, so a short list never scrolls and a long one
+  # behaves like a viewport (the same tail-anchored-in-reverse idea as the
+  # transcript, one dimension down).
+  defp window_offset(index, total, visible) do
+    max(min(index - div(visible, 2), total - visible), 0)
+  end
+
+  # The title, with the position when the list is longer than the window:
+  # a windowed list that does not say it is one is a lie of omission (the
+  # "17 of 21" is the honest form of the truncation this replaces).
+  defp popup_title(popup, offset, shown, total) do
+    base = popup.title
+
+    if shown < total do
+      "#{base}  (#{offset + 1}-#{offset + shown}/#{total})"
+    else
+      base
+    end
   end
 
   # switch attach: delegate to mount_session (start_session returns
@@ -2535,11 +2618,21 @@ defmodule CodingAgent.UI.Tui do
 
   def handle_info({:agent, {:turn_started, agent}}, state) do
     # the session resolved the agent this turn is running as; refresh the
-    # live attribution used by streaming lines and the running slot.
+    # live attribution used by streaming lines and the live band.
     # Starting the silence clock here means a turn that produces no delta
     # for a while still reads "thinking · Ns".
+    #
+    # The MODEL is re-resolved here too: a resumed session whose
+    # definition changed on disk must show the model the turn is really
+    # running on, not the one resolved at mount.
     state = touch(state)
-    {:noreply, %{state | active_agent: agent, running_agent: agent}}
+
+    model =
+      Map.get(state, :running_agent_model) ||
+        agent_model(session_scope(state.session_id), agent) ||
+        Map.get(state, :model)
+
+    {:noreply, %{state | active_agent: agent, running_agent: agent, running_agent_model: model}}
   end
 
   def handle_info({:__run__, prompt}, state) do
@@ -2732,10 +2825,9 @@ defmodule CodingAgent.UI.Tui do
 
     # breathing: 1 cell of background visible on every side of the app
     # and between the two regions (opencode-comparison lesson: crammed
-    # vs airy is margins + spacing, not line height). There is NO bottom
-    # status row: the composer's meta row already answers "what is
-    # happening now" next to the input (the transient text moved there),
-    # so the window's last row was pure repetition.
+    # vs airy is margins + spacing, not line height). The window's bottom
+    # row is the composer's own padding now (the bottom status row is
+    # gone), and the live band sits between the transcript and the field.
     [main_area] =
       Layout.split(area, :vertical, [{:min, 0}], margin: 1, spacing: 1)
 
@@ -2750,14 +2842,23 @@ defmodule CodingAgent.UI.Tui do
       end
 
     in_h = input_height(state)
+    band_h = LiveBand.height()
 
     # input pane width: capped at the reading measure so a wide
     # terminal doesn't stretch the input full width (user feedback)
     [mid_area, _air_area] =
       Layout.split(mid_area, :horizontal, [{:length, min(@measure, mid_area.width)}, {:min, 0}])
 
-    [transcript_area, input_area] =
-      Layout.split(mid_area, :vertical, [{:min, 0}, {:length, in_h}], spacing: 1)
+    # three stacked regions sharing ONE air row between them: transcript,
+    # the live band (what the running turn is doing), the input field
+    # (what the next input will use). The air row is what separates them
+    # visually — no borders anywhere in this stack.
+    [transcript_area, _air1, band_area, _air2, input_area] =
+      Layout.split(
+        mid_area,
+        :vertical,
+        [{:min, 0}, {:length, 1}, {:length, band_h}, {:length, 1}, {:length, in_h}]
+      )
 
     sidebar_widgets =
       if sidebar_area do
@@ -2769,6 +2870,7 @@ defmodule CodingAgent.UI.Tui do
     widgets =
       transcript_widgets(state, transcript_area) ++
         sidebar_widgets ++
+        LiveBand.placements(live_band(state), band_area) ++
         Composer.placements(composer(state), input_area)
 
     widgets ++
@@ -3263,26 +3365,60 @@ defmodule CodingAgent.UI.Tui do
   defp composer(state) do
     # The composer panel (UI.Composer): the input field plus its meta row
     # on ONE chrome surface. All the geometry and the look live there —
-    # this module only resolves the VALUES (identity, status, the
-    # transient note) and hands them over. Layout and time are separated:
-    # the elapsed seconds are computed here (this module owns the clock),
-    # the composer only formats them.
+    # this module only resolves the VALUES (the setup identity and the
+    # transient note) and hands them over.
+    #
+    # This row is SETUP — what the NEXT input will use. The status of the
+    # RUNNING turn lives in the live band above the field (see there).
     Composer.new(
       textarea: state.textarea,
       placeholder: "Message the agent… (alt-enter sends)",
       agent: Map.get(state, :next_agent),
       # the effective model: the next agent's own definition wins over the
-      # session's (the footer must name the model the NEXT input would use)
+      # session's (the row must name the model the NEXT input would use)
       model: Map.get(state, :next_agent_model) || Map.get(state, :model),
-      status: state.status,
-      provider_down?: Map.get(state, :provider_down?, false),
-      spin: Map.get(state, :spin, 0),
-      active_tool: Map.get(state, :active_tool),
-      tool_elapsed_s: tool_elapsed_s(state),
-      silence_s: silence_s(state),
       note: esc_hint(state) || Map.get(state, :menu_note),
       diagnostics: if(Map.get(state, :debug_visible?, false), do: scroll_diagnostics(state))
     )
+  end
+
+  # The live band (UI.LiveBand): the row between the transcript and the
+  # input that says what the RUNNING turn is doing — which agent and
+  # model are executing it, plus the status glyph/word and the elapsed
+  # context. Identity and status can differ from the composer's SETUP
+  # row BELOW, which is the whole reason it exists (Tab changes the next
+  # agent; the running turn keeps its own until the turn boundary). The
+  # clock is resolved here, the words there.
+  defp live_band(state) do
+    LiveBand.new(
+      agent: Map.get(state, :running_agent),
+      model: Map.get(state, :running_agent_model) || Map.get(state, :model),
+      status: state.status,
+      provider_down?: Map.get(state, :provider_down?, false),
+      spin: Map.get(state, :spin, 0),
+      elapsed_s: band_elapsed_s(state),
+      label: band_label(state)
+    )
+  end
+
+  # the elapsed context: the TOOL's runtime while a tool is in flight
+  # (that is what the reader is waiting on), the silence duration while
+  # the model is thinking. One value, one meaning.
+  defp band_elapsed_s(state) do
+    case Map.get(state, :active_tool) do
+      tool when is_binary(tool) -> tool_elapsed_s(state)
+      _ -> silence_s(state)
+    end
+  end
+
+  # the status WORD: the tool names itself while it runs ("running mix"),
+  # otherwise the busy turn is "thinking" and an idle one carries the
+  # badge's own word (nil = let `Styles.status_line/6` choose it)
+  defp band_label(state) do
+    case Map.get(state, :active_tool) do
+      tool when is_binary(tool) -> "running #{tool}"
+      _ -> if Styles.busy?(state.status), do: "thinking", else: nil
+    end
   end
 
   # The esc-confirm hints ("esc again to quit/stop"): the armed double
@@ -3773,7 +3909,7 @@ defmodule CodingAgent.UI.Tui do
 
   defp dialog_widgets(%{deciding?: true}, _area), do: []
 
-  defp dialog_widgets(%{pending: pending}, area) do
+  defp dialog_widgets(%{pending: pending} = state, area) do
     pending
     |> Enum.with_index()
     |> Enum.map(fn {call, i} ->
@@ -3827,8 +3963,7 @@ defmodule CodingAgent.UI.Tui do
       # cap at the reading measure and center: a wide terminal must
       # not stretch the dialog edge to edge (live report)
       w = min(@measure + 2, area.width - 4)
-      x = div(max(area.width - w, 0), 2)
-      rect = %Rect{x: x, y: area.height - h - 3, width: w, height: h}
+      rect = overlay_rect(state, area, h, w)
       [{%Clear{}, rect}, {widget, rect}]
     end)
     |> List.flatten()
@@ -3840,7 +3975,7 @@ defmodule CodingAgent.UI.Tui do
   # no pending tool calls.
   defp budget_widgets(%{budget_prompt: nil}, _area), do: []
 
-  defp budget_widgets(%{budget_prompt: %{budget: budget}}, area) do
+  defp budget_widgets(%{budget_prompt: %{budget: budget}} = state, area) do
     text =
       "The turn has used its #{budget}-round tool budget.\n\n" <>
         "y = continue (another #{budget} rounds)   n = stop (summarize)"
@@ -3866,8 +4001,7 @@ defmodule CodingAgent.UI.Tui do
     }
 
     w = min(@measure + 2, area.width - 4)
-    x = div(max(area.width - w, 0), 2)
-    rect = %Rect{x: x, y: area.height - h - 3, width: w, height: h}
+    rect = overlay_rect(state, area, h, w)
     [{%Clear{}, rect}, {widget, rect}]
   end
 
@@ -3875,7 +4009,7 @@ defmodule CodingAgent.UI.Tui do
   # repeated round, n rejects it (steers the model off the repetition).
   defp doom_widgets(%{doom_prompt: nil}, _area), do: []
 
-  defp doom_widgets(%{doom_prompt: %{tool: tool}}, area) do
+  defp doom_widgets(%{doom_prompt: %{tool: tool}} = state, area) do
     text =
       "Repeated call detected: #{tool} was called 3 times with identical\n" <>
         "arguments. This is usually a loop.\n\n" <>
@@ -3902,8 +4036,7 @@ defmodule CodingAgent.UI.Tui do
     }
 
     w = min(@measure + 2, area.width - 4)
-    x = div(max(area.width - w, 0), 2)
-    rect = %Rect{x: x, y: area.height - h - 3, width: w, height: h}
+    rect = overlay_rect(state, area, h, w)
     [{%Clear{}, rect}, {widget, rect}]
   end
 
@@ -3911,7 +4044,7 @@ defmodule CodingAgent.UI.Tui do
   # numbered, the always-present "type your own" row, and the controls.
   defp question_widgets(%{question_prompt: nil}, _area), do: []
 
-  defp question_widgets(%{question_prompt: qp}, area) do
+  defp question_widgets(%{question_prompt: qp} = state, area) do
     question = Enum.at(qp.questions, qp.index)
     options = question["options"] || []
     multiple? = question["multiple"] || false
@@ -3970,8 +4103,7 @@ defmodule CodingAgent.UI.Tui do
     }
 
     w = min(@measure + 2, area.width - 4)
-    x = div(max(area.width - w, 0), 2)
-    rect = %Rect{x: x, y: area.height - h - 3, width: w, height: h}
+    rect = overlay_rect(state, area, h, w)
     [{%Clear{}, rect}, {widget, rect}]
   end
 

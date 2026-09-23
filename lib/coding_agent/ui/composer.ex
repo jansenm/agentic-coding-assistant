@@ -5,18 +5,17 @@ defmodule CodingAgent.UI.Composer do
 
   This is the single home for the composer's geometry and its look. The
   TUI (`CodingAgent.UI.Tui`) supplies a struct of already-resolved
-  values — the textarea handle, the identity names, the status — and this
-  module measures the panel and places the widgets. Nothing here reads
-  config, the session or the clock: the caller resolves the elapsed
-  seconds and passes them in, so *layout* and *time* stay separate
-  concerns.
+  values — the textarea handle, the identity names, the transient note —
+  and this module measures the panel and places the widgets. Nothing here
+  reads config, the session or the clock: the caller resolves the strings
+  and passes them in, so *layout* and *state* stay separate concerns.
 
   ## Geometry (the "gepresst" report)
 
       +--------------------------------------------+  <- chrome fill, WHOLE rect
       |  <textarea>                                 |  <- 1-cell padding
       |                                             |  <- one blank row of air
-      |  build · model …                  ○ idle    |  <- meta row: identity | slot
+      |  build · model …                            |  <- SETUP row: next input
       +--------------------------------------------+
 
   There is deliberately NO border — a frame around the field read as
@@ -35,16 +34,20 @@ defmodule CodingAgent.UI.Composer do
   The right half of that row is the composer's OUTERMOST row, so it is
   where transient text lives: the caller's `note` (an esc confirm, the
   menu prompt, a one-off "model → …" report, or — behind a debug flag —
-  the scroll diagnostics). This is why the layout has no separate status
-  row at the window bottom any more: the composer answers "what is
-  happening now" next to the input, and the window's last row was pure
-  repetition of it.
+  the scroll diagnostics). With neither, the right half is EMPTY — the
+  status is not this row's job (see below).
 
-  A note does not hide the status glyph: the badge's glyph stays (only
-  its word is dropped) so a running turn stays visible while a hint is
-  on screen. The word goes because the two would collide on a narrow
-  pane — and a hint ("esc again to stop") is more urgent than the word
-  "thinking".
+  ## This row is SETUP; the status is the live band above
+  ## (owner decision, 2026-09-23)
+
+  The meta row answers "what will handle the NEXT input": the agent and
+  model that Tab and the model menu change. What the RUNNING turn is
+  doing is a different question — the two can differ, because a switch
+  applies at the turn boundary — so it lives in its own row above the
+  field (`UI.LiveBand`), which ALWAYS paints the status, running or not.
+  Two places answering the same question is how a UI starts lying, so
+  this module is handed no status at all: the note and the diagnostics
+  are the only transient text here.
   """
   alias CodingAgent.UI.Styles
   alias ExRatatui.Layout
@@ -70,12 +73,6 @@ defmodule CodingAgent.UI.Composer do
           placeholder: String.t(),
           agent: String.t() | nil,
           model: String.t() | nil,
-          status: atom(),
-          provider_down?: boolean(),
-          spin: non_neg_integer() | nil,
-          active_tool: String.t() | nil,
-          tool_elapsed_s: non_neg_integer() | nil,
-          silence_s: non_neg_integer() | nil,
           note: String.t() | nil,
           diagnostics: String.t() | nil,
           max_lines: pos_integer()
@@ -85,12 +82,6 @@ defmodule CodingAgent.UI.Composer do
             placeholder: "",
             agent: nil,
             model: nil,
-            status: :idle,
-            provider_down?: false,
-            spin: nil,
-            active_tool: nil,
-            tool_elapsed_s: nil,
-            silence_s: nil,
             note: nil,
             diagnostics: nil,
             max_lines: @max_lines
@@ -224,21 +215,17 @@ defmodule CodingAgent.UI.Composer do
   # The right half of the meta row: the composer's OUTERMOST row, so the
   # one place transient text can live without reflowing anything. The
   # `note` (esc confirm, menu prompt, a report like "model → …") wins
-  # over a bare debug `diagnostics` dump; with neither, the row shows
-  # the status. Only the status' WORD is dropped when a note is on
-  # screen: its glyph stays, so a running turn is still visible under a
-  # hint, and the row cannot overflow.
+  # over a bare debug `diagnostics` dump; with neither, the half is
+  # blank.
+  #
+  # The status is NOT here — it is the live band's job (`UI.LiveBand`,
+  # above the field), and it paints it whether or not a turn runs. A
+  # second copy on this row would be the same fact twice, next to a
+  # DIFFERENT identity (this row names what the next input will use).
   defp slot(composer) do
     cond do
       is_binary(composer.note) ->
-        Styles.status_line(
-          composer.status,
-          composer.provider_down?,
-          nil,
-          nil,
-          composer.note,
-          :chrome
-        )
+        Text.Line.new([Text.Span.new(composer.note, style: Styles.role(:muted, :chrome))])
 
       is_binary(composer.diagnostics) ->
         Text.Line.new([
@@ -246,39 +233,7 @@ defmodule CodingAgent.UI.Composer do
         ])
 
       true ->
-        status(composer)
-    end
-  end
-
-  # the status answers "is the model still working?", asked at the input.
-  # The active tool names itself; a busy-but-silent turn shows the silence
-  # duration.
-  defp status(composer) do
-    step = if Styles.busy?(composer.status), do: composer.spin, else: nil
-
-    case composer.active_tool do
-      tool when is_binary(tool) ->
-        Styles.status_line(
-          composer.status,
-          composer.provider_down?,
-          step,
-          composer.tool_elapsed_s,
-          "running #{tool}",
-          :chrome
-        )
-
-      nil ->
-        label = if Styles.busy?(composer.status), do: "thinking", else: nil
-        elapsed = if label, do: composer.silence_s, else: nil
-
-        Styles.status_line(
-          composer.status,
-          composer.provider_down?,
-          step,
-          elapsed,
-          label,
-          :chrome
-        )
+        Text.Line.new([Text.Span.new("", style: Styles.role(:muted, :chrome))])
     end
   end
 end

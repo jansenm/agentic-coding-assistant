@@ -299,14 +299,17 @@ defmodule CodingAgent.UI.Styles do
   def busy?(status), do: status in [:running, :interrupting]
 
   @doc """
-  The status line for the composer's meta row: `⠋ running · 12s`.
+  The status line: `⠋ running · 12s`. The one composition of glyph +
+  word + elapsed, so the band above the input and any future caller
+  cannot drift apart on wording or frame.
+
   `elapsed_s` is nil (not shown) when the turn just started, so a fast
   turn never flashes a duration. `label` overrides the badge's default
-  text (e.g. `"running mix"` while a tool is in flight, or a transient
-  hint like an esc confirm).
+  text (`"running mix"` while a tool is in flight, `"thinking"` while
+  the model is silent, `nil` for the badge's own word).
 
-  Returns a `%Text.Line{}` so it composes in a `Block.Title`, the same
-  way the identity footer does.
+  Returns a `%Text.Line{}`, so a caller can place it in a `Paragraph`
+  or a `Block.Title` and append its own spans.
   """
   @spec status_line(
           atom(),
@@ -340,7 +343,7 @@ defmodule CodingAgent.UI.Styles do
       end
 
     Text.Line.new([
-      Text.Span.new(" #{glyph} ", style: badge.style),
+      Text.Span.new("#{glyph} ", style: badge.style),
       Text.Span.new((label || badge.label) <> elapsed, style: role(:muted, surface))
     ])
   end
