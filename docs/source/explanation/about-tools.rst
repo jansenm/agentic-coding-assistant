@@ -1,9 +1,9 @@
 About the tool subsystem
 ========================
 
-The tool subsystem lets the agent act on the world: list directories,
-read files, later write and execute. This page explains the design and
-its policy boundary; the req_llm integration specifics are in
+The tool subsystem lets the agent act on the world: list and read files,
+search them, edit and write them, and run commands. This page explains the
+design and its policy boundary; the req_llm integration specifics are in
 :doc:`about-req-llm`.
 
 Structure
@@ -12,20 +12,22 @@ Structure
 A *tool* is a ``ReqLLM.Tool`` struct — plain data with a name,
 description, parameter schema and callback. The registry
 (:mod:`CodingAgent.Core.Tools`) owns construction and answers the policy
-question "which tools does this session have?". The session loop:
-executes requested tools, appends results to the context, and re-calls
-the model until a final answer or a loop limit.
+question "which tools does this session have?" — ``read_only/1`` for the
+tools that run without a check, ``gated/1`` for the ones that answer to
+the permission gate. The session loop: executes requested tools, appends
+results to the context, and re-calls the model until a final answer or a
+loop limit.
 
 Read-only allow-by-policy (slice 2a)
 ------------------------------------
 
-All tools registered today are read-only by construction, so they run
+The original seven tools are read-only by construction, so they run
 without a permission check: **allow-by-policy**. The guarantee lives in
 exactly one place — the registry's ``read_only/1`` — which is therefore
 the single audit point: a tool that writes must never appear there, and
 must not bypass the permission gate introduced in slice 2b.
 
-Two defenses bound even the read-only tools:
+Two defenses apply even to the read-only tools:
 
 - **Scope**: every tool receives a scope root (the session's working
   directory); all paths are resolved against it.
@@ -46,9 +48,14 @@ Two defenses bound even the read-only tools:
   be distinguished from a regular file by the filesystem interface and
   a VCS-driven workspace cannot create them.
 
-- **Read caps** (256 KiB) and a global tool-round limit (12 per turn)
-  bound context growth and runaway loops — both exist because tool
-  output, not the user, is what fills a working context fastest.
+- **Read caps** (256 KiB per file, 1 MiB per grepped file, 200 grep
+  matches, 500 glob results, 2000 files per walk) and a **per-turn
+  tool-round budget** bound context growth and runaway loops — both exist
+  because tool output, not the user, is what fills a working context
+  fastest. The budget is layered (``max_tool_rounds`` in ``config.toml``,
+  project over global; default 100) and, when it trips interactively, it
+  asks the user whether to continue with another budget or wrap the turn
+  up (ADR 025).
 
 The gate (slice 2b)
 -------------------
@@ -148,10 +155,8 @@ The build/vendor list is separate and always applies: ``_build``,
 walked (never useful, always wasteful) — except when named as the
 target, because naming beats filtering at every layer.
 
-Caps bound the blast radius: 200 grep matches (capped message tells
-the model to narrow the pattern), 500 glob results, 2000 files per
-walk, 1 MiB per file, 500-char lines. Binary files are skipped by a
-NUL-byte sniff.
+Binary files are skipped by a NUL-byte sniff and long lines are clipped at
+500 chars, so a minified file cannot blow up the context.
 
 Editing: targeted replacement (slice 2e)
 ----------------------------------------
