@@ -1,9 +1,9 @@
 About the tool subsystem
 ========================
 
-The tool subsystem lets the agent act on the world: list directories,
-read files, later write and execute. This page explains the design and
-its policy boundary; the req_llm integration specifics are in
+The tool subsystem lets the agent act on the world: list and read files,
+search them, edit and write them, and run commands. This page explains the
+design and its policy boundary; the req_llm integration specifics are in
 :doc:`about-req-llm`.
 
 Structure
@@ -12,20 +12,24 @@ Structure
 A *tool* is a ``ReqLLM.Tool`` struct — plain data with a name,
 description, parameter schema and callback. The registry
 (:mod:`CodingAgent.Core.Tools`) owns construction and answers the policy
-question "which tools does this session have?". The session loop:
-executes requested tools, appends results to the context, and re-calls
-the model until a final answer or a loop limit.
+question "which tools does this session have?" — ``read_only/1`` for the
+tools that run without a check, ``gated/1`` for the ones that answer to
+the permission gate. The session loop: executes requested tools, appends
+results to the context, and re-calls the model until a final answer or a
+loop limit.
 
 Read-only allow-by-policy (slice 2a)
 ------------------------------------
 
-All tools registered today are read-only by construction, so they run
-without a permission check: **allow-by-policy**. The guarantee lives in
-exactly one place — the registry's ``read_only/1`` — which is therefore
-the single audit point: a tool that writes must never appear there, and
-must not bypass the permission gate introduced in slice 2b.
+The read-only tools — ``list_dir``, ``read_file``, ``grep`` and ``glob``,
+plus ``question`` (answered by the session, not executed) — are read-only
+by construction, so they run without a permission check:
+**allow-by-policy**. The guarantee lives in exactly one place — the
+registry's ``read_only/1`` — which is therefore the single audit point: a
+tool that writes must never appear there, and must not bypass the
+permission gate introduced in slice 2b.
 
-Two defenses bound even the read-only tools:
+Two defenses apply even to the read-only tools:
 
 - **Scope**: every tool receives a scope root (the session's working
   directory); all paths are resolved against it.
@@ -46,9 +50,14 @@ Two defenses bound even the read-only tools:
   be distinguished from a regular file by the filesystem interface and
   a VCS-driven workspace cannot create them.
 
-- **Read caps** (256 KiB) and a global tool-round limit (12 per turn)
-  bound context growth and runaway loops — both exist because tool
-  output, not the user, is what fills a working context fastest.
+- **Read caps** (256 KiB per file, 1 MiB per grepped file, 200 grep
+  matches, 500 glob results, 2000 files per walk) and a **per-turn
+  tool-round budget** bound context growth and runaway loops — both exist
+  because tool output, not the user, is what fills a working context
+  fastest. The budget is layered (``max_tool_rounds`` in ``config.toml``,
+  project over global; default 100) and, when it trips interactively, it
+  asks the user whether to continue with another budget or wrap the turn
+  up (ADR 025).
 
 The gate (slice 2b)
 -------------------
@@ -95,14 +104,64 @@ expand. Elixir 1.20 removed ``Path.match/2``, so the matcher lives in
 :mod:`CodingAgent.Core.Tools.Glob` — plain functions, unit-tested
 against the classic glob table.
 
-Caps bound the blast radius: 200 grep matches (capped message tells
-the model to narrow the pattern), 500 glob results, 2000 files per
-walk, 1 MiB per file, 500-char lines. Binary files are skipped by a
-NUL-byte sniff; hidden dirs, ``_build``, ``deps`` and ``.git`` are
-never walked (never useful, always wasteful).
+Delegation: two engines, one answer (ADR 016)
+---------------------------------------------
+
+Both tools delegate to the native engine when it is on ``PATH``
+(``rg`` for grep, ``fd`` for glob) and keep the Elixir walk as the
+reference fallback (portability, and a machine with no ``rg``/``fd``
+and no network to install one). The delegated run goes through
+``Exec`` under the read-only sandbox profile — the same single
+execution path as ``shell`` and ``git``.
+
+The reference engine **defines** the answer; the native engine is
+measured against it. Measured, the two used to be two tools wearing
+one name: ``fd --glob`` matches the entry *name*, so every documented
+shape with a ``/`` (``lib/**/*.ex``) returned 0 files where the walk
+found 59; both binaries are smart-case by default; ``fd``'s dialect is
+richer (character classes, ``!`` negation, ``\`` quotes); ``rg``'s own
+glob was *narrower* than ours and silently dropped matches; a
+non-zero exit was formatted as a result (``Exec`` merges stderr into
+stdout). So:
+
+- a pattern with a ``/`` goes to ``fd`` root-anchored and absolute
+  (``--absolute-path --full-path``), and a pattern fd would read
+  differently stays on the reference engine (``fd_dialect?/1``);
+- ``rg`` never receives the caller's glob: it searches wide and every
+  match is re-filtered by ``Glob.file_match?/3`` — the one rule, in
+  one function, so a pattern means the same thing in ``glob`` and in
+  ``grep``'s ``glob`` argument;
+- errors are not results: a non-zero exit falls back to the walk
+  (``fd`` reports "no matches" with exit 0 — the 0/1 convention
+  belongs to its ``--quiet`` flag).
+
+``SearchDelegationTest`` "engine agreement" pins it: every documented
+shape runs twice, once with the binary and once with the probe forced
+off, and the two answers must be identical.
+
+Hidden entries: a default, not a wall
+-------------------------------------
+
+Hidden entries are skipped in both engines by the *same* rule
+(``Containment.hidden_entry?/1`` — any dot segment, files and
+directories alike; before it the walk pruned hidden *dirs* only, so a
+plain search saw dotfiles that ``rg``/``fd`` never returned), and the
+way to ask for them is to **name** them (``.gitignore``, ``.*``,
+``.idea/*``, ``path: ".github"``) — POSIX spelling, nothing new to
+remember. ``--hidden`` is passed to both binaries so a named entry can
+be found, and the result is filtered afterwards so a pattern that did
+not ask cannot gain one.
+
+The build/vendor list is separate and always applies: ``_build``,
+``deps``, ``.git``, ``doc``, ``cover``, ``.elixir_ls`` are never
+walked (never useful, always wasteful) — except when named as the
+target, because naming beats filtering at every layer.
+
+Binary files are skipped by a NUL-byte sniff and long lines are clipped at
+500 chars, so a minified file cannot blow up the context.
 
 Editing: targeted replacement (slice 2e)
------------------------------------------
+----------------------------------------
 
 ``edit`` replaces an exact string: ``old_string`` must occur *exactly
 once*, else the tool refuses — a stale match ("not found") and an
