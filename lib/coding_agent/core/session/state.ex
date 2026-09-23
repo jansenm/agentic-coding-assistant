@@ -53,6 +53,10 @@ defmodule CodingAgent.Core.Session.State do
     # ADR 026): %{calls, tool} when the user was asked continue/reject.
     # nil otherwise.
     doom_pause: nil,
+    # Parked on a question the model asked (ADR 027): %{calls, questions}
+    # while the human is answering. nil otherwise. The whole round is held
+    # so the exchange stays atomic.
+    question_pause: nil,
     # The last few tool-call ROUND signatures of the CURRENT turn, newest
     # last — each is a sorted list of {name, args}. The window the
     # doom-loop guard looks at (ADR 026). Runtime-only: reset per turn
@@ -139,6 +143,7 @@ defmodule CodingAgent.Core.Session.State do
           pending_round_results: [map()],
           budget_pause: map() | nil,
           doom_pause: map() | nil,
+          question_pause: map() | nil,
           recent_calls: [[{String.t(), map()}]],
           interactive: boolean(),
           subscribers: [reference()],
@@ -243,6 +248,8 @@ defmodule CodingAgent.Core.Session.State do
       budget_pause: Map.get(state, :budget_pause),
       # a doom-loop pause is durable the same way (ADR 026)
       doom_pause: Map.get(state, :doom_pause),
+      # a question pause is durable too (ADR 027)
+      question_pause: Map.get(state, :question_pause),
       # the detection window is per-turn runtime state, never persisted
       recent_calls: [],
       # the interactivity of a live driver is not persisted state

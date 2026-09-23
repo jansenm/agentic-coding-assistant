@@ -359,6 +359,11 @@ how the agent *behaves*; the rest are surface area.
       exists as a pattern) and removes a real failure mode: the agent
       guessing instead of clarifying. Note ADR 017 says a *subagent* may
       not ask; a primary may.
+      **Done: ADR 027 (Proposed) + implemented.** A `question` tool
+      (options + free-text, `multiple` supported); an interactive call
+      parks the turn and the TUI shows a wizard; a non-interactive driver
+      gets an "unavailable" result. Subagent restriction still pending
+      (subagents unimplemented).
 - [ ] **T7 — Slash commands / a command palette.** opencode's `/new`,
       `/sessions`, `/models`, `/compact`, `/export`, `/editor`, `/undo`,
       `/redo`, `/help` are a discovery surface we have as scattered keys.

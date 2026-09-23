@@ -196,6 +196,10 @@ defmodule CodingAgent.UI.Tui do
       # the doom-loop prompt (ADR 026): %{tool: name} while the session is
       # parked at a repeated call; y continues, n rejects (steers)
       doom_prompt: nil,
+      # the question prompt (ADR 027): %{questions: [...], answers: [...],
+      # index: i, selected: [j], custom: nil|buf} while the agent waits for
+      # an answer; a wizard, one question per screen
+      question_prompt: nil,
       last_error: nil,
       scroll_offset: 0,
       open_tool_id: nil,
@@ -248,6 +252,17 @@ defmodule CodingAgent.UI.Tui do
   defp doom_prompt_of(%{doom_pause: %{tool: tool}}), do: %{tool: tool}
   defp doom_prompt_of(_), do: nil
 
+  # A parked question (ADR 027): the wizard state. `index` is the current
+  # question, `selected` the chosen option indices, `answers` the finished
+  # lists, `custom` a free-text buffer when the "type your own" option is
+  # active.
+  defp question_prompt_of(%{question_pause: %{questions: questions}})
+       when is_list(questions) and questions != [] do
+    %{questions: questions, index: 0, selected: [], answers: [], custom: nil}
+  end
+
+  defp question_prompt_of(_), do: nil
+
   defp mount_session(id, opts, prompt) do
     id = id || Keyword.get(opts, :session_id) || "tui-#{System.unique_integer([:positive])}"
 
@@ -288,13 +303,14 @@ defmodule CodingAgent.UI.Tui do
       # attach to the CURRENT state, not a stale idle assumption: the
       # session may already be running/interrupted (e.g. attached after
       # the gate paused, or resumed from disk)
-      {status, pending, budget_prompt, doom_prompt} =
+      {status, pending, budget_prompt, doom_prompt, question_prompt} =
         case Session.state(effective_id) do
           {:ok, st} ->
-            {st.status, st.pending_tool_calls, budget_prompt_of(st), doom_prompt_of(st)}
+            {st.status, st.pending_tool_calls, budget_prompt_of(st), doom_prompt_of(st),
+             question_prompt_of(st)}
 
           _ ->
-            {:idle, [], nil, nil}
+            {:idle, [], nil, nil, nil}
         end
 
       # startup reachability check (design A: a minimal completion
@@ -401,6 +417,7 @@ defmodule CodingAgent.UI.Tui do
         deciding?: false,
         budget_prompt: budget_prompt,
         doom_prompt: doom_prompt,
+        question_prompt: question_prompt,
         last_error: nil,
         # 0 = follow the tail (auto-scroll); >0 = pinned N lines up
         scroll_offset: 0,
@@ -1286,13 +1303,19 @@ defmodule CodingAgent.UI.Tui do
     # typing, so they must not be bound (binding them always made "e"
     # untypable once ADR 021 stopped forwarding unowned keys as text).
     deciding? = state.pending != [] and not Map.get(state, :deciding?, false)
-    # the budget and doom prompts (ADR 025/026) are blocking surfaces with
-    # the same y/n letters; they have no pending tool calls, so they are
-    # mutually exclusive with each other and with the approval dialog
-    prompt? = Map.get(state, :budget_prompt) != nil or Map.get(state, :doom_prompt) != nil
+    # the budget/doom/question prompts (ADR 025/026/027) are blocking
+    # surfaces; they have no pending tool calls, so they are mutually
+    # exclusive with each other and with the approval dialog
+    question? = Map.get(state, :question_prompt) != nil
+
+    prompt? =
+      Map.get(state, :budget_prompt) != nil or Map.get(state, :doom_prompt) != nil or question?
 
     bound =
       cond do
+        # the question wizard is text-driven (digits, letters, enter); it
+        # routes raw events itself, so the keymap is not consulted
+        question? -> []
         prompt? -> Bridge.bound_letters(decision_keymap())
         deciding? -> Bridge.bound_letters(state.keymap) ++ Bridge.bound_letters(decision_keymap())
         true -> Bridge.bound_letters(state.keymap)
@@ -1302,12 +1325,18 @@ defmodule CodingAgent.UI.Tui do
       {:text, code} ->
         # text input disarms the esc confirms (only esc drives them)
         state = %{state | quit_confirm?: false, stop_confirm?: false}
-        {:noreply, edit(state, {:text, code})}
+
+        if question? do
+          {:noreply, question_text(state, code)}
+        else
+          {:noreply, edit(state, {:text, code})}
+        end
 
       {:key, km_event} ->
         # while the decide task is in flight the dialog is hidden and its
         # keys must not fire again (deciding? is false then)
         cond do
+          question? -> {:noreply, question_special(state, km_event.key)}
           Map.get(state, :budget_prompt) != nil -> handle_budget_key(km_event, state)
           Map.get(state, :doom_prompt) != nil -> handle_doom_key(km_event, state)
           deciding? -> handle_decision_key(km_event, state)
@@ -1315,6 +1344,149 @@ defmodule CodingAgent.UI.Tui do
         end
     end
   end
+
+  # The question wizard owns raw key/text handling: digits toggle an
+  # option, enter confirms, esc cancels (asks "unanswered" for the rest),
+  # printable text is a custom answer buffer. A one-question screen at a
+  # time (ADR 027 open question 1).
+  #
+  # Special keys (atoms) and text (strings) arrive on separate paths:
+  # `question_special/2` for keymap events, `question_text/2` for text.
+  defp question_special(%{question_prompt: nil} = state, _key), do: state
+
+  defp question_special(state, key) do
+    case key do
+      :enter -> question_confirm(state)
+      :esc -> question_cancel(state)
+      :backspace -> question_backspace(state)
+      :arrow_up -> question_move(state, -1)
+      :arrow_down -> question_move(state, +1)
+      :arrow_left -> question_move(state, -1)
+      :arrow_right -> question_move(state, +1)
+      _ -> state
+    end
+  end
+
+  defp question_text(%{question_prompt: nil} = state, _text), do: state
+
+  defp question_text(state, text) do
+    case text do
+      d when d in ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"] -> question_toggle(state, d)
+      t -> question_type(state, t)
+    end
+  end
+
+  # Toggle the option at a 1-based digit (0 = the "type your own" row).
+  defp question_toggle(state, digit) do
+    qp = state.question_prompt
+    question = Enum.at(qp.questions, qp.index)
+    options = question["options"] || []
+    n = length(options)
+    idx = String.to_integer(digit)
+
+    cond do
+      # "0" starts a custom answer (the always-present free-text row)
+      idx == 0 ->
+        %{state | question_prompt: %{qp | custom: ""}}
+
+      idx >= 1 and idx <= n ->
+        multiple? = question["multiple"] || false
+        j = idx - 1
+
+        selected =
+          if multiple? do
+            if j in qp.selected, do: qp.selected -- [j], else: qp.selected ++ [j]
+          else
+            [j]
+          end
+
+        %{state | question_prompt: %{qp | selected: selected, custom: nil}}
+
+      true ->
+        state
+    end
+  end
+
+  defp question_type(state, text) do
+    qp = state.question_prompt
+
+    # typing starts a custom answer if one is not active, unless an option
+    # is already selected (then text is ignored — options are the answer)
+    cond do
+      qp.custom != nil -> %{state | question_prompt: %{qp | custom: qp.custom <> text}}
+      qp.selected == [] -> %{state | question_prompt: %{qp | custom: text}}
+      true -> state
+    end
+  end
+
+  defp question_backspace(state) do
+    qp = state.question_prompt
+
+    case qp.custom do
+      nil -> state
+      "" -> %{state | question_prompt: %{qp | custom: nil}}
+      buf -> %{state | question_prompt: %{qp | custom: String.slice(buf, 0, byte_size(buf) - 1)}}
+    end
+  end
+
+  defp question_move(state, _dir) do
+    # single-question screens: movement is a no-op placeholder for a
+    # future form layout (ADR 027 open question 1)
+    state
+  end
+
+  # Confirm the current question: record its answer and advance, or finish
+  # and send all answers when it was the last.
+  defp question_confirm(state) do
+    qp = state.question_prompt
+    question = Enum.at(qp.questions, qp.index)
+    options = question["options"] || []
+
+    labels =
+      cond do
+        qp.custom != nil and qp.custom != "" -> [qp.custom]
+        qp.selected != [] -> Enum.map(qp.selected, fn j -> label_of(Enum.at(options, j)) end)
+        true -> []
+      end
+
+    answers = qp.answers ++ [labels]
+    next = qp.index + 1
+
+    if next >= length(qp.questions) do
+      question_send(%{state | question_prompt: nil}, answers)
+    else
+      %{state | question_prompt: %{qp | index: next, selected: [], answers: answers, custom: nil}}
+    end
+  end
+
+  # Esc: answer the current and all remaining questions as unanswered, and
+  # send (the model sees "Unanswered" and proceeds).
+  defp question_cancel(state) do
+    qp = state.question_prompt
+    remaining = length(qp.questions) - qp.index
+    answers = qp.answers ++ List.duplicate([], remaining)
+    question_send(%{state | question_prompt: nil}, answers)
+  end
+
+  defp question_send(state, answers) do
+    sid = state.session_id
+    parent = self()
+
+    Task.start(fn ->
+      result =
+        case Session.answer_question(sid, answers) do
+          {:ok, session_state} -> {:ok, session_state.status}
+          {:error, reason} -> {:error, reason}
+        end
+
+      send(parent, {:__question_answered__, result})
+    end)
+
+    %{state | status: :running}
+  end
+
+  defp label_of(nil), do: ""
+  defp label_of(o), do: o["label"] || o[:label] || ""
 
   # At the budget prompt: y continues (another full budget), n stops
   # (wrap up). Run the reply in a Task — budget_decision/2 is a call that
@@ -2075,6 +2247,20 @@ defmodule CodingAgent.UI.Tui do
      }}
   end
 
+  # The question answer landed (ADR 027).
+  def handle_info({:__question_answered__, {:ok, status}}, state) do
+    {:noreply, %{state | status: status, question_prompt: nil}}
+  end
+
+  def handle_info({:__question_answered__, {:error, reason}}, state) do
+    {:noreply,
+     %{
+       state
+       | question_prompt: nil,
+         transcript: state.transcript ++ [{:info, "✖ answer failed: #{error_text(reason)}"}]
+     }}
+  end
+
   # the session is no longer waiting (its parked calls resolved or were
   # dropped elsewhere): the dialog is stale, clear it
   def handle_info({:__decided__, {:error, {:not_interrupted, status}}}, state) do
@@ -2131,7 +2317,14 @@ defmodule CodingAgent.UI.Tui do
     # refused decide/2 can race a status broadcast)
     state =
       if status != :interrupted do
-        %{state | pending: [], deciding?: false, budget_prompt: nil, doom_prompt: nil}
+        %{
+          state
+          | pending: [],
+            deciding?: false,
+            budget_prompt: nil,
+            doom_prompt: nil,
+            question_prompt: nil
+        }
       else
         state
       end
@@ -2161,6 +2354,25 @@ defmodule CodingAgent.UI.Tui do
        state
        | status: :interrupted,
          doom_prompt: %{tool: tool},
+         deciding?: false,
+         stop_confirm?: false
+     }}
+  end
+
+  # The session parked on a question the model asked (ADR 027): show the
+  # wizard. The question text is what the agent wants to know.
+  def handle_info({:agent, {:status_changed, :question_asked, %{questions: questions}}}, state) do
+    {:noreply,
+     %{
+       state
+       | status: :interrupted,
+         question_prompt: %{
+           questions: questions,
+           index: 0,
+           selected: [],
+           answers: [],
+           custom: nil
+         },
          deciding?: false,
          stop_confirm?: false
      }}
@@ -2555,7 +2767,9 @@ defmodule CodingAgent.UI.Tui do
 
     widgets ++
       menu_widgets(state, area) ++
-      budget_widgets(state, area) ++ doom_widgets(state, area) ++ dialog_widgets(state, area)
+      budget_widgets(state, area) ++
+      doom_widgets(state, area) ++
+      question_widgets(state, area) ++ dialog_widgets(state, area)
   end
 
   # Viewport rendering: entries intersecting the pane get placed at
@@ -3665,6 +3879,74 @@ defmodule CodingAgent.UI.Tui do
           title: " DOOM LOOP ",
           surface: :chrome,
           border_style: Styles.role(:warning, :chrome),
+          border_type: :double
+        )
+    }
+
+    w = min(@measure + 2, area.width - 4)
+    x = div(max(area.width - w, 0), 2)
+    rect = %Rect{x: x, y: area.height - h - 3, width: w, height: h}
+    [{%Clear{}, rect}, {widget, rect}]
+  end
+
+  # The question wizard (ADR 027): the current question, its options
+  # numbered, the always-present "type your own" row, and the controls.
+  defp question_widgets(%{question_prompt: nil}, _area), do: []
+
+  defp question_widgets(%{question_prompt: qp}, area) do
+    question = Enum.at(qp.questions, qp.index)
+    options = question["options"] || []
+    multiple? = question["multiple"] || false
+
+    option_lines =
+      options
+      |> Enum.with_index(1)
+      |> Enum.map_join("\n", fn {o, i} ->
+        mark = if (i - 1) in qp.selected, do: "▸", else: " "
+        label = o["label"] || ""
+        desc = o["description"]
+
+        line = "#{mark} #{i}) #{label}"
+        if is_binary(desc) and desc != "", do: line <> "\n      #{desc}", else: line
+      end)
+
+    custom_line =
+      case qp.custom do
+        nil -> "  0) type your own answer…"
+        buf -> "▸ 0) #{buf}▏"
+      end
+
+    hint = if multiple?, do: "  (select one or more)", else: ""
+
+    text =
+      "#{question["question"]}\n#{hint}\n\n" <>
+        option_lines <>
+        "\n" <>
+        custom_line <>
+        "\n\nenter = confirm   esc = skip   #{(length(qp.questions) > 1 && "question #{qp.index + 1}/#{length(qp.questions)}") || ""}"
+
+    h = min(length(String.split(text, "\n")) + 2, div(area.height, 2))
+
+    body =
+      text
+      |> String.split("\n")
+      |> Enum.concat(List.duplicate(" ", max(h - 2 - length(String.split(text, "\n")), 0)))
+      |> Enum.join("\n")
+
+    title =
+      case question["header"] do
+        hdr when is_binary(hdr) and hdr != "" -> hdr
+        _ -> "QUESTION"
+      end
+
+    widget = %Paragraph{
+      text: body,
+      style: Styles.surface(:chrome),
+      block:
+        Styles.panel(
+          title: " #{title} ",
+          surface: :chrome,
+          border_style: Styles.role(:accent, :chrome),
           border_type: :double
         )
     }

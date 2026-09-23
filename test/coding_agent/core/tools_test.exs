@@ -6,7 +6,9 @@ defmodule CodingAgent.Core.ToolsTest do
   describe "read_only/1" do
     test "contains only read-only tool names" do
       names = Tools.read_only() |> Enum.map(& &1.name)
-      assert names == ["list_dir", "read_file", "grep", "glob"]
+      # `question` is read-only by nature: the session intercepts the call
+      # and the human answers it (ADR 027)
+      assert names == ["list_dir", "read_file", "grep", "glob", "question"]
     end
 
     test "tools are valid ReqLLM.Tool structs" do

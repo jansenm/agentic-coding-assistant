@@ -24,6 +24,7 @@ defmodule CodingAgent.Core.Tools do
   alias CodingAgent.Core.Tools.Grep
   alias CodingAgent.Core.Tools.ListDir
   alias CodingAgent.Core.Tools.ReadFile
+  alias CodingAgent.Core.Tools.Question
   alias CodingAgent.Core.Tools.Shell
   alias CodingAgent.Core.Tools.WebFetch
   alias CodingAgent.Core.Tools.WriteFile
@@ -51,7 +52,16 @@ defmodule CodingAgent.Core.Tools do
   @spec read_only(scope() | nil) :: [ReqLLM.Tool.t()]
   def read_only(scope \\ nil) do
     scope = scope || default_scope()
-    [ListDir.tool(scope), ReadFile.tool(scope), Grep.tool(scope), Glob.tool(scope)]
+
+    [
+      ListDir.tool(scope),
+      ReadFile.tool(scope),
+      Grep.tool(scope),
+      Glob.tool(scope),
+      # asking is read-only, and the session intercepts the call before
+      # execution (ADR 027); available to every agent including plan
+      Question.tool(scope)
+    ]
   end
 
   @doc """

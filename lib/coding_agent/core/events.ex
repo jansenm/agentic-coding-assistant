@@ -30,6 +30,9 @@ defmodule CodingAgent.Core.Events do
     * `{:status_changed, :doom_reached, %{tool: name}}` — a repeated call
       was detected and the driver is asked to continue or reject
       (ADR 026; interactive only)
+    * `{:status_changed, :question_asked, %{questions: [...]}}` — the
+      model asked the human a question and the driver must answer
+      (ADR 027; interactive only)
     * `{:tool_started, name}` — one tool call about to run (before result)
     * `{:tool_executed, name, content, args}` — one finished tool result
       with the arguments it was called with (the display view records

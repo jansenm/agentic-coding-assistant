@@ -47,6 +47,7 @@ defmodule CodingAgent.Core.Session do
   alias CodingAgent.Core.Interrupt
   alias CodingAgent.Core.Permissions
   alias CodingAgent.Core.ToolCall
+  alias CodingAgent.Core.Tools.Question
 
   alias CodingAgent.Core.Session.{
     Compactor,
@@ -181,7 +182,9 @@ defmodule CodingAgent.Core.Session do
       # a budget pause is durable: the held round and the question resume
       budget_pause: state.budget_pause,
       # a doom-loop pause is durable the same way (ADR 026)
-      doom_pause: state.doom_pause
+      doom_pause: state.doom_pause,
+      # a question pause is durable too (ADR 027)
+      question_pause: state.question_pause
     ]
     |> Keyword.merge(overrides)
   end
@@ -288,6 +291,22 @@ defmodule CodingAgent.Core.Session do
   @spec doom_decision(String.t(), :continue | :reject) :: {:ok, State.t()} | {:error, term()}
   def doom_decision(id, decision) when decision in [:continue, :reject] do
     GenServer.call(via(id), {:doom_decision, decision}, @call_timeout)
+  end
+
+  @doc """
+  Answers a question the model asked (ADR 027).
+
+  `answers` is one list of selected labels per question, in order —
+  `[["A"], ["B", "C"]]` for two questions. An empty list means the
+  question was left unanswered (the model sees `Unanswered`). The held
+  round then runs with the question results pre-known.
+
+  Only valid while parked on a question; any other state returns
+  `{:error, {:not_at_question, status}}`.
+  """
+  @spec answer_question(String.t(), [[String.t()]]) :: {:ok, State.t()} | {:error, term()}
+  def answer_question(id, answers) when is_list(answers) do
+    GenServer.call(via(id), {:answer_question, answers}, @call_timeout)
   end
 
   @doc """
@@ -449,6 +468,8 @@ defmodule CodingAgent.Core.Session do
        budget_pause: Keyword.get(opts, :budget_pause),
        # a resumed doom-loop pause re-offers too (ADR 026)
        doom_pause: Keyword.get(opts, :doom_pause),
+       # a resumed question pause re-offers too (ADR 027)
+       question_pause: Keyword.get(opts, :question_pause),
        test_mode: test_mode,
        turn_runner: turn_runner
      )}
@@ -720,6 +741,63 @@ defmodule CodingAgent.Core.Session do
       ref = spawn_turn(state, fn snapshot -> steer_round(snapshot, calls, reason) end)
       {:noreply, %{state | worker_ref: ref, worker_from: from}}
     end
+  end
+
+  # ADR 027 question answer: run the held round with the question results
+  # pre-known. One result per question call, in the order the calls
+  # appeared.
+  def handle_call({:answer_question, _answers}, _from, %{question_pause: nil} = state) do
+    {:reply, {:error, {:not_at_question, state.status}}, state}
+  end
+
+  def handle_call(
+        {:answer_question, answers},
+        from,
+        %{question_pause: %{calls: calls, questions: questions}} = state
+      ) do
+    state = %{state | question_pause: nil, status: :running}
+    broadcast(state, {:status_changed, :running})
+    persist(state)
+
+    results = build_question_results(question_calls(calls), questions, answers)
+
+    if state.test_mode do
+      {state, _result} = execute_round(state, calls, results)
+      {:reply, {:ok, state}, state}
+    else
+      ref = spawn_turn(state, fn snapshot -> execute_round(snapshot, calls, results) end)
+      {:noreply, %{state | worker_ref: ref, worker_from: from}}
+    end
+  end
+
+  # Build one tool result per question call. Each carries the formatted
+  # answers (opencode's shape): `User has answered your questions:
+  # "q"="a, b". You can now continue...`. An empty answer list renders as
+  # `Unanswered`.
+  defp build_question_results(calls, questions, answers) do
+    formatted =
+      questions
+      |> Enum.with_index()
+      |> Enum.map_join(", ", fn {q, i} ->
+        selected = Enum.at(answers, i) || []
+
+        value =
+          case selected do
+            [] -> "Unanswered"
+            list -> Enum.join(list, ", ")
+          end
+
+        ~s("#{q["question"]}"="#{value}")
+      end)
+
+    content =
+      "User has answered your questions: #{formatted}. " <>
+        "You can now continue with the user's answers in mind."
+
+    Enum.map(calls, fn call ->
+      {id, name, _args} = ToolCall.normalize(call)
+      %{id: id, name: name, content: content}
+    end)
   end
 
   # Every pending call needs a decision; partial answers are refused
@@ -1206,13 +1284,16 @@ defmodule CodingAgent.Core.Session do
   # decision. :ask pauses the session (:interrupted) until the driver
   # supplies decisions for every pending call via decide/3.
   #
-  # Two guards run before the policy gate, in order:
+  # Guards run before the policy gate, in order:
   #
   #   * the tool-round budget (ADR 025): an INTERACTIVE driver is asked
   #     continue/stop; a driver that cannot answer gets the wrap-up;
   #   * the doom-loop guard (ADR 026): three consecutive identical ROUNDS
   #     pause an interactive driver (continue/reject); a non-interactive
   #     driver is steered silently.
+  #
+  # A `question` call is intercepted inside `run_round` (ADR 027): it is
+  # answered by the human, not executed.
   defp gate_tools(state, calls) do
     state = remember_calls(state, calls)
     budget = tool_budget(state)
@@ -1334,10 +1415,125 @@ defmodule CodingAgent.Core.Session do
   defp run_round(state, calls) do
     state = %{state | tool_rounds: state.tool_rounds + 1}
 
-    # All gate policy lives in Session.Gate: it buckets this round's
-    # calls (blacklist / escalation-without-reason / explicit deny /
-    # allow / ask) using the one Permissions.effective/4 path.
-    plan = Gate.classify(state.id, state.policy, state.scope_root, calls)
+    # A question is answered by the human, not executed (ADR 027). The
+    # WHOLE round is held so the exchange stays atomic: any sibling calls
+    # run only once the answer arrives.
+    case question_calls(calls) do
+      [] ->
+        execute_round(state, calls)
+
+      questions ->
+        ask_question(state, calls, questions)
+    end
+  end
+
+  # -- Question tool (ADR 027) -------------------------------------------------
+
+  # The question calls in a round (usually zero or one), with their parsed
+  # questions. Splitting here keeps `execute_round` free of the branch.
+  defp question_calls(calls) do
+    Enum.filter(calls, fn call ->
+      {_id, name, _args} = ToolCall.normalize(call)
+      name == Question.name()
+    end)
+  end
+
+  # Park on the human's answer. The questions are parsed up front so a
+  # malformed call is a result the model can fix, not a crash.
+  #
+  # A non-interactive driver cannot answer: the question is answered
+  # synthetically ("the human is not available") and the round runs, so
+  # the turn never hangs (the ADR 025/026 rule).
+  defp ask_question(state, calls, [call | _] = q_calls) do
+    {id, _name, args} = ToolCall.normalize(call)
+
+    case parse_questions(args) do
+      {:ok, questions} ->
+        if state.interactive do
+          broadcast(state, {:info, "· the agent asked a question"})
+
+          state = %{
+            state
+            | status: :interrupted,
+              question_pause: %{calls: calls, questions: questions}
+          }
+
+          broadcast(state, {:status_changed, :question_asked, %{questions: questions}})
+          persist(state)
+          {state, {:ok, state}}
+        else
+          Logger.warning("question asked with no interactive driver; answering unavailable")
+          results = unavailable_question_results(q_calls)
+          execute_round(state, calls, results)
+        end
+
+      {:error, reason} ->
+        # a malformed question never pauses: answer it in-round so the
+        # model can correct the schema and continue.
+        result = %{id: id, name: Question.name(), content: "error: #{reason}"}
+        broadcast_tools(state, [call], [result])
+        state = complete_round(state, calls, [result])
+        finish_round(state)
+    end
+  end
+
+  # The synthetic answer when no human is available (ADR 027).
+  defp unavailable_question_results(calls) do
+    content =
+      "error: the human is not available to answer questions right now. " <>
+        "Proceed with your best judgment, or stop and state the question plainly in your answer."
+
+    Enum.map(calls, fn call ->
+      {id, name, _args} = ToolCall.normalize(call)
+      %{id: id, name: name, content: content}
+    end)
+  end
+
+  # Parses the tool arguments into a normalized question list. Lenient
+  # about string/atom keys (tool args arrive as maps with string keys).
+  defp parse_questions(args) do
+    raw = Map.get(args, "questions") || Map.get(args, :questions)
+
+    cond do
+      not is_list(raw) or raw == [] ->
+        {:error, "`questions` must be a non-empty array"}
+
+      true ->
+        questions =
+          Enum.map(raw, fn q ->
+            %{
+              "question" => q["question"] || q[:question] || "",
+              "header" => q["header"] || q[:header],
+              "multiple" => q["multiple"] || q[:multiple] || false,
+              "options" => normalize_options(q["options"] || q[:options] || [])
+            }
+          end)
+
+        {:ok, questions}
+    end
+  end
+
+  defp normalize_options(options) do
+    Enum.map(options, fn o ->
+      %{
+        "label" => o["label"] || o[:label] || "",
+        "description" => o["description"] || o[:description]
+      }
+    end)
+  end
+
+  # All gate policy lives in Session.Gate: it buckets this round's calls
+  # (blacklist / escalation-without-reason / explicit deny / allow / ask)
+  # using the one Permissions.effective/4 path. A `question` call never
+  # reaches the policy gate (see run_round): it is answered by the human.
+  #
+  # `answered` carries question results already obtained (ADR 027) so a
+  # resumed question round completes with them alongside the siblings'.
+  defp execute_round(state, calls, answered \\ []) do
+    q_calls = question_calls(calls)
+    answerable = Enum.reject(calls, &(&1 in q_calls))
+
+    plan = Gate.classify(state.id, state.policy, state.scope_root, answerable)
 
     blacklist_results =
       Enum.map(plan.blacklisted, fn call ->
@@ -1351,24 +1547,26 @@ defmodule CodingAgent.Core.Session do
         Gate.no_reason_result(call)
       end)
 
-    # Results already decided for this round, before any human input.
+    # Results already decided for this round, before any human input, plus
+    # the question answers.
     known_calls = plan.blacklisted ++ plan.no_reason ++ plan.denied
 
     known_results =
-      blacklist_results ++
+      answered ++
+        blacklist_results ++
         no_reason_results ++ Enum.map(plan.denied, &Gate.denied_result/1)
 
     if plan.pending == [] do
       auto_results = execute_tools(state, plan.auto)
       results = known_results ++ auto_results
-      broadcast_tools(state, known_calls ++ plan.auto, known_results ++ auto_results)
+      broadcast_tools(state, known_calls ++ plan.auto ++ q_calls, results)
       state = complete_round(state, calls, results)
       finish_round(state)
     else
       # SOME call needs a human. The exchange is appended atomically
       # only once the whole round is decided, so nothing half-formed
-      # ever reaches the wire. The auto/denied results computed now
-      # are carried in state across the pause (and a resume) instead.
+      # ever reaches the wire. The auto/denied/question results computed
+      # now are carried in state across the pause (and a resume) instead.
       auto_results = execute_tools(state, plan.auto)
 
       state = %{
