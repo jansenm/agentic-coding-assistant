@@ -782,18 +782,18 @@ defmodule CodingAgent.UI.Tui do
     end
   end
 
-  # mouse wheel scrolls the transcript (2 lines per notch, clamped at
-  # both ends — see dispatch_input_key scroll_up)
+  # mouse wheel scrolls the transcript (2 lines per notch). The offset is
+  # clamped through the viewport (ADR 028): with lazy measurement the
+  # maximum is discovered when the walk reaches the top, so there is no
+  # stored bound to read — clamping IS the walk.
   def handle_event(%Event.Mouse{kind: "scroll_up"}, state) do
-    state = clamp_scroll_now(state)
-
-    {:noreply,
-     %{state | scroll_offset: min(state.scroll_offset + 2, Map.get(state, :max_scroll, 0))}}
+    state = %{state | scroll_offset: Map.get(state, :scroll_offset, 0) + 2}
+    {:noreply, clamp_scroll_now(state)}
   end
 
   def handle_event(%Event.Mouse{kind: "scroll_down"}, state) do
-    state = clamp_scroll_now(state)
-    {:noreply, %{state | scroll_offset: max(state.scroll_offset - 2, 0)}}
+    state = %{state | scroll_offset: max(Map.get(state, :scroll_offset, 0) - 2, 0)}
+    {:noreply, state}
   end
 
   # Click a closed tool block header → open THAT block (single-open: any other
@@ -1966,14 +1966,13 @@ defmodule CodingAgent.UI.Tui do
       :scroll_up ->
         # clamp at the top: an offset past the max inflates silently
         # (the screen stops updating but the number keeps growing) and
-        # that stale value then makes scroll-down feel dead (found live)
-        state = clamp_scroll_now(state)
-
-        {:noreply,
-         %{state | scroll_offset: min(state.scroll_offset + 5, Map.get(state, :max_scroll, 0))}}
+        # that stale value then makes scroll-down feel dead (found live).
+        # With lazy measurement (ADR 028) the clamp IS the walk — the
+        # viewport discovers the top and returns the accepted offset.
+        state = %{state | scroll_offset: state.scroll_offset + 5}
+        {:noreply, clamp_scroll_now(state)}
 
       :scroll_down ->
-        state = clamp_scroll_now(state)
         {:noreply, %{state | scroll_offset: max(state.scroll_offset - 5, 0)}}
 
       :send_input ->
@@ -2780,24 +2779,22 @@ defmodule CodingAgent.UI.Tui do
 
     entries = display_entries(state)
 
-    # view-side clamp for THIS frame (persistence happens in the
-    # resize handler — render cannot mutate state)
-    max_offset =
-      max(TranscriptView.total_height(entries, w, state.open_tool_id) - pane.height, 0)
-
-    scroll_offset = min(state.scroll_offset, max_offset)
-
-    {top, selected} =
-      TranscriptView.viewport(entries, pane.height, scroll_offset, w, state.open_tool_id)
+    # ADR 028: the viewport measures LAZILY from the tail and returns the
+    # clamped offset plus pane-relative positions. No eager total_height
+    # here — on a long session that cost seconds per cold frame to
+    # produce the same pixels.
+    {_clamped, selected} =
+      TranscriptView.viewport(entries, pane.height, state.scroll_offset, w, state.open_tool_id)
 
     selected
-    |> Enum.flat_map(fn {entry, cursor, _h} ->
+    |> Enum.flat_map(fn {entry, rel, _h} ->
       entry_widgets(entry, w, state.open_tool_id)
-      |> Enum.map(fn {widget, wh} -> {widget, wh, cursor} end)
+      |> Enum.map(fn {widget, wh} -> {widget, wh, rel} end)
     end)
-    |> Enum.map(fn {widget, h, cursor} ->
-      skipped = max(top - cursor, 0)
-      rel = cursor - top
+    |> Enum.map(fn {widget, h, rel} ->
+      # rel is the entry's top row relative to the pane (negative when it
+      # starts above it: those leading rows are clipped)
+      skipped = max(-rel, 0)
       y = max(pane.y + rel, pane.y)
       # clip the bottom at the pane edge
       avail = pane.height - (y - pane.y)
@@ -2873,6 +2870,11 @@ defmodule CodingAgent.UI.Tui do
   # Immediate scroll clamp on toggle: collapsing can shrink the content
   # extent below the current scroll offset; without this, pgdown has to
   # burn through the stale offset before the view moves (found live).
+  #
+  # The clamp is the lazy viewport itself (ADR 028): it measures
+  # tail-first and knows the maximum only once the walk reaches the head,
+  # returning the accepted offset either way. There is no stored maximum —
+  # the accepted offset is the whole answer.
   defp clamp_scroll_now(state) do
     entries = display_entries(state)
 
@@ -2882,15 +2884,16 @@ defmodule CodingAgent.UI.Tui do
     pane_width =
       content_width(if is_integer(state.last_pane_width), do: state.last_pane_width, else: 78)
 
-    max_offset =
-      max(
-        TranscriptView.total_height(entries, pane_width, state.open_tool_id) - pane_height,
-        0
+    {clamped, _selected} =
+      TranscriptView.viewport(
+        entries,
+        pane_height,
+        Map.get(state, :scroll_offset, 0),
+        pane_width,
+        state.open_tool_id
       )
 
-    state
-    |> Map.put(:scroll_offset, min(Map.get(state, :scroll_offset, 0), max_offset))
-    |> Map.put(:max_scroll, max_offset)
+    %{state | scroll_offset: clamped}
   end
 
   # viewport scrolling happens inside the widget when the entry starts
@@ -3300,27 +3303,20 @@ defmodule CodingAgent.UI.Tui do
   end
 
   # Which entry covers screen row `y` (transcript-pane-relative)?
-  # Recomputes the same placement the renderer produces this frame.
+  # Recomputes the same placement the renderer produces this frame — the
+  # lazy viewport (ADR 028) returns pane-relative rows directly, so no
+  # absolute total is needed.
   defp block_at_row(state, y) do
     entries = display_entries(state)
 
     w = content_width(if is_integer(state.last_pane_width), do: state.last_pane_width, else: 78)
     ph = transcript_visible_height(state)
 
-    {_top, selected} =
+    {_clamped, selected} =
       TranscriptView.viewport(entries, ph, state.scroll_offset, w, state.open_tool_id)
 
-    # selected: [{entry, cursor, h}] — cursor is absolute (from the
-    # BOTTOM). Screen row = (entry_bottom - 1) - y where entry_bottom
-    # counts from the pane top... easier: walk from the pane bottom.
-    total = TranscriptView.total_height(entries, w, state.open_tool_id)
-    top = max(total - ph - state.scroll_offset, 0)
-
-    Enum.find_value(selected, fn {entry, cursor, h} ->
-      rel_top = cursor - top
-      rel_bottom = rel_top + h - 1
-
-      if y >= rel_top and y <= rel_bottom, do: entry
+    Enum.find_value(selected, fn {entry, rel_top, h} ->
+      if y >= rel_top and y <= rel_top + h - 1, do: entry
     end)
   end
 
@@ -3580,19 +3576,26 @@ defmodule CodingAgent.UI.Tui do
   end
 
   # Scroll diagnostics (DEVELOPER output, behind `debug_visible?` /
-  # ctrl-x d): entries / measured total / offset / expand state. It is
-  # resolved HERE (this module owns the pane math) and handed to the
-  # composer as a plain string — the same division as the clock.
+  # ctrl-x d): entries / clamped offset / expand state. It is resolved
+  # HERE (this module owns the pane math) and handed to the composer as a
+  # plain string — the same division as the clock.
+  #
+  # No total_height here (ADR 028): the lazy viewport yields the clamped
+  # offset, and with lazy measurement the total is deliberately unknown
+  # until the walk reaches the top — computing it here would reintroduce
+  # the eager cost on every debug frame.
   defp scroll_diagnostics(state) do
     entries = display_entries(state)
 
     w = content_width(if is_integer(state.last_pane_width), do: state.last_pane_width, else: 78)
     ph = if is_integer(state.last_pane_height), do: state.last_pane_height, else: 24
-    total = TranscriptView.total_height(entries, w, state.open_tool_id)
+
+    {clamped, _selected} =
+      TranscriptView.viewport(entries, ph, state.scroll_offset, w, state.open_tool_id)
 
     open = if state.open_tool_id, do: "open:#{state.open_tool_id}", else: "tools shut"
 
-    "scroll: #{state.scroll_offset}/#{max(total - ph, 0)} (#{length(entries)} entries, " <>
+    "scroll: #{clamped} (#{length(entries)} entries, " <>
       "#{open}, h: #{ph} w: #{w})"
   end
 

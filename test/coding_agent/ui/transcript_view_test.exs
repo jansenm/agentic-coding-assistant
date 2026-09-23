@@ -41,25 +41,30 @@ defmodule CodingAgent.UI.TranscriptViewTest do
       assert TranscriptView.viewport([], 5, 0, 80, false) == {0, []}
     end
 
-    # every info entry now occupies 4 rows (1 text + 3 air)
-    test "follow mode: top line pinned so the tail is visible" do
-      {top, selected} = TranscriptView.viewport(entries(10), 3, 0, 80, false)
-      assert top == 37
-
-      assert selected == [
-               {{:info, "line 10"}, 36, 4}
-             ]
+    # every info entry occupies 4 rows (1 text + 3 air). The viewport
+    # returns the clamped offset plus PANE-RELATIVE positions (ADR 028):
+    # 0 is the pane's first row, negative means the entry starts above it.
+    test "follow mode: the tail is visible at offset 0" do
+      {clamped, selected} = TranscriptView.viewport(entries(10), 3, 0, 80, false)
+      assert clamped == 0
+      # the last entry's top is one row above the pane's bottom edge
+      assert selected == [{{:info, "line 10"}, -1, 4}]
     end
 
-    test "offset scrolls up: viewport top decreases" do
-      {top, selected} = TranscriptView.viewport(entries(10), 3, 5, 80, false)
-      assert top == 32
-      assert List.first(selected) |> elem(1) == 32
+    test "offset scrolls up: the window moves toward the head" do
+      {clamped, selected} = TranscriptView.viewport(entries(10), 3, 5, 80, false)
+      assert clamped == 5
+      # 40 lines total, pane 3, offset 5 -> the pane shows lines 32..34.
+      # Entry 9 spans lines 32..35, so it is the one at the pane top
+      # (rel 0); entry 10 spans 36..39 and is below the pane.
+      assert selected == [{{:info, "line 9"}, 0, 4}]
     end
 
     test "clamped at the top: cannot scroll above line 0" do
-      {top, _} = TranscriptView.viewport(entries(10), 3, 999, 80, false)
-      assert top == 0
+      # the walk reaches the head, so the total (40 lines) is known and
+      # the offset clamps to total - height = 37
+      {clamped, _} = TranscriptView.viewport(entries(10), 3, 999, 80, false)
+      assert clamped == 37
     end
 
     test "partial entries at the edges are included" do
@@ -71,20 +76,43 @@ defmodule CodingAgent.UI.TranscriptViewTest do
       entries = [{:info, "a"}, big, {:info, "b"}]
 
       big_h = TranscriptView.height(big, 80, nil)
+      info_h = TranscriptView.height({:info, "a"}, 80, nil)
+      total = info_h + big_h + info_h
 
-      total =
-        TranscriptView.height({:info, "a"}, 80, nil) + big_h +
-          TranscriptView.height({:info, "b"}, 80, nil)
+      # offset 8 (in range: total - 4 > 8), pane 4 -> pane top line 16,
+      # which falls INSIDE the big entry (it spans 4..4+big_h): the big
+      # entry is clipped on both edges and is the only visible one
+      {clamped, selected} = TranscriptView.viewport(entries, 4, 8, 80, false)
+      assert clamped == 8
 
-      # scroll far enough that the top clamps at 0 and the big entry
-      # crosses the bottom edge
-      {top, selected} = TranscriptView.viewport(entries, 4, 8, 80, false)
-      assert top == max(total - 4 - 8, 0)
+      pane_top = total - 4 - 8
+      # the big entry starts 12 lines above the pane top (negative rel)
+      assert selected == [{big, info_h - pane_top, big_h}]
+    end
 
-      # the big entry crosses the bottom edge and is the only selected
-      names = Enum.map(selected, fn {e, _cursor, _h} -> elem(e, 0) end)
-      assert :assistant in names
-      assert List.last(selected) |> elem(0) == big
+    test "short content sits at the pane TOP, not floating at the bottom" do
+      # Regression (found by the accordion hit-test): when the transcript
+      # is shorter than the pane it is top-anchored, so the FIRST entry
+      # starts at pane row 0 — hit-testing depends on it. (The pane still
+      # shows the content's last lines when they overflow the bottom.)
+      entries = [{:info, "a"}, {:info, "b"}]
+
+      # a 9-row pane fits both (8 rows): first entry at pane top
+      {clamped, selected} = TranscriptView.viewport(entries, 9, 0, 80, false)
+      assert clamped == 0
+      assert List.first(selected) == {{:info, "a"}, 0, 4}
+      assert List.last(selected) == {{:info, "b"}, 4, 4}
+    end
+
+    test "only the tail is measured: entries above the window are untouched" do
+      # A window far from the head must not walk the whole list. The
+      # 10th-from-last entry never appears when the pane covers 3 rows
+      # from the tail — so a lazy call returns without measuring it.
+      # (The observable contract is the SELECTED set; the cost claim is
+      # the ADR 028 benchmark.)
+      {clamped, selected} = TranscriptView.viewport(entries(1000), 3, 0, 80, false)
+      assert clamped == 0
+      assert length(selected) == 1
     end
   end
 

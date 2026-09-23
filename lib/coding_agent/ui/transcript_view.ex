@@ -173,39 +173,87 @@ defmodule CodingAgent.UI.TranscriptView do
 
   @doc """
   Viewport model (classic scroll): `offset` counts lines ABOVE the
-  bottom edge (0 = follow the tail). Returns
-  `{top_line, visible_entries}` where `top_line` may be negative
-  relative to the pane top (partial entries render clipped). Clamped
-  so the viewport never scrolls past the top.
+  bottom edge (0 = follow the tail). Returns `{clamped_offset,
+  visible_entries}` where each entry carries its PANE-RELATIVE top row
+  (0 = the pane's first row; negative when the entry starts above the
+  pane and is rendered clipped).
+
+  **Measurement is lazy and tail-first (ADR 028).** Only the entries
+  needed to cover `offset + height` lines from the tail are measured;
+  everything above is left untouched until it is scrolled into view. The
+  old eager form measured the whole transcript every call — 8–10 s cold
+  on a long session — to produce the same pixels.
+
+  The clamp is derived from the same walk: when it reaches the start of
+  the list, the accumulated lines ARE the total, so `offset` is clamped
+  to `max(total - height, 0)`. While entries remain above the window no
+  maximum is known — or needed, because the offset is in range.
   """
   @typep open_id() :: nil | binary()
 
   @spec viewport([entry()], pos_integer(), non_neg_integer(), pos_integer(), open_id()) ::
-          {non_neg_integer(), [{entry(), non_neg_integer(), pos_integer()}]}
-  def viewport([], _height, _offset, _width, _t), do: {0, []}
+          {non_neg_integer(), [{entry(), integer(), pos_integer()}]}
+  def viewport([], _height, _offset, _width, _open_id), do: {0, []}
 
   def viewport(entries, height, offset, width, open_id) do
-    total = total_height(entries, width, open_id)
-    # top line of the viewport in transcript coordinates
-    top = max(total - height - offset, 0)
+    # The window in bottom-relative coordinates: [offset, offset + height).
+    {measured, total_or_covered, exhausted?} =
+      measure_from_tail(entries, width, open_id, offset + height)
 
-    # entries intersecting [top, top + height), with their absolute
-    # top line (for pane-relative placement)
-    pairs =
-      entries
-      |> Enum.map_reduce(0, fn entry, cursor ->
-        h = height(entry, width, open_id)
-        {{entry, cursor, h}, cursor + h}
-      end)
-      |> elem(0)
+    clamped =
+      if exhausted? do
+        min(offset, max(total_or_covered - height, 0))
+      else
+        offset
+      end
 
+    # The pane's TOP edge counted from the transcript bottom. Normally
+    # the pane is a window of `height` above the bottom at `offset`; when
+    # the content is SHORTER than the pane it is the content's own top,
+    # so short content sits at the pane top instead of floating at the
+    # bottom (the old eager form's `max(total - height - offset, 0)` in
+    # these coordinates).
+    pane_top =
+      if exhausted? do
+        min(height + clamped, total_or_covered)
+      else
+        height + clamped
+      end
+
+    # `measured` is in list order (head .. tail); each entry carries its
+    # BOTTOM edge counted from the transcript bottom (`acc`). An entry is
+    # visible when [acc, acc + h) intersects [pane_top - height, pane_top),
+    # and its pane-relative top is pane_top - (acc + h).
     selected =
-      pairs
-      |> Enum.filter(fn {_entry, cursor, h} ->
-        cursor + h > top and cursor < top + height
-      end)
+      measured
+      |> Enum.filter(fn {_entry, acc, h} -> acc < pane_top and acc + h > pane_top - height end)
+      |> Enum.map(fn {entry, acc, h} -> {entry, pane_top - acc - h, h} end)
 
-    {top, selected}
+    {clamped, selected}
+  end
+
+  # Walk backwards from the tail, measuring (through the content-keyed
+  # cache) until the window's top line is covered. Returns
+  # `{measured_in_list_order, accumulated_lines, exhausted?}` — exhausted
+  # means the walk reached the head, so the accumulator is the total.
+  defp measure_from_tail(entries, width, open_id, target) do
+    entries
+    |> Enum.reverse()
+    |> measure(0, [], width, open_id, target)
+  end
+
+  # Nothing left: exhausted — the accumulator is the transcript total.
+  defp measure([], acc, measured, _width, _open_id, _target), do: {measured, acc, true}
+
+  # The window's top is covered; entries beyond this line cannot be
+  # visible (they start at or above it). Do not measure them.
+  defp measure(_rest, acc, measured, _width, _open_id, target) when acc >= target,
+    do: {measured, acc, false}
+
+  defp measure([entry | rest], acc, measured, width, open_id, target) do
+    h = height(entry, width, open_id)
+    # prepend: the walk goes tail -> head, so `measured` ends in list order
+    measure(rest, acc + h, [{entry, acc, h} | measured], width, open_id, target)
   end
 
   # -- shared "agent box" ------------------------------------------------------
