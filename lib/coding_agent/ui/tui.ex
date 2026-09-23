@@ -1466,22 +1466,34 @@ defmodule CodingAgent.UI.Tui do
   defp question_type(state, text) do
     qp = state.question_prompt
 
-    # typing starts a custom answer if one is not active, unless an option
-    # is already selected (then text is ignored — options are the answer)
+    # typing always starts (or continues) a custom answer; typing over a
+    # selected option clears the selection — the typed text IS the answer
+    # then (found live: the no-op while an option was selected felt like
+    # a dead keyboard, with no visible way back to the custom row).
     cond do
       qp.custom != nil -> %{state | question_prompt: %{qp | custom: qp.custom <> text}}
-      qp.selected == [] -> %{state | question_prompt: %{qp | custom: text}}
-      true -> state
+      true -> %{state | question_prompt: %{qp | custom: text, selected: []}}
     end
   end
 
   defp question_backspace(state) do
     qp = state.question_prompt
 
+    # backspace over a selected option drops the selection and opens an
+    # empty custom buffer (same rule as typing: an edit gesture means the
+    # option is no longer the answer)
     case qp.custom do
-      nil -> state
-      "" -> %{state | question_prompt: %{qp | custom: nil}}
-      buf -> %{state | question_prompt: %{qp | custom: String.slice(buf, 0, byte_size(buf) - 1)}}
+      nil when qp.selected != [] ->
+        %{state | question_prompt: %{qp | custom: "", selected: []}}
+
+      nil ->
+        state
+
+      "" ->
+        %{state | question_prompt: %{qp | custom: nil}}
+
+      buf ->
+        %{state | question_prompt: %{qp | custom: String.slice(buf, 0, byte_size(buf) - 1)}}
     end
   end
 
@@ -4137,10 +4149,12 @@ defmodule CodingAgent.UI.Tui do
 
   # The wizard body in markdown. Terms are hard-wrapped single lines
   # (option rows must stay rows — a description never merges into the
-  # next term's line), options separated by blank paragraphs so each
-  # definition block stands alone; tui-markdown renders the description
-  # on its own ": " line (the definition-list look, verified against the
-  # painted buffer).
+  # next term's line), options separated by blank-QUOTE separators (see
+  # options_deflist — a plain blank line paints with no gap); the
+  # "type your own" row is an answer row like any other, so it gets the
+  # same separator. tui-markdown renders the description on its own
+  # ": " line (the definition-list look, verified against the painted
+  # buffer).
   defp question_markdown(question, qp, options) do
     hint =
       if question["multiple"] || false do
@@ -4156,13 +4170,18 @@ defmodule CodingAgent.UI.Tui do
           else: ""
         )
 
+    answers =
+      if options == [] do
+        custom_entry(qp.custom)
+      else
+        options_deflist(options, qp.selected) <> "\n\n>\n\n" <> custom_entry(qp.custom)
+      end
+
     [
       hard_breaks(String.trim(question["question"] || "")),
       hint,
       "",
-      options_deflist(options, qp.selected),
-      "",
-      custom_entry(qp.custom),
+      answers,
       "",
       controls
     ]
@@ -4171,11 +4190,17 @@ defmodule CodingAgent.UI.Tui do
   end
 
   # The options as a definition list: the bold term carries the digit key
-  # (literal inside **…**), the description hangs below as ": …".
+  # (literal inside **…**), the description hangs below as ": …". Blocks
+  # are separated by an EMPTY BLOCKQUOTE (`>`): the def-list parser eats
+  # blank lines between blocks (measured — "\n\n" paints with no gap), so
+  # a plain paragraph separator shows nothing. A blockquote opens a new
+  # top-level block, which ratatui's spacer paints as a blank row even
+  # when empty — and a description or label containing "> x" merges into
+  # the def-list paragraph (lazy continuation) instead of breaking it.
   defp options_deflist(options, selected) do
     options
     |> Enum.with_index(1)
-    |> Enum.map_join("\n\n", fn {o, i} ->
+    |> Enum.map_join("\n\n>\n\n", fn {o, i} ->
       mark = if (i - 1) in selected, do: "▸ ", else: ""
       term = "#{mark}**#{i}) #{o["label"] || ""}**"
 
