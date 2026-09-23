@@ -59,4 +59,108 @@ defmodule CodingAgent.Core.Session.PromptTest do
     [system, _user] = ReqLLM.Context.to_list(Prompt.replace_in_context(context, "NEW"))
     assert system.role == :system
   end
+
+  # -- ADR 024: per-model framework prompt --------------------------------
+
+  describe "family/1" do
+    test "maps model ids to a prompt family, defaulting unknown ones" do
+      assert Prompt.family("anthropic:claude-sonnet-4-20250514") == "claude"
+      assert Prompt.family("github_copilot:claude-3-5") == "claude"
+      assert Prompt.family("ollama:qwen3:14b") == "default"
+      assert Prompt.family("ollama_cloud:deepseek-v4.1-flash") == "default"
+      assert Prompt.family(nil) == "default"
+    end
+  end
+
+  describe "framework/1" do
+    test "returns a real prompt, not the five-line stub, per family" do
+      default = Prompt.framework("ollama:qwen3")
+      claude = Prompt.framework("anthropic:claude-sonnet-4")
+
+      assert String.length(default) > 500
+      assert default != claude
+    end
+
+    test "the vendored text never impersonates opencode and names OUR tools" do
+      for model <- ["ollama:qwen3", "anthropic:claude-sonnet-4"] do
+        prompt = Prompt.framework(model)
+
+        # identity is rewritten (THIRD_PARTY.md): no upstream branding
+        refute prompt =~ "opencode"
+        refute prompt =~ "OpenCode"
+        # our canonical tool names, not opencode's (read/bash/write/...)
+        assert prompt =~ "read_file"
+        assert prompt =~ "write_file"
+      end
+    end
+
+    test "an unknown family falls back to the default file" do
+      assert Prompt.framework("ollama:qwen3") == Prompt.framework(nil)
+    end
+  end
+
+  describe "base/3" do
+    test "selects the framework prompt by model", %{root: root} do
+      assert Prompt.base(nil, root, "anthropic:claude-sonnet-4") =~ "Professional objectivity"
+      refute Prompt.base(nil, root, "ollama:qwen3") =~ "Professional objectivity"
+    end
+
+    test "an override still wins over the model file", %{root: root} do
+      base = Prompt.base("CUSTOM", root, "anthropic:claude-sonnet-4")
+      assert base =~ "CUSTOM"
+      refute base =~ "Professional objectivity"
+    end
+
+    test "project memory is still appended for every model", %{root: root} do
+      File.write!(Path.join(root, "AGENTS.md"), "PROJECT-RULE")
+      assert Prompt.base(nil, root, "anthropic:claude-sonnet-4") =~ "PROJECT-RULE"
+      assert Prompt.base(nil, root, "ollama:qwen3") =~ "PROJECT-RULE"
+    end
+  end
+
+  # -- ADR 024: the per-call environment block ----------------------------
+
+  describe "environment/2" do
+    test "carries the model, cwd, git-repo flag, platform and date", %{root: root} do
+      block = Prompt.environment("ollama:test", root)
+
+      assert block =~ "<env>"
+      assert block =~ "Model: ollama:test"
+      assert block =~ "Working directory: #{root}"
+      assert block =~ "Is directory a git repo: no"
+      assert block =~ "Platform: "
+      assert block =~ "Today's date: #{Date.utc_today()}"
+    end
+
+    test "reports a git repo when .git is present", %{root: root} do
+      File.mkdir_p!(Path.join(root, ".git"))
+      assert Prompt.environment("m", root) =~ "Is directory a git repo: yes"
+    end
+  end
+
+  describe "with_environment/3" do
+    test "appends the block to the system message, leaving the stored context alone" do
+      context =
+        ReqLLM.Context.new()
+        |> ReqLLM.Context.append(ReqLLM.Context.system("BASE"))
+        |> ReqLLM.Context.append(ReqLLM.Context.user("hi"))
+
+      on_wire = Prompt.with_environment(context, "ollama:test", "/tmp")
+
+      [%ReqLLM.Message{role: :system} = sys | _] = ReqLLM.Context.to_list(on_wire)
+      text = Enum.map_join(sys.content, "", &(&1.text || ""))
+      assert text =~ "BASE"
+      assert text =~ "<env>"
+
+      # the STORED context must not have gained the volatile block
+      [%ReqLLM.Message{content: stored} | _] = ReqLLM.Context.to_list(context)
+      refute Enum.map_join(stored, "", &(&1.text || "")) =~ "<env>"
+      assert length(ReqLLM.Context.to_list(context)) == 2
+    end
+
+    test "is a no-op on a context with no system message" do
+      context = ReqLLM.Context.new() |> ReqLLM.Context.append(ReqLLM.Context.user("hi"))
+      assert Prompt.with_environment(context, "m", "/tmp") == context
+    end
+  end
 end

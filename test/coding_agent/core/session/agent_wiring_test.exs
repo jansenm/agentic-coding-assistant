@@ -183,6 +183,79 @@ defmodule CodingAgent.Core.Session.AgentWiringTest do
     end
   end
 
+  describe "model switch recomposes the model-selected prompt (ADR 024)" do
+    test "set_model/2 swaps the framework prompt for the new model" do
+      # start on a non-Claude model, then switch to a Claude id: the
+      # framework prompt must follow the model, not stay on the old one.
+      start("recompose-a", model: "ollama:qwen3")
+      {:ok, before} = Session.state("recompose-a")
+      refute system_text_of(before) =~ "Professional objectivity"
+
+      :ok = Session.set_model("recompose-a", "anthropic:claude-sonnet-4")
+      {:ok, after_switch} = Session.state("recompose-a")
+
+      assert after_switch.model == "anthropic:claude-sonnet-4"
+      assert system_text_of(after_switch) =~ "Professional objectivity"
+      # the system message actually changed (not the old text left in place)
+      refute system_text_of(before) == system_text_of(after_switch)
+      refute system_text_of(before) =~ "Professional objectivity"
+    end
+
+    test "a model switch keeps the active agent's body" do
+      start("recompose-b", model: "ollama:qwen3", agent: "plan")
+      :ok = Session.set_model("recompose-b", "anthropic:claude-sonnet-4")
+      {:ok, s} = Session.state("recompose-b")
+
+      # both the new model prompt AND the plan role survive
+      assert system_text_of(s) =~ "Professional objectivity"
+      assert system_text_of(s) =~ "planning agent"
+    end
+
+    test "an override still wins after a model switch" do
+      start("recompose-c", model: "ollama:qwen3", system_prompt: "MY-OVERRIDE")
+      :ok = Session.set_model("recompose-c", "anthropic:claude-sonnet-4")
+      {:ok, s} = Session.state("recompose-c")
+
+      assert system_text_of(s) =~ "MY-OVERRIDE"
+      refute system_text_of(s) =~ "Professional objectivity"
+    end
+  end
+
+  describe "wire_request/1 (ADR 024 assembly)" do
+    test "appends the environment block on the wire, not in the stored context" do
+      start("wire-env", model: "ollama:qwen3")
+      {:ok, s} = Session.state("wire-env")
+
+      {:ok, _model_input, _opts, wire_context} = Session.wire_request(s)
+
+      wire_system = wire_context |> ReqLLM.Context.to_list() |> hd()
+      assert system_text(wire_system) =~ "<env>"
+      assert system_text(wire_system) =~ "Model: ollama:qwen3"
+
+      # the session's stored context is untouched
+      refute system_text_of(s) =~ "<env>"
+    end
+
+    test "a per-agent temperature rides the request opts" do
+      start("wire-temp", model: "ollama:qwen3")
+
+      {:ok, s} = Session.state("wire-temp")
+      agent = %CodingAgent.Core.Agent{name: "cold", prompt: "p", source: "t", temperature: 0.1}
+      s = %{s | agent: agent}
+
+      {:ok, _input, opts, _ctx} = Session.wire_request(s)
+      assert opts[:temperature] == 0.1
+    end
+
+    test "no agent temperature leaves the provider default (no :temperature key)" do
+      start("wire-notemp", model: "ollama:qwen3")
+      {:ok, s} = Session.state("wire-notemp")
+
+      {:ok, _input, opts, _ctx} = Session.wire_request(s)
+      refute Keyword.has_key?(opts, :temperature)
+    end
+  end
+
   defp system_text_of(state) do
     state.context
     |> ReqLLM.Context.to_list()

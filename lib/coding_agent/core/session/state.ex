@@ -24,6 +24,11 @@ defmodule CodingAgent.Core.Session.State do
     # narrowing, not idempotent).
     base_policy: nil,
     base_prompt: nil,
+    # A caller-supplied system prompt that OVERRIDES the model-selected
+    # framework prompt (ADR 024). Kept here (not just in the start opts)
+    # so a model switch recomposes from it, and a resume carries it.
+    # nil means "use the per-model prompt file".
+    prompt_override: nil,
     # Sandbox mount schema (ADR 015): %{rw: [...], ro: [...], hide: [...]}.
     # Read from UserConfig layers at start (rw only from shipped+global,
     # never the project layer). Empty means "no extra mounts".
@@ -104,6 +109,7 @@ defmodule CodingAgent.Core.Session.State do
           agent: CodingAgent.Core.Agent.t() | nil,
           base_policy: CodingAgent.Core.Permissions.t() | nil,
           base_prompt: String.t() | nil,
+          prompt_override: String.t() | nil,
           pending_tool_calls: [map()],
           pending_round_calls: [map()],
           pending_round_results: [map()],

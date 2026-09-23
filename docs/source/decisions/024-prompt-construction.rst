@@ -5,17 +5,29 @@ Prompt construction: per-model prompts and an environment block
 
 .. adr::
    :id: 024
-   :status: Proposed
+   :status: Accepted
    :date: 2026-09-21
    :tags: prompts, agents, providers, licensing
 
 .. note::
-   Proposed 2026-09-21. Answers T1/T12 of the ``code_review.md``
-   "rival opencode" list. Decides (a) that the system prompt gains a
-   per-model provider file and a per-call environment block, (b) that we
-   vendor opencode's provider files under MIT with attribution, adapting
-   the identity, and (c) that the parsed-but-unused agent fields
-   (``temperature``, ``max_turns``) are either wired or removed (T3).
+   Accepted and implemented 2026-09-21. Answers T1/T12 of the
+   ``code_review.md`` "rival opencode" list. Decides (a) that the system
+   prompt gains a per-model provider file and a per-call environment
+   block, (b) that we vendor opencode's provider files under MIT with
+   attribution, adapting the identity, and (c) that the parsed-but-unused
+   agent fields (``temperature``, ``max_turns``) are either wired or
+   removed (T3).
+
+   **Implemented:** ``Prompt.family/1`` + ``framework/1`` select
+   ``priv/coding-agent/prompts/{default,claude}.txt`` by model id;
+   ``Prompt.environment/2`` builds the per-call block;
+   ``Prompt.with_environment/3`` appends it on the wire only; a model
+   switch recomposes ``base_prompt`` and the system message
+   (``apply_model/2`` + ``recompose_prompt/1``); ``temperature`` rides
+   the request opts (``wire_request/1``, a new testable seam);
+   ``prompt_override`` is a ``State`` field so a switch and a resume both
+   keep a caller's custom prompt. ``max_turns`` remains open (question 1).
+   Attribution in ``LICENSES/MIT.txt`` and ``THIRD_PARTY.md``.
 
 Context
 -------

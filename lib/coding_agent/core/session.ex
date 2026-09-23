@@ -164,6 +164,10 @@ defmodule CodingAgent.Core.Session do
       scope_root: state.scope_root,
       policy: state.base_policy || state.policy,
       agent: resumable_agent_name(state),
+      # carry the caller's prompt override so a model switch after resume
+      # recomposes from it rather than falling back to the model file
+      # (ADR 024)
+      system_prompt: state.prompt_override,
       usage: state.usage,
       compaction_warned: state.compaction_warned,
       compaction_backoff: state.compaction_backoff,
@@ -324,7 +328,12 @@ defmodule CodingAgent.Core.Session do
     # apply_agent narrows, so stacking a second definition would compound
     # the first's restrictions.
     base_policy = policy
-    base_prompt = Prompt.base(Keyword.get(opts, :system_prompt), scope_root)
+    # The framework prompt is selected for the model (ADR 024), so
+    # `base_prompt` depends on it; a model switch recomposes (set_model /
+    # apply_pending_switches). A caller-supplied override wins over the
+    # model file and is kept for that recomposition.
+    prompt_override = Keyword.get(opts, :system_prompt)
+    base_prompt = Prompt.base(prompt_override, scope_root, model)
 
     {agent, policy, system_prompt} =
       case resolve_agent(Keyword.get(opts, :agent), policy, base_prompt, snapshot.agents) do
@@ -379,6 +388,7 @@ defmodule CodingAgent.Core.Session do
        agent: agent,
        base_policy: base_policy,
        base_prompt: base_prompt,
+       prompt_override: prompt_override,
        # resumed state carried forward: usage drives the compaction
        # trigger (see above), warned/backoff avoid re-warning and
        # re-retrying a summarize that already failed before the restart
@@ -456,7 +466,11 @@ defmodule CodingAgent.Core.Session do
     # switch and a resume came back on the OLD model (found live: "it
     # always resets to glm" — the menu showed deepseek, the resumed
     # session ran glm again).
-    new_state = struct!(state, model: model)
+    #
+    # The framework prompt is model-selected (ADR 024), so a model switch
+    # also recomposes the system prompt for the new model. The agent body
+    # is re-composed on top so a switch does not drop the active role.
+    new_state = state |> apply_model(model) |> recompose_prompt()
     persist(new_state)
     {:reply, :ok, new_state}
   end
@@ -696,6 +710,44 @@ defmodule CodingAgent.Core.Session do
 
   defp edit_call(%{arguments: _} = call, new_args), do: %{call | arguments: new_args}
 
+  # -- Prompt recomposition (ADR 024) -----------------------------------------
+
+  # Apply a new model and, with it, the model-selected framework prompt.
+  defp apply_model(state, model) do
+    base_prompt = Prompt.base(system_prompt_override(state), state.scope_root, model)
+    %{state | model: model, base_prompt: base_prompt}
+  end
+
+  # Re-derive the system prompt from the (fresh) base + the current agent
+  # body, and swap it into the context. Used after a model switch, which
+  # changes `base_prompt` (ADR 024).
+  defp recompose_prompt(%{agent: nil} = state) do
+    maybe_replace_system(state, state.base_prompt)
+  end
+
+  defp recompose_prompt(%{agent: agent} = state) do
+    composed = Prompt.compose_agent(state.base_prompt, agent.prompt)
+    maybe_replace_system(state, composed)
+  end
+
+  defp system_prompt_override(state), do: state.prompt_override
+
+  defp maybe_replace_system(state, prompt) do
+    if is_binary(prompt) do
+      %{state | context: Prompt.replace_in_context(state.context, prompt)}
+    else
+      state
+    end
+  end
+
+  # Per-agent temperature (ADR 017/024): a definition may pin its own
+  # sampling temperature. Absent, the provider default stands. req_llm
+  # takes it as a request option (0.0-2.0).
+  defp put_temperature(opts, %{temperature: t}) when is_number(t),
+    do: Keyword.put(opts, :temperature, t)
+
+  defp put_temperature(opts, _agent), do: opts
+
   @impl true
   # The turn worker RETURNED (async_nolink sends {ref, result} before the
   # DOWN): adopt the worker's final state and reply to the caller. This
@@ -884,19 +936,23 @@ defmodule CodingAgent.Core.Session do
   # switches recompute from the base values (no compounding) and replace
   # the system prompt in place.
   defp apply_pending_switches(state, session) do
+    # Agent first: its prompt was resolved from the OLD base_prompt, so it
+    # must not run after the model recomposition (which would drop it).
     state =
-      case session.pending_model do
-        :none -> state
-        model -> %{state | model: model}
+      case session.pending_agent do
+        :none ->
+          state
+
+        {:set, agent, policy, prompt} ->
+          context = Prompt.replace_in_context(state.context, prompt)
+          %{state | agent: agent, policy: policy, context: context}
       end
 
-    case session.pending_agent do
-      :none ->
-        state
-
-      {:set, agent, policy, prompt} ->
-        context = Prompt.replace_in_context(state.context, prompt)
-        %{state | agent: agent, policy: policy, context: context}
+    # Then the model: a model switch swaps the model-selected framework
+    # prompt (ADR 024) and re-applies the just-set agent body on top.
+    case session.pending_model do
+      :none -> state
+      model -> state |> apply_model(model) |> recompose_prompt()
     end
   end
 
@@ -1197,13 +1253,31 @@ defmodule CodingAgent.Core.Session do
   @spec effective_model(State.t()) :: String.t() | nil
   defdelegate effective_model(state), to: State
 
-  defp call_llm(state) do
-    with {:ok, model_input, base_opts} <-
-           Request.build(effective_model(state), state.provider_config) do
-      opts = Keyword.put(base_opts, :tools, current_tools(state))
+  # The wire request for a state: the model input, the options (tools +
+  # per-agent temperature), and the context to send. The context carries
+  # the per-call environment block (ADR 024) — the stored context is not
+  # mutated. Public so a test can assert the assembly without a provider.
+  @doc false
+  @spec wire_request(State.t()) ::
+          {:ok, String.t() | map(), keyword(), ReqLLM.Context.t()} | {:error, term()}
+  def wire_request(state) do
+    model = effective_model(state)
 
+    with {:ok, model_input, base_opts} <- Request.build(model, state.provider_config) do
+      opts =
+        base_opts
+        |> Keyword.put(:tools, current_tools(state))
+        |> put_temperature(state.agent)
+
+      context = Prompt.with_environment(state.context, model, state.scope_root)
+      {:ok, model_input, opts, context}
+    end
+  end
+
+  defp call_llm(state) do
+    with {:ok, model_input, opts, context} <- wire_request(state) do
       with {:ok, stream_response} <-
-             ReqLLM.stream_text(model_input, sanitize_context(state.context), opts) do
+             ReqLLM.stream_text(model_input, sanitize_context(context), opts) do
         events = ReqLLM.StreamResponse.events(stream_response)
 
         # Hand the active stream's hard-cancel to the interrupt

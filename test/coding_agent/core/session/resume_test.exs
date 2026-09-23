@@ -51,6 +51,13 @@ defmodule CodingAgent.Core.Session.ResumeTest do
       assert opts[:pending_round_results] == [%{id: "c0"}]
     end
 
+    test "carries the prompt override (ADR 024)" do
+      # Without this, a model switch after resume would recompose from the
+      # model file and silently drop the caller's custom system prompt.
+      opts = Session.resume_opts(state(prompt_override: "MY-OVERRIDE"))
+      assert opts[:system_prompt] == "MY-OVERRIDE"
+    end
+
     test "restores the BASE policy, not the agent-narrowed one" do
       base = Permissions.load(nil, nil)
       narrowed = Permissions.apply_agent(base, %{disallowed_tools: ["shell"], tools: nil})
