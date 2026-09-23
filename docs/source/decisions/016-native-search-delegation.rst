@@ -73,8 +73,10 @@ preserves that:
   file — measured, it ran. The environment must not be able to influence
   the invocation. ``--no-ignore`` is also set so our skip rules (not the
   repo's ``.gitignore``) decide what is searched;
-- excludes use ``!**/<dir>/**`` (``rg``) and ``--exclude <dir>`` (``fd``)
-  so a *nested* ``src/_build`` is pruned the way the Elixir walk prunes it;
+- excludes use ``!**/<dir>/**`` (``rg``) and ``--exclude **/<dir>/**``
+  (``fd``) so a *nested* ``src/_build`` is pruned the way the Elixir walk
+  prunes it — and, for ``fd``, so a same-named *file* is not pruned (a
+  bare name prunes files too; measured);
 - for ``rg``, an **include glob precedes the excludes**: a later include
   re-adds what an earlier exclude removed (measured), so excludes go last;
 - ``rg`` does not follow symlinks in traversal (measured), and its
@@ -106,3 +108,68 @@ Consequences
 - A future option, not in scope here: a single ``search`` tool that picks
   the engine internally, so the model does not choose between ``grep`` and
   shell. Revisit after the delegation exists.
+
+Amendment 2026-09-23: the delegation was a silent divergence
+------------------------------------------------------------
+
+**Status: Accepted (amendment to the accepted ADR 016).**
+
+The decision above assumed "maps the output into the same result schema",
+i.e. that the external engines answer the *same question* as the Elixir
+implementation. Measured, they did not — the two paths were two search
+tools wearing one name:
+
+- ``fd --glob`` matches the entry **name**, not the path. Every pattern
+  with a ``/`` returned nothing whenever ``fd`` was installed:
+  ``lib/**/*.ex`` found 0 files where the walk found 59, ``lib/*.ex`` 0
+  where the walk found 1. The documented shapes in ``Tools.Glob``'s
+  description and parameter docs (``"lib/**/*.ex"``, ``"**/*.toml"``) were
+  exactly the broken ones; only ``**/*`` and ``*.ex`` happened to agree.
+- ``fd`` and ``rg`` answer with **smart case** by default; the walk is
+  case-sensitive. ``*.EX`` matched ``top.A.EX`` in one path, not the other.
+- ``fd``'s dialect is **richer** than ours: ``[...]`` classes, a leading
+  ``!`` as negation, ``\`` as a quote, and path normalization for ``./x``,
+  ``x/``, ``a//b``. ``[ab].ex`` listed ``a.ex`` and ``b.ex`` under ``fd``
+  and nothing in the walk.
+- ``rg``'s ``--glob`` was passed straight through, so a *narrower* filter
+  than ours silently **dropped** matches the reference engine finds
+  (``--glob '*.ex'`` listed a hidden ``.hidden.ex``), and an invalid glob
+  printed an error on stdout, i.e. reached the model as a search result.
+- None of this was visible to ``fd``: a non-zero exit was formatted as a
+  result, and ``Exec`` merges stderr into stdout.
+
+The fix keeps the decision (delegate) and makes the contract real:
+
+1. **One dialect, enforced by the reference engine.** ``fd`` is called
+   root-anchored and absolute (``--absolute-path --full-path``, pattern
+   ``Path.join(root, pattern)``) so a path pattern means a path, and
+   ``--case-sensitive`` so case means case. Patterns that fd's dialect
+   would read differently stay on the reference engine
+   (``fd_dialect?/1``). ``rg`` no longer receives the caller's glob at
+   all: it searches wide and the result is filtered by
+   ``Glob.file_match?/3``.
+2. **One hidden rule.** ``--hidden`` is passed so a search that *names* a
+   hidden entry can find it, and the result is filtered afterwards
+   (``Containment.filter_hidden/2``), so a pattern that did not ask cannot
+   gain one. Before this the walk and the external engines disagreed about
+   *files* too (the walk pruned hidden directories only, ``fd``/``rg``
+   prune hidden files as well); the walk now applies the same rule, and
+   the opt-in is POSIX spelling (``.gitignore``, ``.*``, ``.github/*``).
+3. **Naming beats filtering at every layer** — ``path: ".github"`` or
+   ``glob: ".env.example"`` is the same opt-in in both tools and both
+   engines, and a named target is exempt from the skip list that would
+   otherwise prune it (``path: "src/doc"`` searches it).
+4. **The skip lists now mean the same thing.** ``fd --exclude <name>``
+   also prunes a *file* of that name; the excludes are ``**/<dir>/**``, so
+   only directories are pruned, like ``Containment.default_skip_dirs/0``.
+5. **Errors are not results.** A non-zero exit falls back (fd reports
+   "no matches" with exit 0 — the 0/1 convention belongs to ``--quiet``).
+
+The reference engine is now the definition and both engines are measured
+against it: ``SearchDelegationTest`` "engine agreement" runs every
+documented shape twice, once with the binary and once with the probe
+forced off, and asserts the two answers are identical. That test is the
+part that was missing — the previous tests used only rootless patterns
+(``*.ex``, ``**/*.ex``), the one region where every engine agreed by
+accident.
+

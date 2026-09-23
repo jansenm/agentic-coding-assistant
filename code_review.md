@@ -154,15 +154,15 @@ session's `call_parts/1`" — the duplication is known.
    documented public decision API (`permissions.ex:322`) no longer reflects
    production behavior.
 
-4. **`grep` / `glob` bypass confinement.** They shell out with `System.cmd`
-   (`grep.ex:138`, `glob.ex:82`) instead of the single `Port.open` +
-   `Sandbox.wrap` path in `Exec` (`exec.ex:29-48`). `shell` and `git` are
-   confined; these two are not, while the docs claim one execution path. They
-   partially compensate with post-hoc path filtering.
+4. ~~**`grep` / `glob` bypass confinement.**~~ **FIXED** (`686acd6`, 2026-09-18).
+   Both delegate through `Exec.run/4` under the read-only sandbox profile,
+   the same `Port.open` + `Sandbox.wrap` path `shell` and `git` use, so the
+   docs' "one execution path" holds again.
 
-5. **`grep` uses the process dictionary** for per-call state
-   (`grep.ex:241-259`). Safe today (one process per callback) but
-   non-reentrant by convention.
+5. ~~**`grep` uses the process dictionary** for per-call state.~~ **FIXED**
+   (2026-09-23, with the engine-agreement work): `collect_files/3` returns
+   `{files, explicit?}`; the flag is a value, not hidden per-process state,
+   so the tool is reentrant again.
 
 ---
 

@@ -22,8 +22,23 @@ defmodule CodingAgent.Core.Tools.Grep do
       explicit-path case is caught by the pre-check.
 
   The Elixir path enforces containment via `CodingAgent.Core.Containment`
-  (the ONE walk implementation). Binary files are skipped; hidden dirs and
-  `_build`/`deps`/`.git` are skipped in both paths.
+  (the ONE walk implementation). Binary files are skipped; hidden entries
+  and `_build`/`deps`/`.git` are skipped in both paths.
+
+  ## Engine agreement: one glob rule, one hidden rule
+
+  `rg` filters by its own glob dialect and its own hidden defaults, and
+  both differ from ours (measured): `--glob '*.ex'` made it list
+  `.hidden.ex`, `--glob 'lib/**/*.ex'` answered a path-anchored question
+  where this tool documents a NAME glob, `./lib/*.ex` matched nothing and
+  an invalid glob printed an error on stdout. So `rg` is not given the
+  caller's glob at all: it searches wide and every match is filtered by
+  the reference rule (`Glob.file_match?/3` + `Containment.hidden_allowed?/2`).
+  `rg` runs `--hidden` so that a search which NAMED a hidden entry
+  (`glob: ".env.example"`, `path: ".github"`) can find it, and the walk
+  asks for `:include_hidden` under the same naming test. Both engines
+  therefore return the same set for every shape the tool documents — the
+  test that pins it is `SearchDelegationTest` "engine agreement".
   """
 
   alias CodingAgent.Core.Containment
@@ -135,10 +150,13 @@ defmodule CodingAgent.Core.Tools.Grep do
     root = Path.expand(scope.root)
     target = rel_target(root, path)
 
+    # --hidden so a search that NAMED a hidden entry can see it; the
+    # result is filtered by the same naming test below, so nothing
+    # else gains hidden entries (see moduledoc).
     args =
       ["--json", "--no-config", "--no-ignore", "--color=never", "--max-filesize", "1M"] ++
-        include_args(glob) ++
-        exclude_args() ++
+        ["--hidden"] ++
+        exclude_args(target) ++
         ["-e", pattern, "--", target]
 
     # The command runs through Exec under the sandbox profile, exactly
@@ -148,36 +166,59 @@ defmodule CodingAgent.Core.Tools.Grep do
     profile = scope |> Tools.profile() |> Map.put(:root, root)
 
     case Exec.run({:exec, rg, args}, root, @exec_timeout, profile) do
-      {:ok, out, 0} -> format_rg_matches(out, root)
-      {:ok, out, 1} -> format_rg_matches(out, root)
+      {:ok, out, 0} -> format_rg_matches(out, root, glob, path)
+      # exit 1 is "no match" for rg (unlike fd, where 1 is an error —
+      # measured); anything else is a failed run we do not want to show.
+      {:ok, out, 1} -> format_rg_matches(out, root, glob, path)
       _ -> :fallback
     end
   end
 
-  # An include glob must precede the excludes: rg lets a later include
-  # re-add what an earlier exclude removed (verified), so exclusions go
-  # last to stay authoritative.
-  defp include_args(nil), do: []
+  # The caller's glob is NOT handed to rg: its dialect is close but not
+  # ours (measured — `lib/**/*.ex` matched a path-anchored pattern,
+  # `./lib/*.ex` matched nothing, an invalid glob printed an error on
+  # stdout), and an include filter that is narrower than our rule would
+  # silently DROP matches the reference engine finds. So rg searches wide
+  # and the result is filtered by the reference rule; the skip trees are
+  # still pruned in the invocation, which is what keeps the search cheap.
+  #
+  # The named target is exempt from its OWN name's exclusion: naming a
+  # path is the opt-in (the walk enters a named `doc`/`.git`, it only
+  # prunes such entries it meets on the way) — `path: "src/doc"` must
+  # search it in both engines.
+  defp exclude_args(target) do
+    named = Path.basename(target)
 
-  defp include_args(glob) when is_binary(glob) and glob != "",
-    do: ["--glob", glob]
-
-  defp include_args(_), do: []
-
-  # Skip the same build/vendor trees the Elixir walk skips. `**/` so a
-  # nested `src/_build` is pruned too (a bare name would leak it — the
-  # walk prunes at any depth).
-  defp exclude_args do
-    Enum.flat_map(External.skip_dirs(), fn dir -> ["--glob", "!**/#{dir}/**"] end)
+    External.skip_dirs()
+    |> Enum.reject(&(&1 == named))
+    |> Enum.flat_map(fn dir -> ["--glob", "!**/#{dir}/**"] end)
   end
 
-  defp format_rg_matches(out, root) do
+  # rg walks in its own order; the reference engine walks sorted. One
+  # deterministic order for both (`path`, then `line`: also the natural
+  # reading order), so the two engines are comparable and a diff of two
+  # runs is empty.
+  defp format_rg_matches(out, root, glob, path) do
+    names = [glob, path]
+
     out
     |> String.split("\n", trim: true)
     |> Enum.flat_map(&rg_match_line(&1, root))
+    |> Enum.filter(&keep_match?(&1, names))
+    |> Enum.sort()
     |> Enum.take(@max_results)
     |> format_results()
   end
+
+  # One match survives when the caller's glob accepts its path (the same
+  # `Glob.file_match?/3` the `glob` tool uses) and the hidden rule allows
+  # it. Both engines therefore return the same set.
+  defp keep_match?({rel, _line, _text}, names) do
+    Containment.hidden_allowed?(rel, names) and glob_accepts?(List.first(names), rel)
+  end
+
+  defp glob_accepts?(nil, _rel), do: true
+  defp glob_accepts?(glob, rel), do: Glob.file_match?(glob, rel, Path.basename(rel))
 
   defp rg_match_line(line, root) do
     with {:ok, %{"type" => "match", "data" => data}} <- Jason.decode(line),
@@ -200,8 +241,7 @@ defmodule CodingAgent.Core.Tools.Grep do
   defp elixir_search(scope, pattern, path, glob) do
     re = Regex.compile!(pattern)
     root = Path.expand(scope.root)
-
-    files = collect_files(scope, path, glob)
+    {files, explicit?} = collect_files(scope, path, glob)
 
     results =
       files
@@ -213,14 +253,18 @@ defmodule CodingAgent.Core.Tools.Grep do
             []
 
           :too_big ->
-            if explicit_file?(path, file),
+            if explicit?,
               do: [{rel(root, file), -1, "(file larger than 1 MiB, skipped)"}],
               else: []
 
           lines ->
-            lines
+            Enum.map(lines, fn {file, line, text} -> {rel(root, file), line, text} end)
         end
       end)
+      # the SAME report rule and the SAME order as the rg path
+      # (see keep_match?/2 + format_rg_matches/4)
+      |> Enum.filter(&keep_match?(&1, [glob, path]))
+      |> Enum.sort()
       |> Enum.take(@max_results)
 
     format_results(results)
@@ -243,34 +287,29 @@ defmodule CodingAgent.Core.Tools.Grep do
   end
 
   # Files to search: a single explicit file, or a containment-respecting
-  # walk of the target directory (Containment owns the discipline).
+  # walk of the target directory (Containment owns the discipline). The
+  # second element says whether the caller named one file — it decides
+  # whether an oversized file is reported or silently skipped.
   defp collect_files(scope, path, glob) do
     start = abs_path(scope, path)
 
     if File.regular?(start) do
-      Process.put({__MODULE__, :explicit_file}, true)
-      Containment.walk(scope, path)
+      {Containment.walk(scope, path), true}
     else
-      Process.put({__MODULE__, :explicit_file}, false)
-
       match_files =
         if glob do
-          fn name ->
-            # name-only match, or a deeper glob like "**/*.ex"
-            Glob.glob_match?(glob, name) or Glob.glob_match?(glob, "**/" <> name)
-          end
+          fn name, rel -> Glob.file_match?(glob, rel, name) end
         end
 
-      Containment.walk(scope, path, match_files: match_files)
+      walk =
+        Containment.walk(scope, path,
+          match_files: match_files,
+          include_hidden: Containment.hidden_pattern?(glob || path)
+        )
+
+      {walk, false}
     end
   end
-
-  defp explicit_file?(_path, _file) do
-    Process.get({__MODULE__, :explicit_file}, false)
-  end
-
-  # (explicit_file flag is per-call process state; the tool callback
-  # always runs in a single process, so no cross-talk in v1)
 
   defp search_file(re, file) do
     case File.read(file) do

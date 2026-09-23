@@ -106,15 +106,30 @@ defmodule CodingAgent.Core.ContainmentTest do
       refute Enum.any?(files, &String.contains?(&1, ".hidden/"))
     end
 
-    test ":match_files filters by entry name", %{scope: scope} do
+    test ":match_files filters by entry name and scope-relative path", %{scope: scope} do
       File.write!(Path.join(@root, "src/other.ex"), "ex\n")
       File.write!(Path.join(@root, "src/data.json"), "{}\n")
 
       files =
-        Containment.walk(scope, ".", match_files: fn name -> String.ends_with?(name, ".ex") end)
+        Containment.walk(scope, ".",
+          match_files: fn name, rel -> String.ends_with?(name, ".ex") and rel != "" end
+        )
 
       names = Enum.map(files, &Path.relative_to(&1, @root))
       assert names == ["src/other.ex"]
+
+      # the second argument is the path RELATIVE TO THE SCOPE ROOT, which
+      # is what a `lib/**/*.ex`-style glob needs
+      files =
+        Containment.walk(scope, ".", match_files: fn _name, rel -> rel == "src/data.json" end)
+
+      assert Enum.map(files, &Path.relative_to(&1, @root)) == ["src/data.json"]
+
+      # no filter means "take everything"
+      files = Containment.walk(scope, ".", match_files: nil)
+
+      assert Enum.sort(Enum.map(files, &Path.relative_to(&1, @root))) ==
+               ["src/data.json", "src/inside.txt", "src/other.ex", "top.txt"]
 
       File.rm!(Path.join(@root, "src/other.ex"))
       File.rm!(Path.join(@root, "src/data.json"))
@@ -146,6 +161,92 @@ defmodule CodingAgent.Core.ContainmentTest do
 
       files = Containment.walk(scope, ".")
       assert Enum.any?(files, &String.contains?(&1, "top.txt"))
+    end
+
+    test "default skips hidden FILES too, not just hidden dirs", %{scope: scope} do
+      File.mkdir_p!(Path.join(@root, ".github/workflows"))
+      File.write!(Path.join(@root, ".github/workflows/ci.yml"), "on: push\n")
+      File.write!(Path.join(@root, ".dotfile"), "x\n")
+      File.mkdir_p!(Path.join(@root, "src/.nested"))
+      File.write!(Path.join(@root, "src/.nested/deep.txt"), "d\n")
+
+      files = Containment.walk(scope, ".")
+      refute Enum.any?(files, &String.contains?(&1, ".github"))
+      refute Enum.any?(files, &String.ends_with?(&1, ".dotfile"))
+      refute Enum.any?(files, &String.contains?(&1, ".nested"))
+      assert Enum.any?(files, &String.ends_with?(&1, "top.txt"))
+
+      # this is the rule that makes the walk agree with rg/fd: they skip a
+      # hidden FILE as well, and an unfiltered walk did not (measured)
+      assert Enum.sort(Enum.map(files, &Path.relative_to(&1, @root))) ==
+               ["src/inside.txt", "top.txt"]
+    end
+
+    test ":include_hidden yields hidden files and descends into hidden dirs", %{scope: scope} do
+      File.mkdir_p!(Path.join(@root, ".github/workflows"))
+      File.write!(Path.join(@root, ".github/workflows/ci.yml"), "on: push\n")
+      File.write!(Path.join(@root, ".dotfile"), "x\n")
+
+      files = Containment.walk(scope, ".", include_hidden: true)
+      rel = Enum.map(files, &Path.relative_to(&1, @root))
+
+      assert ".github/workflows/ci.yml" in rel
+      assert ".dotfile" in rel
+
+      # ...and the skip list still wins: naming a hidden dir does not
+      # open .git (the skip list prunes it in both modes)
+      File.mkdir_p!(Path.join(@root, ".git/objects"))
+      File.write!(Path.join(@root, ".git/objects/blob"), "bin\n")
+
+      files = Containment.walk(scope, ".", include_hidden: true)
+      refute Enum.any?(files, &String.contains?(&1, ".git/"))
+    end
+
+    test "naming a hidden path is the opt-in, hidden or not", %{scope: scope} do
+      File.write!(Path.join(@root, ".gitignore"), "/_build\n")
+      File.mkdir_p!(Path.join(@root, ".idea"))
+      File.write!(Path.join(@root, ".idea/misc.xml"), "<x/>\n")
+
+      # a named FILE start is yielded as given (same as read_file)
+      assert Containment.walk(scope, ".gitignore") == [Path.join(@root, ".gitignore")]
+
+      # a named DIR start is entered as given
+      files = Containment.walk(scope, ".idea")
+      assert files == [Path.join(@root, ".idea/misc.xml")]
+
+      # neither is reachable by walking without the opt-in
+      files = Containment.walk(scope, ".")
+      refute Enum.any?(files, &String.ends_with?(&1, ".gitignore"))
+      refute Enum.any?(files, &String.contains?(&1, ".idea/"))
+    end
+  end
+
+  describe "hidden_entry?/1 + hidden_pattern?/1 (the ONE hidden rule)" do
+    test "an entry is hidden when any segment starts with a dot" do
+      refute Containment.hidden_entry?("lib/a.ex")
+      refute Containment.hidden_entry?("README.md")
+      assert Containment.hidden_entry?(".gitignore")
+      assert Containment.hidden_entry?("docs/.gitignore")
+      assert Containment.hidden_entry?(".github/workflows/ci.yml")
+      assert Containment.hidden_entry?("src/.secret/key.pem")
+    end
+
+    test "'.' and '..' are path syntax, not hidden names" do
+      refute Containment.hidden_entry?(".")
+      refute Containment.hidden_entry?("./lib/a.ex")
+      refute Containment.hidden_entry?("lib/../lib/a.ex")
+    end
+
+    test "a pattern opts in only when a segment NAMES a hidden entry" do
+      refute Containment.hidden_pattern?("**/*.ex")
+      refute Containment.hidden_pattern?("*")
+      refute Containment.hidden_pattern?("lib/**/*.ex")
+
+      assert Containment.hidden_pattern?(".gitignore")
+      assert Containment.hidden_pattern?(".*")
+      assert Containment.hidden_pattern?(".idea/*")
+      assert Containment.hidden_pattern?("**/.gitconfig")
+      assert Containment.hidden_pattern?("docs/.gitkeep")
     end
   end
 
