@@ -58,6 +58,73 @@ defmodule CodingAgent.UI.TuiQuestionTest do
     wait_until(fn -> sync(pid).question_prompt == nil end)
   end
 
+  test "the wizard paints long question text wrapped, not clipped" do
+    root = Path.join(System.tmp_dir!(), "tui-q3-#{System.unique_integer()}")
+    File.mkdir_p!(root)
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    sid = "tui-q3-#{System.unique_integer()}"
+
+    {:ok, _} =
+      CodingAgent.Core.Session.Supervisor.start_session(
+        id: sid,
+        scope_root: root,
+        policy: CodingAgent.Core.Permissions.load(nil, nil),
+        test_mode: true,
+        interactive: true
+      )
+
+    pid =
+      start_supervised!(
+        {Tui, [name: nil, test_mode: {80, 24}, session_id: sid, scope_root: root]}
+      )
+
+    long =
+      "Should the transcript measurement stay lazy when the window is very tall and the session holds thousands of entries?"
+
+    :ok =
+      CodingAgent.Core.Session.debug_gate(sid, [
+        %{
+          id: "q2",
+          name: "question",
+          arguments: %{
+            "questions" => [
+              %{
+                "question" => long,
+                "header" => "Long",
+                "options" => [
+                  %{
+                    "label" => "keep lazy",
+                    "description" =>
+                      "Measure only what the viewport needs, exactly as ADR 028 decided"
+                  },
+                  %{
+                    "label" => "pre-warm the rest",
+                    "description" => "Trade idle CPU for scroll latency"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ])
+
+    wait_until(fn -> sync(pid).question_prompt != nil end)
+
+    buf = buffer(pid) |> Enum.join("\n")
+
+    # the question text is present in full: both a wrapped first line and
+    # its continuation exist (a clipped paragraph would drop the tail)
+    assert buf =~ "Should the transcript"
+    assert buf =~ "thousands of entries"
+
+    # the definition-list form: the term row and its description line
+    assert buf =~ "1) keep lazy"
+    assert buf =~ ": Measure only what the viewport"
+    assert buf =~ "0) type your own answer…"
+    assert buf =~ "enter = confirm"
+  end
+
   test "esc skips the question and the session proceeds" do
     root = Path.join(System.tmp_dir!(), "tui-q2-#{System.unique_integer()}")
     File.mkdir_p!(root)

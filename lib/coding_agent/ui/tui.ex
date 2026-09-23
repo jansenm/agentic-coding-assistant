@@ -4082,49 +4082,36 @@ defmodule CodingAgent.UI.Tui do
     [{%Clear{}, rect}, {widget, rect}]
   end
 
-  # The question wizard (ADR 027): the current question, its options
-  # numbered, the always-present "type your own" row, and the controls.
+  # The question wizard (ADR 027): the current question, its options as a
+  # definition list, the always-present "type your own" row, and the
+  # controls.
+  #
+  # The body is MARKDOWN painted by the Markdown widget, not a hand-sized
+  # Paragraph: markdown wraps long question and description text natively,
+  # so nothing clips at the panel edge (the old plain-Paragraph wizard
+  # lost half of a long question on a narrow window, found live). Options
+  # use the definition-list form — the bold TERM is the key row
+  # ("**1) fd**"), the DESCRIPTION hangs below it prefixed with ": " —
+  # because tui-markdown turns bare digit-led lines into lists and
+  # RENUMBERS them ("1) fd" renders as "1." and "0)" becomes "3."), which
+  # would break the digit keys. Bold keeps "1)" literal. Measured and
+  # painted by the same probe the transcript uses (measure = paint).
   defp question_widgets(%{question_prompt: nil}, _area), do: []
 
   defp question_widgets(%{question_prompt: qp} = state, area) do
     question = Enum.at(qp.questions, qp.index)
     options = question["options"] || []
-    multiple? = question["multiple"] || false
 
-    option_lines =
-      options
-      |> Enum.with_index(1)
-      |> Enum.map_join("\n", fn {o, i} ->
-        mark = if (i - 1) in qp.selected, do: "▸", else: " "
-        label = o["label"] || ""
-        desc = o["description"]
+    body = question_markdown(question, qp, options)
 
-        line = "#{mark} #{i}) #{label}"
-        if is_binary(desc) and desc != "", do: line <> "\n      #{desc}", else: line
-      end)
-
-    custom_line =
-      case qp.custom do
-        nil -> "  0) type your own answer…"
-        buf -> "▸ 0) #{buf}▏"
-      end
-
-    hint = if multiple?, do: "  (select one or more)", else: ""
-
-    text =
-      "#{question["question"]}\n#{hint}\n\n" <>
-        option_lines <>
-        "\n" <>
-        custom_line <>
-        "\n\nenter = confirm   esc = skip   #{(length(qp.questions) > 1 && "question #{qp.index + 1}/#{length(qp.questions)}") || ""}"
-
-    h = min(length(String.split(text, "\n")) + 2, div(area.height, 2))
-
-    body =
-      text
-      |> String.split("\n")
-      |> Enum.concat(List.duplicate(" ", max(h - 2 - length(String.split(text, "\n")), 0)))
-      |> Enum.join("\n")
+    # The probe measures the boxless markdown at the rect's INNER width;
+    # the panel's border adds the 2 rows back. Verified against the drawn
+    # buffer at 100/62/40 cols: the bottom border lands on the rect's
+    # last row, nothing clipped (the boxed widget wraps one column
+    # tighter than the boxless probe on both sides, which the height's
+    # last-nonblank metric absorbs).
+    w = min(@measure + 2, area.width - 4)
+    h = min(TranscriptView.height({:reasoning, body}, w - 2, nil) + 2, area.height - 2)
 
     title =
       case question["header"] do
@@ -4132,8 +4119,8 @@ defmodule CodingAgent.UI.Tui do
         _ -> "QUESTION"
       end
 
-    widget = %Paragraph{
-      text: body,
+    widget = %Markdown{
+      content: body,
       style: Styles.surface(:chrome),
       block:
         Styles.panel(
@@ -4144,10 +4131,69 @@ defmodule CodingAgent.UI.Tui do
         )
     }
 
-    w = min(@measure + 2, area.width - 4)
     rect = overlay_rect(state, area, h, w)
     [{%Clear{}, rect}, {widget, rect}]
   end
+
+  # The wizard body in markdown. Terms are hard-wrapped single lines
+  # (option rows must stay rows — a description never merges into the
+  # next term's line), options separated by blank paragraphs so each
+  # definition block stands alone; tui-markdown renders the description
+  # on its own ": " line (the definition-list look, verified against the
+  # painted buffer).
+  defp question_markdown(question, qp, options) do
+    hint =
+      if question["multiple"] || false do
+        "  \n(select one or more)"
+      else
+        nil
+      end
+
+    controls =
+      "enter = confirm   esc = skip" <>
+        if(length(qp.questions) > 1,
+          do: "   question #{qp.index + 1}/#{length(qp.questions)}",
+          else: ""
+        )
+
+    [
+      hard_breaks(String.trim(question["question"] || "")),
+      hint,
+      "",
+      options_deflist(options, qp.selected),
+      "",
+      custom_entry(qp.custom),
+      "",
+      controls
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join("\n")
+  end
+
+  # The options as a definition list: the bold term carries the digit key
+  # (literal inside **…**), the description hangs below as ": …".
+  defp options_deflist(options, selected) do
+    options
+    |> Enum.with_index(1)
+    |> Enum.map_join("\n\n", fn {o, i} ->
+      mark = if (i - 1) in selected, do: "▸ ", else: ""
+      term = "#{mark}**#{i}) #{o["label"] || ""}**"
+
+      case o["description"] do
+        desc when is_binary(desc) and desc != "" -> term <> "\n: " <> desc
+        _ -> term
+      end
+    end)
+  end
+
+  # The always-present "type your own" row; while a custom answer is
+  # being typed it carries the buffer and the cursor.
+  defp custom_entry(nil), do: "**0) type your own answer…**"
+  defp custom_entry(buf), do: "▸ **0) #{buf}▏**"
+
+  # A paragraph's own newlines must not open new blocks: make them hard
+  # breaks so the question's line structure survives the markdown parse.
+  defp hard_breaks(text), do: String.replace(text, "\n", "  \n")
 
   # The agent's stated reason for an escalation (ADR 015), for display.
   # Only meaningful for `shell`; other tools have no escalations.
