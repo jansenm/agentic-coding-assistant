@@ -24,6 +24,12 @@ defmodule CodingAgent.UI.TuiAgentTest do
     )
   end
 
+  defp write_agent(filename, frontmatter) do
+    dir = Path.join([@tmp_root, ".coding-agent", "agents"])
+    File.mkdir_p!(dir)
+    File.write!(Path.join(dir, filename), frontmatter)
+  end
+
   test "the two slots start from the mounted agent" do
     pid = start_app(agent: "build")
     state = sync(pid)
@@ -182,6 +188,68 @@ defmodule CodingAgent.UI.TuiAgentTest do
     refute buffer =~ "(none)"
     refute buffer =~ "→"
     refute buffer =~ "you"
+  end
+
+  describe "the Tab list is Agent.selectable?/1 (ADR 029)" do
+    test "a mode: all definition is selectable (the old == :primary filter dropped it)" do
+      write_agent("helper.md", """
+      ---
+      description: an unpinned helper
+      mode: all
+      ---
+      helper body
+      """)
+
+      pid = start_app(agent: "build")
+      assert "helper" in sync(pid).primary_agents
+    end
+
+    test "a hidden definition is not offered by Tab" do
+      write_agent("internal.md", """
+      ---
+      description: an internal agent
+      mode: primary
+      hidden: true
+      ---
+      internal body
+      """)
+
+      pid = start_app(agent: "build")
+      refute "internal" in sync(pid).primary_agents
+    end
+
+    test "a subagent-only definition is not offered by Tab" do
+      write_agent("delegate.md", """
+      ---
+      description: a delegated agent
+      mode: subagent
+      ---
+      delegate body
+      """)
+
+      pid = start_app(agent: "build")
+      refute "delegate" in sync(pid).primary_agents
+    end
+  end
+
+  describe "the sidebar effort line (ADR 029)" do
+    test "shows the session's resolved effort, not a global re-read" do
+      File.mkdir_p!(Path.join(@tmp_root, ".coding-agent"))
+
+      File.write!(
+        Path.join(@tmp_root, ".coding-agent/config.toml"),
+        ~s(reasoning_effort = "high")
+      )
+
+      pid = start_app(agent: "build")
+      # the definition list pads labels, so match the value on its row
+      assert Enum.join(buffer(pid), "\n") =~ ~r/effort:\s+high/
+    end
+
+    test "reads 'default' when nothing is configured" do
+      pid = start_app(agent: "build")
+      assert Enum.join(buffer(pid), "\n") =~ ~r/effort:\s+default/
+    end
   end
 
   describe "resume restores the agent (regression)" do

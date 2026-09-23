@@ -81,6 +81,20 @@ defmodule CodingAgent.Core.Agent do
   @doc "The tool-name aliases, for documentation and tests."
   def tool_aliases, do: @tool_aliases
 
+  @doc """
+  Whether the human may select this definition directly (ADR 029).
+
+  True for ``:primary`` and ``:all``; false for ``:subagent``, which only
+  another agent starts via the ``task`` tool, and for ``hidden``
+  definitions, which the @ menu (and Tab) must not offer. This is the ONE
+  rule: the TUI's Tab cycle and the session's resume guard both read it,
+  so the offering surface and the resume path cannot disagree.
+  """
+  @spec selectable?(t()) :: boolean()
+  def selectable?(%__MODULE__{mode: mode, hidden: hidden}) do
+    mode in [:primary, :all] and hidden != true
+  end
+
   # -- Loading -----------------------------------------------------------------
 
   @doc """

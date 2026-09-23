@@ -333,14 +333,18 @@ how the agent *behaves*; the rest are surface area.
       ADR 026 (Proposed) implements the detection half — 3 consecutive
       identical rounds pause an interactive driver (continue/reject) and
       steer a non-interactive one.**
-- [ ] **T3 — Consume the agent fields we already parse.** `temperature`,
+- [x] **T3 — Consume the agent fields we already parse.** `temperature`,
       `max_turns` and `hidden` are read from frontmatter into
       `Core.Agent` and then **never used anywhere in `lib/`** (verified).
       A `maxTurns` that does nothing is worse than none (it is a lie in
-      the docs). **`temperature` wired by ADR 024; `max_turns` wired by
-      ADR 025 (Accepted) as a real per-agent budget with a summarizing
-      stop. `hidden` still to check.** ADR 017's honoured-fields list is
-      corrected as each lands.
+      the docs). **DONE: `temperature` wired by ADR 024; `max_turns`
+      wired by ADR 025 (Accepted) as a real per-agent budget with a
+      summarizing stop; `hidden` wired by ADR 029, which also fixed the
+      `mode: all` selection filter and wired the config.toml
+      `reasoning_effort` knob (`Config.reasoning_effort/1` →
+      `State.reasoning_effort` → `wire_request/2`), raising loudly on an
+      unknown value. ADR 017's honoured-fields list is corrected and now
+      has a consumer for every optional field.**
 - [ ] **T4 — `todowrite` / a plan tool.** opencode's `todowrite` is how
       the model organises multi-step work and stays on task across a long
       turn. This harness has no equivalent, so long tasks drift. Backlog

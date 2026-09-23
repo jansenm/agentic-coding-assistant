@@ -78,6 +78,16 @@ hide = []
 #
 #   max_tool_rounds = 100
 
+# Reasoning effort (ADR 029): how much internal reasoning the model spends
+# before answering. One of: none, minimal, low, medium, high, xhigh, max,
+# default. Unset means the provider's own default. The value rides every
+# request; whether it has an effect depends on the provider (req_llm
+# translates it for OpenAI, Google and Ollama; the Zai/GLM provider does
+# not consume it yet). A value outside the list is a startup error, never
+# a silent no-op.
+#
+#   reasoning_effort = "high"
+
 # Session stores (ADR 020 R16). A store is the selectable place sessions
 # are kept (target: one SQLite DB holding many sessions; until that
 # engine lands, a directory of session files — the selector is the same).

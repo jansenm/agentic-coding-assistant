@@ -245,6 +245,23 @@ defmodule CodingAgent.Core.AgentTest do
     end
   end
 
+  describe "selectable?/1 (ADR 029)" do
+    defp agent(mode, hidden \\ false) do
+      %Agent{name: "a", prompt: "p", source: "t", mode: mode, hidden: hidden}
+    end
+
+    test "primary and all are selectable; subagent is not" do
+      assert Agent.selectable?(agent(:primary))
+      assert Agent.selectable?(agent(:all))
+      refute Agent.selectable?(agent(:subagent))
+    end
+
+    test "a hidden primary is not selectable (the @ menu must not offer it)" do
+      refute Agent.selectable?(agent(:primary, true))
+      refute Agent.selectable?(agent(:all, true))
+    end
+  end
+
   describe "Permissions.apply_agent/2 (layer 4)" do
     test "the definition's deny cannot be overridden by allow" do
       policy = Permissions.load(nil, nil)

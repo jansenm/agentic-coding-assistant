@@ -178,7 +178,8 @@ Consequences
   open question rather than assumed.
 - ``max_turns`` was the last of ADR 024's T3 fields; with
   ``temperature`` (ADR 024) and ``max_turns`` (here) wired, only
-  ``hidden``'s consumption remains to be checked.
+  ``hidden``'s consumption remained to be checked — wired by ADR 029
+  alongside ``reasoning_effort`` and the ``mode: all`` selection rule.
 
 Open questions
 --------------

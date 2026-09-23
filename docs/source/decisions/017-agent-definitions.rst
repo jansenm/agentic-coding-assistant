@@ -65,7 +65,10 @@ almost field for field. We adopt it rather than invent one:
 .. note::
    ``temperature`` was parsed but ignored until ADR 024 wired it into the
    request opts. ``maxTurns`` is wired by ADR 025 (Accepted) as the
-   per-agent turn budget. ``hidden`` remains under review.
+   per-agent turn budget. ``hidden`` and the ``mode: all`` selection rule
+   are wired by ADR 029 (``Agent.selectable?/1``): ``:all`` definitions
+   are human-selectable, ``:subagent`` and ``hidden`` ones are not. Every
+   optional field in this list now has a consumer.
 
 The ``permission`` section is the format ADR 010 layer 4 already
 anticipated (opencode-compatible, restrictive-only).

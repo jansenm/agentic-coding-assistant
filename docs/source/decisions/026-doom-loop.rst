@@ -5,12 +5,12 @@ Doom-loop guard: pause on repeated identical calls
 
 .. adr::
    :id: 026
-   :status: Proposed
+   :status: Accepted
    :date: 2026-09-23
    :tags: sessions, agents, tools, prompts
 
 .. note::
-   Proposed 2026-09-23. Answers T2's detection half in the
+   Accepted and implemented 2026-09-23. Answers T2's detection half in the
    ``code_review.md`` "rival opencode" list — the half ADR 025
    deliberately left open. Detects a repeated call and pauses an
    interactive driver (continue / reject); a driver that cannot answer is

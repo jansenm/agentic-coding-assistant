@@ -438,9 +438,15 @@ TUI wish-list (user's own list, keyboard-first, from the live sessions):
   approval work; ADR 011 separately labels an unbuilt session-switcher
   binding "5d", and that switcher has since shipped via the ctrl-x menu
   (5h), so treat "5d" as a loose label.
-- `reasoning_effort` config knob surfaced in the sidebar (currently
-  shows 'effort: default'; add `reasoning_effort: :high` to config
-  when GLM effort is wanted).
+- **`reasoning_effort` config knob surfaced in the sidebar — WIRED
+  (ADR 029)**: `Config.reasoning_effort/1` resolves the layered value
+  (project over global) into req_llm's canonical atom, `wire_request/2`
+  puts it on every request, and the sidebar renders the session's
+  resolved value (not a global re-read). An unknown value raises at
+  session start. Note: req_llm's Zai/GLM provider does not consume the
+  option (it translates `:thinking` maps instead), so GLM effort
+  remains provider-side; the OpenAI-compatible and Ollama paths honour
+  it.
 - **shell tool drops commands — FIXED (03e3d62)**: root cause was the
   session, not Shell: the assistant tool-call message appended at the
   decide path hardcoded `arguments: "{}"`, erasing every prior call's

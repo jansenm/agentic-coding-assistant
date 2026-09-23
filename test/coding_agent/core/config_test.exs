@@ -208,5 +208,35 @@ defmodule CodingAgent.Core.ConfigTest do
       assert Config.no_model_message() =~ UserConfig.global_dir()
       assert Config.no_model_message() =~ "AGENT_MODEL"
     end
+
+    test "reasoning_effort reads a config.toml string as the canonical atom (ADR 029)" do
+      snapshot = %Config{config: %{"reasoning_effort" => "high"}}
+      assert Config.reasoning_effort(snapshot) == :high
+    end
+
+    test "reasoning_effort trims and lowercases, and nil means the provider default" do
+      assert Config.reasoning_effort(%Config{config: %{"reasoning_effort" => "  HIGH "}}) == :high
+      assert Config.reasoning_effort(%Config{config: %{}}) == nil
+    end
+
+    test "reasoning_effort raises on an unknown value instead of silently ignoring it" do
+      # a typo that changes nothing is the exact bug this accessor kills:
+      # the sidebar used to show the string while req_llm never saw it
+      assert_raise RuntimeError, ~r/invalid config.toml `reasoning_effort`/, fn ->
+        Config.reasoning_effort(%Config{config: %{"reasoning_effort" => "bogus"}})
+      end
+    end
+
+    test "reasoning_effort rejects an atom config value outside the canonical set" do
+      assert_raise RuntimeError, ~r/must be one of/, fn ->
+        Config.reasoning_effort(%Config{config: %{"reasoning_effort" => :bogus}})
+      end
+    end
+
+    test "reasoning_effort rejects a non-string, non-atom value" do
+      assert_raise RuntimeError, ~r/must be one of/, fn ->
+        Config.reasoning_effort(%Config{config: %{"reasoning_effort" => 3}})
+      end
+    end
   end
 end

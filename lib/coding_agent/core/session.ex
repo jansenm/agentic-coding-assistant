@@ -215,14 +215,18 @@ defmodule CodingAgent.Core.Session do
     end
   end
 
-  # The persisted agent name, or nil when the definition is gone /
-  # non-primary. A missing definition must not brick a resume.
+  # The persisted agent name, or nil when the definition is gone / not
+  # human-selectable (ADR 029: subagent-only or hidden). A missing
+  # definition must not brick a resume; neither must a definition that
+  # stopped being selectable since the session ran.
   defp resumable_agent_name(%State{agent: nil}), do: nil
 
   defp resumable_agent_name(%State{agent: %{name: name}, scope_root: root}) do
     case Config.agents(root) do
       {:ok, agents} ->
-        if Enum.any?(agents, &(&1.name == name and &1.mode == :primary)), do: name, else: nil
+        if Enum.any?(agents, &(&1.name == name and CodingAgent.Core.Agent.selectable?(&1))),
+          do: name,
+          else: nil
 
       _ ->
         nil
@@ -460,6 +464,10 @@ defmodule CodingAgent.Core.Session do
        # the per-turn round budget resolved from config.toml (ADR 025);
        # an agent's max_turns overrides it per turn (State.tool_budget/1)
        max_tool_rounds: Config.max_tool_rounds(snapshot),
+       # the session's reasoning effort (ADR 029), resolved from the same
+       # layered config.toml; rides every request via wire_request/2.
+       # A malformed value raises inside Config (loud, never a no-op).
+       reasoning_effort: Config.reasoning_effort(snapshot),
        # a driver that can answer a mid-turn question (the TUI sets this);
        # a headless driver gets the automatic wrap-up at the budget
        interactive: Keyword.get(opts, :interactive, false),
@@ -979,6 +987,15 @@ defmodule CodingAgent.Core.Session do
     do: Keyword.put(opts, :temperature, t)
 
   defp put_temperature(opts, _agent), do: opts
+
+  # The session's reasoning effort (ADR 029): a canonical req_llm option.
+  # Resolution already happened at init (Config.reasoning_effort/1); here
+  # it only rides the wire. nil means "provider default", so no key at all
+  # (an explicit nil would be a no-op key req_llm has to filter).
+  defp put_reasoning_effort(opts, effort) when is_atom(effort) and not is_nil(effort),
+    do: Keyword.put(opts, :reasoning_effort, effort)
+
+  defp put_reasoning_effort(opts, _effort), do: opts
 
   @impl true
   # The turn worker RETURNED (async_nolink sends {ref, result} before the
@@ -1793,6 +1810,7 @@ defmodule CodingAgent.Core.Session do
         base_opts
         |> Keyword.put(:tools, tools)
         |> put_temperature(state.agent)
+        |> put_reasoning_effort(state.reasoning_effort)
 
       context = Prompt.with_environment(context, model, state.scope_root)
       {:ok, model_input, opts, context}

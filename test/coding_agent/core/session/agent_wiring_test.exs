@@ -254,6 +254,42 @@ defmodule CodingAgent.Core.Session.AgentWiringTest do
       {:ok, _input, opts, _ctx} = Session.wire_request(s)
       refute Keyword.has_key?(opts, :temperature)
     end
+
+    test "the session's reasoning effort rides the request opts (ADR 029)" do
+      start("wire-effort", model: "ollama:qwen3")
+      {:ok, s} = Session.state("wire-effort")
+      s = %{s | reasoning_effort: :high}
+
+      {:ok, _input, opts, _ctx} = Session.wire_request(s)
+      assert opts[:reasoning_effort] == :high
+    end
+
+    test "no reasoning effort leaves the provider default (no :reasoning_effort key)" do
+      start("wire-noeffort", model: "ollama:qwen3")
+      {:ok, s} = Session.state("wire-noeffort")
+
+      {:ok, _input, opts, _ctx} = Session.wire_request(s)
+      refute Keyword.has_key?(opts, :reasoning_effort)
+    end
+
+    test "a config.toml reasoning_effort reaches both the state and the wire (ADR 029)" do
+      File.mkdir_p!(Path.join(@tmp_root, ".coding-agent"))
+
+      File.write!(
+        Path.join(@tmp_root, ".coding-agent/config.toml"),
+        ~s(reasoning_effort = "low")
+      )
+
+      on_exit(fn -> File.rm_rf!(Path.join(@tmp_root, ".coding-agent")) end)
+
+      start("wire-effort-cfg", model: "ollama:qwen3")
+      {:ok, s} = Session.state("wire-effort-cfg")
+
+      assert s.reasoning_effort == :low
+
+      {:ok, _input, opts, _ctx} = Session.wire_request(s)
+      assert opts[:reasoning_effort] == :low
+    end
   end
 
   defp system_text_of(state) do

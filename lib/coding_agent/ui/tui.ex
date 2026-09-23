@@ -355,6 +355,15 @@ defmodule CodingAgent.UI.Tui do
           _ -> nil
         end
 
+      # the session's ACTUAL reasoning effort (ADR 029), mirrored for the
+      # sidebar — same reason as the model: the session resolved it from
+      # the layered config, so a global re-read here could disagree.
+      session_effort =
+        case Session.state(effective_id) do
+          {:ok, st} -> Map.get(st, :reasoning_effort)
+          _ -> nil
+        end
+
       initial = %{
         session_id: effective_id,
         model: session_model,
@@ -432,11 +441,9 @@ defmodule CodingAgent.UI.Tui do
         # config). Reload points: session switch, picker actions —
         # everything that re-runs mount_session.
         keymap: Keymap.load(),
-        # sidebar values (model display, reasoning effort): read ONCE
-        # per mount too — sidebar_widget ran UserConfig.load/1 on
-        # EVERY FRAME (3 TOML files x ~60fps poll cadence = the CPU
-        # storm, found live: 500M reductions/s in Toml decoding)
-        ui_config: CodingAgent.Core.UserConfig.load_safe(nil),
+        # the sidebar's effort line renders what the SESSION resolved
+        # (ADR 029), not a per-frame config re-read
+        session_effort: session_effort,
         # picker mode fields (nil = not in picker mode; set by
         # mount_picker only)
         picker: nil,
@@ -3351,16 +3358,12 @@ defmodule CodingAgent.UI.Tui do
     trigger = Compactor.trigger()
     warn_at = Compactor.warn_threshold()
 
-    # per-frame UserConfig.load removed (the CPU storm): the merged
-    # config ships in state, read once per mount
-    cfg =
-      case Map.get(state, :ui_config, {:ok, nil}) do
-        {:ok, c} when c != nil -> c
-        _ -> %{}
-      end
-
-    effort =
-      cfg.config["reasoning_effort"] || CodingAgent.Core.Config.reasoning_effort()
+    # per-frame UserConfig.load removed (the CPU storm): the sidebar
+    # renders the value the LIVE SESSION resolved (state.session_effort,
+    # read once per mount, ADR 029) — the same one wire_request/2 puts on
+    # the request. A config re-read here would show the global layer even
+    # when the running session honoured a project override.
+    effort = Map.get(state, :session_effort)
 
     # last turn's context size (ground truth from the provider) drives
     # the % line; cumulative totals are separate. `Usage.last_input_tokens/1`
@@ -3414,7 +3417,7 @@ defmodule CodingAgent.UI.Tui do
       Styles.definition_list(
         [
           {"session", String.slice(state.session_id, 0, 22)},
-          {"effort", effort || "default"},
+          {"effort", effort_name(effort)},
           {"tokens in", fmt_k(Usage.input_tokens(usage))},
           {"tokens out", fmt_k(Usage.output_tokens(usage))},
           {"context", "#{fmt_k(last_in)} (#{pct}% win)", pct_role},
@@ -3453,6 +3456,13 @@ defmodule CodingAgent.UI.Tui do
   defp fmt_k(n) when n < 1000, do: "#{n}"
   defp fmt_k(n), do: "#{trunc(n / 100) / 10}k"
 
+  # The reasoning-effort label for the sidebar (ADR 029). The session
+  # stores req_llm's canonical atom; `nil` means no override on the wire,
+  # which reads as "default" (the provider's own default).
+  defp effort_name(nil), do: "default"
+  defp effort_name(effort) when is_atom(effort), do: Atom.to_string(effort)
+  defp effort_name(effort), do: to_string(effort)
+
   # -- Agent slots (ADR 018) ---------------------------------------------------
 
   # The session's current agent name, or nil.
@@ -3485,10 +3495,15 @@ defmodule CodingAgent.UI.Tui do
   # Sourced from the definitions; on any load error we fall back to no
   # switching rather than crashing the UI (the session itself raises on a
   # bad definition, so a broken set never reaches here).
+  #
+  # `Agent.selectable?/1` (ADR 029) is the rule: `:all` agents are
+  # selectable here too (the old `mode == :primary` filter silently
+  # dropped them, so an unpinned definition never appeared), and `hidden`
+  # ones never are.
   defp primary_agent_names(scope_root) do
     case CodingAgent.Core.Agent.load(scope_root) do
       {:ok, agents} ->
-        agents |> Enum.filter(&(&1.mode == :primary)) |> Enum.map(& &1.name)
+        agents |> Enum.filter(&CodingAgent.Core.Agent.selectable?/1) |> Enum.map(& &1.name)
 
       {:error, _} ->
         []

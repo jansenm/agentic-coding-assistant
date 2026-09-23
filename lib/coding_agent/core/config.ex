@@ -36,6 +36,11 @@ defmodule CodingAgent.Core.Config do
   @default_compaction_wall_clock_ms 300_000
   @default_compaction_inactivity_ms 120_000
 
+  # req_llm's canonical reasoning efforts (ADR 029); the accepted
+  # config.toml strings, one to one.
+  @reasoning_efforts ~w(none minimal low medium high xhigh max default)
+  @reasoning_effort_atoms Enum.map(@reasoning_efforts, &String.to_atom/1)
+
   @typedoc "One typed read of the layered file configuration for a scope."
   @type t :: %__MODULE__{
           root: String.t() | nil,
@@ -162,9 +167,59 @@ defmodule CodingAgent.Core.Config do
   def context_window_tokens,
     do: app(:context_window_tokens, @default_context_window_tokens)
 
-  @doc "Reasoning-effort override (config.toml or app env), or nil."
-  @spec reasoning_effort() :: String.t() | nil
-  def reasoning_effort, do: app(:reasoning_effort, nil)
+  @doc """
+  Reasoning-effort override (ADR 029), or nil when unset.
+
+  Resolution: the layered ``reasoning_effort`` in ``config.toml`` (project
+  over global), else the ``:reasoning_effort`` app-env override. The value
+  reaches the provider as req_llm's ``:reasoning_effort`` option (via the
+  session's ``State.reasoning_effort`` and ``wire_request/2``) and is one
+  of ``#{Enum.join(@reasoning_efforts, ", ")}``.
+
+  A configured value outside that set is a **loud error**, not a silent
+  no-op: a typo that changes nothing is exactly the bug this accessor
+  exists to kill. Accepts a scope root or an already-read snapshot.
+  """
+  @spec reasoning_effort(String.t() | nil | t()) :: atom() | nil
+  def reasoning_effort, do: reasoning_effort(nil)
+
+  def reasoning_effort(%__MODULE__{} = snapshot) do
+    configured_effort(snapshot) || app_effort()
+  end
+
+  def reasoning_effort(scope_root), do: reasoning_effort(snapshot(scope_root))
+
+  defp configured_effort(%__MODULE__{config: config}) do
+    effort(config["reasoning_effort"], "config.toml `reasoning_effort`")
+  end
+
+  defp app_effort, do: effort(app(:reasoning_effort, nil), "app env :reasoning_effort")
+
+  defp effort(nil, _source), do: nil
+
+  defp effort(value, source) when is_atom(value) do
+    if value in @reasoning_effort_atoms do
+      value
+    else
+      raise invalid_effort(value, source)
+    end
+  end
+
+  defp effort(value, source) when is_binary(value) do
+    normalized = value |> String.trim() |> String.downcase()
+
+    if normalized in @reasoning_efforts do
+      String.to_existing_atom(normalized)
+    else
+      raise invalid_effort(value, source)
+    end
+  end
+
+  defp effort(value, source), do: raise(invalid_effort(value, source))
+
+  defp invalid_effort(value, source) do
+    "invalid #{source}: #{inspect(value)} (must be one of #{Enum.join(@reasoning_efforts, ", ")})"
+  end
 
   @doc """
   The base state directory: the `:store_path` test override's parent, or

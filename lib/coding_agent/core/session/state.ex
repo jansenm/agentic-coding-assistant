@@ -74,6 +74,13 @@ defmodule CodingAgent.Core.Session.State do
     # overrides it per turn (`tool_budget/1`, ADR 025). nil means "use the
     # app-env default" — a directly-constructed State (tests) need not set it.
     max_tool_rounds: nil,
+    # The session's reasoning effort (ADR 029): req_llm's canonical
+    # `:reasoning_effort` atom (`:none | :minimal | ... | :default`) on
+    # every request, or nil for the provider default. Resolved once at
+    # init from the layered config.toml (project over global) or the app
+    # env; like `max_tool_rounds`, a resume re-resolves it from config
+    # rather than trusting the snapshot.
+    reasoning_effort: nil,
     test_mode: false,
     # cumulative usage across the session (sidebar + token-based
     # compaction trigger); cost only when the provider prices it. The
@@ -149,6 +156,7 @@ defmodule CodingAgent.Core.Session.State do
           subscribers: [reference()],
           tool_rounds: non_neg_integer(),
           max_tool_rounds: pos_integer() | nil,
+          reasoning_effort: atom() | nil,
           test_mode: boolean(),
           turn_agents: [String.t() | nil],
           usage: CodingAgent.Core.Session.Usage.t(),
