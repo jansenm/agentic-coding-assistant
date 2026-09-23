@@ -67,15 +67,13 @@ defmodule CodingAgent.Core.Session do
   # provider's own timeouts, not this one.
   @call_timeout :infinity
 
-  # live report: a real multi-step task burned 16 gate rounds and the
-  # turn died with "tool loop limit reached: 12" — the agent then
-  # complained about "flaky parallel calls". 12 was a phase-2 guess;
-  # GLM does one small grep per round: a review turn burned 25 rounds
-  # live (7ce59be made the counter per-turn, but 25 still dies on a
-  # legit review). The default is Core.Config's — the guard exists to
-  # catch a runaway loop, and its cost is proportional to the work
-  # actually requested.
-  defp max_tool_rounds, do: CodingAgent.Core.Config.max_tool_rounds()
+  # The per-turn tool-round budget (ADR 025): an agent definition's
+  # max_turns when set, else the session's config.toml-resolved value,
+  # else the app-env default. The guard exists to catch a runaway loop,
+  # and its cost is proportional to the work actually requested.
+  defp tool_budget(state) do
+    State.tool_budget(state) || CodingAgent.Core.Config.max_tool_rounds()
+  end
 
   # -- Client API -------------------------------------------------------------
 
@@ -257,11 +255,15 @@ defmodule CodingAgent.Core.Session do
   driver contract. Refuses a non-test session with
   `{:error, :not_test_mode}` — it must never silently turn a live
   session into a test-mode one.
+
+  `opts` may set `:rounds` to simulate a turn that has already burned
+  that many tool rounds (default 0), so the budget path (ADR 025) is
+  reachable without a provider.
   """
   @doc since: "0.1.0"
-  @spec debug_gate(String.t(), [map()]) :: :ok | {:error, term()}
-  def debug_gate(id, calls) when is_list(calls) do
-    GenServer.call(via(id), {:debug_gate, calls}, @call_timeout)
+  @spec debug_gate(String.t(), [map()], keyword()) :: :ok | {:error, term()}
+  def debug_gate(id, calls, opts \\ []) when is_list(calls) do
+    GenServer.call(via(id), {:debug_gate, calls, opts}, @call_timeout)
   end
 
   defp via(id), do: {:via, Registry, {CodingAgent.Registry, {:session, id}}}
@@ -395,6 +397,9 @@ defmodule CodingAgent.Core.Session do
        usage: usage,
        compaction_warned: compaction_warned,
        compaction_backoff: compaction_backoff,
+       # the per-turn round budget resolved from config.toml (ADR 025);
+       # an agent's max_turns overrides it per turn (State.tool_budget/1)
+       max_tool_rounds: Config.max_tool_rounds(snapshot),
        test_mode: test_mode,
        turn_runner: turn_runner
      )}
@@ -523,17 +528,18 @@ defmodule CodingAgent.Core.Session do
     {:noreply, start_run(state, from, prompt)}
   end
 
-  def handle_call({:debug_gate, calls}, _from, %{test_mode: true} = state) do
+  def handle_call({:debug_gate, calls, opts}, _from, %{test_mode: true} = state) do
     # test_mode is REQUIRED, never set here: it used to be flipped true
     # unconditionally, so a live session that ever touched the hook
     # raised "test-mode session reached call_llm" on its next real turn.
     # Callers (all tests) already start the session with test_mode: true.
-    state = %{state | status: :running, tool_rounds: 0}
+    rounds = Keyword.get(opts, :rounds, 0)
+    state = %{state | status: :running, tool_rounds: rounds}
     {state, _result} = gate_tools(state, calls)
     {:reply, :ok, state}
   end
 
-  def handle_call({:debug_gate, _calls}, _from, state) do
+  def handle_call({:debug_gate, _calls, _opts}, _from, state) do
     {:reply, {:error, :not_test_mode}, state}
   end
 
@@ -1050,19 +1056,10 @@ defmodule CodingAgent.Core.Session do
   # decision. :ask pauses the session (:interrupted) until the driver
   # supplies decisions for every pending call via decide/3.
   defp gate_tools(state, calls) do
-    if state.tool_rounds >= max_tool_rounds() do
-      Logger.error("tool loop limit reached: #{max_tool_rounds()}")
+    budget = tool_budget(state)
 
-      # tell the user IN the transcript (a bare error turn is a
-      # mystery — the user then asks 'what stopped it now?')
-      broadcast(
-        state,
-        {:info,
-         "· turn stopped: #{max_tool_rounds()} tool rounds used (the per-turn guard) — ask it to continue for another budget"}
-      )
-
-      state = fail_turn(state, {:tool_loop_limit, max_tool_rounds()})
-      {state, {:error, {:tool_loop_limit, max_tool_rounds()}}}
+    if state.tool_rounds >= budget do
+      wrap_up(state, budget)
     else
       state = %{state | tool_rounds: state.tool_rounds + 1}
 
@@ -1124,6 +1121,60 @@ defmodule CodingAgent.Core.Session do
   defp log_refusal(call, message) do
     {id, _, _} = ToolCall.normalize(call)
     Logger.warning("#{message}: #{inspect(id)}")
+  end
+
+  # The turn reached its tool-round budget (ADR 025). This is NOT a
+  # failure: the round's calls are discarded (never executed, never put
+  # on the wire, so the context stays valid), a wrap-up instruction is
+  # appended, ONE final provider call is made WITH TOOLS WITHHELD, and
+  # the resulting summary ends the turn idle. The human keeps a usable
+  # account and can continue with a fresh budget on the next prompt.
+  #
+  # A test-mode session (LLM-free) takes the structural skip, like the
+  # compactor: the instruction is appended and the turn ends idle, but no
+  # provider call is made.
+  defp wrap_up(state, budget) do
+    Logger.warning("tool-round budget reached: #{budget}")
+    broadcast(state, {:info, "· turn budget reached (#{budget} rounds) — summarizing"})
+
+    # The wrap-up instruction is PERSISTED (a synthetic user message, the
+    # shape Compaction.apply/2 uses), so a resumed session — and the next
+    # turn — sees the summary request and the model's answer that followed
+    # it, rather than a context that jumps from the last tool result to an
+    # unexplained assistant summary.
+    context = Context.append(state.context, ReqLLM.Context.user(Prompt.wrap_up()))
+    finish_wrap_up(%{state | context: context})
+  end
+
+  # test_mode is LLM-free: the structural skip (like the compactor's),
+  # so the budget path is reachable without a provider. The instruction
+  # is appended and the turn ends idle; no summary call is made.
+  defp finish_wrap_up(%{test_mode: true} = state) do
+    state = %{state | status: :idle}
+    persist(state)
+    {state, {:ok, state}}
+  end
+
+  defp finish_wrap_up(state) do
+    case call_llm(state, tools: []) do
+      {:ok, %{type: type, text: text, blocks: blocks, usage: usage}}
+      when type in [:final_answer, :tool_calls] ->
+        # :tool_calls should be impossible (tools were withheld); if a
+        # provider emits one anyway, keep the text and end idle — never
+        # loop the wrap-up.
+        state = state |> add_usage(usage) |> complete_turn(text, blocks)
+        {state, {:ok, state}}
+
+      {:interrupted, partial} ->
+        state = state |> drop_interrupt() |> complete_turn(partial, [])
+        {state, {:ok, state}}
+
+      {:error, reason} ->
+        # the wrap-up call itself failed: this IS a failed turn, same as
+        # any other provider error on the answer.
+        state = state |> drop_interrupt() |> fail_turn(reason)
+        {state, {:error, reason}}
+    end
   end
 
   # A tool round is appended as ONE canonical exchange: the assistant
@@ -1257,25 +1308,31 @@ defmodule CodingAgent.Core.Session do
   # per-agent temperature), and the context to send. The context carries
   # the per-call environment block (ADR 024) — the stored context is not
   # mutated. Public so a test can assert the assembly without a provider.
+  #
+  # `overrides` lets the budget wrap-up (ADR 025) withhold tools
+  # (`tools: []`) and send an alternate context without a second assembly
+  # path.
   @doc false
-  @spec wire_request(State.t()) ::
+  @spec wire_request(State.t(), keyword()) ::
           {:ok, String.t() | map(), keyword(), ReqLLM.Context.t()} | {:error, term()}
-  def wire_request(state) do
+  def wire_request(state, overrides \\ []) do
     model = effective_model(state)
+    context = Keyword.get(overrides, :context, state.context)
+    tools = Keyword.get(overrides, :tools, current_tools(state))
 
     with {:ok, model_input, base_opts} <- Request.build(model, state.provider_config) do
       opts =
         base_opts
-        |> Keyword.put(:tools, current_tools(state))
+        |> Keyword.put(:tools, tools)
         |> put_temperature(state.agent)
 
-      context = Prompt.with_environment(state.context, model, state.scope_root)
+      context = Prompt.with_environment(context, model, state.scope_root)
       {:ok, model_input, opts, context}
     end
   end
 
-  defp call_llm(state) do
-    with {:ok, model_input, opts, context} <- wire_request(state) do
+  defp call_llm(state, overrides \\ []) do
+    with {:ok, model_input, opts, context} <- wire_request(state, overrides) do
       with {:ok, stream_response} <-
              ReqLLM.stream_text(model_input, sanitize_context(context), opts) do
         events = ReqLLM.StreamResponse.events(stream_response)

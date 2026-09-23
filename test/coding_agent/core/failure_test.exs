@@ -39,11 +39,6 @@ defmodule CodingAgent.Core.FailureTest do
     assert {:local, _} = Failure.classify({:provider_build_failed, err})
   end
 
-  test "a tool-loop limit is its own bucket, not the provider" do
-    assert {:other, hint} = Failure.classify({:tool_loop_limit, 100})
-    assert hint =~ "budget"
-  end
-
   test "an unrecognised failure keeps the reason and makes no claim" do
     assert {:other, _} = Failure.classify("something odd happened")
     assert {:other, _} = Failure.classify(:weird_atom)

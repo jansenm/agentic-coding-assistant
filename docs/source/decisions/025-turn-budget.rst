@@ -5,19 +5,38 @@ Turn budget: the round limit degrades by wrap-up, not failure
 
 .. adr::
    :id: 025
-   :status: Proposed
+   :status: Accepted
    :date: 2026-09-23
    :tags: sessions, agents, tools, prompts
 
 .. note::
-   Proposed 2026-09-23. Answers T2 and the ``max_turns`` half of T3 in
-   the ``code_review.md`` "rival opencode" list. Decides that reaching
-   the per-turn tool-round budget ends the turn with a *summarizing
-   wrap-up* (status ``:idle``), not a hard failure (status ``:error``),
-   and that ``maxTurns`` becomes the real per-agent budget while the
-   global default gains a ``config.toml`` knob. It does not implement
-   the pattern-based doom-loop guard (T2's detection half); it makes the
-   numeric cap a safe backstop for it.
+   Accepted and implemented 2026-09-23. Answers T2 and the ``max_turns``
+   half of T3 in the ``code_review.md`` "rival opencode" list. Decides
+   that reaching the per-turn tool-round budget ends the turn with a
+   *summarizing wrap-up* (status ``:idle``), not a hard failure (status
+   ``:error``), and that ``maxTurns`` becomes the real per-agent budget
+   while the global default gains a ``config.toml`` knob. The
+   pattern-based doom-loop guard (T2's detection half) remains open; this
+   makes the numeric cap a safe backstop for it.
+
+   **Implemented.** ``State.tool_budget/1`` resolves an agent's
+   ``maxTurns`` over the session value over the app default;
+   ``Config.max_tool_rounds/1`` reads ``max_tool_rounds`` from the layered
+   ``config.toml``; the session resolves and stores it at init
+   (``State.max_tool_rounds``). ``Session.wrap_up/2`` replaces the
+   ``fail_turn`` branch: the round's calls are discarded, ``Prompt.wrap_up/0``
+   is appended as a user message, and one final call is made with
+   ``tools: []`` (``wire_request/2`` gained an overrides argument). A
+   test-mode session takes a structural skip (no provider call), like the
+   compactor. ``Failure.classify/1``'s ``:tool_loop_limit`` clause and the
+   TUI's matching ``error_text`` clause were removed as dead paths.
+
+   **Two recorded divergences from opencode.** (1) opencode appends its
+   ``MAX_STEPS_PROMPT`` as an *assistant prefill* and does **not** actually
+   withhold tools; we append a user message (the ``Compaction.apply/2``
+   shape) and do withhold them (``tools: []``, which `ReqLLM` treats as
+   explicit "no tools", ``Context.persist_tools/2``). (2) opencode's
+   default is ``Infinity``; we keep a default backstop.
 
 Context
 -------
@@ -152,14 +171,16 @@ Open questions
 --------------
 
 1. Is the wrap-up a synthetic **user** message or a system-role
-   instruction? ADR 024 already appends the environment block to the
-   system message per call; a wrap-up is per-turn and mutable state, so
-   a user-role synthetic message is the closer analogue — but the
-   placement (system vs last user) is the same fork ADR 017 records for
-   the plan fragment, and should be decided together.
+   instruction? **Decided during implementation: a user message** — the
+   same shape as ``Compaction.apply/2``, which also injects a synthetic
+   instruction. (opencode uses an assistant prefill; we diverge, recorded
+   above.)
 2. Should a wrap-up call offer a **reduced** tool set (e.g. allow
    nothing but keep the schema valid) or **no** tools key at all? The
    choice affects providers that require a non-empty tool list.
+   **Decided: ``tools: []``**, which `ReqLLM` treats as an explicit empty
+   set. A provider that rejects an empty list would surface as a wrap-up
+   call error; none has been observed.
 3. Does the doom-loop guard's threshold live per model family (the
    ADR 024 calibration surface) or remain a single global constant?
 4. Should the user be able to grant "another budget" from the wrap-up

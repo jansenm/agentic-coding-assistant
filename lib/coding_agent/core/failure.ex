@@ -52,13 +52,10 @@ defmodule CodingAgent.Core.Failure do
 
   `reason` arrives wrapped: `{:stream_error, %ReqLLM.Error.API.Stream{}}`,
   `{:provider_build_failed, %ReqLLM.Error.API.Request{}}`,
-  `{:http_streaming_failed, inner}`, plain structs/maps, strings, atoms or
-  tool-loop limits. A nil / unplaceable reason is `:other` with no claim.
+  `{:http_streaming_failed, inner}`, plain structs/maps, strings or atoms.
+  A nil / unplaceable reason is `:other` with no claim.
   """
   @spec classify(term()) :: {kind(), String.t()}
-  def classify({:tool_loop_limit, _}),
-    do: {:other, "raise the tool-round budget and retry"}
-
   def classify({:stream_error, err}), do: classify(err)
   def classify({:provider_build_failed, err}), do: classify(err)
   def classify({:http_streaming_failed, inner}), do: classify(inner)

@@ -69,6 +69,15 @@ rw = [
 ro = []
 hide = []
 
+# Per-turn tool-round budget (ADR 025). A "round" is one assistant
+# response containing tool calls; the counter resets with each new user
+# prompt. On reaching the budget the turn does not fail — the model is
+# asked to summarize what it did and end with prose, and the session goes
+# idle. Raise it for long reviews; an agent definition's `maxTurns`
+# overrides this per agent.
+#
+#   max_tool_rounds = 100
+
 # Session stores (ADR 020 R16). A store is the selectable place sessions
 # are kept (target: one SQLite DB holding many sessions; until that
 # engine lands, a directory of session files — the selector is the same).

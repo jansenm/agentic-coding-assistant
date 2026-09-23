@@ -194,6 +194,16 @@ defmodule CodingAgent.Core.ConfigTest do
       assert Config.compaction_inactivity_ms() == 120_000
     end
 
+    test "max_tool_rounds honours a config.toml value over the default (ADR 025)" do
+      snapshot = %Config{config: %{"max_tool_rounds" => 42}}
+      assert Config.max_tool_rounds(snapshot) == 42
+    end
+
+    test "max_tool_rounds ignores a non-positive config.toml value" do
+      snapshot = %Config{config: %{"max_tool_rounds" => 0}}
+      assert Config.max_tool_rounds(snapshot) == 100
+    end
+
     test "the no-model message names the user config path" do
       assert Config.no_model_message() =~ UserConfig.global_dir()
       assert Config.no_model_message() =~ "AGENT_MODEL"

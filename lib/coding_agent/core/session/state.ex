@@ -46,6 +46,12 @@ defmodule CodingAgent.Core.Session.State do
     pending_round_results: [],
     subscribers: [],
     tool_rounds: 0,
+    # The session-level tool-round budget, resolved once at init from the
+    # layered config.toml (`max_tool_rounds`, project over global), with
+    # the app-env default as fallback. An agent definition's `max_turns`
+    # overrides it per turn (`tool_budget/1`, ADR 025). nil means "use the
+    # app-env default" — a directly-constructed State (tests) need not set it.
+    max_tool_rounds: nil,
     test_mode: false,
     # cumulative usage across the session (sidebar + token-based
     # compaction trigger); cost only when the provider prices it. The
@@ -115,6 +121,7 @@ defmodule CodingAgent.Core.Session.State do
           pending_round_results: [map()],
           subscribers: [reference()],
           tool_rounds: non_neg_integer(),
+          max_tool_rounds: pos_integer() | nil,
           test_mode: boolean(),
           turn_agents: [String.t() | nil],
           usage: CodingAgent.Core.Session.Usage.t(),
@@ -147,6 +154,20 @@ defmodule CodingAgent.Core.Session.State do
     do: model
 
   def effective_model(%__MODULE__{model: model}), do: model
+
+  @doc """
+  The tool-round budget for a turn (ADR 025): an agent definition's
+  ``max_turns`` when it sets one, otherwise the session's resolved
+  ``max_tool_rounds``, otherwise `nil` (the caller falls back to the
+  app-env default). Mirrors `effective_model/1` so the same definition
+  that pins its model may also pin its budget.
+  """
+  @spec tool_budget(t()) :: pos_integer() | nil
+  def tool_budget(%__MODULE__{agent: %{max_turns: n}}) when is_integer(n) and n > 0, do: n
+
+  def tool_budget(%__MODULE__{max_tool_rounds: n}) when is_integer(n) and n > 0, do: n
+
+  def tool_budget(_), do: nil
 
   @doc """
   Rebuilds a decoded snapshot into a complete `%State{}`, healing

@@ -30,6 +30,25 @@ defmodule CodingAgent.Core.Session.Prompt do
   # An empty system prompt is worse than a short one.
   @minimal "You are a coding assistant embedded in a terminal application. Be concise."
 
+  # The wrap-up instruction sent when a turn reaches its tool-round budget
+  # (ADR 025). Tools are withheld on that call, so this only has to steer
+  # the prose; the wording is ours (opencode's MAX_STEPS_PROMPT is the
+  # reference, not the source — identity and requirements rewritten).
+  @wrap_up """
+  The tool-round budget for this turn has been reached, so no further tools
+  are available. Respond with text only — do not attempt to call any tool.
+
+  In your response:
+  - state that the turn's tool budget was reached;
+  - summarize what you accomplished;
+  - list what is still unfinished;
+  - recommend the next step for the human.\
+  """
+
+  @doc "The turn-budget wrap-up instruction (ADR 025)."
+  @spec wrap_up() :: String.t()
+  def wrap_up, do: @wrap_up
+
   # Model families we ship a calibrated framework prompt for (ADR 024).
   # The default is the strict, example-light one tuned for local models;
   # a Claude variant exists because Claude responds to a different frame

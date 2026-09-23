@@ -328,16 +328,16 @@ how the agent *behaves*; the rest are surface area.
       calls within a turn and inject steering ("you have called X with the
       same args three times; change approach or ask") *before* the cap.
       This is precisely the five-minutes-in-circles failure mode.
-      **Split into ADR 025 (Proposed), which makes the numeric cap a safe
+      **Split into ADR 025 (Accepted), which makes the numeric cap a safe
       backstop — the trip now wraps up instead of failing the turn, and
-      `maxTurns` becomes a real, configurable budget.** The
+      `maxTurns` is a real, configurable budget.** The
       pattern-detection half (the actual primary control) stays open here.
 - [ ] **T3 — Consume the agent fields we already parse.** `temperature`,
       `max_turns` and `hidden` are read from frontmatter into
       `Core.Agent` and then **never used anywhere in `lib/`** (verified).
       A `maxTurns` that does nothing is worse than none (it is a lie in
       the docs). **`temperature` wired by ADR 024; `max_turns` wired by
-      ADR 025 (Proposed) as a real per-agent budget with a summarizing
+      ADR 025 (Accepted) as a real per-agent budget with a summarizing
       stop. `hidden` still to check.** ADR 017's honoured-fields list is
       corrected as each lands.
 - [ ] **T4 — `todowrite` / a plan tool.** opencode's `todowrite` is how

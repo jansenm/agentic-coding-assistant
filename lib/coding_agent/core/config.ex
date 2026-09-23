@@ -114,9 +114,30 @@ defmodule CodingAgent.Core.Config do
 
   # -- Runtime knobs -----------------------------------------------------------
 
-  @doc "Per-turn tool-round guard (catches a single runaway loop, not normal work)."
-  @spec max_tool_rounds() :: pos_integer()
-  def max_tool_rounds, do: app(:max_tool_rounds, @default_max_tool_rounds)
+  @doc """
+  Per-turn tool-round budget (ADR 025). The trip no longer fails the turn:
+  it ends with a summarizing wrap-up (`Session.gate_tools/2`).
+
+  Resolution, strongest first: an agent definition's ``max_turns`` (applied
+  in `State.tool_budget/1`), the layered ``max_tool_rounds`` in
+  ``config.toml`` (project over global), the app-env override, then the
+  built-in default. Accepts a scope root or an already-read snapshot so a
+  caller that holds one does not re-read.
+  """
+  @spec max_tool_rounds(String.t() | nil | t()) :: pos_integer()
+  def max_tool_rounds, do: max_tool_rounds(nil)
+
+  def max_tool_rounds(%__MODULE__{} = snapshot),
+    do: configured_rounds(snapshot) || app(:max_tool_rounds, @default_max_tool_rounds)
+
+  def max_tool_rounds(scope_root), do: max_tool_rounds(snapshot(scope_root))
+
+  defp configured_rounds(%__MODULE__{config: config}) do
+    case config["max_tool_rounds"] do
+      n when is_integer(n) and n > 0 -> n
+      _ -> nil
+    end
+  end
 
   @doc """
   Absolute compaction trigger in tokens. The default lives in
