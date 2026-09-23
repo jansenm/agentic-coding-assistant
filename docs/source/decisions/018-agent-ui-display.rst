@@ -118,9 +118,9 @@ Open questions for the implementation slice
 2. **Many subagents.** A key per subagent does not scale; the tab model
    needs a bounded tab bar (e.g. show N, cycle through the rest) or a
    picker. Decide when parallelism is actually used.
-3. ~~**Where the two slots live:** sidebar (it is already the "agent"
+3. **Where the two slots live:** sidebar (it is already the "agent"
    panel) versus the status line (always visible, one row). The sidebar
-   has room for both with models; the status line is at a premium.~~
+   has room for both with models; the status line is at a premium.
    **Answered 2026-09-23** (amendment below): neither — the running slot
    gets its own row above the input (the live band), the sidebar keeps
    the badges, and the composer's row below the field is setup only.
@@ -174,6 +174,14 @@ only caller. The band chooses the *label* it passes (``running mix`` for a
 tool in flight, ``thinking`` for a silent busy turn, ``nil`` for the
 badge's own word); the wording, the spinner frames and the colour roles
 cannot fork.
+
+**The elapsed context is gated on ``busy?``.** The composer's status line
+used to count seconds only while a turn was busy; the band must keep that
+rule or a finished turn reads ``○ idle · 204s`` — a frozen count beside a
+non-running state. The same gate keeps a tool left "in flight" by a failed
+turn (the result that would clear it never arrives) from labelling the
+next pause ``running mix``; a non-busy status transition drops the
+in-flight tool as hygiene.
 
 **Consequence for ADR 018 part 2 (subagent tabs).** The band is where a
 subagent's running identity will surface: when the ``task`` seam lands,

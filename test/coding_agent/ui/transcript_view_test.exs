@@ -116,6 +116,89 @@ defmodule CodingAgent.UI.TranscriptViewTest do
     end
   end
 
+  describe "differential: the lazy walk == the eager algorithm it replaced" do
+    # ADR 028 decision 5 keeps `total_height/3` as the eager TEST
+    # primitive precisely so this test can exist: it reconstructs the
+    # old whole-transcript algorithm (absolute cursor from the HEAD,
+    # `top = total - height - offset`) and asserts the lazy tail-first
+    # walk produces the same selected entries, pane-relative positions
+    # and clamp across offsets, pane sizes and content shorter than the
+    # pane. Without a caller the function is dead weight; with one it is
+    # the anchor that catches a silent divergence in the hot path.
+    defp eager_viewport(entries, height, offset, width, open_id) do
+      total = TranscriptView.total_height(entries, width, open_id)
+      clamped = min(offset, max(total - height, 0))
+      top = max(total - height - offset, 0)
+
+      {selected, _} =
+        entries
+        |> Enum.map_reduce(0, fn entry, cursor ->
+          h = TranscriptView.height(entry, width, open_id)
+          {{entry, cursor, h}, cursor + h}
+        end)
+
+      selected =
+        selected
+        |> Enum.filter(fn {_e, c, h} -> c < top + height and c + h > top end)
+        |> Enum.map(fn {e, c, h} -> {e, c - top, h} end)
+
+      {clamped, selected}
+    end
+
+    defp mixed_entries do
+      [
+        {:info, "a note"},
+        {:user, "hey", "build"},
+        {:assistant, "answer one\n\nwith two paragraphs", "build"},
+        {:reasoning, "some thinking text that wraps around the pane width"},
+        tool("t1", "shell", "line1\nline2\nline3"),
+        tool("t2", "read_file", "contents"),
+        {:info, "a longer info line that could wrap at a narrow width"},
+        {:assistant, String.duplicate("x ", 120), "plan"},
+        {:user, "again"},
+        {:info, "tail"}
+      ]
+    end
+
+    test "identical entries, pane-relative positions and clamps across offsets" do
+      entries = mixed_entries()
+
+      for width <- [40, 80],
+          pane <- [3, 9, 24],
+          offset <- [0, 1, 7, 50, 500, 99_999] do
+        {eager_clamped, eager_selected} = eager_viewport(entries, pane, offset, width, nil)
+        {lazy_clamped, lazy_selected} = TranscriptView.viewport(entries, pane, offset, width, nil)
+
+        assert eager_clamped == lazy_clamped,
+               "clamp differs at width=#{width} pane=#{pane} offset=#{offset}"
+
+        assert eager_selected == lazy_selected,
+               "selection differs at width=#{width} pane=#{pane} offset=#{offset}"
+      end
+    end
+
+    test "identical for content SHORTER than the pane (the top-anchor case)" do
+      entries = [{:info, "a"}, {:info, "b"}]
+
+      for pane <- [9, 24],
+          offset <- [0, 5, 99_999] do
+        assert eager_viewport(entries, pane, offset, 80, nil) ==
+                 TranscriptView.viewport(entries, pane, offset, 80, nil)
+      end
+    end
+
+    test "identical with an expanded tool (an open_id changes measured heights)" do
+      entries = mixed_entries()
+
+      for open <- [nil, "t1", "t2"],
+          pane <- [4, 12],
+          offset <- [0, 3, 40] do
+        assert eager_viewport(entries, pane, offset, 80, open) ==
+                 TranscriptView.viewport(entries, pane, offset, 80, open)
+      end
+    end
+  end
+
   describe "bound_letters + toggle (5c wiring)" do
     test "toggle_tool_output is a keymap binding" do
       km = CodingAgent.UI.Keymap.defaults()

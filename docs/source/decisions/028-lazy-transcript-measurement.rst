@@ -27,7 +27,9 @@ Transcript measurement: lazy, tail-first, not eager
    paths stopped calling it (the diagnostics line reports the clamped
    offset, from the same lazy walk), so in the shipped tree its only
    caller is the differential test that reconstructs the old eager
-   algorithm. The stored ``max_scroll`` is gone: the viewport
+   algorithm (``transcript_view_test.exs``, "differential: the lazy walk
+   == the eager algorithm it replaced" — no production path calls it).
+   The stored ``max_scroll`` is gone: the viewport
    returns the accepted offset, and the scroll handlers clamp through it.
 
    **Measured result** (live session, 1630 rows, cold cache):
@@ -41,7 +43,8 @@ Transcript measurement: lazy, tail-first, not eager
    floating it at the bottom instead of top-anchoring it. The existing
    accordion hit-test caught it (a click on the first entry stopped
    resolving); fixed and pinned by "short content sits at the pane TOP".
-   The differential probe now covers the short case too.
+   The differential test now covers the short case and an expanded tool
+   (an ``open_id`` changes measured heights) as well.
 
 Context
 -------
@@ -149,7 +152,9 @@ reads the clamped offset from the lazy viewport like the render, clamp
 and hit-test do. What keeps it alive is the differential anchor: it is
 the reconstruction of the old eager algorithm that the lazy walk is
 checked against, so it must keep measuring the whole transcript, eagerly,
-by exactly the path the old code used.
+by exactly the path the old code used. That anchor is an in-tree test
+(``transcript_view_test.exs``), not a scratch probe, so the check
+survives; without it the function is dead weight and could be removed.
 
 Consequences
 ------------

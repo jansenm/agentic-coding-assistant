@@ -35,6 +35,23 @@ defmodule CodingAgent.UI.TrackBStatusTest do
     })
   end
 
+  # a project-scoped variant: agent definitions live in
+  # `<scope_root>/.coding-agent/agents`
+  defp start_tui_in(root, agent) do
+    start_supervised!(%{
+      id: String.to_atom("trackb-#{System.unique_integer([:positive])}"),
+      start:
+        {Tui, :start_link,
+         [[name: nil, test_mode: {100, 30}, scope_root: root, sidebar: false, agent: agent]]}
+    })
+  end
+
+  defp write_agent(root, filename, frontmatter) do
+    dir = Path.join([root, ".coding-agent", "agents"])
+    File.mkdir_p!(dir)
+    File.write!(Path.join(dir, filename), frontmatter)
+  end
+
   defp joined(pid), do: pid |> buffer() |> Enum.join("\n")
 
   describe "Styles.spinner/1 + status_line/6 (pure)" do
@@ -230,6 +247,87 @@ defmodule CodingAgent.UI.TrackBStatusTest do
       # epoch is negative, so only the ORDERING is meaningful)
       agent(pid, {:reasoning_deltas, "thinking…"})
       assert sync(pid).last_activity_at >= before
+    end
+
+    test "a non-busy band never counts seconds (idle/error/pause)" do
+      pid = start_tui_with("build")
+
+      agent(pid, {:turn_started, "build"})
+      agent(pid, {:status_changed, :running})
+      agent(pid, {:status_changed, :idle})
+
+      # the clock is stale by 9s, but an idle turn is not waiting on one:
+      # "○ idle · 9s" would imply a countdown that no longer runs
+      :sys.replace_state(pid, fn rt ->
+        update_in(rt.user_state.last_activity_at, &(&1 - 9_000))
+      end)
+
+      fire(pid, :__spin__)
+
+      idle = Enum.at(buffer(pid), row_with(pid, "○ idle"))
+      assert idle =~ "○ idle"
+      refute idle =~ ~r/\d+s/
+    end
+
+    test "a tool left in flight does not survive the turn that started it" do
+      pid = start_tui_with("build")
+
+      agent(pid, {:turn_started, "build"})
+      agent(pid, {:status_changed, :running})
+      agent(pid, {:tool_started, "mix"})
+
+      # the result that would clear the label is never coming (a failed
+      # turn); the pause/error row must not read "running mix"
+      agent(pid, {:status_changed, :error, :boom})
+
+      assert sync(pid).active_tool == nil
+      refute joined(pid) =~ "running mix"
+      refute joined(pid) =~ "mix"
+    end
+
+    test "the band's model follows the agent a NEW turn runs as (mid-turn Tab)" do
+      # a mid-turn Tab leaves the mount-time model cache naming the OLD
+      # agent; the next turn's :turn_started must resolve the model the
+      # session actually put on the wire (State.effective_model/1)
+      root = System.tmp_dir!() |> Path.join("trackb-#{System.unique_integer([:positive])}")
+      File.rm_rf!(root)
+      File.mkdir_p!(root)
+      on_exit(fn -> File.rm_rf!(root) end)
+
+      write_agent(root, "alpha.md", """
+      ---
+      description: alpha
+      mode: primary
+      model: ollama:alpha-model
+      ---
+      alpha body
+      """)
+
+      write_agent(root, "beta.md", """
+      ---
+      description: beta
+      mode: primary
+      model: ollama:beta-model
+      ---
+      beta body
+      """)
+
+      pid = start_tui_in(root, "alpha")
+      assert sync(pid).running_agent_model == "ollama:alpha-model"
+
+      agent(pid, {:turn_started, "alpha"})
+      agent(pid, {:status_changed, :running})
+
+      key(pid, "tab")
+      assert sync(pid).next_agent == "beta"
+
+      # the boundary: next turn runs as beta
+      agent(pid, {:status_changed, :idle})
+      agent(pid, {:turn_started, "beta"})
+
+      s = sync(pid)
+      assert s.running_agent == "beta"
+      assert s.running_agent_model == "ollama:beta-model"
     end
   end
 

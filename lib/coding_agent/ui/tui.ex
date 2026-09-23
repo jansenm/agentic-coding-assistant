@@ -2401,6 +2401,12 @@ defmodule CodingAgent.UI.Tui do
     state =
       if status in [:idle, :error, :interrupted], do: %{state | stop_confirm?: false}, else: state
 
+    # a tool "in flight" cannot survive the turn that started it: the
+    # result that would clear it is never coming (a crashed turn, a
+    # pause). Without this the next :running after a decide would flash
+    # "running mix" for a call that already ended.
+    state = if status in [:idle, :error, :interrupted], do: end_tool(state), else: state
+
     # an authoritative move OFF :interrupted means the parked calls are
     # resolved or gone: clear the dialog and the deciding guard (a
     # refused decide/2 can race a status broadcast)
@@ -2471,7 +2477,13 @@ defmodule CodingAgent.UI.Tui do
   # TUI learns WHAT to render in the approval dialog (a live interrupt
   # during a run; attaching mid-session pulls state on mount instead).
   def handle_info({:agent, {:status_changed, :interrupted, pending}}, state) do
-    {:noreply, %{state | status: :interrupted, pending: pending, stop_confirm?: false}}
+    {:noreply,
+     %{
+       end_tool(state)
+       | status: :interrupted,
+         pending: pending,
+         stop_confirm?: false
+     }}
   end
 
   def handle_info({:agent, {:status_changed, :error, reason}}, state) do
@@ -2498,7 +2510,7 @@ defmodule CodingAgent.UI.Tui do
 
     {:noreply,
      %{
-       state
+       end_tool(state)
        | status: :error,
          stop_confirm?: false,
          transcript: transcript,
@@ -2622,15 +2634,16 @@ defmodule CodingAgent.UI.Tui do
     # Starting the silence clock here means a turn that produces no delta
     # for a while still reads "thinking · Ns".
     #
-    # The MODEL is re-resolved here too: a resumed session whose
-    # definition changed on disk must show the model the turn is really
-    # running on, not the one resolved at mount.
+    # The MODEL comes from the SESSION's own resolution
+    # (`State.effective_model/1`, the same function `wire_request/2`
+    # uses) — not from a fresh disk read or the cached value. The cache
+    # names the PREVIOUS turn's agent (a mid-turn Tab leaves it pointing
+    # at the old agent while the next turn runs as the new one), and a
+    # disk re-read can diverge from the definition the session actually
+    # resolved. Asking the session answers "what is really on the wire".
     state = touch(state)
 
-    model =
-      Map.get(state, :running_agent_model) ||
-        agent_model(session_scope(state.session_id), agent) ||
-        Map.get(state, :model)
+    model = session_effective_model(state.session_id) || Map.get(state, :model)
 
     {:noreply, %{state | active_agent: agent, running_agent: agent, running_agent_model: model}}
   end
@@ -2778,6 +2791,14 @@ defmodule CodingAgent.UI.Tui do
     do: %{state | active_tool: nil, tool_started_at: nil}
 
   defp clear_tool_if_done(state, _name), do: state
+
+  # A turn ended (idle/error/paused) with a tool still marked in flight:
+  # its result is never arriving, so drop the label rather than let a
+  # later :running flash it again. The clock goes with it (the band only
+  # counts while busy, so this is hygiene, not display).
+  defp end_tool(state) do
+    %{state | active_tool: nil, tool_started_at: nil}
+  end
 
   # Seconds since the turn's last activity, or nil when there has been
   # none yet (so a fast turn never flashes a duration). The sentinel is
@@ -3403,21 +3424,30 @@ defmodule CodingAgent.UI.Tui do
 
   # the elapsed context: the TOOL's runtime while a tool is in flight
   # (that is what the reader is waiting on), the silence duration while
-  # the model is thinking. One value, one meaning.
+  # the model is thinking. NOTHING while the turn is not busy (idle,
+  # error, a gate/budget/doom/question pause): a frozen count next to
+  # "○ idle" implies the app is waiting out a clock that no longer runs
+  # (the pre-band composer gated on `busy?` for exactly this reason).
   defp band_elapsed_s(state) do
-    case Map.get(state, :active_tool) do
-      tool when is_binary(tool) -> tool_elapsed_s(state)
-      _ -> silence_s(state)
+    if Styles.busy?(state.status) do
+      case Map.get(state, :active_tool) do
+        tool when is_binary(tool) -> tool_elapsed_s(state)
+        _ -> silence_s(state)
+      end
     end
   end
 
   # the status WORD: the tool names itself while it runs ("running mix"),
-  # otherwise the busy turn is "thinking" and an idle one carries the
-  # badge's own word (nil = let `Styles.status_line/6` choose it)
+  # otherwise the busy turn is "thinking" and a non-busy one carries the
+  # badge's own word (nil = let `Styles.status_line/6` choose it). The
+  # `busy?` gate also keeps a tool left in flight by a failed turn from
+  # labelling a pause "running mix".
   defp band_label(state) do
-    case Map.get(state, :active_tool) do
-      tool when is_binary(tool) -> "running #{tool}"
-      _ -> if Styles.busy?(state.status), do: "thinking", else: nil
+    if Styles.busy?(state.status) do
+      case Map.get(state, :active_tool) do
+        tool when is_binary(tool) -> "running #{tool}"
+        _ -> "thinking"
+      end
     end
   end
 
@@ -3624,6 +3654,18 @@ defmodule CodingAgent.UI.Tui do
     case Session.state(id) do
       {:ok, %{scope_root: root}} when is_binary(root) -> root
       _ -> File.cwd!()
+    end
+  end
+
+  # The model the session will actually put on the wire (`State.effective_model/1`:
+  # the running agent's pinned model, else the session's). The live band
+  # reads this instead of re-deriving from the definition cache — the
+  # cache can lag a mid-turn switch, and the session's own answer is the
+  # one the request uses.
+  defp session_effective_model(id) do
+    case Session.state(id) do
+      {:ok, st} -> CodingAgent.Core.Session.State.effective_model(st)
+      _ -> nil
     end
   end
 

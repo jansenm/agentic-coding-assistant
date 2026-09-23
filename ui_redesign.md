@@ -534,3 +534,50 @@ wandert das Band nach oben und die Overlays mit.
   `(1-17/21)` → `(5-21/21)`). Der übrige Overlay-Bestand (`budget`, `doom`,
   `question`) bleibt beim Klemmen: deren Höhe ist auf `div(area.height, 2)`
   begrenzt und damit bei jedem Fenster ≥ 20 Zeilen kleiner als der Raum.
+
+### 8.6 Review der Runde 4 (fremdgeprüft, nachgemessen)
+
+Der Review des Live-Band-Commits fand drei echte Defekte, alle in der
+Wirkung des Bandes, alle nachgemessen:
+
+1. **Die Uhr im Idle lief weiter.** `band_elapsed_s/1` wählte den
+   Stille-Zähler ohne `busy?`-Gate, also zeigte ein fertiger Turn
+   `○ idle · 204s`. Der alte Composer hatte genau dieses Gate
+   (`label = if busy?, do: "thinking"`) — es ist jetzt wieder da, für
+   Zeit und Label. Ein Test pinnt es (`a non-busy band never counts
+   seconds`).
+2. **Ein hängendes Tool überlebte seinen Turn.** Starb der Turn nach
+   `{:tool_started, "mix"}` an einem Fehler, blieb `active_tool` gesetzt,
+   und der nächste Pause-/Error-Frame las `⏸ running mix` — ein
+   Werkzeug, das nie mehr ein Ergebnis liefert. Die Status-Handler
+   (`:idle`/`:error`/`:interrupted`, beide Aritäten) räumen es jetzt ab
+   (`end_tool/1`), und `band_label/1` gatet zusätzlich auf `busy?`.
+   Ein Test pinnt es (`a tool left in flight does not survive the turn`).
+3. **Das Band zeigte das Modell des VORIGEN Agenten.** Der
+   `:turn_started`-Handler las `Map.get(state, :running_agent_model)`
+   ZUERST; nach einem Mid-Turn-`tab` nennt dieser Cache den alten Agenten,
+   während der nächste Turn als der neue läuft. Gemessen:
+   `running_agent=beta, model=ollama:alpha-model`. Der Handler fragt
+   jetzt die Session (`State.effective_model/1` — dieselbe Funktion, die
+   `wire_request/2` benutzt), nicht den Cache und nicht die Platte: die
+   Session ist die einzige Quelle, die weiß, was wirklich auf die Leitung
+   geht. Ein Test pinnt es (mid-turn Tab mit gepinnten Modellen).
+
+Zwei Doku-Korrekturen des Reviews waren selbst nicht haltbar und sind
+mitkorrigiert:
+
+* ADR 028 behauptete, `total_height/3` werde von einem
+  Differential-Test am Leben gehalten — den gab es im Baum nicht, nur
+  eine externe Probe in `/tmp`. Der Test ist jetzt eingecheckt
+  (`transcript_view_test.exs`, „differential: the lazy walk == the eager
+  algorithm it replaced", inklusive Short-Content- und Open-Tool-Fall),
+  womit die Aussage stimmt statt nur zu klingen.
+* ADR 018 benutzte `~~…~~` als Durchstreichung. RST kennt das nicht (kein
+  `sphinx.ext` dafür aktiviert), das Ergebnis waren zwei sichtbare
+  Tilden im HTML. Die Antwort steht jetzt fett als „Answered", wie in
+  ADR 024.
+
+Nicht geändert (bewusst, kein Defekt): `active_tool` bleibt als
+Display-Zustand im TUI-State, auch wenn die Session ihn nicht mehr
+autoritativ führt — das Band ist der einzige Leser und gatet selbst.
+
