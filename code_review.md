@@ -309,18 +309,17 @@ error rather than steering. Ordered by leverage — the top three change
 how the agent *behaves*; the rest are surface area.
 
 - [ ] **T1 — Write the real framework prompt + per-agent role prompts.**
-      `Core.Session.Prompt`'s built-in layer is two sentences
-      (`prompt.ex:20-23`), and `build.md`/`plan.md` bodies are a short
-      paragraph each. opencode ships a large, opinionated system prompt;
-      the difference in behavior is not subtle. This is the single
-      highest-leverage change and is really the "seed the agents with
-      harness + role guidance" discussion: (a) the framework layer should
-      state the harness contract (you are in a TUI agent; a human reads
-      the stream and answers the gate; how to behave, when to ask), and
-      (b) each definition body should say how to *live* the role (what
-      "plan" means, what evidence "build" must produce). Keep role
-      specifics in the definition (ADR 017), harness facts in the
-      framework layer.
+      **Folded into ADR 024 (Proposed) with T12/T3.** `Core.Session.Prompt`'s
+      built-in layer is two sentences (`prompt.ex:20-23`), and
+      `build.md`/`plan.md` bodies are a short paragraph each. This is the
+      "seed the agents with harness + role guidance" discussion: (a) the
+      framework layer states the harness contract (you are in a TUI agent;
+      a human reads the stream and answers the gate; how to behave, when
+      to ask), and (b) each definition body says how to *live* the role
+      (what "plan" means, what evidence "build" must produce). Role
+      specifics stay in the definition (ADR 017); harness facts in the
+      framework layer. ADR 024 adds the per-model dimension and the
+      licensing/attribution plan.
 - [ ] **T2 — A doom-loop guard.** opencode detects the same tool call
       repeated (its `doom_loop` permission, default `ask`) and re-prompts
       with a nudge. This harness has only a per-turn `max_tool_rounds`
@@ -329,13 +328,15 @@ how the agent *behaves*; the rest are surface area.
       calls within a turn and inject steering ("you have called X with the
       same args three times; change approach or ask") *before* the cap.
       This is precisely the five-minutes-in-circles failure mode.
-- [ ] **T3 — Consume the agent fields we already parse.** `temperature`,
-      `max_turns` and `hidden` are read from frontmatter into
-      `Core.Agent` and then **never used anywhere in `lib/`** (verified).
-      A `maxTurns` that does nothing is worse than none (it is a lie in
-      the docs). Either wire them (per-agent temperature into the request;
-      `max_turns` as a real round budget with a summarizing stop) or
-      remove them from the honoured-fields list in ADR 017.
+- [ ] **T3 — Consume the agent fields we already parse.** **Folded into
+      ADR 024 (Proposed).** `temperature`, `max_turns` and `hidden` are
+      read from frontmatter into `Core.Agent` and then **never used
+      anywhere in `lib/`** (verified). A `maxTurns` that does nothing is
+      worse than none (it is a lie in the docs). Either wire them
+      (per-agent temperature into the request opts; `max_turns` as a real
+      round budget with a summarizing stop, like opencode's
+      `max-steps.txt`) or remove them from the honoured-fields list in
+      ADR 017. ADR 024 leaves the `max_turns` decision open (question 1).
 - [ ] **T4 — `todowrite` / a plan tool.** opencode's `todowrite` is how
       the model organises multi-step work and stays on task across a long
       turn. This harness has no equivalent, so long tasks drift. Backlog
@@ -379,16 +380,23 @@ how the agent *behaves*; the rest are surface area.
       indentation-flexible → escape-normalized → block-anchor with
       Levenshtein), and reports LSP diagnostics inline after every edit.
 - [ ] **T12 — Provider-specific prompt files + an environment block.**
-      From the opencode prompt-construction write-up (rmk40 gist,
-      2026-09-11): opencode ships several static prompt files and selects
-      one by model ID (`anthropic.txt`, `gemini.txt`, `qwen.txt`,
-      `beast.txt` for GPT/o-series, `codex_header.txt` for GPT-5), and it
-      generates a per-call **environment block** (model name, working
-      directory, platform, today's date) into the system prompt. We send
-      ONE five-line framework prompt to every model, local Ollama models
-      included, and NO environment block (verified) — so the model does
-      not know its cwd, platform, or the date. A small, high-leverage
-      sibling of T1: per-model prompt selection + a generated env block.
+      **Designed: ADR 024 (Proposed).** Read from opencode's source
+      (`packages/opencode/src/session/system.ts`, MIT): 9 prompt files
+      selected by model id — `meta` (muse), `beast` (gpt-4/o1/o3),
+      `gpt-astra` (gpt-6), `codex`, `gpt`, `gemini`, `anthropic`,
+      `trinity`, `kimi`, else `default`. The circulating summary (rmk40
+      gist) is WRONG on two points: there is no `qwen.txt` (the fallback
+      is `default.txt`) and no `codex_header.txt`. The files are ~90% the
+      same document re-tuned per family — the lesson is that the prompt is
+      a per-model *calibration surface*, not a one-time write. Plus a
+      per-call `<env>` block (model id, cwd, worktree, is-git-repo,
+      platform, date) that we send NONE of (verified). ADR 024 decides:
+      env block is per-call (not in the persisted `base_prompt`, which
+      must stay cacheable), a `Prompt.for_model/1` selector keyed on the
+      model id `Request.build/2` already parses, start with TWO prompts
+      (strict default + Claude), and VENDOR opencode's files under MIT
+      with per-file SPDX attribution (adapted identity, not verbatim —
+      they open "You are opencode…"). Also folds in T3.
 - [ ] **T13 — Incremental instruction discovery (nested `AGENTS.md`).**
       opencode injects instruction files not only at session start but
       DURING tool execution: when `read` touches a file, it walks up from
