@@ -67,6 +67,11 @@ defmodule CodingAgent.Core.Session do
   # provider's own timeouts, not this one.
   @call_timeout :infinity
 
+  # How many consecutive identical tool ROUNDS constitute a doom loop
+  # (ADR 026). opencode's DOOM_LOOP_THRESHOLD is 3 (processor.ts), though
+  # it counts stream parts; we count rounds. The same value.
+  @doom_loop_window 3
+
   # The per-turn tool-round budget (ADR 025): an agent definition's
   # max_turns when set, else the session's config.toml-resolved value,
   # else the app-env default. The guard exists to catch a runaway loop,
@@ -174,7 +179,9 @@ defmodule CodingAgent.Core.Session do
       pending_round_calls: state.pending_round_calls,
       pending_round_results: state.pending_round_results,
       # a budget pause is durable: the held round and the question resume
-      budget_pause: state.budget_pause
+      budget_pause: state.budget_pause,
+      # a doom-loop pause is durable the same way (ADR 026)
+      doom_pause: state.doom_pause
     ]
     |> Keyword.merge(overrides)
   end
@@ -265,6 +272,22 @@ defmodule CodingAgent.Core.Session do
   @spec budget_decision(String.t(), :continue | :stop) :: {:ok, State.t()} | {:error, term()}
   def budget_decision(id, decision) when decision in [:continue, :stop] do
     GenServer.call(via(id), {:budget_decision, decision}, @call_timeout)
+  end
+
+  @doc """
+  Answers the doom-loop prompt (ADR 026).
+
+  `:continue` runs the repeated round anyway (the user judges the
+  repetition correct). `:reject` does not run it: every held call is
+  answered with a synthetic tool result steering the model off the
+  repetition, and the turn continues.
+
+  Only valid while parked at `:doom_reached`; any other state returns
+  `{:error, {:not_at_doom, status}}`.
+  """
+  @spec doom_decision(String.t(), :continue | :reject) :: {:ok, State.t()} | {:error, term()}
+  def doom_decision(id, decision) when decision in [:continue, :reject] do
+    GenServer.call(via(id), {:doom_decision, decision}, @call_timeout)
   end
 
   @doc """
@@ -424,6 +447,8 @@ defmodule CodingAgent.Core.Session do
        # a resumed budget pause re-offers its dialog (the held round and
        # the question are durable)
        budget_pause: Keyword.get(opts, :budget_pause),
+       # a resumed doom-loop pause re-offers too (ADR 026)
+       doom_pause: Keyword.get(opts, :doom_pause),
        test_mode: test_mode,
        turn_runner: turn_runner
      )}
@@ -584,6 +609,11 @@ defmodule CodingAgent.Core.Session do
     {:reply, {:error, {:budget_pause, :use_budget_decision}}, state}
   end
 
+  # A doom-loop pause likewise is :interrupted with no pending TOOL calls.
+  def handle_call({:decide, _decisions}, _from, %{doom_pause: %{}} = state) do
+    {:reply, {:error, {:doom_pause, :use_doom_decision}}, state}
+  end
+
   def handle_call({:decide, decisions}, from, %{status: :interrupted} = state) do
     case validate_decisions(state, decisions) do
       :ok ->
@@ -638,14 +668,56 @@ defmodule CodingAgent.Core.Session do
     persist(state)
 
     if state.test_mode do
-      {state, _result} = gate_tools(state, calls)
+      {state, _result} = run_round(state, calls)
       {:reply, {:ok, state}, state}
     else
       ref =
         spawn_turn(state, fn snapshot ->
-          gate_tools(snapshot, calls)
+          run_round(snapshot, calls)
         end)
 
+      {:noreply, %{state | worker_ref: ref, worker_from: from}}
+    end
+  end
+
+  # ADR 026 doom-loop prompt: continue (run the repeated round) or reject
+  # (steer the model off the repetition). Valid only while parked.
+  def handle_call({:doom_decision, _decision}, _from, %{doom_pause: nil} = state) do
+    {:reply, {:error, {:not_at_doom, state.status}}, state}
+  end
+
+  def handle_call({:doom_decision, :continue}, from, %{doom_pause: %{calls: calls}} = state) do
+    state = %{state | doom_pause: nil, status: :running}
+    broadcast(state, {:status_changed, :running})
+    persist(state)
+
+    if state.test_mode do
+      {state, _result} = run_round(state, calls)
+      {:reply, {:ok, state}, state}
+    else
+      ref = spawn_turn(state, fn snapshot -> run_round(snapshot, calls) end)
+      {:noreply, %{state | worker_ref: ref, worker_from: from}}
+    end
+  end
+
+  def handle_call(
+        {:doom_decision, :reject},
+        from,
+        %{doom_pause: %{calls: calls, tool: tool}} = state
+      ) do
+    state = %{state | doom_pause: nil, status: :running}
+    broadcast(state, {:status_changed, :running})
+    persist(state)
+
+    reason =
+      "repeated identical call rejected by the user — you called #{tool} with the " <>
+        "same arguments #{@doom_loop_window} times; change approach or ask."
+
+    if state.test_mode do
+      {state, _result} = steer_round(state, calls, reason)
+      {:reply, {:ok, state}, state}
+    else
+      ref = spawn_turn(state, fn snapshot -> steer_round(snapshot, calls, reason) end)
       {:noreply, %{state | worker_ref: ref, worker_from: from}}
     end
   end
@@ -927,6 +999,8 @@ defmodule CodingAgent.Core.Session do
           status: :running,
           last_error: nil,
           tool_rounds: 0,
+          # the doom-loop window is per turn (ADR 026)
+          recent_calls: [],
           turn_agents: state.turn_agents ++ [agent]
       }
 
@@ -1132,22 +1206,111 @@ defmodule CodingAgent.Core.Session do
   # decision. :ask pauses the session (:interrupted) until the driver
   # supplies decisions for every pending call via decide/3.
   #
-  # The tool-round budget (ADR 025) is checked first. An INTERACTIVE
-  # driver is asked whether to continue; a driver that cannot answer
-  # (headless, a test) gets the automatic wrap-up.
+  # Two guards run before the policy gate, in order:
+  #
+  #   * the tool-round budget (ADR 025): an INTERACTIVE driver is asked
+  #     continue/stop; a driver that cannot answer gets the wrap-up;
+  #   * the doom-loop guard (ADR 026): three consecutive identical ROUNDS
+  #     pause an interactive driver (continue/reject); a non-interactive
+  #     driver is steered silently.
   defp gate_tools(state, calls) do
+    state = remember_calls(state, calls)
     budget = tool_budget(state)
 
     cond do
-      state.tool_rounds < budget ->
-        run_round(state, calls)
-
-      state.interactive ->
+      state.tool_rounds >= budget and state.interactive ->
         pause_at_budget(state, calls, budget)
 
-      true ->
+      state.tool_rounds >= budget ->
         wrap_up(state, budget)
+
+      doom_loop?(state) and state.interactive ->
+        pause_at_doom(state, calls)
+
+      doom_loop?(state) ->
+        steer_doom(state, calls)
+
+      true ->
+        run_round(state, calls)
     end
+  end
+
+  # -- Doom-loop guard (ADR 026) ----------------------------------------------
+
+  # Append THIS ROUND's call signature to the per-turn window, newest
+  # last, capped at the window size. The window is over ROUNDS, not
+  # individual calls: a doom loop is the model re-emitting the same call
+  # across rounds (the "five minutes in circles" failure), not three
+  # parallel identical calls in one intent. opencode checks per stream
+  # part, which would also trip on the latter; we deliberately do not
+  # (recorded in the ADR).
+  #
+  # A round's signature is its sorted list of {name, args} — so a round is
+  # "the same" when it asked for the same calls, regardless of order.
+  defp remember_calls(state, calls) do
+    sig =
+      calls
+      |> Enum.map(fn call ->
+        {_id, name, args} = ToolCall.normalize(call)
+        {name, args}
+      end)
+      |> Enum.sort()
+
+    window = Enum.take(state.recent_calls ++ [sig], -@doom_loop_window)
+    %{state | recent_calls: window}
+  end
+
+  # True when the window is full and every ROUND is identical.
+  defp doom_loop?(%{recent_calls: window}) do
+    length(window) == @doom_loop_window and match?([x, x, x], window)
+  end
+
+  # Park at a detected loop (ADR 026). The round is held, so "continue"
+  # runs exactly it and "reject" steers the model off the repetition.
+  defp pause_at_doom(state, calls) do
+    {_id, tool, _args} = ToolCall.normalize(hd(calls))
+
+    broadcast(
+      state,
+      {:info, "· repeated call detected: #{tool} ×#{@doom_loop_window} — continue or reject"}
+    )
+
+    state = %{state | status: :interrupted, doom_pause: %{calls: calls, tool: tool}}
+    broadcast(state, {:status_changed, :doom_reached, %{tool: tool}})
+    persist(state)
+    {state, {:ok, state}}
+  end
+
+  # Non-interactive fallback: steer silently. The held round is answered
+  # with a synthetic tool result explaining the repetition, so the model
+  # reads it (like a failed tool) and changes approach; the loop then
+  # continues. No dialog, no hang.
+  defp steer_doom(state, calls) do
+    {_id, tool, _args} = ToolCall.normalize(hd(calls))
+    Logger.warning("doom loop steered (non-interactive): #{tool}")
+
+    steer_round(
+      state,
+      calls,
+      "repeated identical call rejected — you have called #{tool} with the same " <>
+        "arguments #{@doom_loop_window} times in a row; repeating will not help. " <>
+        "Change approach or ask the user."
+    )
+  end
+
+  # Answer every held call with a synthetic result carrying `reason`, then
+  # complete the round and let the loop continue. Used by the silent steer
+  # and by a user "reject".
+  defp steer_round(state, calls, reason) do
+    results =
+      Enum.map(calls, fn call ->
+        {id, name, _args} = ToolCall.normalize(call)
+        %{id: id, name: name, content: "error: #{reason}"}
+      end)
+
+    broadcast_tools(state, calls, results)
+    state = complete_round(state, calls, results)
+    finish_round(state)
   end
 
   # Park the turn at the budget and ask the driver to continue or stop.

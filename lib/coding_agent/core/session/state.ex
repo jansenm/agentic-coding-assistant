@@ -49,6 +49,15 @@ defmodule CodingAgent.Core.Session.State do
     # yet. nil otherwise. `calls` is the round that tripped the budget —
     # "continue" executes it under a fresh budget; "stop" wraps up.
     budget_pause: nil,
+    # Parked at a detected doom loop (three consecutive identical calls,
+    # ADR 026): %{calls, tool} when the user was asked continue/reject.
+    # nil otherwise.
+    doom_pause: nil,
+    # The last few tool-call ROUND signatures of the CURRENT turn, newest
+    # last — each is a sorted list of {name, args}. The window the
+    # doom-loop guard looks at (ADR 026). Runtime-only: reset per turn
+    # and never persisted.
+    recent_calls: [],
     # Whether a driver (the TUI) can answer a mid-turn question at all. A
     # non-interactive driver (future headless mode, a test) gets the
     # automatic wrap-up instead of a pause nobody can resolve.
@@ -129,6 +138,8 @@ defmodule CodingAgent.Core.Session.State do
           pending_round_calls: [map()],
           pending_round_results: [map()],
           budget_pause: map() | nil,
+          doom_pause: map() | nil,
+          recent_calls: [[{String.t(), map()}]],
           interactive: boolean(),
           subscribers: [reference()],
           tool_rounds: non_neg_integer(),
@@ -230,6 +241,10 @@ defmodule CodingAgent.Core.Session.State do
       # and the question survive, so a resumed session re-offers the
       # dialog instead of silently dropping the interrupted round.
       budget_pause: Map.get(state, :budget_pause),
+      # a doom-loop pause is durable the same way (ADR 026)
+      doom_pause: Map.get(state, :doom_pause),
+      # the detection window is per-turn runtime state, never persisted
+      recent_calls: [],
       # the interactivity of a live driver is not persisted state
       interactive: false,
       # per-turn agent attribution (old snapshots lack it)

@@ -193,6 +193,9 @@ defmodule CodingAgent.UI.Tui do
       # the tool-round budget prompt (ADR 025): %{budget: n} while the
       # session is parked at the budget; y continues, n stops
       budget_prompt: nil,
+      # the doom-loop prompt (ADR 026): %{tool: name} while the session is
+      # parked at a repeated call; y continues, n rejects (steers)
+      doom_prompt: nil,
       last_error: nil,
       scroll_offset: 0,
       open_tool_id: nil,
@@ -241,6 +244,10 @@ defmodule CodingAgent.UI.Tui do
   defp budget_prompt_of(%{budget_pause: %{budget: budget}}), do: %{budget: budget}
   defp budget_prompt_of(_), do: nil
 
+  # A parked doom-loop prompt (ADR 026): continue/reject dialog.
+  defp doom_prompt_of(%{doom_pause: %{tool: tool}}), do: %{tool: tool}
+  defp doom_prompt_of(_), do: nil
+
   defp mount_session(id, opts, prompt) do
     id = id || Keyword.get(opts, :session_id) || "tui-#{System.unique_integer([:positive])}"
 
@@ -281,10 +288,13 @@ defmodule CodingAgent.UI.Tui do
       # attach to the CURRENT state, not a stale idle assumption: the
       # session may already be running/interrupted (e.g. attached after
       # the gate paused, or resumed from disk)
-      {status, pending, budget_prompt} =
+      {status, pending, budget_prompt, doom_prompt} =
         case Session.state(effective_id) do
-          {:ok, st} -> {st.status, st.pending_tool_calls, budget_prompt_of(st)}
-          _ -> {:idle, [], nil}
+          {:ok, st} ->
+            {st.status, st.pending_tool_calls, budget_prompt_of(st), doom_prompt_of(st)}
+
+          _ ->
+            {:idle, [], nil, nil}
         end
 
       # startup reachability check (design A: a minimal completion
@@ -390,6 +400,7 @@ defmodule CodingAgent.UI.Tui do
         pending_edit: nil,
         deciding?: false,
         budget_prompt: budget_prompt,
+        doom_prompt: doom_prompt,
         last_error: nil,
         # 0 = follow the tail (auto-scroll); >0 = pinned N lines up
         scroll_offset: 0,
@@ -1275,14 +1286,14 @@ defmodule CodingAgent.UI.Tui do
     # typing, so they must not be bound (binding them always made "e"
     # untypable once ADR 021 stopped forwarding unowned keys as text).
     deciding? = state.pending != [] and not Map.get(state, :deciding?, false)
-    # the budget prompt (ADR 025) is its own blocking surface with the
-    # same y/n letters; it has no pending tool calls, so the two are
-    # mutually exclusive by construction
-    at_budget? = Map.get(state, :budget_prompt) != nil
+    # the budget and doom prompts (ADR 025/026) are blocking surfaces with
+    # the same y/n letters; they have no pending tool calls, so they are
+    # mutually exclusive with each other and with the approval dialog
+    prompt? = Map.get(state, :budget_prompt) != nil or Map.get(state, :doom_prompt) != nil
 
     bound =
       cond do
-        at_budget? -> Bridge.bound_letters(decision_keymap())
+        prompt? -> Bridge.bound_letters(decision_keymap())
         deciding? -> Bridge.bound_letters(state.keymap) ++ Bridge.bound_letters(decision_keymap())
         true -> Bridge.bound_letters(state.keymap)
       end
@@ -1297,7 +1308,8 @@ defmodule CodingAgent.UI.Tui do
         # while the decide task is in flight the dialog is hidden and its
         # keys must not fire again (deciding? is false then)
         cond do
-          at_budget? -> handle_budget_key(km_event, state)
+          Map.get(state, :budget_prompt) != nil -> handle_budget_key(km_event, state)
+          Map.get(state, :doom_prompt) != nil -> handle_doom_key(km_event, state)
           deciding? -> handle_decision_key(km_event, state)
           true -> handle_input_key(km_event, ev, state)
         end
@@ -1333,6 +1345,34 @@ defmodule CodingAgent.UI.Tui do
     # Optimistic: hide the prompt now, resume running; the reply
     # reconciles (or re-opens on a refusal)
     %{state | budget_prompt: nil, status: :running}
+  end
+
+  # At the doom-loop prompt: y continues the repeated round anyway, n
+  # rejects it (the held round is answered with steering so the model
+  # changes approach).
+  defp handle_doom_key(km_event, state) do
+    case Keymap.resolve(decision_keymap(), km_event) do
+      :approve -> {:noreply, doom_decide(state, :continue)}
+      :reject -> {:noreply, doom_decide(state, :reject)}
+      _ -> {:noreply, state}
+    end
+  end
+
+  defp doom_decide(state, decision) do
+    sid = state.session_id
+    parent = self()
+
+    Task.start(fn ->
+      result =
+        case Session.doom_decision(sid, decision) do
+          {:ok, session_state} -> {:ok, session_state.status}
+          {:error, reason} -> {:error, reason}
+        end
+
+      send(parent, {:__doom_decided__, result})
+    end)
+
+    %{state | doom_prompt: nil, status: :running}
   end
 
   # Menu popup overlay (the pending note is on the composer's meta
@@ -2021,6 +2061,20 @@ defmodule CodingAgent.UI.Tui do
      }}
   end
 
+  # The doom-loop reply landed (ADR 026).
+  def handle_info({:__doom_decided__, {:ok, status}}, state) do
+    {:noreply, %{state | status: status, doom_prompt: nil}}
+  end
+
+  def handle_info({:__doom_decided__, {:error, reason}}, state) do
+    {:noreply,
+     %{
+       state
+       | doom_prompt: nil,
+         transcript: state.transcript ++ [{:info, "✖ doom answer failed: #{error_text(reason)}"}]
+     }}
+  end
+
   # the session is no longer waiting (its parked calls resolved or were
   # dropped elsewhere): the dialog is stale, clear it
   def handle_info({:__decided__, {:error, {:not_interrupted, status}}}, state) do
@@ -2077,7 +2131,7 @@ defmodule CodingAgent.UI.Tui do
     # refused decide/2 can race a status broadcast)
     state =
       if status != :interrupted do
-        %{state | pending: [], deciding?: false, budget_prompt: nil}
+        %{state | pending: [], deciding?: false, budget_prompt: nil, doom_prompt: nil}
       else
         state
       end
@@ -2094,6 +2148,19 @@ defmodule CodingAgent.UI.Tui do
        state
        | status: :interrupted,
          budget_prompt: %{budget: budget},
+         deciding?: false,
+         stop_confirm?: false
+     }}
+  end
+
+  # The session parked at a detected doom loop (ADR 026): show the
+  # continue/reject prompt.
+  def handle_info({:agent, {:status_changed, :doom_reached, %{tool: tool}}}, state) do
+    {:noreply,
+     %{
+       state
+       | status: :interrupted,
+         doom_prompt: %{tool: tool},
          deciding?: false,
          stop_confirm?: false
      }}
@@ -2487,7 +2554,8 @@ defmodule CodingAgent.UI.Tui do
         Composer.placements(composer(state), input_area)
 
     widgets ++
-      menu_widgets(state, area) ++ budget_widgets(state, area) ++ dialog_widgets(state, area)
+      menu_widgets(state, area) ++
+      budget_widgets(state, area) ++ doom_widgets(state, area) ++ dialog_widgets(state, area)
   end
 
   # Viewport rendering: entries intersecting the pane get placed at
@@ -3559,6 +3627,42 @@ defmodule CodingAgent.UI.Tui do
       block:
         Styles.panel(
           title: " TOOL BUDGET ",
+          surface: :chrome,
+          border_style: Styles.role(:warning, :chrome),
+          border_type: :double
+        )
+    }
+
+    w = min(@measure + 2, area.width - 4)
+    x = div(max(area.width - w, 0), 2)
+    rect = %Rect{x: x, y: area.height - h - 3, width: w, height: h}
+    [{%Clear{}, rect}, {widget, rect}]
+  end
+
+  # The doom-loop prompt (ADR 026): a single panel, y continues the
+  # repeated round, n rejects it (steers the model off the repetition).
+  defp doom_widgets(%{doom_prompt: nil}, _area), do: []
+
+  defp doom_widgets(%{doom_prompt: %{tool: tool}}, area) do
+    text =
+      "Repeated call detected: #{tool} was called 3 times with identical\n" <>
+        "arguments. This is usually a loop.\n\n" <>
+        "y = continue (run it anyway)   n = reject (change approach)"
+
+    h = min(7, div(area.height, 2))
+
+    body =
+      text
+      |> String.split("\n")
+      |> Enum.concat(List.duplicate(" ", max(h - 2 - length(String.split(text, "\n")), 0)))
+      |> Enum.join("\n")
+
+    widget = %Paragraph{
+      text: body,
+      style: Styles.surface(:chrome),
+      block:
+        Styles.panel(
+          title: " DOOM LOOP ",
           surface: :chrome,
           border_style: Styles.role(:warning, :chrome),
           border_type: :double

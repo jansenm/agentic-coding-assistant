@@ -328,11 +328,11 @@ how the agent *behaves*; the rest are surface area.
       calls within a turn and inject steering ("you have called X with the
       same args three times; change approach or ask") *before* the cap.
       This is precisely the five-minutes-in-circles failure mode.
-      **Split into ADR 025 (Accepted), which makes the numeric cap a safe
-      backstop — the trip asks the user continue/stop (or wraps up when
-      nobody can answer), and `maxTurns` is a real, configurable budget.**
-      The pattern-detection half (the actual primary control) stays open
-      here.
+      **Split: ADR 025 (Accepted) makes the numeric cap a safe backstop
+      (the trip asks continue/stop, or wraps up when nobody can answer);
+      ADR 026 (Proposed) implements the detection half — 3 consecutive
+      identical rounds pause an interactive driver (continue/reject) and
+      steer a non-interactive one.**
 - [ ] **T3 — Consume the agent fields we already parse.** `temperature`,
       `max_turns` and `hidden` are read from frontmatter into
       `Core.Agent` and then **never used anywhere in `lib/`** (verified).

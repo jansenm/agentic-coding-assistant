@@ -27,6 +27,9 @@ defmodule CodingAgent.Core.Events do
     * `{:status_changed, :budget_reached, %{budget: n}}` — the tool-round
       budget was reached and the driver is asked to continue or stop
       (ADR 025; only an interactive session emits this)
+    * `{:status_changed, :doom_reached, %{tool: name}}` — a repeated call
+      was detected and the driver is asked to continue or reject
+      (ADR 026; interactive only)
     * `{:tool_started, name}` — one tool call about to run (before result)
     * `{:tool_executed, name, content, args}` — one finished tool result
       with the arguments it was called with (the display view records

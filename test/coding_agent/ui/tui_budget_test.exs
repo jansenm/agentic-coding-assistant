@@ -83,4 +83,40 @@ defmodule CodingAgent.UI.TuiBudgetTest do
     wait_until(fn -> File.exists?(Path.join(root, "cont.txt")) end)
     assert File.read!(Path.join(root, "cont.txt")) == "y"
   end
+
+  test "the doom prompt reaches the TUI; n rejects through the async decision" do
+    root = Path.join(System.tmp_dir!(), "tui-doom-#{System.unique_integer()}")
+    File.mkdir_p!(root)
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    sid = "tui-doom-#{System.unique_integer()}"
+
+    {:ok, _} =
+      CodingAgent.Core.Session.Supervisor.start_session(
+        id: sid,
+        scope_root: root,
+        policy: CodingAgent.Core.Permissions.load(nil, nil),
+        test_mode: true,
+        interactive: true
+      )
+
+    pid =
+      start_supervised!(
+        {Tui, [name: nil, test_mode: {80, 24}, session_id: sid, scope_root: root]}
+      )
+
+    assert sync(pid).doom_prompt == nil
+
+    call = %{id: "d1", name: "read_file", arguments: %{"path" => "same.txt"}}
+    :ok = CodingAgent.Core.Session.debug_gate(sid, [call])
+    :ok = CodingAgent.Core.Session.debug_gate(sid, [%{call | id: "d2"}])
+    :ok = CodingAgent.Core.Session.debug_gate(sid, [%{call | id: "d3"}])
+
+    wait_until(fn -> sync(pid).doom_prompt != nil end)
+    assert sync(pid).doom_prompt.tool == "read_file"
+    assert sync(pid).status == :interrupted
+
+    key(pid, "n")
+    wait_until(fn -> sync(pid).doom_prompt == nil end)
+  end
 end
