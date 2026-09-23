@@ -71,10 +71,10 @@ hide = []
 
 # Per-turn tool-round budget (ADR 025). A "round" is one assistant
 # response containing tool calls; the counter resets with each new user
-# prompt. On reaching the budget the turn does not fail — the model is
-# asked to summarize what it did and end with prose, and the session goes
-# idle. Raise it for long reviews; an agent definition's `maxTurns`
-# overrides this per agent.
+# prompt. At the budget the interactive TUI ASKS whether to continue
+# (another full budget) or stop (the model summarizes and the turn ends);
+# a non-interactive driver summarizes automatically. An agent definition's
+# `maxTurns` overrides this per agent.
 #
 #   max_tool_rounds = 100
 

@@ -113,6 +113,73 @@ defmodule CodingAgent.Core.Session.TurnBudgetTest do
     end
   end
 
+  describe "the interactive budget prompt (ADR 025)" do
+    test "an interactive trip PAUSES and holds the round instead of wrapping up" do
+      id = "budget-ask-#{System.unique_integer()}"
+      start(id, interactive: true)
+
+      :ok =
+        Session.debug_gate(
+          id,
+          [tool_call("h1", "write_file", %{"path" => "held.txt", "content" => "x"})],
+          rounds: 100
+        )
+
+      {:ok, state} = Session.state(id)
+      assert state.status == :interrupted
+      assert state.budget_pause.budget == 100
+
+      held_ids = Enum.map(state.budget_pause.calls, fn c -> c.id end)
+      assert held_ids == ["h1"]
+      refute File.exists?(Path.join(@tmp_root, "held.txt")), "the held round must not run yet"
+    end
+
+    test "continue runs the held round under a fresh budget" do
+      id = "budget-cont-#{System.unique_integer()}"
+      start(id, interactive: true)
+
+      :ok =
+        Session.debug_gate(
+          id,
+          [tool_call("h2", "write_file", %{"path" => "cont.txt", "content" => "y"})],
+          rounds: 100
+        )
+
+      {:ok, _} = Session.budget_decision(id, :continue)
+      {:ok, state} = Session.state(id)
+
+      assert File.read!(Path.join(@tmp_root, "cont.txt")) == "y"
+      assert state.budget_pause == nil
+      assert state.tool_rounds <= 1
+    end
+
+    test "stop discards the held round and wraps up" do
+      id = "budget-stop-#{System.unique_integer()}"
+      start(id, interactive: true)
+
+      :ok =
+        Session.debug_gate(
+          id,
+          [tool_call("h3", "write_file", %{"path" => "stopped.txt", "content" => "z"})],
+          rounds: 100
+        )
+
+      {:ok, _} = Session.budget_decision(id, :stop)
+      {:ok, state} = Session.state(id)
+
+      refute File.exists?(Path.join(@tmp_root, "stopped.txt")), "stop must discard the round"
+      assert state.budget_pause == nil
+      assert state.status == :idle
+    end
+
+    test "a budget_decision outside a pause is refused" do
+      id = "budget-none-#{System.unique_integer()}"
+      start(id, interactive: true)
+
+      assert {:error, {:not_at_budget, :idle}} = Session.budget_decision(id, :continue)
+    end
+  end
+
   describe "the wrap-up request withholds tools (ADR 025)" do
     test "wire_request/2 with tools: [] sends an empty tool list" do
       id = "budget-wire-#{System.unique_integer()}"

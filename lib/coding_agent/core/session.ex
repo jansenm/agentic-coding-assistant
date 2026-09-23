@@ -172,7 +172,9 @@ defmodule CodingAgent.Core.Session do
       status: state.status,
       pending_tool_calls: state.pending_tool_calls,
       pending_round_calls: state.pending_round_calls,
-      pending_round_results: state.pending_round_results
+      pending_round_results: state.pending_round_results,
+      # a budget pause is durable: the held round and the question resume
+      budget_pause: state.budget_pause
     ]
     |> Keyword.merge(overrides)
   end
@@ -248,6 +250,22 @@ defmodule CodingAgent.Core.Session do
   @spec decide(String.t(), [%{id: String.t(), decision: :approve | :reject | {:edit, map()}}]) ::
           {:ok, State.t()} | {:error, term()}
   def decide(id, decisions), do: GenServer.call(via(id), {:decide, decisions}, @call_timeout)
+
+  @doc """
+  Answers the tool-round budget prompt (ADR 025).
+
+  `:continue` runs the round that tripped the budget under a FRESH budget
+  (another full allowance) — the round's calls were held, so nothing is
+  lost. `:stop` wraps up: the held round is discarded and the model is
+  asked to summarize, exactly as a non-interactive driver experiences it.
+
+  Only valid while the session is parked at `:budget_reached`; any other
+  state returns `{:error, {:not_at_budget, status}}`.
+  """
+  @spec budget_decision(String.t(), :continue | :stop) :: {:ok, State.t()} | {:error, term()}
+  def budget_decision(id, decision) when decision in [:continue, :stop] do
+    GenServer.call(via(id), {:budget_decision, decision}, @call_timeout)
+  end
 
   @doc """
   Feeds tool calls directly into the permission gate, bypassing the
@@ -400,6 +418,12 @@ defmodule CodingAgent.Core.Session do
        # the per-turn round budget resolved from config.toml (ADR 025);
        # an agent's max_turns overrides it per turn (State.tool_budget/1)
        max_tool_rounds: Config.max_tool_rounds(snapshot),
+       # a driver that can answer a mid-turn question (the TUI sets this);
+       # a headless driver gets the automatic wrap-up at the budget
+       interactive: Keyword.get(opts, :interactive, false),
+       # a resumed budget pause re-offers its dialog (the held round and
+       # the question are durable)
+       budget_pause: Keyword.get(opts, :budget_pause),
        test_mode: test_mode,
        turn_runner: turn_runner
      )}
@@ -554,6 +578,12 @@ defmodule CodingAgent.Core.Session do
     {:noreply, %{state | queued_calls: state.queued_calls ++ [{:decide, from, decisions}]}}
   end
 
+  # A budget pause is also :interrupted but holds no pending TOOL calls;
+  # refuse a decide here so the two pauses cannot be confused.
+  def handle_call({:decide, _decisions}, _from, %{budget_pause: %{}} = state) do
+    {:reply, {:error, {:budget_pause, :use_budget_decision}}, state}
+  end
+
   def handle_call({:decide, decisions}, from, %{status: :interrupted} = state) do
     case validate_decisions(state, decisions) do
       :ok ->
@@ -572,6 +602,52 @@ defmodule CodingAgent.Core.Session do
 
   def handle_call({:decide, _decisions}, _from, state) do
     {:reply, {:error, {:not_interrupted, state.status}}, state}
+  end
+
+  # ADR 025 budget prompt: continue (fresh budget, run the held round) or
+  # stop (wrap up). Valid only while parked at the budget.
+  def handle_call({:budget_decision, _decision}, _from, %{budget_pause: nil} = state) do
+    {:reply, {:error, {:not_at_budget, state.status}}, state}
+  end
+
+  def handle_call({:budget_decision, :stop}, from, %{budget_pause: %{budget: budget}} = state) do
+    # The held round is discarded (as in the non-interactive wrap-up); a
+    # provider call follows, so it runs in a worker like every turn step.
+    state = %{state | budget_pause: nil, status: :running}
+    broadcast(state, {:status_changed, :running})
+    persist(state)
+
+    if state.test_mode do
+      {state, _result} = wrap_up(state, budget)
+      {:reply, {:ok, state}, state}
+    else
+      ref =
+        spawn_turn(state, fn snapshot ->
+          wrap_up(snapshot, budget)
+        end)
+
+      {:noreply, %{state | worker_ref: ref, worker_from: from}}
+    end
+  end
+
+  def handle_call({:budget_decision, :continue}, from, %{budget_pause: %{calls: calls}} = state) do
+    # A fresh full budget, and the held round runs. The round counter is
+    # reset here (not in begin_run) so continuation does not accumulate.
+    state = %{state | budget_pause: nil, status: :running, tool_rounds: 0}
+    broadcast(state, {:status_changed, :running})
+    persist(state)
+
+    if state.test_mode do
+      {state, _result} = gate_tools(state, calls)
+      {:reply, {:ok, state}, state}
+    else
+      ref =
+        spawn_turn(state, fn snapshot ->
+          gate_tools(snapshot, calls)
+        end)
+
+      {:noreply, %{state | worker_ref: ref, worker_from: from}}
+    end
   end
 
   # Every pending call needs a decision; partial answers are refused
@@ -1055,64 +1131,95 @@ defmodule CodingAgent.Core.Session do
   # (allow class defaults); state-changing tools get the effective
   # decision. :ask pauses the session (:interrupted) until the driver
   # supplies decisions for every pending call via decide/3.
+  #
+  # The tool-round budget (ADR 025) is checked first. An INTERACTIVE
+  # driver is asked whether to continue; a driver that cannot answer
+  # (headless, a test) gets the automatic wrap-up.
   defp gate_tools(state, calls) do
     budget = tool_budget(state)
 
-    if state.tool_rounds >= budget do
-      wrap_up(state, budget)
+    cond do
+      state.tool_rounds < budget ->
+        run_round(state, calls)
+
+      state.interactive ->
+        pause_at_budget(state, calls, budget)
+
+      true ->
+        wrap_up(state, budget)
+    end
+  end
+
+  # Park the turn at the budget and ask the driver to continue or stop.
+  # The round's calls are held (not executed, not on the wire) so
+  # "continue" can run exactly this round under a fresh budget.
+  defp pause_at_budget(state, calls, budget) do
+    Logger.warning("tool-round budget reached: #{budget} (asking)")
+    broadcast(state, {:info, "· turn budget reached (#{budget} rounds)"})
+
+    state = %{
+      state
+      | status: :interrupted,
+        budget_pause: %{calls: calls, budget: budget}
+    }
+
+    broadcast(state, {:status_changed, :budget_reached, %{budget: budget}})
+    persist(state)
+    {state, {:ok, state}}
+  end
+
+  defp run_round(state, calls) do
+    state = %{state | tool_rounds: state.tool_rounds + 1}
+
+    # All gate policy lives in Session.Gate: it buckets this round's
+    # calls (blacklist / escalation-without-reason / explicit deny /
+    # allow / ask) using the one Permissions.effective/4 path.
+    plan = Gate.classify(state.id, state.policy, state.scope_root, calls)
+
+    blacklist_results =
+      Enum.map(plan.blacklisted, fn call ->
+        log_refusal(call, "gate: shell command denied (blacklist)")
+        Gate.blacklist_result(call)
+      end)
+
+    no_reason_results =
+      Enum.map(plan.no_reason, fn call ->
+        log_refusal(call, "gate: shell escalation without reason refused")
+        Gate.no_reason_result(call)
+      end)
+
+    # Results already decided for this round, before any human input.
+    known_calls = plan.blacklisted ++ plan.no_reason ++ plan.denied
+
+    known_results =
+      blacklist_results ++
+        no_reason_results ++ Enum.map(plan.denied, &Gate.denied_result/1)
+
+    if plan.pending == [] do
+      auto_results = execute_tools(state, plan.auto)
+      results = known_results ++ auto_results
+      broadcast_tools(state, known_calls ++ plan.auto, known_results ++ auto_results)
+      state = complete_round(state, calls, results)
+      finish_round(state)
     else
-      state = %{state | tool_rounds: state.tool_rounds + 1}
+      # SOME call needs a human. The exchange is appended atomically
+      # only once the whole round is decided, so nothing half-formed
+      # ever reaches the wire. The auto/denied results computed now
+      # are carried in state across the pause (and a resume) instead.
+      auto_results = execute_tools(state, plan.auto)
 
-      # All gate policy lives in Session.Gate: it buckets this round's
-      # calls (blacklist / escalation-without-reason / explicit deny /
-      # allow / ask) using the one Permissions.effective/4 path.
-      plan = Gate.classify(state.id, state.policy, state.scope_root, calls)
+      state = %{
+        state
+        | status: :interrupted,
+          pending_tool_calls: plan.pending,
+          pending_round_calls: calls,
+          pending_round_results: known_results ++ auto_results
+      }
 
-      blacklist_results =
-        Enum.map(plan.blacklisted, fn call ->
-          log_refusal(call, "gate: shell command denied (blacklist)")
-          Gate.blacklist_result(call)
-        end)
-
-      no_reason_results =
-        Enum.map(plan.no_reason, fn call ->
-          log_refusal(call, "gate: shell escalation without reason refused")
-          Gate.no_reason_result(call)
-        end)
-
-      # Results already decided for this round, before any human input.
-      known_calls = plan.blacklisted ++ plan.no_reason ++ plan.denied
-
-      known_results =
-        blacklist_results ++
-          no_reason_results ++ Enum.map(plan.denied, &Gate.denied_result/1)
-
-      if plan.pending == [] do
-        auto_results = execute_tools(state, plan.auto)
-        results = known_results ++ auto_results
-        broadcast_tools(state, known_calls ++ plan.auto, known_results ++ auto_results)
-        state = complete_round(state, calls, results)
-        finish_round(state)
-      else
-        # SOME call needs a human. The exchange is appended atomically
-        # only once the whole round is decided, so nothing half-formed
-        # ever reaches the wire. The auto/denied results computed now
-        # are carried in state across the pause (and a resume) instead.
-        auto_results = execute_tools(state, plan.auto)
-
-        state = %{
-          state
-          | status: :interrupted,
-            pending_tool_calls: plan.pending,
-            pending_round_calls: calls,
-            pending_round_results: known_results ++ auto_results
-        }
-
-        broadcast_tools(state, known_calls ++ plan.auto, known_results ++ auto_results)
-        broadcast(state, {:status_changed, :interrupted, plan.pending})
-        persist(state)
-        {state, {:ok, state}}
-      end
+      broadcast_tools(state, known_calls ++ plan.auto, known_results ++ auto_results)
+      broadcast(state, {:status_changed, :interrupted, plan.pending})
+      persist(state)
+      {state, {:ok, state}}
     end
   end
 

@@ -24,6 +24,9 @@ defmodule CodingAgent.Core.Events do
     * `{:llm_message, text}` — the full assistant answer for a turn
     * `{:turn_started, agent_name | nil}` — the agent handling the turn
     * `{:status_changed, status}` / `{:status_changed, status, detail}`
+    * `{:status_changed, :budget_reached, %{budget: n}}` — the tool-round
+      budget was reached and the driver is asked to continue or stop
+      (ADR 025; only an interactive session emits this)
     * `{:tool_started, name}` — one tool call about to run (before result)
     * `{:tool_executed, name, content, args}` — one finished tool result
       with the arguments it was called with (the display view records

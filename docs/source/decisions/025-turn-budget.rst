@@ -12,31 +12,37 @@ Turn budget: the round limit degrades by wrap-up, not failure
 .. note::
    Accepted and implemented 2026-09-23. Answers T2 and the ``max_turns``
    half of T3 in the ``code_review.md`` "rival opencode" list. Decides
-   that reaching the per-turn tool-round budget ends the turn with a
-   *summarizing wrap-up* (status ``:idle``), not a hard failure (status
-   ``:error``), and that ``maxTurns`` becomes the real per-agent budget
-   while the global default gains a ``config.toml`` knob. The
-   pattern-based doom-loop guard (T2's detection half) remains open; this
-   makes the numeric cap a safe backstop for it.
+   that reaching the per-turn tool-round budget never fails the turn:
+   an **interactive** driver is asked to *continue* (another full budget)
+   or *stop* (a summarizing wrap-up), and a driver that cannot answer
+   gets the wrap-up automatically. ``maxTurns`` is the per-agent budget;
+   the global default has a ``config.toml`` knob. The pattern-based
+   doom-loop guard (T2's detection half) remains open; this makes the
+   numeric cap a safe backstop for it.
 
    **Implemented.** ``State.tool_budget/1`` resolves an agent's
    ``maxTurns`` over the session value over the app default;
    ``Config.max_tool_rounds/1`` reads ``max_tool_rounds`` from the layered
-   ``config.toml``; the session resolves and stores it at init
-   (``State.max_tool_rounds``). ``Session.wrap_up/2`` replaces the
-   ``fail_turn`` branch: the round's calls are discarded, ``Prompt.wrap_up/0``
-   is appended as a user message, and one final call is made with
-   ``tools: []`` (``wire_request/2`` gained an overrides argument). A
-   test-mode session takes a structural skip (no provider call), like the
-   compactor. ``Failure.classify/1``'s ``:tool_loop_limit`` clause and the
-   TUI's matching ``error_text`` clause were removed as dead paths.
+   ``config.toml``; the session resolves and stores it at init. At the
+   budget ``gate_tools/2`` either (a) pauses the session ``:interrupted``
+   with ``State.budget_pause`` holding the tripped round and broadcasts
+   ``{:status_changed, :budget_reached, %{budget: n}}`` when the driver is
+   interactive, or (b) wraps up. ``Session.budget_decision/2`` answers the
+   pause: ``:continue`` resets the counter and runs the held round,
+   ``:stop`` discards it and wraps up. The TUI renders a
+   ``TOOL BUDGET`` panel (``budget_widgets/2``) and routes y/n
+   (``handle_budget_key/2``). ``Prompt.wrap_up/0`` is the wrap-up
+   instruction; the final call withholds tools via ``wire_request/2``.
+   ``interactive`` is session state, not persisted; the durable
+   ``budget_pause`` survives a resume so the dialog re-offers.
 
    **Two recorded divergences from opencode.** (1) opencode appends its
    ``MAX_STEPS_PROMPT`` as an *assistant prefill* and does **not** actually
    withhold tools; we append a user message (the ``Compaction.apply/2``
    shape) and do withhold them (``tools: []``, which `ReqLLM` treats as
    explicit "no tools", ``Context.persist_tools/2``). (2) opencode's
-   default is ``Infinity``; we keep a default backstop.
+   default is ``Infinity`` with a single auto-stop; we keep a default
+   backstop and add a continue affordance on top.
 
 Context
 -------
@@ -113,22 +119,28 @@ calls never entered the context, discarding them is safe.
 Decision
 --------
 
-**1. Reaching the budget ends the turn with a wrap-up, not a failure.**
-When ``gate_tools/2`` finds ``tool_rounds >= budget``:
+**1. Reaching the budget never fails the turn. An interactive driver is
+asked; others get a wrap-up.** When ``gate_tools/2`` finds
+``tool_rounds >= budget``:
 
-- the round's calls are **discarded** (never executed, never appended);
-- a synthetic wrap-up instruction is appended to the context, in the
-  spirit of opencode's ``MAX_STEPS_PROMPT``: the budget is reached, no
-  further tools are available this turn, respond with a text summary of
-  what was done, what remains, and what to do next;
-- **one** final provider call is made with **tools withheld**;
-- the resulting text becomes the turn's answer; status ends ``:idle``
-  (not ``:error``), ``last_error`` is not set.
+- if the driver is **interactive**, the session parks at
+  ``:interrupted`` (``State.budget_pause`` holds the tripped round) and
+  broadcasts ``{:status_changed, :budget_reached, %{budget: n}}``. The
+  question is *continue* (another full budget, running exactly the held
+  round) or *stop*;
+- otherwise (headless, a test), it **wraps up**: the round's calls are
+  **discarded** (never executed, never appended); a synthetic wrap-up
+  instruction (``Prompt.wrap_up/0``) is appended, in the spirit of
+  opencode's ``MAX_STEPS_PROMPT`` (the budget is reached, no further tools
+  are available this turn, respond with a text summary of what was done,
+  what remains, and what to do next); **one** final provider call is made
+  with **tools withheld**; and the resulting text becomes the turn's
+  answer. Status ends ``:idle`` (not ``:error``), ``last_error`` is not
+  set.
 
-The user-visible transcript note changes from "ask it to continue for
-another budget" to a note that the budget was reached and the model is
-summarizing. The next user prompt starts a fresh turn with a fresh
-budget, exactly as today. The extra call is bounded at one.
+*Stop* from the dialog produces the same wrap-up. The next user prompt
+starts a fresh turn with a fresh budget. The extra call is bounded at one
+per wrap-up.
 
 **2. ``maxTurns`` becomes the per-agent budget; the global default is a
 ``config.toml`` knob.** An agent definition's ``maxTurns`` overrides the
@@ -151,14 +163,15 @@ Consequences
 ------------
 
 - A turn that reaches the budget yields a usable status report and an
-  ``:idle`` session the user can continue, instead of an ``:error`` and
-  a dead turn. This is the user-visible fix.
+  ``:idle`` session, instead of an ``:error`` and a dead turn. An
+  interactive user can also grant another budget with one key.
 - The budget is tunable per agent and per project without recompiling,
-  and can be raised safely once a pattern guard exists.
-- Reusing the existing gate machinery keeps the change contained: no new
+  and can be raised safely because the trip is graceful.
+- Reusing the existing pause machinery keeps the change contained: no new
   context shape, no dangling tool call, no change to ``complete_round``.
-- One extra provider call is spent when the budget trips. Bounded, and
-  strictly more useful than the current zero-output failure.
+- One extra provider call is spent when the budget trips (the wrap-up), or
+  none when the user continues. Bounded, and strictly more useful than the
+  old zero-output failure.
 - The wrap-up relies on the model following a tool-less instruction. A
   model that emits a tool call anyway (our client offers none, so this
   should be impossible at the wire) would need a guard; recorded as an
@@ -183,6 +196,6 @@ Open questions
    call error; none has been observed.
 3. Does the doom-loop guard's threshold live per model family (the
    ADR 024 calibration surface) or remain a single global constant?
-4. Should the user be able to grant "another budget" from the wrap-up
-   without retyping ("continue" already does this by starting a new
-   turn; is a one-key affordance worth it)?
+4. Should the user be able to grant "another budget" without answering
+   the dialog? **Decided: yes — the ``continue`` affordance** (y at the
+   budget prompt). It grants another full budget and runs the held round.

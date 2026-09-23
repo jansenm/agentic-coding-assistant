@@ -44,6 +44,15 @@ defmodule CodingAgent.Core.Session.State do
     # and a resumed round lost the auto results.
     pending_round_calls: [],
     pending_round_results: [],
+    # Parked at the tool-round budget (ADR 025): %{calls, rounds} when an
+    # INTERACTIVE driver was asked "continue or stop?" and has not answered
+    # yet. nil otherwise. `calls` is the round that tripped the budget —
+    # "continue" executes it under a fresh budget; "stop" wraps up.
+    budget_pause: nil,
+    # Whether a driver (the TUI) can answer a mid-turn question at all. A
+    # non-interactive driver (future headless mode, a test) gets the
+    # automatic wrap-up instead of a pause nobody can resolve.
+    interactive: false,
     subscribers: [],
     tool_rounds: 0,
     # The session-level tool-round budget, resolved once at init from the
@@ -119,6 +128,8 @@ defmodule CodingAgent.Core.Session.State do
           pending_tool_calls: [map()],
           pending_round_calls: [map()],
           pending_round_results: [map()],
+          budget_pause: map() | nil,
+          interactive: boolean(),
           subscribers: [reference()],
           tool_rounds: non_neg_integer(),
           max_tool_rounds: pos_integer() | nil,
@@ -215,6 +226,12 @@ defmodule CodingAgent.Core.Session.State do
       compaction_backoff: Map.get(state, :compaction_backoff, 0),
       pending_round_calls: Map.get(state, :pending_round_calls, []),
       pending_round_results: Map.get(state, :pending_round_results, []),
+      # A budget pause is durable like a gate pause: the round it carries
+      # and the question survive, so a resumed session re-offers the
+      # dialog instead of silently dropping the interrupted round.
+      budget_pause: Map.get(state, :budget_pause),
+      # the interactivity of a live driver is not persisted state
+      interactive: false,
       # per-turn agent attribution (old snapshots lack it)
       turn_agents: Map.get(state, :turn_agents, []),
       # nested structs: heal the Elixir 1.20 missing-default trap one

@@ -190,6 +190,9 @@ defmodule CodingAgent.UI.Tui do
       # the dialog is hidden but `pending` is NOT dropped, so an
       # errored decide/2 can re-show it
       deciding?: false,
+      # the tool-round budget prompt (ADR 025): %{budget: n} while the
+      # session is parked at the budget; y continues, n stops
+      budget_prompt: nil,
       last_error: nil,
       scroll_offset: 0,
       open_tool_id: nil,
@@ -233,6 +236,11 @@ defmodule CodingAgent.UI.Tui do
     {:ok, initial}
   end
 
+  # A parked budget prompt (ADR 025): the TUI renders a continue/stop
+  # dialog from %{budget: n}. nil when the session is not at the budget.
+  defp budget_prompt_of(%{budget_pause: %{budget: budget}}), do: %{budget: budget}
+  defp budget_prompt_of(_), do: nil
+
   defp mount_session(id, opts, prompt) do
     id = id || Keyword.get(opts, :session_id) || "tui-#{System.unique_integer([:positive])}"
 
@@ -273,10 +281,10 @@ defmodule CodingAgent.UI.Tui do
       # attach to the CURRENT state, not a stale idle assumption: the
       # session may already be running/interrupted (e.g. attached after
       # the gate paused, or resumed from disk)
-      {status, pending} =
+      {status, pending, budget_prompt} =
         case Session.state(effective_id) do
-          {:ok, st} -> {st.status, st.pending_tool_calls}
-          _ -> {:idle, []}
+          {:ok, st} -> {st.status, st.pending_tool_calls, budget_prompt_of(st)}
+          _ -> {:idle, [], nil}
         end
 
       # startup reachability check (design A: a minimal completion
@@ -381,6 +389,7 @@ defmodule CodingAgent.UI.Tui do
         pending: pending,
         pending_edit: nil,
         deciding?: false,
+        budget_prompt: budget_prompt,
         last_error: nil,
         # 0 = follow the tail (auto-scroll); >0 = pinned N lines up
         scroll_offset: 0,
@@ -456,7 +465,7 @@ defmodule CodingAgent.UI.Tui do
   # lives in Core.Session.resume_opts/2 — the view does not reconstruct
   # State field-by-field.
   defp start_resumed({:ok, state}, _id, _opts, _resume_id) do
-    with {:ok, pid} <- Session.resume(state) do
+    with {:ok, pid} <- Session.resume(state, interactive: true) do
       {:ok, pid, state, nil}
     end
   end
@@ -481,7 +490,11 @@ defmodule CodingAgent.UI.Tui do
                  id: id,
                  scope_root: Keyword.get(opts, :scope_root) || File.cwd!(),
                  model: model,
-                 agent: Keyword.get(opts, :agent)
+                 agent: Keyword.get(opts, :agent),
+                 # the TUI can answer a mid-turn question: at the round
+                 # budget the session ASKS continue/stop (ADR 025) instead
+                 # of auto-summarizing
+                 interactive: true
                ) do
           {:ok, pid, nil, notice}
         end
@@ -1262,12 +1275,16 @@ defmodule CodingAgent.UI.Tui do
     # typing, so they must not be bound (binding them always made "e"
     # untypable once ADR 021 stopped forwarding unowned keys as text).
     deciding? = state.pending != [] and not Map.get(state, :deciding?, false)
+    # the budget prompt (ADR 025) is its own blocking surface with the
+    # same y/n letters; it has no pending tool calls, so the two are
+    # mutually exclusive by construction
+    at_budget? = Map.get(state, :budget_prompt) != nil
 
     bound =
-      if deciding? do
-        Bridge.bound_letters(state.keymap) ++ Bridge.bound_letters(decision_keymap())
-      else
-        Bridge.bound_letters(state.keymap)
+      cond do
+        at_budget? -> Bridge.bound_letters(decision_keymap())
+        deciding? -> Bridge.bound_letters(state.keymap) ++ Bridge.bound_letters(decision_keymap())
+        true -> Bridge.bound_letters(state.keymap)
       end
 
     case Bridge.translate(ev, bound) do
@@ -1279,12 +1296,43 @@ defmodule CodingAgent.UI.Tui do
       {:key, km_event} ->
         # while the decide task is in flight the dialog is hidden and its
         # keys must not fire again (deciding? is false then)
-        if deciding? do
-          handle_decision_key(km_event, state)
-        else
-          handle_input_key(km_event, ev, state)
+        cond do
+          at_budget? -> handle_budget_key(km_event, state)
+          deciding? -> handle_decision_key(km_event, state)
+          true -> handle_input_key(km_event, ev, state)
         end
     end
+  end
+
+  # At the budget prompt: y continues (another full budget), n stops
+  # (wrap up). Run the reply in a Task — budget_decision/2 is a call that
+  # runs the rest of the turn (a provider round-trip) and must not block
+  # the render loop, exactly like decide/2.
+  defp handle_budget_key(km_event, state) do
+    case Keymap.resolve(decision_keymap(), km_event) do
+      :approve -> {:noreply, budget_decide(state, :continue)}
+      :reject -> {:noreply, budget_decide(state, :stop)}
+      _ -> {:noreply, state}
+    end
+  end
+
+  defp budget_decide(state, decision) do
+    sid = state.session_id
+    parent = self()
+
+    Task.start(fn ->
+      result =
+        case Session.budget_decision(sid, decision) do
+          {:ok, session_state} -> {:ok, session_state.status}
+          {:error, reason} -> {:error, reason}
+        end
+
+      send(parent, {:__budget_decided__, result})
+    end)
+
+    # Optimistic: hide the prompt now, resume running; the reply
+    # reconciles (or re-opens on a refusal)
+    %{state | budget_prompt: nil, status: :running}
   end
 
   # Menu popup overlay (the pending note is on the composer's meta
@@ -1955,6 +2003,24 @@ defmodule CodingAgent.UI.Tui do
     {:noreply, %{state | status: status, pending: pending, deciding?: false}}
   end
 
+  # The budget reply landed (ADR 025). A status_changed broadcast follows
+  # from the session; clear the optimistic running state's guard. A
+  # refusal (e.g. the pause was already resolved) re-opens nothing — the
+  # session's own broadcast is authoritative.
+  def handle_info({:__budget_decided__, {:ok, status}}, state) do
+    {:noreply, %{state | status: status, budget_prompt: nil}}
+  end
+
+  def handle_info({:__budget_decided__, {:error, reason}}, state) do
+    {:noreply,
+     %{
+       state
+       | budget_prompt: nil,
+         transcript:
+           state.transcript ++ [{:info, "✖ budget answer failed: #{error_text(reason)}"}]
+     }}
+  end
+
   # the session is no longer waiting (its parked calls resolved or were
   # dropped elsewhere): the dialog is stale, clear it
   def handle_info({:__decided__, {:error, {:not_interrupted, status}}}, state) do
@@ -2011,12 +2077,26 @@ defmodule CodingAgent.UI.Tui do
     # refused decide/2 can race a status broadcast)
     state =
       if status != :interrupted do
-        %{state | pending: [], deciding?: false}
+        %{state | pending: [], deciding?: false, budget_prompt: nil}
       else
         state
       end
 
     {:noreply, %{state | status: status}}
+  end
+
+  # The session parked at the tool-round budget (ADR 025): show the
+  # continue/stop prompt. Distinct from the approval dialog — no pending
+  # TOOL calls, so the two never collide.
+  def handle_info({:agent, {:status_changed, :budget_reached, %{budget: budget}}}, state) do
+    {:noreply,
+     %{
+       state
+       | status: :interrupted,
+         budget_prompt: %{budget: budget},
+         deciding?: false,
+         stop_confirm?: false
+     }}
   end
 
   # :interrupted carries the pending calls as detail — this is how the
@@ -2406,7 +2486,8 @@ defmodule CodingAgent.UI.Tui do
         sidebar_widgets ++
         Composer.placements(composer(state), input_area)
 
-    widgets ++ menu_widgets(state, area) ++ dialog_widgets(state, area)
+    widgets ++
+      menu_widgets(state, area) ++ budget_widgets(state, area) ++ dialog_widgets(state, area)
   end
 
   # Viewport rendering: entries intersecting the pane get placed at
@@ -3390,8 +3471,6 @@ defmodule CodingAgent.UI.Tui do
 
   defp dialog_widgets(%{pending: []}, _area), do: []
 
-  # hidden while the decide task runs, but `pending` is retained so an
-  # error reply can re-show it
   defp dialog_widgets(%{deciding?: true}, _area), do: []
 
   defp dialog_widgets(%{pending: pending}, area) do
@@ -3453,6 +3532,43 @@ defmodule CodingAgent.UI.Tui do
       [{%Clear{}, rect}, {widget, rect}]
     end)
     |> List.flatten()
+  end
+
+  # The tool-round budget prompt (ADR 025): a single panel, y continues
+  # (another full budget), n stops (the model summarizes and the turn
+  # ends). Rendered instead of the approval dialog — a budget pause has
+  # no pending tool calls.
+  defp budget_widgets(%{budget_prompt: nil}, _area), do: []
+
+  defp budget_widgets(%{budget_prompt: %{budget: budget}}, area) do
+    text =
+      "The turn has used its #{budget}-round tool budget.\n\n" <>
+        "y = continue (another #{budget} rounds)   n = stop (summarize)"
+
+    h = min(6, div(area.height, 2))
+
+    body =
+      text
+      |> String.split("\n")
+      |> Enum.concat(List.duplicate(" ", max(h - 2 - length(String.split(text, "\n")), 0)))
+      |> Enum.join("\n")
+
+    widget = %Paragraph{
+      text: body,
+      style: Styles.surface(:chrome),
+      block:
+        Styles.panel(
+          title: " TOOL BUDGET ",
+          surface: :chrome,
+          border_style: Styles.role(:warning, :chrome),
+          border_type: :double
+        )
+    }
+
+    w = min(@measure + 2, area.width - 4)
+    x = div(max(area.width - w, 0), 2)
+    rect = %Rect{x: x, y: area.height - h - 3, width: w, height: h}
+    [{%Clear{}, rect}, {widget, rect}]
   end
 
   # The agent's stated reason for an escalation (ADR 015), for display.
