@@ -1,10 +1,15 @@
 # UI redesign — Befunde, Entscheidungen, Umsetzung
 
-Stand: **Runde 1–3 umgesetzt und grün** (714 Tests). Dieses Dokument hält
+Stand: **Runde 1–4 umgesetzt und grün** (813 Tests). Dieses Dokument hält
 fest, was gemessen wurde, was entschieden ist und was noch offen ist.
 Runde 2 (Abschnitt 6) zieht die Konsequenz aus F6: die Meta-Zeile ist kein
 `Block`-Titel mehr, sondern echter Inhalt im eigenen Modul `UI.Composer`.
 Runde 3 (Abschnitt 7) entfernt die Bottom-Row ersatzlos und zieht F11 nach.
+Runde 4 (Abschnitt 8) trennt die zwei Fragen, die eine Zeile nicht
+gleichzeitig beantworten konnte: Status und Identität des **laufenden**
+Turns ziehen in ein eigenes Band **über** dem Feld (`UI.LiveBand`), die
+Meta-Zeile im Composer ist nur noch **Setup** („was der nächste Input
+nimmt").
 
 Leitregel (Owner-Entscheidung):
 
@@ -39,8 +44,10 @@ behaupten; sie ist jetzt als Test-Helfer vorhanden
 | F9 | Markdown-Renderer | `# `-Präfix bleibt sichtbar; H1 bekommt einen **cyan Hintergrundbalken** (Theme ist in der Crate fest verdrahtet); ` ``` `-Fences bleiben stehen; Inline-Code bg ist hart `:black`; Tabellenrahmen `:dark_gray`; HR als literales `---`. |
 | F10 | `effort` | Wird aus der Config gelesen und in der Sidebar gezeigt, aber **nie** an `Request.build/2` oder die Agent-Definition gegeben — reine Dekoration. |
 | F11 | Bottom-Row | Dialog und Picker rechnen gegen `area.height - h - 3` — 3 Zeilen „unter sich", weil die Statuszeile am Fensterboden lag. Beim Entfernen der Zeile (Runde 3) muss diese Geometrie mitziehen: sonst steht ein Dialog **auf** der Composer-Meta-Zeile und verdeckt genau den Status, den er erklärt. Ein Test prüft, dass die Meta-Zeile unter dem Dialog sichtbar bleibt. |
-| F13 | Notes vs. Status | Ein `note` (esc-Hinweis, Menü-Prompt) **ersetzt** die Status-Worte, aber nicht den Glyph: `⠋ esc again to stop` — der laufende Turn bleibt sichtbar, der Hinweis ist dringlicher als das Wort „thinking". Auf einer schmalen Pane (100 Spalten) kollidieren beide sonst: Identity + `⏸ approval needed (y/n/e)` füllen die Zeile bereits. |
 | F12 | Placeholder | Der alte Placeholder war länger als die Input-Breite und wurde abgeschnitten (`… ctrl-t o│`). |
+| F13 | Notes vs. Status | Ein `note` (esc-Hinweis, Menü-Prompt) **ersetzt** die Status-Worte, aber nicht den Glyph: `⠋ esc again to stop` — der laufende Turn bleibt sichtbar, der Hinweis ist dringlicher als das Wort „thinking". Auf einer schmalen Pane (100 Spalten) kollidieren beide sonst: Identity + `⏸ approval needed (y/n/e)` füllen die Zeile bereits. |
+| F14 | Laufend vs. nächste | Die Meta-Zeile trug **zwei verschiedene Aussagen** gleichzeitig: links die Identität des *nächsten* Inputs (`next_agent`/`next_agent_model`), rechts den Status des *laufenden* Turns. Solange beides gleich ist, fällt es nicht auf; nach Tab (`running=build`, `next=plan`) nennt eine Zeile zwei Subjekte. Gemessen (100×30, `{:turn_started, "build"}` + Tab): Band `agent build · model … · ⠋ thinking`, Setup-Zeile `build · model …` — beide Zeilen sind unterscheidbar, weil sie **verschiedene Werte** tragen. |
+| F15 | Overlay-Raum | Das Menü-Popup rechnete gegen `area.height - 4` (Fixwert), der Dialog gegen `area.height - h - 3`. Das Band nahm 5 Zeilen (3 + 2 Luft) weg, das Popup ist aber 26 Zeilen hoch: bei 100×30 blieb eine negative `rect.y` stehen → `ExRatatui draw error: "rect.y: unexpected value"` (im Log sichtbar, ohne Testfehler, weil der Frame danach nur noch alt war). |
 
 ---
 
@@ -164,11 +171,13 @@ als Liste geführt, nicht stillschweigend verworfen.
 | O4 | Sidebar-Titel `" status "` entfernen (F8); oberer Slot: leer oder Scope | „Wort weg" entschieden, Slot offen |
 | O5 | ~15 leere Zeilen der Sidebar: kürzen / füllen / ruhig lassen | offen |
 | O6 | Rail `▌` links + Provider/effort/Modell farbcodiert im Band | offen |
-| O7 | Sidebar entdoppeln (Modell/Effort raus, wenn das Band sie zeigt) | offen |
+| O7 | Sidebar entdoppeln (Modell/Effort raus, wenn das Band sie zeigt) | offen — das Band zeigt das Modell nur im Busy-Fall, die Sidebar also weiterhin im Idle |
 | O8 | Markdown-Politur (F9): `#`-Präfixe, Fences, Inline-Code-bg | offen |
 | O9 | `effort` (F10): entweder wirksam machen (Core-Thema) oder aus der UI nehmen | offen |
 | O10 | „wide bar" aus dem ratatui-Beispiel: Picker-Auswahlzeile oder Vorbild für die Rail? | offen |
 | O11 | Latente Duplikation: `Tui.entry_widgets/3` baut Reasoning/Tool/Info-Widgets nach, die `TranscriptView.widget_for/3` schon für die Messung baut — „measure = paint" hält nur zufällig | offen (P4) |
+| O12 | Band interaktiv machen (Rail `▌`, Provider/effort farbcodiert) — berührt das Padding-Entscheid aus §8.2 | offen |
+| O13 | Overlay-Höhe jenseits des Popups: `budget`/`doom`/`question` klemmen weiterhin (ihre Höhe ist auf `div(area.height, 2)` begrenzt, bleibt also unter dem Raum), das Menü fenstert | offen, falls ein Overlay je höher wird |
 
 ---
 
@@ -328,3 +337,163 @@ Bottom-Row sichtbar; sie bleibt im State und im Picker (ADR 020), aber nicht
 mehr im Composer — die Meta-Zeile ist voll (Identity links, Status/Note
 rechts). Wenn sie zurück soll, dann als eigenes Entscheidungsstück (Sidebar-
 Slot oder Picker-Kopf), nicht als weitere Spans in diese Zeile.
+
+**Nachtrag (Runde 4):** die Meta-Zeile ist *nicht mehr voll* — der Status ist
+aus ihr heraus in das Band gewandert (Abschnitt 8). Der Platz, der frei wurde,
+ist trotzdem **kein** Session-Id-Slot: die Zeile beantwortet weiter genau eine
+Frage („was nimmt der nächste Input"), und die Id ist keine. Es bleibt bei
+„eigenes Entscheidungsstück".
+
+---
+
+## 8. Runde 4 — das Live-Band über dem Feld
+
+### 8.1 Befund
+
+Die Meta-Zeile des Composers trug seit Runde 1/3 **zwei verschiedene
+Aussagen** auf einer Zeile (F14):
+
+* links die Identität des **nächsten** Inputs (`next_agent`,
+  `next_agent_model`) — die, die Tab und das Modell-Menü ändern;
+* rechts den Status des **laufenden** Turns (Glyph, Spinner, Wort,
+  Elapsed-Reset).
+
+Solange beide gleich sind, fällt es nicht auf. Sobald sie divergieren, nennt
+eine Zeile zwei Subjekte: nach `tab` (im Test `running=build`, `next=plan`)
+liest sich `build · model …   ⠋ thinking` als „plan denkt". Das ist die
+Lüge, die die Zeile vorher nur *nicht sichtbar* erzählt hat.
+
+Dazu kam ein Befund an der Geometrie (F15): das Menü-Popup rechnete gegen den
+Fixwert `area.height - 4`, der Dialog gegen `area.height - h - 3`. Das Band
+nimmt 5 Zeilen weg (3 Band + 2 Luft), das Popup ist aber 26 Zeilen hoch — bei
+100×30 ergab `area.height - 4 - 26` eine **negative** `rect.y`. Sichtbar war
+das nur als Log-Zeile `ExRatatui draw error: "rect.y: unexpected value"` (der
+Frame blieb danach der alte, kein Test schlug fehl).
+
+### 8.2 Entscheidung (Owner)
+
+* Der Status **gehört über das Feld**, als **Kopie** der laufenden Session —
+  er kann sich vom nächsten Agenten/Modell unterscheiden, und genau das muss
+  man sehen können.
+* Mindestens **1 Zelle Padding auf allen vier Seiten**.
+* Unterscheidbar vom Eingabefeld **über den Hintergrund**: das Band malt auf
+  `:base` (dem ungefüllten Terminal-Hintergrund des Transcripts), **nicht**
+  auf dem Chrome-Grau des Composers.
+* Der Status ist **immer** sichtbar — das Layout bewegt sich nie, auch nicht
+  im Idle.
+* Die Meta-Zeile darunter ist **Setup**: nur noch das, was der nächste Input
+  nimmt.
+
+Daraus folgt die Modul-Teilung: `UI.LiveBand` hat eigene Daten (Identität des
+laufenden Turns, Status, Elapsed-Kontext) und eigene Funktionen (Höhe,
+Platzierung, Zeilenaufbau) — also ein eigenes Modul (die Leitregel „was eigene
+Daten *und* eigene Funktionen hat, bekommt ein eigenes Modul"). Der Composer
+**verliert** die Status-Felder ersatzlos: `Composer.new(status: …)` schlägt
+jetzt fehl (`KeyError`). Ein zweiter Ort für dieselbe Aussage wäre genau die
+Duplikation, die Runde 3 (Bottom-Row) entfernt hat.
+
+Die Status-Vokabel bleibt **eine**: `Styles.status_line/6` komponiert Glyph +
+Wort + Ellapsed, und das Band ist der einzige Aufrufer. Das Band entscheidet
+nur, **welches Label** es übergibt (`"running mix"` bei laufendem Tool,
+`"thinking"` während eines stillen Turns, `nil` = Badge-Wort). Ihr führender
+Space ist weg (das Band bringt sein Padding mit) und ihr Moduldoc nennt jetzt
+den Aufrufer statt der Composer-Zeile.
+
+Die **Identität im Band** erscheint nur, während ein Turn läuft
+(`Styles.busy?/1`): das ist der Fall, in dem „läuft" von „nimmt der nächste
+Input" abweichen *kann*. Im Idle würde sie die Setup-Zeile zwei Zeilen weiter
+unten wörtlich wiederholen. Der Status selbst steht immer.
+
+### 8.3 Geometrie (F15) — ein Raum, nicht zwei Offsets
+
+Der Raum, den ein Overlay nutzen darf, ist **definiert** als „alles über dem
+Band":
+
+```elixir
+defp overlay_room(state, area) do
+  max(area.height - input_height(state) - LiveBand.height() - 2, 1)
+end
+```
+
+und `overlay_rect/4` setzt die Unterkante jedes Overlays auf dessen letzte
+Zeile und **klemmt die Höhe** auf denselben Wert. Das ist der Kern der
+Reparatur: Höhe und Position sind *dieselbe* Zahl; zwei getrennte Offsets (ein
+`area.height - 4`-Cap hier, ein `area.height - h - 3` dort) sind genau die
+Bauform, die eine negative `rect.y` erzeugt. Geklemmt wird, weil ein Popup
+legitim höher ist als der Transcript-Pane (Menü: 9 Zeilen, Keymap-Liste: 21)
+— es darf dann nur nicht mehr über das Band laufen.
+
+Gemessen bei 100×30 (CellSession): Band-Zeilen 19 (Padding) / 20
+(Padding) / **21 (Status)** / 22, 23 (Padding); Composer 24–28, Meta-Zeile 27;
+Fensterzeile 29 = App-Rand (`:reset`). Alle Overlays enden jetzt auf Zeile 19.
+Bei 160×30 liegt der Approval-Dialog auf 15–19 und das Band darunter
+unverändert sichtbar.
+
+Die Höhen sind **gemessen**, nicht angenommen: `input_height(state)` wächst
+mit dem getippten Text, `LiveBand.height()` ist konstant 3. Wächst das Feld,
+wandert das Band nach oben und die Overlays mit.
+
+### 8.4 Geändert
+
+* `lib/coding_agent/ui/live_band.ex` (**neu**): `new/1`, `height/0` (3),
+  `placements/2` (Fill auf `:base` + Status-Paragraph, 1 Zelle Inset auf allen
+  Seiten). Zeilenaufbau: Identität (nur busy, `Styles.badge/3`) → Trenner →
+  `Styles.status_line/6`; ohne Identität nur der Status; die Zeile ist nie leer.
+* `lib/coding_agent/ui/composer.ex`: Struct auf `textarea, placeholder, agent,
+  model, note, diagnostics, max_lines` reduziert (die Status-Felder sind weg);
+  `slot/1` ist `note` → `diagnostics` → **leer**; Moduldoc: diese Zeile ist
+  SETUP, der Status ist das Band. Geometrie unverändert (`measure = paint`).
+* `lib/coding_agent/ui/tui.ex`: `LiveBand` in `@layout_overhead`,
+  `layout_overhead/1` und in `render_main/2` (die Midthälfte splittet jetzt in
+  fünf Regionen: Transcript, Luft, Band, Luft, Composer); `live_band/1`,
+  `band_elapsed_s/1` (Tool-Laufzeit bzw. Stille) und `band_label/1` neu;
+  `overlay_room/2` + `overlay_rect/4` ersetzen `area.height - 4` /
+  `area.height - h - 3` in Menü, Approval, Budget, Doom und Question;
+  `handle_info({:agent, {:turn_started, agent}})` löst zusätzlich das
+  **Modell** des laufenden Turns neu auf (eine resumed Session, deren
+  Definition sich auf der Platte geändert hat, muss das zeigen, was läuft).
+* Tests:
+  * `test/coding_agent/ui/live_band_test.exs` (**neu**): der Zeilenaufbau als
+    Unit-Test — Identität + Spinner + Caller-Label, `nil`-Label fällt auf das
+    Badge-Wort zurück, ohne Identität kein hängender Trenner, ein laufendes
+    Tool nennt sich mit **seiner** Laufzeit, Idle zeigt nur den Status.
+  * `composer_test`: die Meta-Zeile neu geschrieben — links `build · model
+    glm`, **rechts leer** ohne Note/Diagnostics, mit Note wörtlich (kein
+    Glyph), Diagnostics nur ohne Note.
+  * `track_b_status_test`: der Abschnitt „Status am Input" heißt „the live
+    band (A)" — das Band trägt den Status **über** der Setup-Zeile, Idle
+    wiederholt keine Identität, `tool_started` nennt das Tool, `tool_executed`
+    fällt auf „thinking" zurück, und nach `tab` zeigt das Band den **laufenden**
+    Agenten, die Setup-Zeile den **nächsten**.
+  * `tui_cells_test`: das Band ist auf `:reset` (inklusive Randzellen), hat
+    links/rechts/oben/unten 1 Zelle Padding, und `last_pane_height == 30 - 2 -
+    2 - 3 - 5` beweist `measure = paint` für die neue Zeile.
+  * `tui_visual_test`: der Approval-Dialog liegt **über** dem Band und dem
+    Feld, die Pause steht im Band und **nicht** in der Setup-Zeile (der alte
+    Assert suchte `approval needed` und dann `model ` auf *derselben* Zeile —
+    die Zeilen sind jetzt getrennt).
+  * `tui_menu_test`: ein Popup, das höher ist als der Raum über dem Band
+    (Keymap-Liste: 21 Zeilen), fenstert um die Auswahl und nennt den
+    Ausschnitt im Titel; ein passendes Popup trägt keinen Bereich.
+
+### 8.5 Was jetzt fehlt (bewusst)
+
+* Das Band ist **nicht** interaktiv: es zeigt Zustand, es nimmt keine
+  Tastendrücke. (Der Rail `▌` links aus O6 wäre der nächste visuelle Schritt,
+  dann muss die Kollision mit dem Padding entschieden werden.)
+* Die Setup-Zeile und das Band nennen im Idle **dasselbe** Modell — das Band
+  aber nur den Status, nicht die Identität; die Duplikation ist damit
+  weggeschnitten, nicht nur umgeformt.
+* Ein `note` (esc-Hinweis) steht in der Setup-Zeile, der laufende Turn im Band
+  — zwei Zeilen, zwei Aussagen. Auf einer sehr flachen Pane (60×8) liegen sie
+  direkt untereinander, ohne Luft dazwischen; gemessen wird dort nichts
+  verdeckt, aber die Trennung ist dann nur noch der Hintergrund.
+* **Lange Popups werden gefenstert, nicht geklemmt.** Die Keymap-Liste ist
+  21 Zeilen hoch (`menu_popup`: 9), der Raum über dem Band bei 100×30 ist 20
+  Zeilen. Zuerst kürzte `overlay_rect/4` die Liste auf 20 — gemessen fielen
+  damit die **letzten** Einträge weg, und der Auswahlmarker wäre aus dem
+  gemalten Bereich gelaufen. Jetzt ist der Popup ein **Fenster** um die
+  Auswahl (`window_offset/3`, absolut gezählter Index, Titel zeigt
+  `(1-17/21)` → `(5-21/21)`). Der übrige Overlay-Bestand (`budget`, `doom`,
+  `question`) bleibt beim Klemmen: deren Höhe ist auf `div(area.height, 2)`
+  begrenzt und damit bei jedem Fenster ≥ 20 Zeilen kleiner als der Raum.

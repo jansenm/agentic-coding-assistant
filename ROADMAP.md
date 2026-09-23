@@ -264,7 +264,10 @@ same trajectory viewed from different ends.
      clamped at both ends AT THE INPUT (the silent-inflation hang).
      Real terminal dims via mount capture + 500ms resize poller (the
       render-persistence illusion + no local Resize events — both found
-      live). Scroll diagnostics behind ctrl-x d (composer meta row).
+      live). Scroll diagnostics behind ctrl-x d (composer meta row);
+     the status then left that row for a permanent live band above the
+     field (running agent/model + status), so the composer's row is
+     setup only (round 4, ui_redesign.md).
    - **5f. Compaction recalibrated (the opencode lesson)** ✅ —
      absolute token trigger (`compaction_trigger_tokens`, 180k
      default) replacing the 70%-of-window rule: the user's GLM

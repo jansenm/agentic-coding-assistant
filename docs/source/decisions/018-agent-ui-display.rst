@@ -118,9 +118,85 @@ Open questions for the implementation slice
 2. **Many subagents.** A key per subagent does not scale; the tab model
    needs a bounded tab bar (e.g. show N, cycle through the rest) or a
    picker. Decide when parallelism is actually used.
-3. **Where the two slots live:** sidebar (it is already the "agent"
+3. ~~**Where the two slots live:** sidebar (it is already the "agent"
    panel) versus the status line (always visible, one row). The sidebar
-   has room for both with models; the status line is at a premium.
+   has room for both with models; the status line is at a premium.~~
+   **Answered 2026-09-23** (amendment below): neither — the running slot
+   gets its own row above the input (the live band), the sidebar keeps
+   the badges, and the composer's row below the field is setup only.
 4. **Finished subagent detail.** Keep the last subagent's tab until the
    next delegation (easier to read), or close immediately (matches
    ephemeral semantics). Lean "keep until replaced", read-only.
+
+Amendment 2026-09-23: the running/next split gets its own row
+-------------------------------------------------------------
+
+**Status: Accepted (amendment to the Proposed ADR 018; part 1 shipped).**
+
+Open question 3 above is now answered, and the answer is "neither of the
+two options offered": the two slots do **not** share a row. The
+sidebar-versus-status-line choice assumed that one row can carry both
+facts. It cannot, and the reason is the ADR's own point 1 — the two can
+differ.
+
+**What was measured.** After implementation the composer's meta row (the
+row below the input field) carried the *next* agent and model on its left
+half and the *running* turn's status on its right half. Idle, both slots
+name the same agent, so the row read correctly. After ``tab`` with a turn
+in flight (measured 100×30: ``running=build``, ``next=plan``), the row
+read ``build · model …   ⠋ thinking`` — one row, two subjects, and the
+status looked like it belonged to ``plan``. The row never *stated* the
+running agent, so nothing was wrong in the data; the layout made one row
+answer two questions, and the reader cannot tell which half belongs to
+which.
+
+**Decision (owner): three rows with distinct jobs.**
+
+- The **live band** (``CodingAgent.UI.LiveBand``), a permanent row
+  **above** the input field, answers "what is the RUNNING turn doing": the
+  running agent and model (only while a turn is in flight — idle, the row
+  below already names them) plus the status glyph, word and elapsed
+  context. It paints on the ``base`` surface, the transcript's own
+  background, so it reads as part of the reading area and is
+  distinguishable from the input field by background alone. One cell of
+  padding on all four sides.
+- The composer's **meta row**, below the field, is **setup only**: the
+  agent and model the *next* input will use — the ones ``tab`` and the
+  model menu change. It no longer receives a status at all (the struct
+  field is gone, so a caller cannot pass one).
+- The **sidebar** keeps the badges it already has (``build running`` /
+  ``plan next`` while busy, the next agent when idle). It is the
+  always-visible panel; the band is the one that sits next to the input.
+
+The status is drawn in exactly one place: ``Styles.status_line/6`` is the
+single composition of glyph, word and elapsed, and ``UI.LiveBand`` is its
+only caller. The band chooses the *label* it passes (``running mix`` for a
+tool in flight, ``thinking`` for a silent busy turn, ``nil`` for the
+badge's own word); the wording, the spinner frames and the colour roles
+cannot fork.
+
+**Consequence for ADR 018 part 2 (subagent tabs).** The band is where a
+subagent's running identity will surface: when the ``task`` seam lands,
+the running slot names the leaf of the active delegation, and the band is
+the row that shows it without touching the next-input setup. The band's
+identity prefix is therefore deliberately "the running agent, whoever that
+is" — not "the primary".
+
+**Consequence for overlays (found while implementing).** Every overlay
+(menu, approval, budget, doom, question) now places against the room
+*above* the band, and its height is clamped to that same room — one
+``overlay_room/2`` for both numbers. The previous pair of fixed offsets
+(``area.height - 4`` for the menu cap, ``area.height - h - 3`` for the
+placement) only worked while the row they must not cover was the
+composer's own meta row; with a 26-row popup on a 30-row window the
+placement went negative and the frame was dropped with
+``rect.y: unexpected value``. A dialog that hides the band hides the very
+status it asks about.
+
+Acceptance: ``test/coding_agent/ui/live_band_test.exs`` (row composition
+as a unit), ``track_b_status_test.exs`` ("the live band (A)": the band
+carries the running identity and the status, the setup row carries
+neither, ``tab`` moves only the setup row), ``tui_cells_test.exs`` (the
+band's ``base`` background and its four-sided padding, plus the
+``last_pane_height`` arithmetic that proves measure = paint), and
+``tui_visual_test.exs`` (an approval dialog ends above the band).

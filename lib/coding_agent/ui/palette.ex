@@ -85,8 +85,9 @@ defmodule CodingAgent.UI.Palette do
   @body_white {:indexed, 255}
 
   @doc """
-  The shipped scheme. `:base` is the terminal-default surface (no fill,
-  the transcript); `:chrome` is every region the app PAINTS ITSELF — the
+  The shipped scheme. `:base` is the terminal-default surface (no fill:
+  the transcript, and the live band above the input that deliberately
+  shares its background); `:chrome` is every region the app PAINTS ITSELF — the
   overlays (menu, picker, dialog) and the composer panel; the
   fills are the point: one grey, so the chrome reads as one material and
   the composer sits on it like the rest of the frame. `:sidebar` is the

@@ -15,6 +15,12 @@ defmodule CodingAgent.UI.TuiCellsTest do
       border, it is a filled field;
     * the text looked "tempered" — the body text is a stated white, not
       the terminal theme's ANSI 15.
+
+  The live band (the status row ABOVE the field) is the one place the
+  transcript's UNPAINTED surface and the chrome fill meet inside a single
+  column: the band keeps the base background while the composer below it
+  carries the grey, so a colour regression there reads as "the band turned
+  into a third slab of chrome".
   """
   use CodingAgent.TuiCase, async: true
 
@@ -80,7 +86,7 @@ defmodule CodingAgent.UI.TuiCellsTest do
     refute pane =~ "│"
   end
 
-  test "the identity and the status share the composer's last row" do
+  test "the band carries the status, the composer's row carries the setup" do
     {pid, session} = start_cell_tui([scope_root: File.cwd!()], {100, 30})
     fire(pid, :__resize_poll__)
 
@@ -89,14 +95,79 @@ defmodule CodingAgent.UI.TuiCellsTest do
 
     snapshot = cells(session)
 
-    row = meta_row(snapshot)
+    # the status words are unique in the frame: the composer's row below
+    # the field paints none (it is SETUP), so this row IS the band
+    band =
+      Enum.find(0..(snapshot.height - 1), &String.contains?(row_text(snapshot, &1), "thinking"))
 
-    text = row_text(snapshot, row)
+    assert band != nil
 
-    assert text =~ "thinking"
-    # left half: identity; right half: status — one band, not two rows
-    assert :binary.match(text, "model ") |> elem(0) < div(snapshot.width, 2)
-    assert :binary.match(text, "thinking") |> elem(0) > div(snapshot.width, 2)
+    text = row_text(snapshot, band)
+    assert text =~ "agent build"
+    assert text =~ "model "
+
+    # the band sits ABOVE the composer's meta row
+    assert band < meta_row(snapshot)
+
+    # ...and the band's row is NOT the composer's surface: it keeps the
+    # transcript's unpainted background (the owner's "distinguish it by
+    # background, use the black of the output section"), including the
+    # padding cells to the left of the row's text
+    assert cell(snapshot, band, 37).bg == :reset
+    assert cell(snapshot, band, 38).bg == :reset
+    assert cell(snapshot, band - 1, 40).bg == :reset
+    assert cell(snapshot, band + 1, 40).bg == :reset
+  end
+
+  test "the band has one cell of padding on all four sides" do
+    {pid, session} = start_cell_tui([scope_root: File.cwd!()], {100, 30})
+    fire(pid, :__resize_poll__)
+    snapshot = cells(session)
+
+    band = Enum.find(0..(snapshot.height - 1), &String.contains?(row_text(snapshot, &1), "idle"))
+    assert band != nil
+
+    # the band rect starts at the sidebar's right border; its first cell
+    # is the LEFT padding, and the status text begins one cell later (the
+    # left "│" column is the sidebar's own border, not the band)
+    assert cell(snapshot, band, 37).symbol == " "
+    assert cell(snapshot, band, 38).symbol != " "
+    assert String.starts_with?(row_text(snapshot, band) |> String.slice(37..-1//1), " ○ idle")
+    # the right padding: the row's last cell inside the mid area is blank
+    assert cell(snapshot, band, snapshot.width - 2).symbol == " "
+
+    # vertically: the band's own rect is three rows (padding, row,
+    # padding) and the row BELOW it is still base — the chrome field only
+    # starts after the air row (measure = paint: two blank rows between
+    # the status text and the input field)
+    assert cell(snapshot, band + 1, 40).bg == :reset
+    assert cell(snapshot, band + 2, 40).bg == :reset
+    assert cell(snapshot, band + 3, 40).bg == Palette.fill(Styles.palette(), :chrome)
+  end
+
+  test "the band is painted in the SAME frame rows the layout reserves for it" do
+    # measure = paint: the transcript pane height the TUI computes (and
+    # uses for its scroll clamp) must leave the band's rows out of the
+    # transcript. The band is 3 rows (padding, row, padding) + 2 air rows.
+    {pid, session} = start_cell_tui([scope_root: File.cwd!(), sidebar: false], {100, 30})
+    fire(pid, :__resize_poll__)
+
+    st = sync(pid)
+
+    composer_h =
+      CodingAgent.UI.Composer.height(CodingAgent.UI.Composer.new(textarea: st.textarea))
+
+    # 30 rows - margin(2) - spacing(2) - band(3) - composer(5: an EMPTY
+    # field measures 5, one row under `min_height/0`, which is the floor
+    # before a textarea exists)
+    assert composer_h == 5
+    assert st.last_pane_height == 30 - 2 - 2 - 3 - composer_h
+
+    # the band's status row is one row past the transcript + the air row
+    # (its own first row is the top padding)
+    snapshot = cells(session)
+    band = Enum.find(0..29, &String.contains?(row_text(snapshot, &1), "idle"))
+    assert band == st.last_pane_height + 3
   end
 
   test "the chrome grey covers the sidebar, the composer and the overlays alike" do

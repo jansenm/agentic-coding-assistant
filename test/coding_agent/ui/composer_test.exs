@@ -12,6 +12,7 @@ defmodule CodingAgent.UI.ComposerTest do
 
   alias CodingAgent.UI.{Composer, Styles}
   alias ExRatatui.Layout.Rect
+  alias ExRatatui.Text
   alias ExRatatui.Widgets.{Block, Paragraph, Textarea}
 
   defp composer(opts \\ []), do: Composer.new(opts)
@@ -47,7 +48,7 @@ defmodule CodingAgent.UI.ComposerTest do
 
       assert {%Paragraph{block: %Block{}}, ^rect} = fill
       assert {%Textarea{}, text_rect} = text
-      assert {%Paragraph{block: %Block{titles: [_identity, _status]}}, meta_rect} = meta
+      assert {%Paragraph{block: %Block{titles: [_identity, _slot]}}, meta_rect} = meta
 
       # the fill covers the WHOLE rect; the fields sit inside one cell of
       # padding — the surface goes on past them
@@ -99,82 +100,52 @@ defmodule CodingAgent.UI.ComposerTest do
       titles
     end
 
-    test "identity on the left, status on the right, per-span roles" do
-      [left, right] = titles(agent: "build", model: "glm", status: :idle)
+    defp text_of(%Text.Line{spans: spans}), do: Enum.map_join(spans, "", & &1.content)
+
+    test "identity on the left, an empty right half, per-span roles" do
+      [left, right] = titles(agent: "build", model: "glm")
 
       assert left.alignment == :left
       assert right.alignment == :right
 
-      text = Enum.map_join(left.content.spans, "", & &1.content)
+      text = text_of(left.content)
       # no "you" and no arrow: the field IS the input, the agent names
       # what will handle it
       assert text == "build · model glm"
 
       # every span names the chrome surface (the fill is explicit there)
       assert Enum.all?(left.content.spans, &(&1.style.bg == Styles.surface_bg(:chrome).bg))
+
+      # the right half is SETUP's leftover: with no note and no
+      # diagnostics it is empty. The status is not this row's job — the
+      # live band above the field paints it (UI.LiveBand).
+      assert text_of(right.content) == ""
     end
 
     test "no agent: the identity reads 'model …', with no placeholder arrow" do
       [left, _right] = titles(agent: nil, model: "glm")
-      text = Enum.map_join(left.content.spans, "", & &1.content)
-      assert text == "model glm"
+      assert text_of(left.content) == "model glm"
     end
 
-    test "the active tool names itself in the status" do
-      [_left, right] = titles(status: :running, active_tool: "mix", tool_elapsed_s: 38)
-      text = Enum.map_join(right.content.spans, "", & &1.content)
-      assert text =~ "running mix"
-      assert text =~ "38s"
-    end
+    test "a note takes the right half verbatim, with no glyph in front" do
+      [_left, right] = titles(note: "esc again to stop")
 
-    test "a busy-but-silent turn shows the silence duration" do
-      [_left, right] = titles(status: :running, silence_s: 12)
-      text = Enum.map_join(right.content.spans, "", & &1.content)
-      assert text =~ "thinking"
-      assert text =~ "12s"
-    end
-
-    test "a note replaces the status WORD but keeps its glyph" do
-      [_left, right] = titles(status: :running, spin: 0, note: "esc again to stop")
-      text = Enum.map_join(right.content.spans, "", & &1.content)
-
-      assert text =~ "esc again to stop"
-      # the running turn stays visible: the spinner is still there, only
-      # the word "thinking" is dropped (the two would collide on a narrow
-      # pane, and the hint is the more urgent of the two)
-      assert text =~ Styles.spinner(0)
-      refute text =~ "thinking"
-      # the note carries no elapsed time — it is not the turn clock
-      refute text =~ "12s"
-    end
-
-    test "a note also wins while the gate is open (its badge glyph stays)" do
-      [_left, right] = titles(status: :interrupted, note: "esc again to quit")
-      text = Enum.map_join(right.content.spans, "", & &1.content)
-
-      # the gate's own glyph survives the hint, so the pause stays visible
-      assert text =~ "⏸"
-      assert text =~ "esc again to quit"
-      refute text =~ "approval needed"
+      # the note IS the whole slot now: the status glyph it used to keep
+      # belongs to the live band, which shows the real spinner two rows
+      # up — a second, frozen glyph here would contradict it
+      assert text_of(right.content) == "esc again to stop"
+      refute text_of(right.content) =~ "⏸"
     end
 
     test "the debug diagnostics show only when there is no note" do
-      [_left, right] = titles(status: :idle, diagnostics: "scroll: 3/120")
-      assert Enum.map_join(right.content.spans, "", & &1.content) =~ "scroll: 3/120"
+      [_left, right] = titles(diagnostics: "scroll: 3/120")
+      assert text_of(right.content) =~ "scroll: 3/120"
 
-      [_left, right] =
-        titles(status: :idle, note: "esc again to quit", diagnostics: "scroll: 3/120")
+      [_left, right] = titles(note: "esc again to quit", diagnostics: "scroll: 3/120")
 
-      text = Enum.map_join(right.content.spans, "", & &1.content)
+      text = text_of(right.content)
       assert text =~ "esc again to quit"
       refute text =~ "scroll:"
-    end
-
-    test "with neither note nor diagnostics the status itself shows" do
-      [_left, right] = titles(status: :running, spin: 0, diagnostics: nil, note: nil)
-      text = Enum.map_join(right.content.spans, "", & &1.content)
-      assert text =~ Styles.spinner(0)
-      assert text =~ "thinking"
     end
   end
 end
