@@ -26,8 +26,10 @@ Prompt construction: per-model prompts and an environment block
    (``apply_model/2`` + ``recompose_prompt/1``); ``temperature`` rides
    the request opts (``wire_request/1``, a new testable seam);
    ``prompt_override`` is a ``State`` field so a switch and a resume both
-   keep a caller's custom prompt. ``max_turns`` remains open (question 1).
-   Attribution in ``LICENSES/MIT.txt`` and ``THIRD_PARTY.md``.
+   keep a caller's custom prompt. ``max_turns`` became ADR 025 (a real
+   per-agent budget with a summarizing wrap-up); question 1 below records
+   that answer. Attribution in ``LICENSES/MIT.txt`` and
+   ``THIRD_PARTY.md``.
 
 Context
 -------
@@ -170,7 +172,9 @@ Open questions
 --------------
 
 1. Does ``max_turns`` become a real budget (a summarizing stop, like
-   opencode's ``max-steps.txt``) or is it removed?
+   opencode's ``max-steps.txt``) or is it removed? **Answered by ADR
+   025: it becomes a real per-agent budget whose trip results in a
+   summarizing wrap-up, not a failed turn.**
 2. Should the plan fragment move from the system prompt to the last user
    message, as opencode does? ADR 017 records the fork; this ADR does
    not decide it.

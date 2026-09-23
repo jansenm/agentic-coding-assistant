@@ -62,6 +62,11 @@ almost field for field. We adopt it rather than invent one:
   (deny-list), ``permission`` (glob → ``allow | ask | deny``),
   ``temperature``, ``maxTurns``, ``hidden``.
 
+.. note::
+   ``temperature`` was parsed but ignored until ADR 024 wired it into the
+   request opts. ``maxTurns`` is wired by ADR 025 (Proposed) as the
+   per-agent turn budget. ``hidden`` remains under review.
+
 The ``permission`` section is the format ADR 010 layer 4 already
 anticipated (opencode-compatible, restrictive-only).
 

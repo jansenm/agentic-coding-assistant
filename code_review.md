@@ -309,7 +309,7 @@ error rather than steering. Ordered by leverage — the top three change
 how the agent *behaves*; the rest are surface area.
 
 - [ ] **T1 — Write the real framework prompt + per-agent role prompts.**
-      **Folded into ADR 024 (Proposed) with T12/T3.** `Core.Session.Prompt`'s
+      **Folded into ADR 024 (Accepted) with T12; implemented.** `Core.Session.Prompt`'s
       built-in layer is two sentences (`prompt.ex:20-23`), and
       `build.md`/`plan.md` bodies are a short paragraph each. This is the
       "seed the agents with harness + role guidance" discussion: (a) the
@@ -328,15 +328,18 @@ how the agent *behaves*; the rest are surface area.
       calls within a turn and inject steering ("you have called X with the
       same args three times; change approach or ask") *before* the cap.
       This is precisely the five-minutes-in-circles failure mode.
-- [ ] **T3 — Consume the agent fields we already parse.** **Folded into
-      ADR 024 (Proposed).** `temperature`, `max_turns` and `hidden` are
-      read from frontmatter into `Core.Agent` and then **never used
-      anywhere in `lib/`** (verified). A `maxTurns` that does nothing is
-      worse than none (it is a lie in the docs). Either wire them
-      (per-agent temperature into the request opts; `max_turns` as a real
-      round budget with a summarizing stop, like opencode's
-      `max-steps.txt`) or remove them from the honoured-fields list in
-      ADR 017. ADR 024 leaves the `max_turns` decision open (question 1).
+      **Split into ADR 025 (Proposed), which makes the numeric cap a safe
+      backstop — the trip now wraps up instead of failing the turn, and
+      `maxTurns` becomes a real, configurable budget.** The
+      pattern-detection half (the actual primary control) stays open here.
+- [ ] **T3 — Consume the agent fields we already parse.** `temperature`,
+      `max_turns` and `hidden` are read from frontmatter into
+      `Core.Agent` and then **never used anywhere in `lib/`** (verified).
+      A `maxTurns` that does nothing is worse than none (it is a lie in
+      the docs). **`temperature` wired by ADR 024; `max_turns` wired by
+      ADR 025 (Proposed) as a real per-agent budget with a summarizing
+      stop. `hidden` still to check.** ADR 017's honoured-fields list is
+      corrected as each lands.
 - [ ] **T4 — `todowrite` / a plan tool.** opencode's `todowrite` is how
       the model organises multi-step work and stays on task across a long
       turn. This harness has no equivalent, so long tasks drift. Backlog
@@ -380,7 +383,7 @@ how the agent *behaves*; the rest are surface area.
       indentation-flexible → escape-normalized → block-anchor with
       Levenshtein), and reports LSP diagnostics inline after every edit.
 - [ ] **T12 — Provider-specific prompt files + an environment block.**
-      **Designed: ADR 024 (Proposed).** Read from opencode's source
+      **Done: ADR 024 (Accepted), implemented.** Read from opencode's source
       (`packages/opencode/src/session/system.ts`, MIT): 9 prompt files
       selected by model id — `meta` (muse), `beast` (gpt-4/o1/o3),
       `gpt-astra` (gpt-6), `codex`, `gpt`, `gemini`, `anthropic`,
