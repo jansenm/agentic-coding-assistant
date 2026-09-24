@@ -28,8 +28,17 @@ The question tool: a channel to ask the human mid-turn
    shape, ``Unanswered`` for a blank). A malformed question returns an
    in-round error instead of pausing. The TUI renders a one-question-at-a-
    time wizard (``question_widgets/2``, ``question_special/2``,
-   ``question_text/2``), digits toggle options, ``0`` is free text,
+   ``question_text/2``): digits toggle options, ``0`` is free text,
    enter confirms, esc skips.
+
+   **Amended 2026-09-23 (wizard review + fixes).** The wizard body is
+   Markdown (it wraps long text; the plain-Paragraph version clipped half
+   a long question), options use the definition-list form with blank-
+   blockquote separators, an edit gesture (typing, ``0``, backspace)
+   makes the option no longer the answer, a digit INSIDE a custom buffer
+   is text, and model-supplied labels/descriptions are flattened to one
+   line so they cannot escape their row (details in the amendment
+   below).
 
 Context
 -------
@@ -139,3 +148,39 @@ Open questions
    We ship it always; if it proves noisy, a config switch is the natural
    control (the ADR 024 calibration surface could also tune when the model
    reaches for it).
+
+Amendment 2026-09-23: the wizard's rendering and input semantics
+----------------------------------------------------------------
+
+Two live reports drove the first two fixes; a review of those fixes
+found three more, all measured:
+
+**Rendering.** The body is Markdown, not a hand-sized Paragraph. The
+Paragraph clipped long question text at the panel edge (found live:
+"it does not wrap, so i don't see half of your message") and its trim
+mode ate leading indents. Options are a definition list: the bold term
+carries the digit key (``**1) fd**`` — bare ``1)`` lines are parsed as
+ordered lists and renumbered), the description hangs below as ``: …``,
+and answer blocks are separated by an EMPTY BLOCKQUOTE (``>``) because
+the def-list parser swallows plain blank lines. The panel height comes
+from the same probe the transcript measures with, so measure = paint.
+
+**Exclusivity (found in review).** ``0`` set the custom buffer but left
+the selected option marked, so both rows painted ``▸`` and confirming
+without typing submitted the *option*. ``question_toggle/2`` now clears
+the opposite side on every activation, matching the typed-character rule
+the same commit introduced.
+
+**Digits inside custom text (found in review).** ``question_text/2``
+routed every digit to the option toggle, so a free-text answer of "42"
+selected option 4 and wiped the buffer — a numeric answer was
+impossible. Digits toggle only while no custom buffer is active.
+
+**Row integrity (found in review).** Labels and descriptions were
+embedded in the def-list verbatim, so a newline in a model-supplied label
+closed the bold term and a blank line opened a heading/blockquote
+(``evil\n>\n\n## heading`` painted as a heading). They are flattened to
+one line now; the text survives, the structure does not move.
+
+Escape path, pinned by test: in a custom buffer, backspace removes a
+character; at ``""`` it closes the buffer; then a digit selects again.

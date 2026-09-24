@@ -1426,13 +1426,25 @@ defmodule CodingAgent.UI.Tui do
   defp question_text(%{question_prompt: nil} = state, _text), do: state
 
   defp question_text(state, text) do
-    case text do
-      d when d in ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"] -> question_toggle(state, d)
-      t -> question_type(state, t)
+    # A digit toggles an option ONLY while no custom answer is being
+    # typed: inside the free-text buffer a digit is text like any other
+    # ("0 is free text" must not make every number untypeable — found
+    # live: an answer of "42" selected option 4 and wiped the buffer).
+    case {state.question_prompt.custom, text} do
+      {nil, d} when d in ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"] ->
+        question_toggle(state, d)
+
+      _ ->
+        question_type(state, text)
     end
   end
 
   # Toggle the option at a 1-based digit (0 = the "type your own" row).
+  # Every activation is EXCLUSIVE: choosing "type your own" drops the
+  # selection the same way a typed character does (an edit gesture means
+  # the option is no longer the answer), and choosing an option drops any
+  # custom buffer — otherwise both rows paint their marker at once and
+  # `question_confirm/1`'s ordering silently decides which one wins.
   defp question_toggle(state, digit) do
     qp = state.question_prompt
     question = Enum.at(qp.questions, qp.index)
@@ -1443,7 +1455,7 @@ defmodule CodingAgent.UI.Tui do
     cond do
       # "0" starts a custom answer (the always-present free-text row)
       idx == 0 ->
-        %{state | question_prompt: %{qp | custom: ""}}
+        %{state | question_prompt: %{qp | custom: "", selected: []}}
 
       idx >= 1 and idx <= n ->
         multiple? = question["multiple"] || false
@@ -4197,16 +4209,23 @@ defmodule CodingAgent.UI.Tui do
   # top-level block, which ratatui's spacer paints as a blank row even
   # when empty — and a description or label containing "> x" merges into
   # the def-list paragraph (lazy continuation) instead of breaking it.
+  #
+  # Labels, descriptions and the custom buffer are MODEL/USER text
+  # embedded in that structure, so each is reduced to ONE line first: a
+  # newline inside a label leaves the bold term unclosed and a blank line
+  # in a description escapes the def-list (measured — "evil\n>\n\n## x"
+  # painted as a heading). Flattening whitespace keeps the option rows
+  # rows, which is the structure's contract.
   defp options_deflist(options, selected) do
     options
     |> Enum.with_index(1)
     |> Enum.map_join("\n\n>\n\n", fn {o, i} ->
       mark = if (i - 1) in selected, do: "▸ ", else: ""
-      term = "#{mark}**#{i}) #{o["label"] || ""}**"
+      term = "#{mark}**#{i}) #{single_line(o["label"])}**"
 
-      case o["description"] do
-        desc when is_binary(desc) and desc != "" -> term <> "\n: " <> desc
-        _ -> term
+      case single_line(o["description"]) do
+        "" -> term
+        desc -> term <> "\n: " <> desc
       end
     end)
   end
@@ -4214,7 +4233,14 @@ defmodule CodingAgent.UI.Tui do
   # The always-present "type your own" row; while a custom answer is
   # being typed it carries the buffer and the cursor.
   defp custom_entry(nil), do: "**0) type your own answer…**"
-  defp custom_entry(buf), do: "▸ **0) #{buf}▏**"
+  defp custom_entry(buf), do: "▸ **0) #{single_line(buf)}▏**"
+
+  # One line, always: whitespace runs (newlines included) collapse to a
+  # single space, so embedded text cannot open a markdown block or close
+  # its own emphasis.
+  defp single_line(nil), do: ""
+  defp single_line(text) when is_binary(text), do: text |> String.split() |> Enum.join(" ")
+  defp single_line(_), do: ""
 
   # A paragraph's own newlines must not open new blocks: make them hard
   # breaks so the question's line structure survives the markdown parse.
