@@ -1634,8 +1634,15 @@ defmodule CodingAgent.Core.Session do
   # test_mode is LLM-free: the structural skip (like the compactor's),
   # so the budget path is reachable without a provider. The instruction
   # is appended and the turn ends idle; no summary call is made.
+  #
+  # The :idle broadcast is what the production path gets from
+  # `complete_turn/3`: the TUI treats session broadcasts as the authority
+  # and ignores the decision reply, so a silent state change here would
+  # leave the band on "running" after a budget stop (found by the TUI
+  # tests once the reply stopped being authoritative).
   defp finish_wrap_up(%{test_mode: true} = state) do
     state = %{state | status: :idle}
+    broadcast(state, {:status_changed, :idle})
     persist(state)
     {state, {:ok, state}}
   end

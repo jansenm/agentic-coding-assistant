@@ -1505,7 +1505,10 @@ defmodule CodingAgent.UI.Tui do
         %{state | question_prompt: %{qp | custom: nil}}
 
       buf ->
-        %{state | question_prompt: %{qp | custom: String.slice(buf, 0, byte_size(buf) - 1)}}
+        # GRAPHEME-wise, not byte-wise: `byte_size/1` made backspace a
+        # no-op on multibyte text ("abä": byte_size 4 -> slice(…, 3)
+        # returns "abä" unchanged; found live with German input)
+        %{state | question_prompt: %{qp | custom: String.slice(buf, 0..-2//1)}}
     end
   end
 
@@ -2328,50 +2331,47 @@ defmodule CodingAgent.UI.Tui do
     {:noreply, %{state | status: status, pending: pending, deciding?: false}}
   end
 
-  # The budget reply landed (ADR 025). A status_changed broadcast follows
-  # from the session; clear the optimistic running state's guard. A
-  # refusal (e.g. the pause was already resolved) re-opens nothing — the
-  # session's own broadcast is authoritative.
-  def handle_info({:__budget_decided__, {:ok, status}}, state) do
-    {:noreply, %{state | status: status, budget_prompt: nil}}
+  # The budget reply landed (ADR 025). The session's broadcasts are
+  # authoritative and have already moved the UI (`:running` cleared the
+  # prompt; a fresh `:budget_reached` may have opened the NEXT one), so
+  # the reply is a NO-OP — it carries nothing the broadcasts did not:
+  # touching the prompt here used to close a fresh dialog when the reply
+  # arrived late (the question-wizard race, ADR 027 amendment; the same
+  # class hit all three reply handlers).
+  def handle_info({:__budget_decided__, {:ok, _status}}, state) do
+    {:noreply, state}
   end
 
+  # A refusal (the pause was already resolved, a race): re-read the
+  # session and re-open the prompt when a pause is still parked instead
+  # of dropping the dialog silently.
   def handle_info({:__budget_decided__, {:error, reason}}, state) do
-    {:noreply,
-     %{
-       state
-       | budget_prompt: nil,
-         transcript:
-           state.transcript ++ [{:info, "✖ budget answer failed: #{error_text(reason)}"}]
-     }}
+    state = note_failure(resync_prompt(state, :budget), "budget answer failed", reason)
+    {:noreply, state}
   end
 
-  # The doom-loop reply landed (ADR 026).
-  def handle_info({:__doom_decided__, {:ok, status}}, state) do
-    {:noreply, %{state | status: status, doom_prompt: nil}}
+  # The doom-loop reply landed (ADR 026): a no-op, like the budget reply.
+  def handle_info({:__doom_decided__, {:ok, _status}}, state) do
+    {:noreply, state}
   end
 
   def handle_info({:__doom_decided__, {:error, reason}}, state) do
-    {:noreply,
-     %{
-       state
-       | doom_prompt: nil,
-         transcript: state.transcript ++ [{:info, "✖ doom answer failed: #{error_text(reason)}"}]
-     }}
+    state = note_failure(resync_prompt(state, :doom), "doom answer failed", reason)
+    {:noreply, state}
   end
 
-  # The question answer landed (ADR 027).
-  def handle_info({:__question_answered__, {:ok, status}}, state) do
-    {:noreply, %{state | status: status, question_prompt: nil}}
+  # The question answer landed (ADR 027): a no-op, like the budget reply.
+  # The reported live bug: answering Q1, the session asks Q2 (its
+  # `:question_asked` broadcast opens the wizard) and only THEN does the
+  # answer worker finish — the late reply used to clear the fresh Q2
+  # dialog ("the dialog disappears, the band says approval needed").
+  def handle_info({:__question_answered__, {:ok, _status}}, state) do
+    {:noreply, state}
   end
 
   def handle_info({:__question_answered__, {:error, reason}}, state) do
-    {:noreply,
-     %{
-       state
-       | question_prompt: nil,
-         transcript: state.transcript ++ [{:info, "✖ answer failed: #{error_text(reason)}"}]
-     }}
+    state = note_failure(resync_prompt(state, :question), "answer failed", reason)
+    {:noreply, state}
   end
 
   # the session is no longer waiting (its parked calls resolved or were
@@ -2453,33 +2453,41 @@ defmodule CodingAgent.UI.Tui do
 
   # The session parked at the tool-round budget (ADR 025): show the
   # continue/stop prompt. Distinct from the approval dialog — no pending
-  # TOOL calls, so the two never collide.
+  # TOOL calls, so the two never collide (and a stale approval `pending`
+  # from a decide still in flight is dropped: it belongs to a pause that
+  # is over).
   def handle_info({:agent, {:status_changed, :budget_reached, %{budget: budget}}}, state) do
     {:noreply,
      %{
        state
        | status: :interrupted,
          budget_prompt: %{budget: budget},
+         pending: [],
          deciding?: false,
          stop_confirm?: false
      }}
   end
 
   # The session parked at a detected doom loop (ADR 026): show the
-  # continue/reject prompt.
+  # continue/reject prompt (a stale approval `pending` is dropped, as for
+  # the budget).
   def handle_info({:agent, {:status_changed, :doom_reached, %{tool: tool}}}, state) do
     {:noreply,
      %{
        state
        | status: :interrupted,
          doom_prompt: %{tool: tool},
+         pending: [],
          deciding?: false,
          stop_confirm?: false
      }}
   end
 
   # The session parked on a question the model asked (ADR 027): show the
-  # wizard. The question text is what the agent wants to know.
+  # wizard. The question text is what the agent wants to know. A stale
+  # approval `pending` is dropped: a question pause has no pending tool
+  # calls, and leaving the list would paint the approval dialog OVER the
+  # wizard when the decide reply lands after this broadcast.
   def handle_info({:agent, {:status_changed, :question_asked, %{questions: questions}}}, state) do
     {:noreply,
      %{
@@ -2492,6 +2500,7 @@ defmodule CodingAgent.UI.Tui do
            answers: [],
            custom: nil
          },
+         pending: [],
          deciding?: false,
          stop_confirm?: false
      }}
@@ -2752,6 +2761,58 @@ defmodule CodingAgent.UI.Tui do
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
+
+  # Re-read the session after a failed answer/decision and re-open the
+  # pause's prompt when it is still parked (the refusal can race a FRESH
+  # pause broadcast). Without a parked pause the optimistic close stands
+  # — the session's state, not the reply, is the authority. A dead
+  # session is no authority either: leave the optimistic close alone
+  # instead of crashing the UI on the `:noproc` exit.
+  defp resync_prompt(state, kind) do
+    session_state =
+      try do
+        case Session.state(state.session_id) do
+          {:ok, session_state} -> session_state
+          _ -> nil
+        end
+      catch
+        :exit, _ -> nil
+      end
+
+    case session_state do
+      nil ->
+        state
+
+      session_state ->
+        %{open_pause(state, kind, session_state) | status: session_state.status}
+    end
+  end
+
+  defp open_pause(state, :question, session_state) do
+    case question_prompt_of(session_state) do
+      nil -> state
+      prompt -> %{state | question_prompt: prompt}
+    end
+  end
+
+  defp open_pause(state, :budget, session_state) do
+    case budget_prompt_of(session_state) do
+      nil -> state
+      prompt -> %{state | budget_prompt: prompt}
+    end
+  end
+
+  defp open_pause(state, :doom, session_state) do
+    case doom_prompt_of(session_state) do
+      nil -> state
+      prompt -> %{state | doom_prompt: prompt}
+    end
+  end
+
+  defp note_failure(state, what, reason) do
+    transcript = state.transcript ++ [{:info, "✖ #{what}: #{error_text(reason)}"}]
+    %{state | transcript: transcript}
+  end
 
   # The stream throttle (only while unrendered text) and the busy spinner
   # (only while a turn is in flight). Both reconcile from state, so each
@@ -3466,12 +3527,33 @@ defmodule CodingAgent.UI.Tui do
   # badge's own word (nil = let `Styles.status_line/6` choose it). The
   # `busy?` gate also keeps a tool left in flight by a failed turn from
   # labelling a pause "running mix".
+  #
+  # A pause names ITSELF: the badge only knows `:interrupted` and said
+  # "approval needed (y/n/e)" for all four pauses (the known label bug —
+  # a budget/doom/question pause pointed at keys that do nothing).
+  # Approval keeps the badge's own word (its dialog IS the y/n/e one).
   defp band_label(state) do
-    if Styles.busy?(state.status) do
-      case Map.get(state, :active_tool) do
-        tool when is_binary(tool) -> "running #{tool}"
-        _ -> "thinking"
-      end
+    cond do
+      Styles.busy?(state.status) ->
+        case Map.get(state, :active_tool) do
+          tool when is_binary(tool) -> "running #{tool}"
+          _ -> "thinking"
+        end
+
+      state.status == :interrupted ->
+        pause_label(state)
+
+      true ->
+        nil
+    end
+  end
+
+  defp pause_label(state) do
+    cond do
+      Map.get(state, :budget_prompt) != nil -> "tool budget reached (y/n)"
+      Map.get(state, :doom_prompt) != nil -> "repeated call (y/n)"
+      Map.get(state, :question_prompt) != nil -> "the agent asked a question"
+      true -> nil
     end
   end
 

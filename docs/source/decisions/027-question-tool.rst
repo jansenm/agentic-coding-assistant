@@ -184,3 +184,62 @@ one line now; the text survives, the structure does not move.
 
 Escape path, pinned by test: in a custom buffer, backspace removes a
 character; at ``""`` it closes the buffer; then a digit selects again.
+
+Amendment 2026-09-24: the reply race, the pause label, and the tool's
+rendering contract
+-------------------------------------------------------------------
+
+A live report — "the agent asks, I answer, the dialog disappears and the
+band says *approval needed*; restarting the app shows the same dialog
+again" — traced to a race between the answer reply and the NEXT pause's
+broadcast. The same commit fixes three smaller findings from the same
+session.
+
+**The race (the actual bug).** ``answer_question/2`` starts a worker and
+replies to the caller only when that worker returns — after the turn has
+run the held round, continued the loop and possibly parked on the NEXT
+question. That next ``:question_asked`` broadcast opens a fresh wizard,
+and then the late ``{:__question_answered__, {:ok, :interrupted}}`` reply
+cleared it unconditionally. The TUI handled the reply as if it were the
+authority on the prompt; the session's broadcasts already were. **The fix
+makes the ``:ok`` reply handlers for question, budget and doom no-ops**:
+``:running`` already clears every prompt and ``:question_asked`` /
+``:budget_reached`` / ``:doom_reached`` already open one, so the reply
+carries nothing that would not double-write. The error path now re-reads
+the session (``Session.state/1``) and re-opens the prompt only when a
+pause is still parked there, instead of dropping the dialog silently.
+The pause broadcasts also clear a stale approval ``pending`` (a decide
+reply still in flight could otherwise paint the approval dialog over the
+fresh wizard). Regression test: Q1 answered, Q2 broadcast delivered, then
+the late reply — the Q2 dialog must survive (``tui_question_test.exs``,
+deterministic, no provider). The LLM-free ``finish_wrap_up/1`` gained the
+``:idle`` broadcast ``complete_turn/3`` emits in production, so a budget
+stop still settles the band now that the reply is authoritative for
+nothing.
+
+**The pause label (the misleading band).** ``Styles.status_badge/1``
+knows only ``:interrupted`` and labelled **all four** pauses "approval
+needed (y/n/e)" — a budget/doom/question pause pointed at keys that do
+nothing. The live band's label now names the parked pause: "tool budget
+reached (y/n)", "repeated call (y/n)", "the agent asked a question";
+approval keeps the badge's own word (its dialog IS the y/n/e one).
+
+**Backspace with multibyte text.** ``question_backspace/1`` sliced by
+``byte_size/1``, so backspace over "abä" was a no-op
+(``String.slice(buf, 0, 3)`` returns the whole string). It slices
+graphemes now (``String.slice(buf, 0..-2//1)``); German input hit this
+directly. Pinned by test.
+
+**The tool description states the rendering contract.** The question text
+renders as **Markdown** (paragraphs, hard line breaks, bold, inline
+code); ``header``, ``label`` and ``description`` are flattened to one
+line and must not carry newlines; fenced code blocks are **not**
+highlighted (``tui-markdown`` emits the fence markers literally — probed
+against the widget, independent of our ``hard_breaks/1``). The model is
+told all three.
+
+**The "asked twice" observation** is treated as a consequence of the
+race, not a prompt defect: the answer's dialog vanished before the user
+could see the exchange had registered. With the dialog surviving, this is
+re-checked live before any prompt tuning (recorded in
+``übersicht.md``).

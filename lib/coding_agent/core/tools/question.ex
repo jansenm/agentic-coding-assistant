@@ -41,8 +41,19 @@ defmodule CodingAgent.Core.Tools.Question do
         an "Other" or catch-all option yourself.
       - To allow more than one choice per question, set `multiple: true`.
       - If you recommend an option, put it FIRST and end its label with
-        " (Recommended)".
+         " (Recommended)".
       - Prefer a question over guessing. Keep the options short.
+
+      Rendering:
+      - The question text is rendered as MARKDOWN: paragraphs, line
+        breaks, bold and inline code all work, so format code as
+        `inline code`.
+      - `header`, option `label` and `description` are flattened to a
+        single line before display — do NOT put newlines or multi-line
+        blocks there.
+      - Fenced code blocks (```) are NOT highlighted; their markers show
+        literally. Prefer inline code for short snippets and keep any
+        code short.
       """,
       parameter_schema: %{
         "type" => "object",

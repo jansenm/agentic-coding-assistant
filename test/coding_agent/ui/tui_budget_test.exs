@@ -119,4 +119,47 @@ defmodule CodingAgent.UI.TuiBudgetTest do
     key(pid, "n")
     wait_until(fn -> sync(pid).doom_prompt == nil end)
   end
+
+  test "a late budget reply cannot close the NEXT pause (same race as the question dialog)" do
+    # The same bug class ADR 027 found for the question wizard: the
+    # decision reply arrives AFTER the worker already parked on the next
+    # pause, whose broadcast opened the fresh dialog. The reply must not
+    # clear it.
+    root = Path.join(System.tmp_dir!(), "tui-budget-race-#{System.unique_integer()}")
+    File.mkdir_p!(root)
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    sid = "tui-budget-race-#{System.unique_integer()}"
+
+    {:ok, _} =
+      CodingAgent.Core.Session.Supervisor.start_session(
+        id: sid,
+        scope_root: root,
+        policy: CodingAgent.Core.Permissions.load(nil, nil),
+        test_mode: true,
+        interactive: true
+      )
+
+    pid =
+      start_supervised!(
+        {Tui, [name: nil, test_mode: {100, 30}, session_id: sid, scope_root: root]}
+      )
+
+    # the first pause opens; the user continues (optimistic close)
+    agent(pid, {:status_changed, :budget_reached, %{budget: 100}})
+    assert sync(pid).budget_prompt != nil
+
+    agent(pid, {:status_changed, :running})
+    assert sync(pid).budget_prompt == nil
+
+    # the next pause opens before the reply lands
+    agent(pid, {:status_changed, :doom_reached, %{tool: "read_file"}})
+    assert sync(pid).doom_prompt != nil
+
+    send(pid, {:__budget_decided__, {:ok, :interrupted}})
+    state = sync(pid)
+
+    assert state.doom_prompt != nil, "the late budget reply must not close the doom prompt"
+    assert state.status == :interrupted
+  end
 end
