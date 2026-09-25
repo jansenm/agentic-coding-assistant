@@ -134,6 +134,9 @@ Open questions for the implementation slice
    **Answered 2026-09-23** (amendment below): neither — the running slot
    gets its own row above the input (the live band), the sidebar keeps
    the badges, and the composer's row below the field is setup only.
+   **Refined 2026-09-25** (second amendment): the sidebar keeps the
+   running/next SPLIT, but as definition rows in its identity block, not
+   as badges — the panel was regrouped and the badge shape went with it.
 4. **Finished subagent detail.** Keep the last subagent's tab until the
    next delegation (easier to read), or close immediately (matches
    ephemeral semantics). Lean "keep until replaced", read-only.
@@ -174,9 +177,12 @@ which.
   agent and model the *next* input will use — the ones ``tab`` and the
   model menu change. It no longer receives a status at all (the struct
   field is gone, so a caller cannot pass one).
-- The **sidebar** keeps the badges it already has (``build running`` /
-  ``plan next`` while busy, the next agent when idle). It is the
-  always-visible panel; the band is the one that sits next to the input.
+- The **sidebar** keeps the running/next **split** (``build running`` /
+  ``plan next`` while busy, the next agent when idle) as rows of its
+  identity block — the badge *shape* was replaced by definition rows in
+  the 2026-09-25 sidebar amendment; the split itself is unchanged. It is
+  the always-visible panel; the band is the one that sits next to the
+  input.
 
 The status is drawn in exactly one place: ``Styles.status_line/6`` is the
 single composition of glyph, word and elapsed, and ``UI.LiveBand`` is its
@@ -404,3 +410,84 @@ Still open
 - **A finished child's display rows are still deleted.** Since the tab is
   in-memory this is fine today; a durable child transcript would need
   ``cleanup`` and a ``parent_id`` link — recorded so the path is known.
+
+Amendment 2026-09-25 (sidebar): the panel is three blocks, headed by the scope
+------------------------------------------------------------------------------
+
+**Status: Accepted (the sidebar layout below is shipped).**
+
+The panel had accumulated rows without a reading order: two identity
+badges, a definition list that mixed *who acts* (session, effort) with
+*what it costs* (tokens, context, compacts-at), the cost line, the help
+chords — and a ``Block`` title ``" status "`` on top. The title was the
+visible symptom: because the panel draws one border (``borders:
+[:right]``), a title has no top rule to sit on, so it painted as bare
+text one cell in from the edge — neither a heading nor content, and
+indented relative to the rows below it. The word itself was also wrong
+for the panel's job (it holds the scope, the identity and the token
+numbers; "status" names one of its rows at best).
+
+**The layout now has three blocks, separated by blank lines:**
+
+.. code-block:: text
+
+   agentic-coding-assistant-mjansen
+
+   agent:    build
+   model:    deepseek-v4.1-flash
+   provider: ollama_cloud
+   session:  tui-3396
+
+   effort:      default
+   tokens in:    12.4k
+   tokens out:    3.1k
+   context:      48.0k (9% win)
+   compacts at: 180.0k tok
+
+   ctrl-t toggles tools
+   ctrl-x p hides panel
+
+1. **The heading is a body line, not a title.** ``Styles.heading/2``
+   renders one line in the ``:emphasis`` role (the stated body white,
+   bold) — the role ``Palette`` has carried since the beginning and no
+   call site used. As a body line it is flush with the panel's own
+   content column, which is what makes it read as a heading of the
+   content rather than chrome floating above it. The text is the
+   **scope**: the last path segment of the session's ``scope_root``, the
+   answer to "which repo am I in" (the full path is far wider than the
+   36-column panel). ``scope_root`` is mirrored into the TUI state at
+   mount, like the model and the effort — the render path must not call
+   into the session per frame (the per-frame-load CPU lesson).
+2. **Identity is one block: agent + model + provider + session.**
+   ``model:`` and ``provider:`` are the two halves of the model spec
+   (``"<provider>:<id>"``), split by the same rule ``Request.build/2``
+   and ``ProviderHealth.probe_model/2`` use, so the panel names exactly
+   the two things the wire request resolves. Before this, the spec rode
+   one badge on the full panel width precisely *because* the definition
+   list's label column clipped it; split, both halves fit whole and the
+   special case is gone.
+3. **Effort belongs with the tokens, not with the session id.** The
+   reasoning-effort knob is a *cost* fact — it changes how much the model
+   spends per turn — so it heads the token block. Labels are padded per
+   block: ``definition_list/2`` pads to the widest label of its own list,
+   so the identity block pads to ``provider`` (8) and the stats block to
+   ``compacts at`` (11). One merged list would pad every identity row
+   three cells wider to make room for a stats label.
+4. **The agent rows keep the running/next split** (part 1 above): both
+   while a turn is in flight and they differ, only ``next`` while idle.
+   The value keeps the ``:agent`` role, so the identity colour survives
+   the badge → definition-row move; the *shape* supersedes the badges the
+   2026-09-23 amendment kept in the sidebar, the *split* does not.
+5. **The empty rows below stay empty.** The panel is short and the column
+   is full height; the alternative (padding the content out to fill the
+   column) is decoration. Recorded because it is a decision, not an
+   oversight: TODO's O5 asked for exactly this call.
+
+Acceptance: ``styles_test.exs`` (``heading/2`` is emphasis, bold, on the
+surface's own fill; ``section_header/2`` stays muted), ``tui_cells_test.exs``
+(the heading's cell is white+bold on the sidebar fill and shares ONE
+column with the identity labels; ``model:`` and ``provider:`` own separate
+rows), ``tui_agent_test.exs`` (the panel heads with the scope, the old
+title string is gone), ``tui_visual_test.exs`` (the heading is the first
+content row, the model is split, and both disappear with the panel when
+``ctrl-x p`` hides it).

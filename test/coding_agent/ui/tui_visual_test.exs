@@ -16,6 +16,13 @@ defmodule CodingAgent.UI.TuiVisualTest do
     })
   end
 
+  # The sidebar's first content line: the SCOPE heading (the repo basename).
+  # It replaced the " status " Block title (O4): a title on a one-sided
+  # border painted as bare text one cell in from the edge, which read as
+  # neither a heading nor content. `start_tui/2` scopes every TUI here to
+  # the cwd.
+  defp sidebar_heading, do: Path.basename(File.cwd!())
+
   setup do
     pid = start_tui()
     %{pid: pid}
@@ -292,10 +299,12 @@ defmodule CodingAgent.UI.TuiVisualTest do
     fire(pid, :__resize_poll__)
 
     rows = buffer(pid)
-    # sidebar starts on the first content row with its truthful title
-    # (it was "agent", but the panel is session status — B4); its border
-    # column is still drawn at the input row (full-height span)
-    assert rows |> Enum.at(1) |> String.contains?("status")
+    # the sidebar's first content row is its scope heading (it was the
+    # "status" title until O4 — the heading is a body line now, flush
+    # with the panel content instead of floating one cell in from the
+    # border); the border column is still drawn at the input row
+    # (full-height span)
+    assert rows |> Enum.at(1) |> String.contains?(sidebar_heading())
     assert rows |> Enum.at(26) |> String.contains?("│")
 
     # floor: empty input = 4 rows; typing 5 lines grows the box
@@ -318,13 +327,15 @@ defmodule CodingAgent.UI.TuiVisualTest do
 
     # visible by default; the panel claims @sidebar_width columns
     assert sync(pid).sidebar_visible?
-    assert buffer(pid) |> Enum.at(1) |> String.contains?("status")
+    assert buffer(pid) |> Enum.at(1) |> String.contains?(sidebar_heading())
 
-    # the wider panel fits a full model id (the 24-col cut it mid-name:
-    # "ollama_cloud:glm-5.3-f|"; 36 leaves room for the whole string)
-    st = sync(pid)
-    model = st.model || "?"
-    assert String.length(model) <= 34
+    # the model is split into its two halves now (O7): the panel shows
+    # "model:" and "provider:" on their own rows, so neither half is
+    # clipped (the single 32-char badge cut "…deepseek-v4.1-fl|")
+    [provider, id] = (sync(pid).model || ":") |> String.split(":", parts: 2)
+    text = Enum.join(buffer(pid), "\n")
+    assert text =~ ~r/model:\s+#{Regex.escape(id)}/
+    assert text =~ ~r/provider:\s+#{Regex.escape(provider)}/
 
     # toggle off via the menu fast path: the panel is gone, the
     # transcript starts at the left edge
@@ -333,7 +344,8 @@ defmodule CodingAgent.UI.TuiVisualTest do
     refute sync(pid).sidebar_visible?
 
     rows = buffer(pid)
-    refute rows |> Enum.at(1) |> String.contains?("status")
+    refute rows |> Enum.at(1) |> String.contains?(sidebar_heading())
+    refute Enum.join(rows, "\n") =~ "provider:"
     # the transcript now begins at column 0 — a reasoning line sits at
     # the left edge with no 36-col gutter before it
     agent(pid, {:reasoning_deltas, "flush left"})
@@ -343,13 +355,18 @@ defmodule CodingAgent.UI.TuiVisualTest do
     key(pid, "x", ["ctrl"])
     key(pid, "p")
     assert sync(pid).sidebar_visible?
-    assert buffer(pid) |> Enum.at(1) |> String.contains?("status")
+    assert buffer(pid) |> Enum.at(1) |> String.contains?(sidebar_heading())
   end
 
   test "sidebar: false seeds the panel off at mount (test seam)" do
     pid = start_tui({100, 30}, sidebar: false)
     refute sync(pid).sidebar_visible?
-    refute buffer(pid) |> Enum.at(1) |> String.contains?("status")
+    rows = buffer(pid)
+    refute rows |> Enum.at(1) |> String.contains?(sidebar_heading())
+    refute Enum.join(rows, "\n") =~ "provider:"
+    # and no border column anywhere: the panel is out of the layout, not
+    # painted empty
+    refute Enum.any?(rows, &String.contains?(&1, "│"))
   end
 
   test "approval dialog: cleared background, above status, capped width" do

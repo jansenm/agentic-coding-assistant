@@ -24,6 +24,18 @@ defmodule CodingAgent.UI.TuiAgentTest do
     )
   end
 
+  # The COLUMN a substring starts at, counted in graphemes (the row string
+  # is UTF-8 and the panel's border "│" is 3 bytes — a byte offset would
+  # be off, the lesson from `tui_cells_test`).
+  defp col_of(row, needle) do
+    {at, _len} = :binary.match(row, needle)
+
+    row
+    |> binary_part(0, at)
+    |> String.graphemes()
+    |> length()
+  end
+
   defp write_agent(filename, frontmatter) do
     dir = Path.join([@tmp_root, ".coding-agent", "agents"])
     File.mkdir_p!(dir)
@@ -138,14 +150,22 @@ defmodule CodingAgent.UI.TuiAgentTest do
   end
 
   # B4: the status panel answers "which agent handles what I type, and
-  # which is running", as a badge. Its title is truthful ("status", not
-  # "agent" — it holds session/effort/token data).
-  test "the sidebar is titled status and carries the agent badge" do
+  # which is running", as a row of the identity block. Its first content
+  # line is the SCOPE heading (O4 dropped the " status " Block title: a
+  # one-sided border painted it as bare text one cell in from the edge,
+  # which read as neither heading nor content).
+  test "the sidebar heads with the scope and carries the agent row" do
     pid = start_app(agent: "build")
     rows = buffer(pid)
 
-    assert rows |> Enum.at(1) |> String.contains?("status")
-    refute rows |> Enum.at(1) |> String.contains?("agent╯")
+    assert rows |> Enum.at(1) |> String.contains?(Path.basename(@tmp_root))
+    # the old floating title is gone from the panel's own rows
+    refute rows |> Enum.at(1) |> String.contains?("status")
+    # ...and the heading is a BODY line: it sits flush with the panel's
+    # content column, not one cell in from the border like a title
+    heading_col = col_of(rows |> Enum.at(1), Path.basename(@tmp_root))
+    label_col = col_of(rows |> Enum.at(3), "agent:")
+    assert heading_col == label_col
 
     buffer = Enum.join(rows, "\n")
     assert buffer =~ "build"

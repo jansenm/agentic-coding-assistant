@@ -234,4 +234,59 @@ defmodule CodingAgent.UI.TuiCellsTest do
     assert cell(snapshot, row, 10).bg == :reset
     assert cell(snapshot, row, 11).bg == :reset
   end
+
+  # The sidebar's identity block (the redesign): the scope heads the panel
+  # as a BOLD body line (not a Block title floating one cell in from the
+  # border), and the model spec is split into its two halves so neither is
+  # clipped. Both facts are colour/column facts, so they are asserted on
+  # the cell buffer.
+  test "the sidebar heads with a bold scope and splits model from provider" do
+    {pid, session} = start_cell_tui([scope_root: File.cwd!()], {100, 30})
+    fire(pid, :__resize_poll__)
+    snapshot = cells(session)
+
+    scope = Path.basename(File.cwd!())
+    heading_row = Enum.find(0..29, &String.contains?(row_text(snapshot, &1), scope))
+    assert heading_row != nil
+
+    # the heading carries the emphasis role ON the sidebar fill: white and
+    # bold (the composer's own identity line stays muted, so this is the
+    # panel's heading and not a stray span)
+    emphasis = Palette.resolve(Styles.palette(), :emphasis, :sidebar)
+    lead = String.length(row_text(snapshot, heading_row) |> String.split(scope) |> List.first())
+
+    assert cell(snapshot, heading_row, lead).symbol == String.first(scope)
+    assert cell(snapshot, heading_row, lead).fg == emphasis.fg
+    assert :bold in cell(snapshot, heading_row, lead).modifiers
+    assert cell(snapshot, heading_row, lead).bg == Palette.fill(Styles.palette(), :sidebar)
+
+    # the model spec is split: the id and its provider each own a row, so
+    # neither half is clipped (the single badge cut "…deepseek-v4.1-fl|")
+    [provider, id] = (sync(pid).model || ":") |> String.split(":", parts: 2)
+
+    model_row =
+      Enum.find(0..29, fn r ->
+        t = row_text(snapshot, r)
+        String.contains?(t, "model:") and String.contains?(t, id)
+      end)
+
+    provider_row = Enum.find(0..29, &String.contains?(row_text(snapshot, &1), "provider:"))
+
+    assert model_row != nil
+    assert provider_row != nil
+    assert model_row < provider_row
+    assert row_text(snapshot, provider_row) =~ "provider: #{provider}"
+
+    # the heading and the identity labels share ONE column: the heading is
+    # panel content, flush with the rows below it (a Block title sat one
+    # cell further right, which is the look O4 removed)
+    assert lead == grapheme_col(row_text(snapshot, model_row), "model:")
+  end
+
+  # The column a substring starts at, in graphemes (a row string is UTF-8
+  # and the panel's border "│" is 3 bytes — a byte offset would be off).
+  defp grapheme_col(row, needle) do
+    {at, _len} = :binary.match(row, needle)
+    row |> binary_part(0, at) |> String.graphemes() |> length()
+  end
 end

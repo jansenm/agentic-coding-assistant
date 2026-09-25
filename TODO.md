@@ -2,7 +2,8 @@
 
 Stand: 2026-09-25, Branch `devel` @ `1b78de4`. Gegen den Baum verifiziert;
 die beiden Zeilenmaße im P4-Punkt gegen den Commit korrigiert, in dem sie
-falsch waren (Folge-Commit).
+falsch waren (Folge-Commit). Die Sidebar-Einträge O4/O5 in Runde 5 auf
+`dev/mjansen` gegen den dortigen Baum nachgezogen (noch nicht auf `devel`).
 
 Der **große Plan** steht in `ROADMAP.md` (Phasen, Produktthese,
 „Later“-Ideen, Ground Rules). **Entscheidungen** stehen in den ADRs
@@ -116,7 +117,10 @@ Damit ist aus dem alten P3-Befund nur noch offen:
 Die Runden 1–4 (Palette/Styles, `UI.Composer`, Bottom-Row-Wegfall,
 `UI.LiveBand`) sind umgesetzt; Befunde und Entscheidungen stehen in
 ADR 018 (Amendment „the running/next split gets its own row“) und im
-`Styles`/`Palette`-Moduldoc. Offen:
+`Styles`/`Palette`-Moduldoc. **Runde 5 (Sidebar-Neugliederung) ist
+umgesetzt**: drei durch Leerzeilen getrennte Blöcke — Überschrift
+(Scope), Identität (Agent/Modell/Provider/Session), Kosten (Effort mit
+den Token-Zeilen) — plus die ctrl-Hinweise. Offen:
 
 * **O2** Air pro Eintrag differenzieren (Vorschlag: tool 1 / info 1 /
   reasoning 2 / assistant 3) statt `@air 3` überall.
@@ -124,15 +128,25 @@ ADR 018 (Amendment „the running/next split gets its own row“) und im
   (`Styles.definition_list/2`, `{:decimal, number, suffix}`; die
   Token-Zeilen der Sidebar nutzen es). Offen bleibt **rechtsbündig**
   (Padding im `Paragraph` oder echte `Table`).
-* **O4** Sidebar-Titel `" status "` entfernen (das Wort ist entschieden
-  weg, der obere Slot ist offen: leer oder Scope).
-* **O5** ~15 leere Sidebar-Zeilen: kürzen / füllen / ruhig lassen.
+* **O4** Sidebar-Titel `" status "` **erledigt**: der Blocktitel ist weg,
+  die erste Inhaltszeile ist der **Scope** (Basename von `scope_root`) in
+  der Rolle `:emphasis` (`Styles.heading/2`) — eine Body-Zeile, flush mit
+  den Zeilen darunter; ein Titel auf `borders: [:right]` stand eine Zelle
+  eingerückt und las sich weder als Überschrift noch als Inhalt.
+* **O5** ~15 leere Sidebar-Zeilen: **entschieden — ruhig lassen**. Das
+  Panel ist fertig gegliedert, der Leerraum darunter trägt keine
+  Information; Füllen wäre Dekoration.
 * **O6/O12** Band interaktiv machen: Rail `▌` links, Provider/Effort
   farbcodiert; das Band nimmt heute keine Tastendrücke. Berührt das
   Padding-Entscheid (ADR 018 Amendment: 1 Zelle auf allen vier Seiten).
 * **O7** Sidebar entdoppeln (Modell/Effort raus, wenn das Band sie
   zeigt) — das Band zeigt das Modell nur im Busy-Fall, die Duplikation
-  im Idle bleibt.
+  im Idle bleibt. **Teilantwort aus Runde 5:** das Modell steht nicht
+  mehr als ein geklipptes Badge (32 Zeichen, `model ollama_cloud:
+  deepseek-v4.1-fl…`) da, sondern in seine zwei Hälften zerlegt
+  (`model:` + `provider:`, dieselbe Regel wie `Request.build/2` und
+  `ProviderHealth.probe_model/2`) — beide Hälften passen jetzt ganz;
+  die Dublette zum Band selbst bleibt offen.
 * **O8** Markdown-Politur: `#`-Präfixe bleiben sichtbar, Fences bleiben
   literal, Inline-Code-bg ist hart `:black` (F9-Messung; die Crate
   `tui-markdown` ist die Ursache, nicht `hard_breaks`).

@@ -269,7 +269,25 @@ defmodule CodingAgent.UI.Styles do
     }
   end
 
-  @doc "A muted, slightly emphasized line for a panel section."
+  @doc """
+  A panel heading: one line in the `:emphasis` role (stated white, bold).
+
+  The heading a panel carries as its FIRST body line. It is deliberately
+  not a `Block` title: a title on a one-sided border (`borders: [:right]`)
+  paints as bare text one cell in from the edge, which reads as neither a
+  heading nor content ("hängt da einfach so rum"). A body line is flush
+  with the panel's own content and cannot be mistaken for chrome.
+  """
+  @spec heading(String.t(), surface()) :: Text.Line.t()
+  def heading(text, surface \\ :base) do
+    Text.Line.new([Text.Span.new(to_string(text), style: role(:emphasis, surface))])
+  end
+
+  @doc """
+  A muted hint line at the foot of a panel section (a key chord). Carries
+  no emphasis at all — it is footnote weight, not a heading; headings are
+  `heading/2`.
+  """
   @spec section_header(String.t(), surface()) :: Text.Line.t()
   def section_header(text, surface \\ :base) do
     Text.Line.new([Text.Span.new(to_string(text), style: role(:muted, surface))])

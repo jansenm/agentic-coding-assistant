@@ -430,6 +430,10 @@ defmodule CodingAgent.UI.Tui do
       initial = %{
         session_id: effective_id,
         model: session_model,
+        # the scope root this session works in, mirrored for the sidebar
+        # heading (read once per mount, like the model and the effort — the
+        # render path must not call into the session per frame)
+        scope_root: session_scope(effective_id),
         # ADR 018 two slots:
         #   running_agent  — what is executing the ACTIVE turn (the
         #                    session's resolved definition; a subagent
@@ -4052,56 +4056,41 @@ defmodule CodingAgent.UI.Tui do
     # pre-compaction notice territory: the Compactor's warn threshold
     pct_role = if last_in >= warn_at, do: :warning, else: :text
 
-    # Identity is a BADGE here too (B4): the panel answers "which agent
-    # will handle what I type, and which is running" — the question the
-    # old "agent"-titled status panel could not. While a turn is IN
-    # FLIGHT, running and next are BOTH shown so they can differ (Tab
-    # only changes the next turn's agent); when idle only the next agent
-    # is shown, because `running_agent` keeps the last turn's value.
     running = Map.get(state, :running_agent)
     next_agent = Map.get(state, :next_agent)
     busy? = state.status in [:running, :interrupting]
 
-    identity_badges =
-      cond do
-        not busy? ->
-          [Styles.badge(:agent, next_agent, :sidebar)]
+    # -- the two blocks --------------------------------------------------------
+    # The panel answers three questions in three visually separated
+    # blocks, top to bottom:
+    #
+    #   * the HEADING: which repo is this session scoped to ("wo arbeite
+    #     ich") — a body line in `:emphasis`, not a `Block` title (a
+    #     one-sided border paints a title as bare text one cell in from
+    #     the edge, which reads as neither heading nor content);
+    #   * WHO acts: the agent (with the running/next split while a turn
+    #     is in flight), the model it runs on — split into its two halves,
+    #     so nothing is clipped — and the session id;
+    #   * WHAT it costs: the effort knob TOGETHER with the token rows it
+    #     belongs with (the decimal-aligned list), then the cost line.
+    #
+    # Labels are per-block for a reason: `definition_list/2` pads to the
+    # widest label of ITS list, so the identity block pads to "provider"
+    # (8) and the stats block to "compacts at" (11) — one list would pad
+    # every identity row by three cells to accommodate a stats label.
+    identity =
+      agent_rows(running, next_agent, busy?) ++
+        model_rows(Map.get(state, :model)) ++
+        [{"session", String.slice(state.session_id, 0, 22)}]
 
-        is_binary(running) and is_binary(next_agent) and running != next_agent ->
-          [
-            Styles.badge(:agent, "#{running} running", :sidebar),
-            Styles.badge(:agent, "#{next_agent} next", :sidebar)
-          ]
-
-        is_binary(running) ->
-          [Styles.badge(:agent, "#{running} running", :sidebar)]
-
-        is_binary(next_agent) ->
-          [Styles.badge(:agent, "#{next_agent} next", :sidebar)]
-
-        true ->
-          [Styles.badge(:agent, nil, :sidebar)]
-      end
-
-    # the model is IDENTITY (like the agent), so it rides a badge on the
-    # full panel width — in the definition list the label column padding
-    # ("compacts at:") clipped long ids to "glm-5.3-f…", hiding the
-    # version that distinguishes one model from another
-    identity_lines =
-      identity_badges ++ [Styles.badge(:model, Map.get(state, :model), :sidebar), Styles.gap()]
-
-    definition_lines =
-      Styles.definition_list(
-        [
-          {"session", String.slice(state.session_id, 0, 22)},
-          {"effort", effort_name(effort)},
-          {"tokens in", {:decimal, fmt_k(Usage.input_tokens(usage)), nil}},
-          {"tokens out", {:decimal, fmt_k(Usage.output_tokens(usage)), nil}},
-          {"context", {:decimal, fmt_k(last_in), " (#{pct}% win)"}, pct_role},
-          {"compacts at", {:decimal, fmt_k(trigger), " tok"}, pct_role}
-        ],
-        :sidebar
-      )
+    stats =
+      [
+        {"effort", effort_name(effort)},
+        {"tokens in", {:decimal, fmt_k(Usage.input_tokens(usage)), nil}},
+        {"tokens out", {:decimal, fmt_k(Usage.output_tokens(usage)), nil}},
+        {"context", {:decimal, fmt_k(last_in), " (#{pct}% win)"}, pct_role},
+        {"compacts at", {:decimal, fmt_k(trigger), " tok"}, pct_role}
+      ]
 
     cost_line =
       case usage.cost do
@@ -4118,17 +4107,92 @@ defmodule CodingAgent.UI.Tui do
       Styles.section_header("ctrl-x p hides panel", :sidebar)
     ]
 
-    lines = identity_lines ++ definition_lines ++ cost_line ++ help
+    lines =
+      [Styles.heading(scope_name(Map.get(state, :scope_root)), :sidebar), Styles.gap()] ++
+        Styles.definition_list(identity, :sidebar) ++
+        [Styles.gap()] ++
+        Styles.definition_list(stats, :sidebar) ++ cost_line ++ help
 
     %Paragraph{
       text: lines,
       # the whole panel carries the sidebar fill, so the gaps between
       # role-styled spans are filled too (a patchy fill looked broken)
       style: Styles.surface(:sidebar),
-      # truthful title (B4): this panel is session status, not "agent"
-      block: Styles.panel(title: " status ", borders: [:right], surface: :sidebar)
+      # NO title: the heading is the first BODY line (see above). The
+      # panel keeps one border — the separating rule against the
+      # transcript, not a frame.
+      block: Styles.panel(borders: [:right], surface: :sidebar)
     }
   end
+
+  # The identity rows for the agent slot (B4/ADR 018). While a turn is IN
+  # FLIGHT, running and next are BOTH shown so they can differ (Tab only
+  # changes the next turn's agent); when idle only the next agent is
+  # shown, because `running_agent` keeps the last turn's value. The value
+  # carries the `:agent` role (cyan) so the identity keeps the colour the
+  # badge gave it.
+  defp agent_rows(running, next_agent, busy?) do
+    cond do
+      not busy? ->
+        [{"agent", next_agent, :agent}]
+
+      is_binary(running) and is_binary(next_agent) and running != next_agent ->
+        [
+          {"agent", "#{running} running", :agent},
+          {"agent", "#{next_agent} next", :agent}
+        ]
+
+      is_binary(running) ->
+        [{"agent", "#{running} running", :agent}]
+
+      is_binary(next_agent) ->
+        [{"agent", "#{next_agent} next", :agent}]
+
+      true ->
+        [{"agent", nil, :agent}]
+    end
+  end
+
+  # The model rows: the spec's two halves on their own rows.
+  #
+  # A model spec is "<provider>:<model id>" and the sidebar used to show
+  # it as ONE 32-char-clipped badge ("model ollama_cloud:deepseek-v4.1-fl…"):
+  # the version that distinguishes one model from another was exactly
+  # what got cut. Split, both halves fit whole. The split rule is the one
+  # `Request.build/2` and `ProviderHealth.probe_model/2` already use, so
+  # the panel names the same two things the wire request does. A spec
+  # with no colon names no provider: the `provider` row is then omitted
+  # rather than filled with a guessed one. A missing model reads as the
+  # definition list's em dash, like every other absent value.
+  defp model_rows(model) do
+    case split_model_spec(model) do
+      {id, nil} -> [{"model", id, :model}]
+      {id, provider} -> [{"model", id, :model}, {"provider", provider, :model}]
+    end
+  end
+
+  # "<provider>:<model id>" -> {id, provider}; a bare id -> {id, nil}.
+  defp split_model_spec(model) when is_binary(model) and model != "" do
+    case String.split(model, ":", parts: 2) do
+      [provider, id] -> {id, provider}
+      [id] -> {id, nil}
+    end
+  end
+
+  defp split_model_spec(_), do: {nil, nil}
+
+  # The panel heading: the repo this session is scoped to, as its last
+  # path segment (the full path is far wider than the 36-column panel).
+  # A scope with no basename ("/") or no scope at all (a half-built
+  # state) falls back to something printable rather than a blank heading.
+  defp scope_name(root) when is_binary(root) and root != "" do
+    case Path.basename(root) do
+      "" -> root
+      name -> name
+    end
+  end
+
+  defp scope_name(_), do: "—"
 
   defp fmt_k(n) when n < 1000, do: "#{n}"
   defp fmt_k(n), do: "#{trunc(n / 100) / 10}k"

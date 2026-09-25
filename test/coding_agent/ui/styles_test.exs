@@ -150,6 +150,23 @@ defmodule CodingAgent.UI.StylesTest do
     end
   end
 
+  describe "heading/2 and section_header/2" do
+    test "a heading is one line in the emphasis role (stated white, bold)" do
+      %Text.Line{spans: [span]} = Styles.heading("aca-mjansen", :sidebar)
+      assert span.content == "aca-mjansen"
+      assert span.style == Styles.role(:emphasis, :sidebar)
+      assert :bold in span.style.modifiers
+      assert span.style.bg == Styles.role(:text, :sidebar).bg
+    end
+
+    test "a section header stays muted — footnote weight, not a heading" do
+      %Text.Line{spans: [span]} = Styles.section_header("ctrl-t toggles tools", :sidebar)
+      assert span.content == "ctrl-t toggles tools"
+      assert span.style == Styles.role(:muted, :sidebar)
+      refute :bold in span.style.modifiers
+    end
+  end
+
   describe "status_badge/2" do
     test "maps each status to a glyph, role and label" do
       assert %{glyph: "●", label: "running…"} = Styles.status_badge(:running)
