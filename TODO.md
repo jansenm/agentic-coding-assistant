@@ -1,6 +1,8 @@
 # TODO — der aktive Backlog
 
-Stand: 2026-09-25, Branch `devel` @ `1b78de4`. Gegen den Baum verifiziert.
+Stand: 2026-09-25, Branch `devel` @ `1b78de4`. Gegen den Baum verifiziert;
+die beiden Zeilenmaße im P4-Punkt gegen den Commit korrigiert, in dem sie
+falsch waren (Folge-Commit).
 
 Der **große Plan** steht in `ROADMAP.md` (Phasen, Produktthese,
 „Later“-Ideen, Ground Rules). **Entscheidungen** stehen in den ADRs
@@ -95,7 +97,7 @@ Damit ist aus dem alten P3-Befund nur noch offen:
 
 * `tui.ex` aufteilen (~4400 Zeilen; interner Aufbau nur durch
   `# --`-Kommentare getrennt) und den Mount-State **einmal** definieren
-  (`mount_picker` ~180, `mount_session` ~315).
+  (`mount_picker` ~114, `mount_session` ~212).
 * `TranscriptView.metrics/…` als **eine** Heimat der Pane-Geometrie —
   derzeit verstreut (`content_width`, `pane_size`, Overlay-Raum).
 * `test_mode?`-Branches durch injizierte Behaviours ersetzen, wo sie
@@ -118,8 +120,10 @@ ADR 018 (Amendment „the running/next split gets its own row“) und im
 
 * **O2** Air pro Eintrag differenzieren (Vorschlag: tool 1 / info 1 /
   reasoning 2 / assistant 3) statt `@air 3` überall.
-* **O3** Sidebar-Werte rechtsbündig (Padding im `Paragraph` oder echte
-  `Table`).
+* **O3** Sidebar-Werte ausrichten: **punktausgerichtet erledigt**
+  (`Styles.definition_list/2`, `{:decimal, number, suffix}`; die
+  Token-Zeilen der Sidebar nutzen es). Offen bleibt **rechtsbündig**
+  (Padding im `Paragraph` oder echte `Table`).
 * **O4** Sidebar-Titel `" status "` entfernen (das Wort ist entschieden
   weg, der obere Slot ist offen: leer oder Scope).
 * **O5** ~15 leere Sidebar-Zeilen: kürzen / füllen / ruhig lassen.
