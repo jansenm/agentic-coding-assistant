@@ -176,7 +176,7 @@ werden — sie war zum Commit-Zeitpunkt in dieser Umgebung nur nicht
 belegt (kein venv, kein Netz). `docs/howtos/build-docs` beschreibt den
 Weg bereits.
 
-Nebenbefund, gehört nicht zu diesem Commit: `docs/Makefile` hat im
+Nebenbefund, gehört nicht zu diesem Commit: `docs/Makefile` hatte im
 Branch-Worktree eine uncommittete Änderung — `$(SPHINXBUILD)::` bekommt
 `$(SPHINXPYTHON)` als Voraussetzung. Sie ist **notwendig, nicht
 kosmetisch**, und das ist mit `make -n` belegbar:
@@ -201,33 +201,33 @@ hatte nur `$(SPHINXBUILD)` als Eingang: der Install-Schritt lief, bevor
 das venv existierte. Ein kalter Checkout konnte `make html` deshalb nie
 bauen — der Docstring im `requirements.txt` sagt `python3 -m venv .venv`
 explizit als Handgriff davor. Der Fix steht als eigener Commit unter
-diesem (`docs(makefile): a cold checkout can build the docs`).
+diesem (`docs(makefile): a cold checkout can build the docs`), verifiziert
+mit `make -n html` gegen ein leeres `VIRTUALENV` und einem echten
+`make html` in `docs/`.
 
 ---
 
 ## 5. Was als Commit draus geworden ist
 
 ```
-6ee2fab docs(todo): the two stale line counts and O3's done half  (dev/mjansen)
+423cd0d review: the record for 9dbfc00, 935cf92 and 85daad9     (dev/mjansen)
+b4f6351 docs(makefile): a cold checkout can build the docs      (dev/mjansen)
+6ee2fab docs(todo): the two stale line counts and O3's done half (dev/mjansen)
 85daad9 feat(ui): the sidebar's token values align on the decimal point
 935cf92 docs: consolidate the backlog into TODO.md, ROADMAP stays the plan (devel)
 ```
 
 `6ee2fab` (nur Text, 1 Datei, +8/−4): die zwei Zeilenmaße korrigiert (P4),
 O3 in „punktausgerichtet erledigt / rechtsbündig offen" geteilt, `Stand`-
-Zeile von `9dbfc00` auf `935cf92` gezogen. `devel` zeigt weiterhin auf
-`935cf92`.
+Zeile von `9dbfc00` auf `935cf92` gezogen.
 
-Darüber (dieser Branch, noch nicht auf `devel`):
+`b4f6351` (eine Zeile im `docs/Makefile`): macht den Bootstrap-Pfad
+gangbar (siehe Abschnitt 4) — der eigentliche Fund hinter „sphinx builds
+clean". Verifiziert mit `make -n html` gegen ein leeres `VIRTUALENV` und
+einem echten `make html` in `docs/`.
 
-```
-docs(makefile): a cold checkout can build the docs
-review: the record for 9dbfc00, 935cf92 and 85daad9
-```
-
-Der Makefile-Fix macht den Bootstrap-Pfad gangbar (siehe Abschnitt 4);
-`review.md` ist dieser Text. `devel` bleibt unberührt — beide Commits
-liegen nur auf `dev/mjansen`.
+`423cd0d` ist dieser Text. `devel` zeigt weiterhin auf `935cf92`; die
+drei Commits liegen nur auf `dev/mjansen`.
 
 ## 6. Offen
 
