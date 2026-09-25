@@ -17,7 +17,7 @@ defmodule CodingAgent.UI.Styles do
   bug — so the palette resolves per surface, and the test suite asserts,
   for every role x filled surface, that `fg != bg`.
 
-  Rules this module encodes (see `code_review.md`, UI styling):
+  Rules this module encodes (see `CodingAgent.UI.Palette`):
 
   - One meaning per role; call sites name the role (and surface).
   - All borders `:rounded`; the border color is chosen by role

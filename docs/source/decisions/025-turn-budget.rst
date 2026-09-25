@@ -11,7 +11,7 @@ Turn budget: the round limit degrades by wrap-up, not failure
 
 .. note::
    Accepted and implemented 2026-09-23. Answers T2 and the ``max_turns``
-   half of T3 in the ``code_review.md`` "rival opencode" list. Decides
+   half of T3 in the ``TODO.md`` "rival opencode" list. Decides
    that reaching the per-turn tool-round budget never fails the turn:
    an **interactive** driver is asked to *continue* (another full budget)
    or *stop* (a summarizing wrap-up), and a driver that cannot answer

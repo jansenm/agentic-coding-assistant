@@ -46,8 +46,9 @@ post-milestone:
   mechanism.
 
 Explicitly *not* needed for the milestone: webfetch, websearch, lsp,
-skills execution, todowrite, question — see "Later". (Webfetch has
-since shipped anyway, ADR 013 — dogfood showed doc work needed it.)
+skills execution, todowrite, question — see "Later". (Webfetch (ADR 013)
+and question (ADR 027) have since shipped anyway; dogfood showed the
+need.)
 
 ## Decided
 
@@ -87,13 +88,14 @@ Two things would turn "nice" into a genuine differentiator:
 2. **User-extensible profiles/policy** — users author confinement the way
    they author permissions, without needing to know bwrap flags.
 
-This reframes B7 (`/tmp` scratch, `code_review.md`): a sandbox model
+This reframes B7 (`/tmp` scratch, `TODO.md`): a sandbox model
 powerful enough to *live in* needs a notion of state across calls
-(persistent scratch, session scope). Today `/tmp` is per-call tmpfs by
-construction (`sandbox/bwrap.ex:210`), which makes the "run now, inspect
-next call" pattern impossible. See the B7 fix direction and the bwrap
-overlay note below; the multi-agent overlay work and this thesis are the
-same trajectory viewed from different ends.
+(persistent scratch, session scope). **Resolved by ADR 022**: the
+per-call tmpfs is gone; each session gets a host scratch directory
+(`System.tmp_dir!/0/coding-agent/<id>`) bound over `/tmp`, cleaned by
+the session-lifecycle verbs. The bwrap overlay note below is the
+related trajectory; the multi-agent overlay work and this thesis are the
+same problem viewed from different ends.
 
 ## Phases
 
@@ -267,7 +269,7 @@ same trajectory viewed from different ends.
       live). Scroll diagnostics behind ctrl-x d (composer meta row);
      the status then left that row for a permanent live band above the
      field (running agent/model + status), so the composer's row is
-     setup only (round 4, ui_redesign.md).
+     setup only (round 4; ADR 018 amendment, `UI.LiveBand`).
    - **5f. Compaction recalibrated (the opencode lesson)** ✅ —
      absolute token trigger (`compaction_trigger_tokens`, 180k
      default) replacing the 70%-of-window rule: the user's GLM
@@ -367,7 +369,8 @@ it is isolation *between* agents.
 
 **Ticket / coordination store** (idea recorded 2026-09-19; not planned).
 Multi-agent work (implementer + reviewer) currently coordinates through
-Markdown documents (`code_review.md`) that both sides edit: no stable
+Markdown documents (a `TODO.md` and review docs) that both sides edit:
+no stable
 identifiers, no status field, no comment history, and a "moving target"
 when two agents touch one file. The idea is deliberately small — *not*
 JIRA/Mantis: one central place where agents (or a single agent) record
@@ -389,9 +392,10 @@ CLI *and* TUI before the format matters). A ticket should be able to
 instinct from ADR 020**: ship the verbs, keep the engine simple. Do not
 build this until the Markdown backlog actually hurts.
 
-**SQLite is increasingly the right engine (owner note, 2026-09-19).** The
-more the pieces take shape, the clearer it is that the store needs a real
-database rather than per-session `term_to_binary` blobs:
+**SQLite is the right engine — and it is now the engine (owner note
+2026-09-19, implemented).** The note below is kept for the reasoning;
+the store is one SQLite DB per store (ADR 020 R16, ADR 023), so the
+listed problems are gone rather than pending:
 
 - the **double-decode cost** in `Store.list/0` (full context decoded just
   to read id/model/mtime/scope) is exactly the "no indexes, no columns"
@@ -407,11 +411,12 @@ database rather than per-session `term_to_binary` blobs:
 - and the **dual view** of ADR 020 (agent view vs immutable display view)
   is two tables, not two blob shapes.
 
-Keep the ADR-020 discipline: **verbs first**, engine second, and decide
-the engine explicitly in ADR 020 (still *Proposed*) — the lean is SQLite,
-but the slice order (session management surface → engine) does not
-change. Do not rip out the blob store until the verbs have proven the
-shape.
+Keep the ADR-020 discipline: **verbs first**, engine second — and the
+engine itself shipped (R16: one SQLite DB per store, ADR 023; the
+metadata columns make listing read columns, not decode states). What
+remains is the ADR's status (`Proposed` in the file, shipped in the
+tree — see `TODO.md` Doc-Staleness). Do not reintroduce per-session
+blob shapes.
 
 **Reviewer in the same TUI, on a bwrap snapshot** (idea recorded
 2026-09-19; future). Combine the bwrap-layer isolation above with the
@@ -494,7 +499,7 @@ TUI wish-list (user's own list, keyboard-first, from the live sessions):
 | background shell runs | one day | the real escape hatch for very long jobs: tool returns "started, job id", agent polls / gets notified, user keeps working; needs session+TUI machinery (phases 3-4) — v1 answer is generous `timeout_secs` |
 | mid-tool hard cancel | one day | `Core.Interrupt` stops a running turn between tools/at loop boundaries, but a single long `shell` still runs to its timeout (up to 1800 s). Needs `Shell` to expose a registered port-kill handle (same `Interrupt.register/2` seam) so esc kills the in-flight command |
 | runtime introspection (BEAM) | one day | the Elixir-native cousin of Tidewave's runtime tools (Dashbit; requires a hosted Phoenix app — not our path): eval-in-node (gated always-ask like shell), process/supervisor state, ETS inspection. Valuable once the agent debugs its own runtime; also a reason to keep an eye on ACP as the interop layer |
-| `question` | **needs an ADR** | model-invoked stop-and-ask vs. harness-side gate; a loop concern, not a tool — do not hack it into the gate |
+| `question` | ✅ (ADR 027) | model-invoked stop-and-ask, settled by its own ADR as a loop concern: the gate intercepts a `question` call, the session parks, the TUI shows a wizard; a non-interactive driver gets an "unavailable" result |
 | code-intelligence queries (`outline` / `symbols` / `source-by-symbol` / `callers` / `check`) | one day | the "structural sight" idea (cf. grove + `is-grep-enough` benchmark, CGA): returns *answers*, never raw AST (AST as implementation detail only). For Elixir via `Code.string_to_quoted` + `Code.Typespec` + compile tracer — semantic-grade where tree-sitter tools (grove) are name-based only, and Elixir is missing from grove's 27 languages. Evidence says grep wins on simple lookups; structural pays off on trace/architecture tasks (2-3x fewer tokens). **Benchmark context quality first** (tokens, grounding, completeness), CGA/is-grep-enough style, before building the tier. `check` (post-edit syntax gate) folds naturally into 2e `edit`. LSP only if rename-references are ever demanded; an MCP *server* exporting these queries is the phase-7 interoperability edition |
 
 Beyond tools — the trajectory after dogfooding, roughly:

@@ -11,7 +11,7 @@ Ignored configuration fields: wire them or fail loudly
 
 .. note::
    Accepted and implemented 2026-09-23. Closes the ``hidden`` half of T3
-   in the ``code_review.md`` "rival opencode" list and removes the last
+   in the ``TODO.md`` "rival opencode" list and removes the last
    documented-but-dead knobs: ``reasoning_effort`` (config.toml), and the
    agent fields ``hidden`` and ``mode: all``. The rule that ADR 024/025
    applied to ``temperature``/``maxTurns`` — a documented field that

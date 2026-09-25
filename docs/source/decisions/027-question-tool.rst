@@ -11,7 +11,7 @@ The question tool: a channel to ask the human mid-turn
 
 .. note::
    Accepted and implemented 2026-09-23. Answers T6 in the
-   ``code_review.md`` "rival opencode" list. Adds a ``question`` tool: the
+   ``TODO.md`` "rival opencode" list. Adds a ``question`` tool: the
    model can ask the human one or more multiple-choice questions
    mid-turn, the session pauses, and the answers arrive as the tool's
    result. Interactive drivers show a wizard; a driver that cannot answer
@@ -242,4 +242,4 @@ told all three.
 race, not a prompt defect: the answer's dialog vanished before the user
 could see the exchange had registered. With the dialog surviving, this is
 re-checked live before any prompt tuning (recorded in
-``übersicht.md``).
+``TODO.md``).

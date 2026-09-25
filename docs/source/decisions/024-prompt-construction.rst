@@ -11,7 +11,7 @@ Prompt construction: per-model prompts and an environment block
 
 .. note::
    Accepted and implemented 2026-09-21. Answers T1/T12 of the
-   ``code_review.md`` "rival opencode" list. Decides (a) that the system
+   ``TODO.md`` "rival opencode" list. Decides (a) that the system
    prompt gains a per-model provider file and a per-call environment
    block, (b) that we vendor opencode's provider files under MIT with
    attribution, adapting the identity, and (c) that the parsed-but-unused

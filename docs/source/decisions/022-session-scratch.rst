@@ -13,7 +13,7 @@ Session scratch: a persistent /tmp inside the sandbox
    Accepted 2026-09-20; implemented the same day. Extends ADR 015's
    confinement (the mount set gains one session-scoped bind); does not
    change the threat model. Responds to a live dogfooding finding
-   (``code_review.md`` B7): every tool call runs in a fresh namespace
+   (``TODO.md`` B7): every tool call runs in a fresh namespace
    whose ``/tmp`` is a fresh tmpfs, so the agent cannot build state
    across calls. Every mechanism below was measured on the target
    machine before being written down.

@@ -93,7 +93,7 @@ Glossary
       background. A role resolves *on* a surface. The ``base`` region is
       not only the reading area: it also carries the status band above the
       input, which is how that band stays distinguishable from the field
-      (``ui_redesign.md`` §8).
+      (ADR 018 amendment).
 
    Live band (UI)
       The permanent one-row status area between the transcript and the

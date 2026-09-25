@@ -11,7 +11,7 @@ Doom-loop guard: pause on repeated identical calls
 
 .. note::
    Accepted and implemented 2026-09-23. Answers T2's detection half in the
-   ``code_review.md`` "rival opencode" list — the half ADR 025
+   ``TODO.md`` "rival opencode" list — the half ADR 025
    deliberately left open. Detects a repeated call and pauses an
    interactive driver (continue / reject); a driver that cannot answer is
    steered silently. Built on ADR 025's pause machinery.
