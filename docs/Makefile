@@ -24,7 +24,7 @@ $(SPHINXPYTHON):
 	@echo "$(VIRTUALENV): setting up the virtual environment"
 	$(PYTHON) -m venv $(VIRTUALENV)
 
-$(SPHINXBUILD)::
+$(SPHINXBUILD):: $(SPHINXPYTHON)
 	@echo "$(VIRTUALENV): installing dependencies"
 	$(SPHINXPYTHON) -m pip install -r requirements.txt
 
