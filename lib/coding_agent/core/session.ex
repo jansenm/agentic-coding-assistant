@@ -184,7 +184,11 @@ defmodule CodingAgent.Core.Session do
       # a doom-loop pause is durable the same way (ADR 026)
       doom_pause: state.doom_pause,
       # a question pause is durable too (ADR 027)
-      question_pause: state.question_pause
+      question_pause: state.question_pause,
+      # subagent seams (ADR 017/018): a resumed primary keeps depth 0;
+      # a resumed child would too (children are ephemeral and not resumed)
+      depth: state.depth,
+      persist?: state.persist?
     ]
     |> Keyword.merge(overrides)
   end
@@ -197,6 +201,22 @@ defmodule CodingAgent.Core.Session do
   @spec resume(State.t(), keyword()) :: {:ok, pid()} | {:error, term()}
   def resume(%State{} = state, overrides \\ []) do
     CodingAgent.Core.Session.Supervisor.start_session(resume_opts(state, overrides))
+  end
+
+  @doc """
+  Stops a live session process. Used by the subagent seam to retire a
+  finished child (it ran once, its summary is extracted, and it must not
+  linger idle under the supervisor: `restart: :transient` means a normal
+  stop is not restarted). Best effort — an already-gone child is fine.
+  """
+  @spec stop(String.t()) :: :ok
+  def stop(id) do
+    case Registry.lookup(CodingAgent.Registry, {:session, id}) do
+      [{pid, _}] -> GenServer.stop(pid, :normal, 5_000)
+      _ -> :ok
+    end
+  catch
+    :exit, _ -> :ok
   end
 
   @doc """
@@ -376,6 +396,9 @@ defmodule CodingAgent.Core.Session do
     # turn "in flight" (and assert the session still answers) without a
     # provider. Never set in production.
     turn_runner = Keyword.get(opts, :turn_runner)
+    # test seam for the CHILD session a `task` call starts (ADR 017/018):
+    # the child's blocking body. Never set in production.
+    subagent_runner = Keyword.get(opts, :subagent_runner)
 
     # A session that was parked at the gate when it last stopped resumes
     # PARKED, not idle: the pending calls (and the half of the round that
@@ -471,6 +494,12 @@ defmodule CodingAgent.Core.Session do
        # a driver that can answer a mid-turn question (the TUI sets this);
        # a headless driver gets the automatic wrap-up at the budget
        interactive: Keyword.get(opts, :interactive, false),
+       # Subagent seams (ADR 017/018). A primary is depth 0; a delegated
+       # child is depth 1 (no further delegation). The names a `task` call
+       # may delegate to are resolved here so the tool can advertise them.
+       depth: Keyword.get(opts, :depth, 0),
+       subagents: delegatable_names(Config.agents(scope_root)),
+       persist?: Keyword.get(opts, :persist?, true),
        # a resumed budget pause re-offers its dialog (the held round and
        # the question are durable)
        budget_pause: Keyword.get(opts, :budget_pause),
@@ -479,9 +508,19 @@ defmodule CodingAgent.Core.Session do
        # a resumed question pause re-offers too (ADR 027)
        question_pause: Keyword.get(opts, :question_pause),
        test_mode: test_mode,
-       turn_runner: turn_runner
+       turn_runner: turn_runner,
+       subagent_runner: subagent_runner
      )}
   end
+
+  # The names a `task` call may delegate to (ADR 017/018): `:subagent` and
+  # `:all` definitions, never a `primary`. A broken definition set reads as
+  # "nothing delegatable" here; the parent's own turn surfaces the load
+  # error if it matters, and `Subagent.find_definition/2` reports it.
+  defp delegatable_names({:ok, definitions}),
+    do: CodingAgent.Core.Session.Subagent.delegatable(definitions) |> Enum.map(& &1.name)
+
+  defp delegatable_names(_), do: []
 
   # Resolves the named agent definition and applies it. Returns
   # `{:ok, agent_or_nil, policy, system_prompt}` or `{:error, reason}`.
@@ -1134,10 +1173,15 @@ defmodule CodingAgent.Core.Session do
   end
 
   # Runtime fields are process-local to the SESSION; the worker snapshot
-  # carries only durable content plus the test seam. subscribers are
+  # carries only durable content plus the test seams. subscribers are
   # cleared too: they are live monitor refs, not data — the worker must
   # never persist its stale copy (and it broadcasts via the Registry,
   # not this list).
+  #
+  # `subagent_runner` stays IN the worker snapshot (unlike `turn_runner`,
+  # which the spawn closure captures directly): `Subagent.run/2` reads it
+  # from the worker's state to build the child's blocking body. Both are
+  # stripped before any disk write (see `strip_runner/1`).
   defp worker_snapshot(state) do
     %{
       state
@@ -1167,6 +1211,7 @@ defmodule CodingAgent.Core.Session do
           subscribers: session.subscribers,
           id: session.id,
           turn_runner: session.turn_runner,
+          subagent_runner: session.subagent_runner,
           worker_ref: nil,
           worker_from: nil,
           queued_calls: session.queued_calls,
@@ -1548,7 +1593,8 @@ defmodule CodingAgent.Core.Session do
   # resumed question round completes with them alongside the siblings'.
   defp execute_round(state, calls, answered \\ []) do
     q_calls = question_calls(calls)
-    answerable = Enum.reject(calls, &(&1 in q_calls))
+    t_calls = task_calls(calls)
+    answerable = Enum.reject(calls, &(&1 in q_calls or &1 in t_calls))
 
     plan = Gate.classify(state.id, state.policy, state.scope_root, answerable)
 
@@ -1573,32 +1619,108 @@ defmodule CodingAgent.Core.Session do
         blacklist_results ++
         no_reason_results ++ Enum.map(plan.denied, &Gate.denied_result/1)
 
-    if plan.pending == [] do
-      auto_results = execute_tools(state, plan.auto)
-      results = known_results ++ auto_results
-      broadcast_tools(state, known_calls ++ plan.auto ++ q_calls, results)
-      state = complete_round(state, calls, results)
-      finish_round(state)
-    else
-      # SOME call needs a human. The exchange is appended atomically
-      # only once the whole round is decided, so nothing half-formed
-      # ever reaches the wire. The auto/denied/question results computed
-      # now are carried in state across the pause (and a resume) instead.
-      auto_results = execute_tools(state, plan.auto)
+    # A `task` call runs its child session inline (ADR 017/018): its only
+    # trace in the parent context is the returned summary. Computed here
+    # (not inside a branch) because the round is atomic — whether or not a
+    # SIBLING call parks at the gate, every call needs exactly one result.
+    task_results = run_subagents(state, t_calls)
 
-      state = %{
-        state
-        | status: :interrupted,
-          pending_tool_calls: plan.pending,
-          pending_round_calls: calls,
-          pending_round_results: known_results ++ auto_results
-      }
+    cond do
+      # A SUBAGENT (depth > 0) has no human channel (ADR 017): it runs
+      # inside a `task` call, so parking at the gate would hang the parent
+      # turn forever. Fail closed — the pending calls get a denial the
+      # model can read and adapt to. Escalations are declared in the
+      # subagent's definition, never requested at runtime. A depth-0
+      # headless driver keeps the usual park/decide contract.
+      plan.pending != [] and state.depth > 0 ->
+        auto_results = execute_tools(state, plan.auto)
+        denied = Enum.map(plan.pending, &subagent_no_human_result/1)
 
-      broadcast_tools(state, known_calls ++ plan.auto, known_results ++ auto_results)
-      broadcast(state, {:status_changed, :interrupted, plan.pending})
-      persist(state)
-      {state, {:ok, state}}
+        results = known_results ++ task_results ++ auto_results ++ denied
+
+        broadcast_tools(
+          state,
+          known_calls ++ t_calls ++ plan.auto ++ plan.pending ++ q_calls,
+          results
+        )
+
+        state = complete_round(state, calls, results)
+        finish_round(state)
+
+      plan.pending == [] ->
+        auto_results = execute_tools(state, plan.auto)
+        results = known_results ++ task_results ++ auto_results
+        broadcast_tools(state, known_calls ++ t_calls ++ plan.auto ++ q_calls, results)
+        state = complete_round(state, calls, results)
+        finish_round(state)
+
+      true ->
+        # SOME call needs a human. The exchange is appended atomically
+        # only once the whole round is decided, so nothing half-formed
+        # ever reaches the wire. The auto/denied/question/task results
+        # computed now are carried in state across the pause (and a resume).
+        auto_results = execute_tools(state, plan.auto)
+
+        state = %{
+          state
+          | status: :interrupted,
+            pending_tool_calls: plan.pending,
+            pending_round_calls: calls,
+            pending_round_results: known_results ++ task_results ++ auto_results
+        }
+
+        broadcast_tools(
+          state,
+          known_calls ++ t_calls ++ plan.auto,
+          known_results ++ task_results ++ auto_results
+        )
+
+        broadcast(state, {:status_changed, :interrupted, plan.pending})
+        persist(state)
+        {state, {:ok, state}}
     end
+  end
+
+  # The `task` (subagent) calls in a round. Like `question`, they are
+  # intercepted before the gate: the session runs a child, not a gated
+  # tool action (ADR 017/018). The child's own tool calls are gated in the
+  # child session.
+  defp task_calls(calls) do
+    Enum.filter(calls, fn call ->
+      {_id, name, _args} = ToolCall.normalize(call)
+      name == CodingAgent.Core.Tools.Task.name()
+    end)
+  end
+
+  # A `task` call's children may not ask a human (ADR 017): a sibling call
+  # the gate wanted to prompt is answered with a clear refusal instead of
+  # parking the child forever.
+  defp subagent_no_human_result(call) do
+    {id, name, _} = ToolCall.normalize(call)
+
+    %{
+      id: id,
+      name: name,
+      content:
+        "error: this call needs human approval, but a subagent has no human " <>
+          "channel (ADR 017). Declare the authority in the subagent definition, " <>
+          "or do this on the primary agent instead."
+    }
+  end
+
+  # Runs each task call's child and returns its summary as a tool result.
+  # A failed delegation returns an error result (the model can correct the
+  # subagent_type and retry) rather than crashing the parent turn.
+  #
+  # `{:tool_started, "task"}` is published per call (as `ToolRunner` does
+  # for a gated tool), so the status band reads "running task" for the
+  # child's whole duration; the matching `{:tool_executed, ...}` is
+  # published by `broadcast_tools/3` with the round's results.
+  defp run_subagents(state, task_calls) do
+    Enum.map(task_calls, fn call ->
+      Events.publish(state.id, {:tool_started, CodingAgent.Core.Tools.Task.name()})
+      CodingAgent.Core.Session.Subagent.run(state, call)
+    end)
   end
 
   # Gate-side refusals are logged with their id and reason so a live
@@ -1730,7 +1852,14 @@ defmodule CodingAgent.Core.Session do
   defp current_tools(state), do: ToolRunner.tools(state.policy, tool_scope(state))
 
   defp tool_scope(state) do
-    ToolRunner.scope(state.scope_root, state.mounts, state.id, state.policy.shell_mode)
+    ToolRunner.scope(
+      state.scope_root,
+      state.mounts,
+      state.id,
+      state.policy.shell_mode,
+      depth: state.depth,
+      subagents: state.subagents
+    )
   end
 
   # Tool output is arbitrary bytes; scrub is the PREVENT side of the
@@ -2092,15 +2221,22 @@ defmodule CodingAgent.Core.Session do
     state
   end
 
-  # Slice 4a: every turn boundary leaves a persisted snapshot.  # Slice 4a: every turn boundary leaves a persisted snapshot. A crash
+  # Slice 4a: every turn boundary leaves a persisted snapshot. A crash
   # mid-turn loses at most the current turn — the previous boundary is
   # on disk. Failures are logged, never raised: an unwritable disk
   # must not kill a working session.
+  #
+  # A subagent child (`persist?: false`) is NOT persisted: its summary is
+  # the durable record, carried in the parent's context, and a picker
+  # entry of its own would be noise (ADR 018: ephemeral children). The
+  # in-memory session still works; only the disk write is skipped.
   #
   # Runtime-only fields are stripped before the write: worker refs and
   # the queue are process-local, and the test seam is a closure that
   # must never be serialized (Store.restore clears them too, belt and
   # braces for snapshots written by an older build).
+  defp persist(%{persist?: false} = state), do: state
+
   defp persist(state) do
     case state |> worker_snapshot() |> strip_runner() |> Store.save() do
       :ok -> :ok
@@ -2110,7 +2246,7 @@ defmodule CodingAgent.Core.Session do
     state
   end
 
-  defp strip_runner(state), do: %{state | turn_runner: nil}
+  defp strip_runner(state), do: %{state | turn_runner: nil, subagent_runner: nil}
 
   # -- Infrastructure ---------------------------------------------------------
 

@@ -15,6 +15,16 @@ UI: running vs. next agent, and subagent views
    (the slice after ADR 017) and are specified here so that seam is
    built with the UI contract in mind, not retrofitted.
 
+   **Part 1 shipped** (two slots / the live band — see the amendment
+   below). **Part 2 (the ``task`` seam) shipped 2026-09-25**: the child
+   session, the parent events (``{:subagent_started, child_id, name,
+   model}`` / ``{:subagent_finished, child_id, outcome}``), the
+   summary-only return, the depth-1 bound, and the live band naming the
+   leaf of the active delegation. **Not yet built: the subagent TAB**
+   (opening the child's transcript by key binding) — the seam and the
+   events exist, so the tab is a pure view slice (recorded in
+   ``TODO.md``).
+
 Context
 -------
 
@@ -208,3 +218,63 @@ neither, ``tab`` moves only the setup row), ``tui_cells_test.exs`` (the
 band's ``base`` background and its four-sided padding, plus the
 ``last_pane_height`` arithmetic that proves measure = paint), and
 ``tui_visual_test.exs`` (an approval dialog ends above the band).
+
+Amendment 2026-09-25: the ``task`` seam ships (part 2, without the tab)
+-----------------------------------------------------------------------
+
+**Status: the delegation mechanics and the band's leaf identity are
+implemented. The subagent TAB (open a child's transcript) is not.**
+
+The seam, end to end:
+
+- **The tool.** ``Core.Tools.Task`` is a ``task`` tool with
+  ``{description, prompt, subagent_type}``. Like ``question`` it is
+  intercepted by the session before the gate (``Session.execute_round/3``
+  splits ``task_calls/1`` out), because a child needs the parent's
+  RESOLVED config and must be bounded in depth. Its callback is a loud
+  safety net: a call that ever reaches execution is a bug.
+- **The child.** ``Core.Session.Subagent`` finds the named definition
+  (``:subagent`` or ``:all``; never a ``primary``, and ``hidden`` is
+  allowed — ADR 029 said the seam would need exactly that), starts a
+  ``Session`` with ``depth: parent + 1``, ``interactive: false``,
+  ``persist?: false`` and the parent's (already agent-narrowed) policy,
+  runs one turn, and returns the child's final assistant text as the
+  summary. The child's transcript never enters the parent context — only
+  the summary does, as the ``task`` tool result.
+- **Depth 1.** ``Tools.delegation/1`` returns the ``task`` tool only for
+  a depth-0 scope; a depth-1 child's tool set excludes it. The gate also
+  fails a depth-1 session's parked calls CLOSED instead of pausing
+  (a subagent has no human channel, ADR 017); a depth-0 headless driver
+  keeps the usual park/decide contract.
+- **The events.** The parent publishes ``{:subagent_started, child_id,
+  name, model}`` and ``{:subagent_finished, child_id, outcome}`` on its
+  OWN channel. The TUI keeps a ``subagents`` map and lets the live band
+  name the LEAF of the active delegation (``band_identity/1``), reverting
+  to the primary when the child finishes. This satisfies the amendment
+  above ("the running agent, whoever that is").
+- **Ephemeral.** ``persist?: false`` skips the child's disk write (its
+  summary is the durable record, in the parent), and ``Subagent`` deletes
+  any stray child row after the turn, so a subagent never appears in the
+  picker.
+
+What is deliberately NOT here: the **subagent tab** (a key binding that
+subscribes to the child id and paints its transcript), the two-slot
+header's tab bar, and the model-precedence open question (definition
+``model`` wins over the session model, per ``State.effective_model/1`` —
+a deliberate first choice, revisitable). Recorded in ``TODO.md``.
+
+**Known limitation (recorded, not hidden): esc does not stop a running
+child.** The parent's turn worker blocks on the child's ``Session.run/2``
+inside the ``task`` call; ``Core.Interrupt`` is cooperative between tool
+calls, and an inline child is one call, so a stop arrives only after the
+child finishes. The child has its own interrupt id, so the plumbing
+exists (``Interrupt.request/1`` on ``child_id``); forwarding the parent's
+stop to the active child is the natural follow-up, alongside the existing
+"mid-tool hard cancel" note in ``ROADMAP.md``.
+
+Acceptance: ``test/coding_agent/core/session/subagent_test.exs`` (the
+round returns the summary, ephemerality, unknown/primary types, a failed
+child, depth 1 and the fail-closed gate, the parent events),
+``test/coding_agent/core/tools_test.exs`` (the task tool's presence by
+depth), and ``test/coding_agent/ui/tui_subagent_test.exs`` (the band's
+leaf identity and its revert).

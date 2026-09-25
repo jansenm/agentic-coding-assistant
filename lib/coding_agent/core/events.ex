@@ -33,6 +33,13 @@ defmodule CodingAgent.Core.Events do
     * `{:status_changed, :question_asked, %{questions: [...]}}` — the
       model asked the human a question and the driver must answer
       (ADR 027; interactive only)
+    * `{:subagent_started, child_id, agent_name, model}` — a `task` call
+      started a child session (ADR 017/018; published on the PARENT's
+      channel). The child's own events go to its own id; the TUI may
+      subscribe to `child_id` for a tab and must unsubscribe at
+      `:subagent_finished`.
+    * `{:subagent_finished, child_id, outcome}` — the child ended
+      (`:ok` or `:error`); only its summary is in the parent's context
     * `{:tool_started, name}` — one tool call about to run (before result)
     * `{:tool_executed, name, content, args}` — one finished tool result
       with the arguments it was called with (the display view records

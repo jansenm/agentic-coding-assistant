@@ -16,20 +16,32 @@ im jeweiligen ADR vermerkt.
 
 ## Zuerst: Live-Smoke
 
-* **Frage-Dialog doppelt gestellt?** Der Race-Fix (ADR 027 Amendment,
-  Commit `9dbfc00`) muss live bestätigt werden: der Dialog darf nach der
-  Antwort bleiben, wenn der Agent nachfragt; der zweite identische Ask
-  sollte ausbleiben. Nur mit echtem Provider prüfbar.
+* **Frage-Dialog doppelt gestellt?** Der Race-Fix (ADR 027 Amendment)
+  muss live bestätigt werden: der Dialog darf nach der Antwort bleiben,
+  wenn der Agent nachfragt; der zweite identische Ask sollte ausbleiben.
+  Nur mit echtem Provider prüfbar.
+* **Subagent (`task`) live.** Der Seam ist gebaut (ADR 018 Amendment,
+  2026-09-25), aber nur mit `test_mode`/Seam-Runner getestet: ein echter
+  Lauf startet den Provider im Kind, persistiert nicht, und sein Summary
+  landet als Tool-Result im Parent. Live prüfen, dass ein realer Lauf
+  sauber startet, das Band den Leaf nennt und der Parent-Kontext nur die
+  Zusammenfassung sieht.
+* **esc stoppt kein laufendes Kind.** Der Parent-Worker blockiert im
+  `task`-Call auf `Session.run/2` des Kindes; `Interrupt` wirkt zwischen
+  Tool-Calls, das Kind ist EIN Call. Der Parent-Stop kommt erst nach dem
+  Kind an. Die Kind-Id hat eine eigene Interrupt-Registrierung, das
+  Weiterleiten ist der natürliche Folge-Fix (zusammen mit „mid-tool hard
+  cancel“ in `ROADMAP.md`).
 
 ## Nächste Schritte (priorisiert)
 
-1. **Subagent (`task`) — ROADMAP Phase 6b, „the next slice“.** Der
-   größte Architekturgap: keine Delegation, keine Kontext-Isolation.
-   ADR 017/018 definieren den Seam (isolierter Kind-Kontext,
-   Summary-only-Rückgabe, Tiefe 1, Subagent-Tabs). Voraussetzung für die
-   Spezialisten-/Repo-Matrix (ADR 007). Die Live-Band-Konsequenz (ADR 018
-   Amendment: das Band nennt das Blatt der aktiven Delegation) ist
-   vorbereitet.
+1. **Subagent-Tab (ADR 018 Teil 2, Rest).** Der Seam und die Events
+   existieren (`{:subagent_started, child_id, name, model}` /
+   `{:subagent_finished, ...}`), `Session.subscribe/1` funktioniert auf
+   einer Kind-Id. Es fehlt die reine View-Slice: an die aktive Kind-Id
+   subscriben, den Kind-Transcript in einem Tab rendern (nicht in den
+   Parent mischen), bei `:subagent_finished` unsubscriben. Die TUI hält
+   `subagents`/`active_subagent` bereits.
 2. **`todowrite`/Plan-Tool (T4).** opencodes Weg, Mehrschritt-Arbeit
    sichtbar zu halten; dem Plan-Agenten fehlt sonst ein dauerhaftes
    Artefakt. Braucht eine kleine UI-Fläche.
@@ -49,7 +61,7 @@ im jeweiligen ADR vermerkt.
 | # | Punkt | Stand |
 | --- | --- | --- |
 | T4 | `todowrite`/Plan-Tool (braucht UI-Fläche) | offen — nächste Schritte 2 |
-| T5 | `task`/Subagent (ADR 017/018) | offen — nächste Schritte 1 (ROADMAP 6b) |
+| T5 | `task`/Subagent (ADR 017/018) | **Seam gebaut** (2026-09-25, ADR 018 Amendment); offen nur der Subagent-Tab — nächste Schritte 1 |
 | T7 | Slash-Commands/Command-Palette | offen — nächste Schritte 4 |
 | T8 | Undo/Redo via Git-Checkpoint + `/undo` | offen — nächste Schritte 5 |
 | T9 | `websearch` neben `webfetch` | offen (Such-API-Abhängigkeit; `webfetch` ist da) |
@@ -87,7 +99,7 @@ Damit ist aus dem alten P3-Befund nur noch offen:
 
 ## Struktur & Kosmetik (P4)
 
-* `tui.ex` aufteilen (~4360 Zeilen; interner Aufbau nur durch
+* `tui.ex` aufteilen (~4400 Zeilen; interner Aufbau nur durch
   `# --`-Kommentare getrennt) und den Mount-State **einmal** definieren
   (`mount_picker` ~180, `mount_session` ~315).
 * `TranscriptView.metrics/…` als **eine** Heimat der Pane-Geometrie —

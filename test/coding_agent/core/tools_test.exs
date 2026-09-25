@@ -21,6 +21,29 @@ defmodule CodingAgent.Core.ToolsTest do
     end
   end
 
+  describe "delegation/1 (task, ADR 017/018)" do
+    test "a depth-0 scope offers the task tool; a depth-1 scope does not" do
+      assert [%{name: "task"}] = Tools.delegation(%{root: ".", depth: 0})
+      assert Tools.delegation(%{root: ".", depth: 1}) == []
+    end
+
+    test "the default scope (no depth) offers it" do
+      assert Enum.map(Tools.delegation(), & &1.name) == ["task"]
+    end
+
+    test "the task tool is part of all/1 for a primary" do
+      assert "task" in Enum.map(Tools.all(%{root: ".", depth: 0}), & &1.name)
+      refute "task" in Enum.map(Tools.all(%{root: ".", depth: 1}), & &1.name)
+    end
+
+    test "the description names the available subagents" do
+      tool = CodingAgent.Core.Tools.Task.tool(%{root: ".", subagents: ["explore", "review"]})
+
+      assert tool.description =~ "explore"
+      assert tool.description =~ "review"
+    end
+  end
+
   describe "in_scope?/2" do
     setup do
       %{scope: %{root: "/tmp/agent-test-root"}}

@@ -139,7 +139,7 @@ defmodule CodingAgent.Core.PathHardeningTest do
     test "leak attempts all fail with a scope error", %{root: root, secret_file: secret} do
       symlink(secret, Path.join(root, "leak.txt"))
       symlink(secret, Path.join(root, "leakdir"))
-      tool = find("read_file", root)
+      tool = find("read_file", %{root: root})
 
       for path <- ["leak.txt", "/etc/passwd", "../../../etc/passwd"] do
         # containment may reject with a scope error (string) or fail the

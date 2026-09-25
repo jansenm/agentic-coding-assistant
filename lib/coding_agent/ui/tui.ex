@@ -249,6 +249,11 @@ defmodule CodingAgent.UI.Tui do
       # index: i, selected: [j], custom: nil|buf} while the agent waits for
       # an answer; a wizard, one question per screen
       question_prompt: nil,
+      # active subagent tabs (ADR 018): child_id => %{agent, model}; the
+      # live band names the leaf of the active delegation. Empty until a
+      # `task` call starts a child.
+      subagents: %{},
+      active_subagent: nil,
       last_error: nil,
       scroll_offset: 0,
       open_tool_id: nil,
@@ -425,6 +430,13 @@ defmodule CodingAgent.UI.Tui do
         #                    own agent, so the two can differ.
         running_agent: session_agent(effective_id),
         next_agent: session_agent(effective_id),
+        # active subagent tabs (ADR 018): child_id => %{agent, model}.
+        # The live band names the LEAF of the active delegation while a
+        # child runs; entries are dropped on {:subagent_finished}. The
+        # child's transcript is never blended into the parent view (the
+        # tab view itself is a later slice; this map is what it will read).
+        subagents: %{},
+        active_subagent: nil,
         # the agent executing the CURRENT turn (unknown until the
         # session broadcasts {:turn_started, agent}); used to attribute
         # live assistant/tool/compaction lines while a turn streams.
@@ -2661,6 +2673,37 @@ defmodule CodingAgent.UI.Tui do
     {:noreply, %{state | transcript: state.transcript ++ [{:info, "· context compacted"}]}}
   end
 
+  # A `task` call started a child session (ADR 017/018). The child's own
+  # events arrive on the child's channel; the parent event just tells the
+  # UI a delegation is live, so the live band and sidebar can name the
+  # LEAF. Its transcript is never blended into the parent view.
+  def handle_info({:agent, {:subagent_started, child_id, agent, model}}, state) do
+    state = touch(state)
+    sub = %{agent: agent, model: model}
+
+    {:noreply,
+     %{state | subagents: Map.put(state.subagents, child_id, sub), active_subagent: child_id}}
+  end
+
+  def handle_info({:agent, {:subagent_finished, child_id, outcome}}, state) do
+    state = touch(state)
+
+    transcript =
+      case outcome do
+        :error -> state.transcript ++ [{:info, "· subagent ended with an error"}]
+        _ -> state.transcript
+      end
+
+    {:noreply,
+     %{
+       state
+       | subagents: Map.delete(state.subagents, child_id),
+         active_subagent:
+           if(state.active_subagent == child_id, do: nil, else: state.active_subagent),
+         transcript: transcript
+     }}
+  end
+
   def handle_info({:agent, {:turn_started, agent}}, state) do
     # the session resolved the agent this turn is running as; refresh the
     # live attribution used by streaming lines and the live band.
@@ -3496,15 +3539,34 @@ defmodule CodingAgent.UI.Tui do
   # agent; the running turn keeps its own until the turn boundary). The
   # clock is resolved here, the words there.
   defp live_band(state) do
+    {agent, model} = band_identity(state)
+
     LiveBand.new(
-      agent: Map.get(state, :running_agent),
-      model: Map.get(state, :running_agent_model) || Map.get(state, :model),
+      agent: agent,
+      model: model,
       status: state.status,
       provider_down?: Map.get(state, :provider_down?, false),
       spin: Map.get(state, :spin, 0),
       elapsed_s: band_elapsed_s(state),
       label: band_label(state)
     )
+  end
+
+  # The band names the LEAF of the active delegation while a subagent runs
+  # (ADR 018 amendment: "the running agent, whoever that is"), else the
+  # primary's running identity. The child runs inside the parent's turn,
+  # so the parent's status stays the one shown; only the identity changes.
+  defp band_identity(state) do
+    sub = Map.get(state, :subagents, %{}) |> Map.get(Map.get(state, :active_subagent))
+
+    case sub do
+      %{agent: agent, model: model} ->
+        {agent, model}
+
+      _ ->
+        {Map.get(state, :running_agent),
+         Map.get(state, :running_agent_model) || Map.get(state, :model)}
+    end
   end
 
   # the elapsed context: the TOOL's runtime while a tool is in flight

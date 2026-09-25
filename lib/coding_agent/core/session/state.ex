@@ -57,6 +57,14 @@ defmodule CodingAgent.Core.Session.State do
     # while the human is answering. nil otherwise. The whole round is held
     # so the exchange stays atomic.
     question_pause: nil,
+    # Subagent seams (ADR 017/018). `depth` is 0 for a primary session and
+    # 1 for a delegated child; depth 1 excludes the `task` tool (bounded
+    # fan-out). `subagents` is the names a `task` call may delegate to,
+    # resolved at init. `persist?` is false for a child: its summary is the
+    # durable record (in the parent), not a picker entry of its own.
+    depth: 0,
+    subagents: [],
+    persist?: true,
     # The last few tool-call ROUND signatures of the CURRENT turn, newest
     # last — each is a sorted list of {name, args}. The window the
     # doom-loop guard looks at (ADR 026). Runtime-only: reset per turn
@@ -126,7 +134,11 @@ defmodule CodingAgent.Core.Session.State do
     # test-only seam: replaces the worker's blocking body, so a test can
     # hold a turn "in flight" without touching a provider. nil in
     # production. Runtime-only.
-    turn_runner: nil
+    turn_runner: nil,
+    # test-only seam: replaces a CHILD session's blocking body (the
+    # subagent path), so a test can exercise delegation without a provider.
+    # nil in production. Runtime-only.
+    subagent_runner: nil
   ]
 
   @type status :: :idle | :running | :interrupted | :error
@@ -151,6 +163,9 @@ defmodule CodingAgent.Core.Session.State do
           budget_pause: map() | nil,
           doom_pause: map() | nil,
           question_pause: map() | nil,
+          depth: non_neg_integer(),
+          subagents: [String.t()],
+          persist?: boolean(),
           recent_calls: [[{String.t(), map()}]],
           interactive: boolean(),
           subscribers: [reference()],
@@ -167,7 +182,8 @@ defmodule CodingAgent.Core.Session.State do
           queued_calls: [tuple()],
           pending_agent: term(),
           pending_model: term(),
-          turn_runner: (State.t() -> {State.t(), term()}) | nil
+          turn_runner: (State.t() -> {State.t(), term()}) | nil,
+          subagent_runner: (State.t() -> {State.t(), term()}) | nil
         }
 
   @doc "Builds a new session state."
@@ -239,6 +255,7 @@ defmodule CodingAgent.Core.Session.State do
       pending_agent: :none,
       pending_model: :none,
       turn_runner: nil,
+      subagent_runner: nil,
       status: idle_or_interrupted(state),
       # runtime guard counter: a snapshot saved with tool_rounds 25 (the
       # old never-reset bug) resurrected as 25, so resuming and

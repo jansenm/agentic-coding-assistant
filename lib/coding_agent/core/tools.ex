@@ -39,7 +39,9 @@ defmodule CodingAgent.Core.Tools do
           required(:root) => String.t(),
           optional(:mounts) => CodingAgent.Core.Sandbox.Mounts.t(),
           optional(:session_id) => String.t() | nil,
-          optional(:shell_mode) => CodingAgent.Core.Permissions.shell_mode()
+          optional(:shell_mode) => CodingAgent.Core.Permissions.shell_mode(),
+          optional(:depth) => non_neg_integer(),
+          optional(:subagents) => [String.t()]
         }
 
   @doc """
@@ -86,9 +88,29 @@ defmodule CodingAgent.Core.Tools do
     ]
   end
 
-  @doc "All tools a session carries (read-only + gated)."
+  @doc "All tools a session carries (read-only + gated + delegation)."
   @spec all(scope() | nil) :: [ReqLLM.Tool.t()]
-  def all(scope \\ nil), do: read_only(scope) ++ gated(scope)
+  def all(scope \\ nil), do: read_only(scope) ++ gated(scope) ++ delegation(scope)
+
+  @doc """
+  Delegation tools (the `task` tool, ADR 017/018).
+
+  Only a **primary** session (depth 0) may delegate: a subagent is depth
+  1 and gets an empty list, which enforces the depth-1 fan-out bound at
+  the same place the registry is narrowed. The gate intercepts a `task`
+  call before execution (`Core.Session.Subagent`), so the callback here
+  is a safety net.
+  """
+  @spec delegation(scope() | nil) :: [ReqLLM.Tool.t()]
+  def delegation(scope \\ nil) do
+    scope = scope || default_scope()
+
+    if is_map(scope) and Map.get(scope, :depth, 0) == 0 do
+      [CodingAgent.Core.Tools.Task.tool(scope)]
+    else
+      []
+    end
+  end
 
   @doc """
   Default scope: the process working directory.

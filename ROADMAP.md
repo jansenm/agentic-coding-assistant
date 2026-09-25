@@ -325,12 +325,16 @@ same problem viewed from different ends.
      018): sidebar shows two slots — `running` and `next` — with models;
      **Tab** switches the primary via `Session.set_agent/2`, recomputed
      from the session's base values so switching never compounds.
-   - **6b. Subagent seam (`task` tool)** — the next slice: a child
-     session with an isolated context, returning only a summary (ADR 007
-     rule 3), depth 1 (subagents spawn no children), and per-subagent
-     tabs in the UI (ADR 018). Escalations are part of the definition,
-     never requested at runtime by a subagent (which has no human
-     channel).
+   - **6b. Subagent seam (`task` tool)** ✅ (2026-09-25) — the core seam
+     shipped: `Core.Tools.Task`, `Core.Session.Subagent` starts a child
+     session with an isolated context, returns only its summary (ADR 007
+     rule 3 / ADR 018), depth 1 (a child's tool set excludes `task`), the
+     parent events `{:subagent_started, ...}` / `{:subagent_finished,
+     ...}`, ephemeral children (`persist?: false`), the live band naming
+     the active leaf. Escalations stay definition-time, never runtime
+     (ADR 017). **The subagent TAB (viewing a child's transcript) is the
+     remaining view slice** — the events and the child channel exist;
+     see `TODO.md`.
    - **6c. Matrix / orchestration** — vertical and horizontal
      specialists, cross-repo atomicity (needs its own ADR).
 7. **Extensibility** — skills as per-specialist knowledge packages;
@@ -494,7 +498,7 @@ TUI wish-list (user's own list, keyboard-first, from the live sessions):
 | `websearch` | one day | search-API dependency; low value for a coding agent |
 | `lsp` | unlikely | language-server surface is huge; compile/test loop covers most agent needs |
 | `skill` | ADR 007 territory | frontmatter loading documented in configuration-landscape; execution later |
-| `task` (subagent) | slice 6b | defined in ADR 017/018: isolated child context, summary-only return, depth 1, per-subagent UI tabs. Not built yet |
+| `task` (subagent) | `task` ✅ (6b) | isolated child context, summary-only return, depth 1 (ADR 017/018). Shipped 2026-09-25; the per-subagent UI tab is the remaining view slice |
 | `todowrite` | one day | session scratchpad, pure state, cheap — after dogfood |
 | background shell runs | one day | the real escape hatch for very long jobs: tool returns "started, job id", agent polls / gets notified, user keeps working; needs session+TUI machinery (phases 3-4) — v1 answer is generous `timeout_secs` |
 | mid-tool hard cancel | one day | `Core.Interrupt` stops a running turn between tools/at loop boundaries, but a single long `shell` still runs to its timeout (up to 1800 s). Needs `Shell` to expose a registered port-kill handle (same `Interrupt.register/2` seam) so esc kills the in-flight command |

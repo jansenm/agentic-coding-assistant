@@ -241,6 +241,10 @@ system-array side; whether plan should be, too, is open. See
 Still open (subagent slice)
 
 5. **Model precedence** for subagents: definition ``model`` vs. session
-   model vs. an inherited default. Claude Code's order (per-invocation >
-   definition > env > session) is a good starting point, but it only
-   matters once the ``task`` seam exists.
+   model vs. an inherited default. **Decided 2026-09-25** (with the
+   ``task`` seam): the definition's ``model`` wins over the session model
+   (``State.effective_model/1``, the same precedence ADR 017 set for a
+   primary), and a definition without a model inherits the parent's
+   effective model. Claude Code's fuller order (per-invocation >
+   definition > env > session) is a possible later refinement; there is
+   no per-invocation model override today.

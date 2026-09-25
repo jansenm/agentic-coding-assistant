@@ -95,22 +95,27 @@ defmodule CodingAgent.Core.Session.ToolRunner do
   end
 
   @doc """
-  The sandbox scope for a session: the scope root, its configured mounts
-  and the session id (ADR 022 — the id lets the sandbox bind a
-  session-persistent scratch over `/tmp`).
+  The sandbox scope for a session: the scope root, its configured mounts,
+  the session id (ADR 022 — the id lets the sandbox bind a
+  session-persistent scratch over `/tmp`), the shell mode, plus the
+  delegation fields (ADR 017/018): `depth` gates the `task` tool and
+  `subagents` is what it advertises.
   """
   @spec scope(
           String.t() | nil,
           Sandbox.Mounts.t() | nil,
           String.t() | nil,
-          Permissions.shell_mode()
+          Permissions.shell_mode(),
+          keyword()
         ) :: CodingAgent.Core.Tools.scope()
-  def scope(scope_root, mounts, session_id \\ nil, shell_mode \\ :rw) do
+  def scope(scope_root, mounts, session_id \\ nil, shell_mode \\ :rw, extras \\ []) do
     %{
       root: scope_root || File.cwd!(),
       mounts: mounts || Sandbox.Mounts.empty(),
       session_id: session_id,
-      shell_mode: shell_mode
+      shell_mode: shell_mode,
+      depth: Keyword.get(extras, :depth, 0),
+      subagents: Keyword.get(extras, :subagents, [])
     }
   end
 end
