@@ -4095,10 +4095,10 @@ defmodule CodingAgent.UI.Tui do
         [
           {"session", String.slice(state.session_id, 0, 22)},
           {"effort", effort_name(effort)},
-          {"tokens in", fmt_k(Usage.input_tokens(usage))},
-          {"tokens out", fmt_k(Usage.output_tokens(usage))},
-          {"context", "#{fmt_k(last_in)} (#{pct}% win)", pct_role},
-          {"compacts at", "#{fmt_k(trigger)} tok", pct_role}
+          {"tokens in", {:decimal, fmt_k(Usage.input_tokens(usage)), nil}},
+          {"tokens out", {:decimal, fmt_k(Usage.output_tokens(usage)), nil}},
+          {"context", {:decimal, fmt_k(last_in), " (#{pct}% win)"}, pct_role},
+          {"compacts at", {:decimal, fmt_k(trigger), " tok"}, pct_role}
         ],
         :sidebar
       )

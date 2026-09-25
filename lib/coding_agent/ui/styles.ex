@@ -115,6 +115,20 @@ defmodule CodingAgent.UI.Styles do
 
   # -- definition list -------------------------------------------------------
 
+  @typedoc """
+  A value aligned on its decimal point (see `definition_list/2`): the
+  rendered number, plus an optional trailing suffix (`" (96% win)"`,
+  `" tok"`) that hangs after the decimal part.
+  """
+  @type decimal_value :: {:decimal, String.t(), String.t() | nil}
+
+  @typedoc "The value of a definition row: plain text (nil reads as an em dash) or decimal-aligned."
+  @type definition_value :: String.t() | nil | decimal_value()
+
+  @typedoc "A definition row; the optional role colors the value only."
+  @type definition_pair ::
+          {String.t(), definition_value()} | {String.t(), definition_value(), role()}
+
   @doc """
   A key/value list for a `Paragraph`: each label in `:muted`, each value
   in `:text` (or a per-row role), one line per pair. Replaces the
@@ -129,43 +143,73 @@ defmodule CodingAgent.UI.Styles do
   value with a colon, so the values align in one column. A bare
   concatenation (`sessiontui-259`) is unreadable — the separator is the
   point of a definition list, not decoration.
+
+  A value of the shape `{:decimal, number, suffix}` is aligned on its
+  decimal point across the list: integer parts are padded to the widest
+  one, so the points (and the suffixes that follow them) land in a
+  column instead of ragging with the magnitude. Compact counts read as
+  one column this way:
+
+      tokens in:      0
+      tokens out:  10.0k
+      context:    480.0k (96% win)
+      compacts at: 180.0k tok
+
+  The suffix is not aligned — column-aligning it too would need a second
+  column and reads as a table, not a definition list.
   """
-  @spec definition_list(
-          [{String.t(), String.t()} | {String.t(), String.t(), role()}],
-          surface()
-        ) :: [Text.Line.t()]
+  @spec definition_list([definition_pair()], surface()) :: [Text.Line.t()]
   def definition_list(pairs, surface \\ :base) when is_list(pairs) do
-    width =
-      pairs
-      |> Enum.map(fn
-        {label, _, _} -> String.length(to_string(label))
-        {label, _} -> String.length(to_string(label))
-      end)
+    rows = Enum.map(pairs, &normalize_pair/1)
+
+    label_width =
+      rows
+      |> Enum.map(fn {label, _value, _role} -> String.length(label) end)
       |> Enum.max(fn -> 0 end)
 
-    Enum.map(pairs, fn
-      {label, value, value_role} ->
-        definition_line(label, value, width, value_role, surface)
+    number_width =
+      rows
+      |> Enum.map(fn {_label, value, _role} -> number_width(value) end)
+      |> Enum.max(fn -> 0 end)
 
-      {label, value} ->
-        definition_line(label, value, width, :text, surface)
-    end)
+    Enum.map(rows, &definition_line(&1, label_width, number_width, surface))
   end
 
-  defp definition_line(label, value, width, value_role, surface) do
-    label_span =
-      label
-      |> to_string()
-      |> then(&String.pad_trailing("#{&1}:", width + 1))
+  defp normalize_pair({label, value, role}), do: {to_string(label), value, role}
+  defp normalize_pair({label, value}), do: {to_string(label), value, :text}
+
+  # The integer-part width a decimal value claims in the number column;
+  # 0 for plain values, so an all-text list has no number column at all.
+  defp number_width({:decimal, number, _suffix}),
+    do: number |> split_decimal() |> elem(0) |> String.length()
+
+  defp number_width(_value), do: 0
+
+  defp definition_line({label, value, value_role}, label_width, number_width, surface) do
+    label_span = String.pad_trailing("#{label}:", label_width + 1)
 
     # label and value share the surface: the label is `:muted` ON that
     # surface (so its fg and bg match the value's, no invisible label)
     Text.Line.new([
       Text.Span.new(label_span <> " ", style: role(:muted, surface)),
-      Text.Span.new(if(value in [nil, ""], do: "—", else: to_string(value)),
-        style: role(value_role, surface)
-      )
+      Text.Span.new(render_value(value, number_width), style: role(value_role, surface))
     ])
+  end
+
+  defp render_value({:decimal, number, suffix}, number_width) do
+    {int, frac} = split_decimal(number)
+    String.pad_leading(int, number_width) <> frac <> (suffix || "")
+  end
+
+  defp render_value(value, _number_width),
+    do: if(value in [nil, ""], do: "—", else: to_string(value))
+
+  # "10.0k" -> {"10", ".0k"}; "0" -> {"0", ""} (no decimal part).
+  defp split_decimal(number) do
+    case String.split(number, ".", parts: 2) do
+      [int, frac] -> {int, "." <> frac}
+      [int] -> {int, ""}
+    end
   end
 
   @doc "A single blank spacer line (one spacing token instead of ad-hoc empty lines)."

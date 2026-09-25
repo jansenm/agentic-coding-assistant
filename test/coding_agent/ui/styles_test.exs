@@ -122,6 +122,32 @@ defmodule CodingAgent.UI.StylesTest do
       assert %Text.Line{spans: [_, value]} = row
       assert value.style == Styles.role(:warning)
     end
+
+    test "decimal values align on the point; their suffixes follow it" do
+      rows =
+        Styles.definition_list([
+          {"tokens in", {:decimal, "0", nil}},
+          {"tokens out", {:decimal, "10.0k", nil}},
+          {"context", {:decimal, "480.0k", " (96% win)"}},
+          {"compacts at", {:decimal, "180.0k", " tok"}}
+        ])
+
+      rendered = Enum.map(rows, &Enum.map_join(&1.spans, "", fn s -> s.content end))
+
+      assert rendered == [
+               "tokens in:     0",
+               "tokens out:   10.0k",
+               "context:     480.0k (96% win)",
+               "compacts at: 180.0k tok"
+             ]
+    end
+
+    test "decimal rows keep their per-row role and label styling" do
+      [row] = Styles.definition_list([{"context", {:decimal, "480.0k", " (96% win)"}, :warning}])
+      assert %Text.Line{spans: [label, value]} = row
+      assert label.style == Styles.role(:muted)
+      assert value.style == Styles.role(:warning)
+    end
   end
 
   describe "status_badge/2" do
