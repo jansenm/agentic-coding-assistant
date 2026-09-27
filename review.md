@@ -24,32 +24,64 @@ Branch auch auf `devel` landen soll, ist eine eigene Entscheidung: die
 Konsolidierung `935cf92` hat die Review-Dokumente bewusst entfernt. Das
 hier ist deren Nachfolger, nicht ihre Rückkehr.
 
+> **Nachtrag 2026-09-25 (Rebase).** `dev/mjansen` ist kurz nach diesem
+> Record auf `devel` neu aufgesetzt worden — `devel` war von `935cf92`
+> auf **`1b78de4`** („the task tool — subagents return a summary")
+> weitergezogen, und `dev/mjansen` ist dem gefolgt. Jeder Hash **im
+> Fließtext** dieses Dokuments ist damit historisch: er benennt den
+> Commit, wie er zum Review-Zeitpunkt hieß. Er heiße jetzt:
+>
+> | vorher (Text) | jetzt |
+> | --- | --- |
+> | `85daad9` | `78da98e` |
+> | `6ee2fab` | `d58a681` |
+> | `b4f6351` | `cc9cebf` |
+> | `423cd0d` | `9e8ab6a` |
+> | `09e2077` | `dad6c18` |
+> | `81be63a` | `756576b` |
+>
+> `935cf92` und `9dbfc00` sind unverändert (sie liegen auf `devel`).
+> Kein Finding ändert sich dadurch. Die **Trees der sechs Commits** sind
+> unverändert — belegt: das Code-Patch von `756576b` (`lib/` + `test/`)
+> ist zeichengleich mit dem von `81be63a`, nur die Hunk-Offsets
+> verschieben sich. Was sich ändert, ist der Boden darunter: `devel` und
+> damit `1b78de4` liegt jetzt unter dem Branch, und zwei Dateien tragen
+> das Ergebnis der Konfliktauflösung — `TODO.md` (die `Stand`-Zeile) und
+> `docs/source/decisions/018-agent-ui-display.rst`, wo beide Seiten einen
+> Anhang an dasselbe Dateiende geschrieben hatten und jetzt **beide**
+> Amendments stehen (das `task`-Seam-Amendment aus `1b78de4` und das
+> Sidebar-Amendment aus `756576b`). Abschnitt 5 nennt die neuen Hashes.
+
 ---
 
 ## 1. `9dbfc00` — fix(ui): the paused dialog survives a late reply (ADR 027)
 
-Die Analyse trägt. Umsetzung gegen den Baum geprüft:
+Die Analyse trägt. Umsetzung gegen den Baum geprüft — die Zeilenangaben
+sind auf den **heutigen** Baum gezogen (Seam + Sidebar-Neugliederung
+haben `tui.ex` verschoben); zum Review-Zeitpunkt lagen sie um ~5-20
+Zeilen weiter oben (siehe Nachtrag):
 
 - Die drei `{:ok, _}`-Reply-Handler sind tatsächlich No-Ops
-  (`tui.ex:2341`, `:2354`, `:2368` — `handle_info` für `__budget_decided__`,
+  (`tui.ex:2357`, `:2370`, `:2384` — `handle_info` für `__budget_decided__`,
   `__doom_decided__`, `__question_answered__`).
 - Alle drei Fehlerpfade laufen über
-  `note_failure(resync_prompt(state, kind), …)` (`tui.ex:2349`, `:2359`,
-  `:2373`); `resync_prompt/2` (`tui.ex:2771`) fängt `:exit` ab — eine tote
+  `note_failure(resync_prompt(state, kind), …)` (`tui.ex:2365`, `:2375`,
+  `:2389`); `resync_prompt/2` (`tui.ex:2818`) fängt `:exit` ab — eine tote
   Session nimmt die TUI nicht mit `:noproc` mit.
 - `finish_wrap_up/1` (test_mode) broadcastet jetzt `:idle`
-  (`session.ex:1643`) — konsistent mit `complete_turn/3`.
-- `pending: []` wird bei den Pause-Broadcasts gesetzt (`tui.ex:2441`,
-  `:2465`, `:2480`, `:2503`); `pause_label/1` (`tui.ex:3551`) ist da.
-- Backspace: `String.slice(buf, 0..-2//1)` (`tui.ex:1511`) — greift nur im
+  (`session.ex:1765`) — konsistent mit `complete_turn/3`.
+- `pending: []` wird bei den Pause-Broadcasts gesetzt (`tui.ex:2457`,
+  `:2481`, `:2496`, `:2519`); `pause_label/1` (`tui.ex:3617`) ist da.
+- Backspace: `String.slice(buf, 0..-2//1)` (`tui.ex:1527`) — greift nur im
   Nicht-`""`-Zweig, korrekt.
 - Keine Flakes: volle Läufe mit `--seed 0/1/2/3` und zufälligen Seeds →
-  jeweils **849 grün**.
+  jeweils grün — zum Review-Zeitpunkt **849**, nach dem Rebase auf
+  `1b78de4` **870** (der Seam bringt eigene Tests mit).
 
 **Freigabe: kann so bleiben.** Zwei Anmerkungen, keine Blocker:
 
 1. **Der Approval-Reply ist als einziger nicht auf No-Op umgestellt.**
-   `handle_info({:__decided__, {:ok, status}}, state)` (`tui.ex:2325`)
+   `handle_info({:__decided__, {:ok, status}}, state)` (`tui.ex:2341`)
    schreibt weiterhin `status` und `pending` aus der Antwort. Nach der im
    Commit selbst formulierten Regel („die Broadcasts sind die Autorität")
    ist das die letzte Stelle, an der ein verspäteter Reply frischen
@@ -58,7 +90,7 @@ Die Analyse trägt. Umsetzung gegen den Baum geprüft:
    unauffällig — aber die Inkonsistenz bleibt. Entweder gleicher No-Op
    oder ein Kommentar, warum Approval bewusst anders ist.
    *Offen, Code.*
-2. `open_pause/3` (`tui.ex:2791`, `:2798`, `:2805`) ist dreimal dieselbe
+2. `open_pause/3` (`tui.ex:2838`, `:2845`, `:2852`) ist dreimal dieselbe
    Form mit einem anderen Prompt-Feld. Nach der Duplikat-Regel im
    `AGENTS.md` könnte das eine Funktion mit Feldnamen-Mapping sein.
    Kosmetisch. *Offen, Code.*
@@ -116,7 +148,9 @@ so gelassen. Der gelandete Commit selbst wurde in keinem Fall angefasst.
 `Styles.definition_list/2` nimmt `{:decimal, number, suffix}`: der
 Ganzzahl-Teil wird auf den breitesten der Liste gepolstert, Dezimalteil
 und Suffix folgen ungepolstert. Die vier Token-Zeilen der Sidebar nutzen
-es (`tui.ex:3693-3697`), `session`/`effort` bleiben Text, eine Liste ohne
+es (`tui.ex:3693-3697` im Tree von `78da98e`; nach der Sidebar-
+Neugliederung `756576b` stehen sie in `tui.ex:3746-3749`, `session`/`effort`
+in eigenen Blöcken), `session`/`effort` bleiben Text, eine Liste ohne
 Decimal-Wert hat keine Zahlenspalte.
 
     tokens in:      0
@@ -209,38 +243,48 @@ mit `make -n html` gegen ein leeres `VIRTUALENV` und einem echten
 
 ## 5. Was als Commit draus geworden ist
 
+Nach dem Rebase (Nachtrag oben) heißen die Commits des Branch so:
+
 ```
-423cd0d review: the record for 9dbfc00, 935cf92 and 85daad9     (dev/mjansen)
-b4f6351 docs(makefile): a cold checkout can build the docs      (dev/mjansen)
-6ee2fab docs(todo): the two stale line counts and O3's done half (dev/mjansen)
-85daad9 feat(ui): the sidebar's token values align on the decimal point
+756576b feat(ui): the sidebar is three blocks, headed by the scope  (dev/mjansen)
+dad6c18 review: correct my own stale bits in the record             (dev/mjansen)
+9e8ab6a review: the record for 9dbfc00, 935cf92 and 85daad9         (dev/mjansen)
+cc9cebf docs(makefile): a cold checkout can build the docs          (dev/mjansen)
+d58a681 docs(todo): the two stale line counts and O3's done half    (dev/mjansen)
+78da98e feat(ui): the sidebar's token values align on the decimal point (dev/mjansen)
+1b78de4 feat(agents): the task tool — subagents return a summary    (devel)
 935cf92 docs: consolidate the backlog into TODO.md, ROADMAP stays the plan (devel)
 ```
 
-`6ee2fab` (nur Text, 1 Datei, +8/−4): die zwei Zeilenmaße korrigiert (P4),
+Vorher (zum Review-Zeitpunkt) hießen dieselben Commits `423cd0d`,
+`b4f6351`, `6ee2fab`, `85daad9`, `09e2077`; die Zuordnung steht in der
+Tabelle im Nachtrag. Der Baum des jeweiligen Commits ist unverändert.
+
+`d58a681` (nur Text, 1 Datei, +8/−4): die zwei Zeilenmaße korrigiert (P4),
 O3 in „punktausgerichtet erledigt / rechtsbündig offen" geteilt, `Stand`-
 Zeile von `9dbfc00` auf `935cf92` gezogen.
 
-`b4f6351` (eine Zeile im `docs/Makefile`): macht den Bootstrap-Pfad
+`cc9cebf` (eine Zeile im `docs/Makefile`): macht den Bootstrap-Pfad
 gangbar (siehe Abschnitt 4) — der eigentliche Fund hinter „sphinx builds
 clean". Verifiziert mit `make -n html` gegen ein leeres `VIRTUALENV` und
 einem echten `make html` in `docs/`.
 
-`423cd0d` ist dieser Text. `devel` zeigt weiterhin auf `935cf92`; die
-drei Commits liegen nur auf `dev/mjansen`.
+`9e8ab6a` ist dieser Text. `devel` steht inzwischen auf `1b78de4` (dem
+`task`-Seam, der nach diesem Record gelandet ist); die sechs Commits des
+Branch liegen nur auf `dev/mjansen` und sitzen jetzt direkt darauf.
 
 ## 6. Offen
 
 Code, nicht Text — bewusst nicht angefasst:
 
-- Approval-Reply (`tui.ex:2325`) auf No-Op oder Kommentar (Abschnitt 1.1).
+- Approval-Reply (`tui.ex:2341`) auf No-Op oder Kommentar (Abschnitt 1.1).
 - `open_pause/3` entdoppeln (Abschnitt 1.2).
 
 Text, offen auf Ansage:
 
 - `935cf92`s „Vier Dokumente gelöscht" steht so noch in der `devel`-
   Historie; wenn das dort auch sichtbar korrigiert werden soll, braucht es
-  dieselbe Art Folge-Commit wie `6ee2fab`.
+  dieselbe Art Folge-Commit wie `d58a681`.
 - `review.md` selbst: ob dieser Record auf `devel` soll, ist eine
   Produktentscheidung, keine Frage der Richtigkeit. `935cf92` hat die
   Review-Dokumente bewusst entfernt; dann sollte die Einordnung „einmalig

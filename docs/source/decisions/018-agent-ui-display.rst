@@ -134,9 +134,10 @@ Open questions for the implementation slice
    **Answered 2026-09-23** (amendment below): neither — the running slot
    gets its own row above the input (the live band), the sidebar keeps
    the badges, and the composer's row below the field is setup only.
-   **Refined 2026-09-25** (second amendment): the sidebar keeps the
-   running/next SPLIT, but as definition rows in its identity block, not
-   as badges — the panel was regrouped and the badge shape went with it.
+   **Refined 2026-09-25** (the sidebar amendment lower down): the sidebar
+   keeps the running/next SPLIT, but as definition rows in its identity
+   block, not as badges — the panel was regrouped and the badge shape
+   went with it.
 4. **Finished subagent detail.** Keep the last subagent's tab until the
    next delegation (easier to read), or close immediately (matches
    ephemeral semantics). Lean "keep until replaced", read-only.
@@ -477,7 +478,9 @@ numbers; "status" names one of its rows at best).
    while a turn is in flight and they differ, only ``next`` while idle.
    The value keeps the ``:agent`` role, so the identity colour survives
    the badge → definition-row move; the *shape* supersedes the badges the
-   2026-09-23 amendment kept in the sidebar, the *split* does not.
+   2026-09-23 amendment kept in the sidebar, the *split* does not. (The
+   subagent-tab amendment above leaves this untouched: it changes what
+   the band names, not how the sidebar renders the split.)
 5. **The empty rows below stay empty.** The panel is short and the column
    is full height; the alternative (padding the content out to fill the
    column) is decoration. Recorded because it is a decision, not an
@@ -491,3 +494,10 @@ rows), ``tui_agent_test.exs`` (the panel heads with the scope, the old
 title string is gone), ``tui_visual_test.exs`` (the heading is the first
 content row, the model is split, and both disappear with the panel when
 ``ctrl-x p`` hides it).
+
+**Where this sits relative to the subagent tab** (the amendment above):
+the tab will add a bounded tab bar and, possibly, rows in this panel —
+the layout here was chosen so a later block can be appended without
+re-cutting the three that exist. TODO.md's O5 (the empty rows) and this
+heading are deliberately independent of the tab work: neither reads the
+``subagents`` map.

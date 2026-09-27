@@ -1,9 +1,12 @@
 # TODO — der aktive Backlog
 
-Stand: 2026-09-25, Branch `devel` @ `1b78de4`. Gegen den Baum verifiziert;
-die beiden Zeilenmaße im P4-Punkt gegen den Commit korrigiert, in dem sie
-falsch waren (Folge-Commit). Die Sidebar-Einträge O4/O5 in Runde 5 auf
-`dev/mjansen` gegen den dortigen Baum nachgezogen (noch nicht auf `devel`).
+Stand: 2026-09-25, Branch `devel` @ `1b78de4`. `dev/mjansen` ist auf
+`devel` rebased (HEAD `756576b`) — die sechs Branch-Commits haben dabei
+neue Hashes bekommen; die alte↔neue Zuordnung steht in `review.md`
+(Nachtrag oben und Abschnitt 5). Gegen den Baum verifiziert; die beiden
+Zeilenmaße im P4-Punkt gegen den Commit korrigiert, in dem sie falsch
+waren (Folge-Commit). Die Sidebar-Einträge O4/O5 in Runde 5 auf
+`dev/mjansen` nachgezogen (noch nicht auf `devel`).
 
 Der **große Plan** steht in `ROADMAP.md` (Phasen, Produktthese,
 „Later“-Ideen, Ground Rules). **Entscheidungen** stehen in den ADRs
