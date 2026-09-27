@@ -496,8 +496,10 @@ content row, the model is split, and both disappear with the panel when
 ``ctrl-x p`` hides it).
 
 **Where this sits relative to the subagent tab** (the amendment above):
-the tab will add a bounded tab bar and, possibly, rows in this panel —
-the layout here was chosen so a later block can be appended without
-re-cutting the three that exist. TODO.md's O5 (the empty rows) and this
-heading are deliberately independent of the tab work: neither reads the
-``subagents`` map.
+the tab adds a bounded tab bar above the transcript (shipped with the
+subagent-tab amendment, ``@tab_bar_cap`` 5) and may yet add rows in this
+panel — the layout here was chosen so a later block can be appended
+without re-cutting the three that exist. TODO.md's O5 (the empty rows)
+and this heading are deliberately independent of the tab work: neither
+reads the ``subagents`` map; the shipped tab bar took the row above the
+transcript and did not touch this panel.

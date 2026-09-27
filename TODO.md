@@ -1,12 +1,15 @@
 # TODO — der aktive Backlog
 
-Stand: 2026-09-25, Branch `devel` @ `1b78de4`. `dev/mjansen` ist auf
-`devel` rebased (HEAD `756576b`) — die sechs Branch-Commits haben dabei
-neue Hashes bekommen; die alte↔neue Zuordnung steht in `review.md`
-(Nachtrag oben und Abschnitt 5). Gegen den Baum verifiziert; die beiden
-Zeilenmaße im P4-Punkt gegen den Commit korrigiert, in dem sie falsch
-waren (Folge-Commit). Die Sidebar-Einträge O4/O5 in Runde 5 auf
-`dev/mjansen` nachgezogen (noch nicht auf `devel`).
+Stand: 2026-09-27, Branch `devel` @ `f830a8f` („subagent tabs, parallel
+delegation“, ADR 018 Teil 2). `dev/mjansen` ist **zweimal** auf `devel`
+rebased worden (erst auf `1b78de4`, dann auf `f830a8f`); die sechs
+ursprünglichen Branch-Commits haben dabei jedes Mal neue Hashes
+bekommen, die alte↔neue Zuordnung steht in `review.md` (Nachtrag und
+Abschnitt 5). Gegen den Baum verifiziert; die beiden Zeilenmaße im
+P4-Punkt gegen den Commit korrigiert, in dem sie falsch waren
+(Folge-Commit), zuletzt auf die heutigen Bäume nachgezogen. Die
+Sidebar-Einträge O4/O5 in Runde 5 auf `dev/mjansen` nachgezogen (noch
+nicht auf `devel`).
 
 Der **große Plan** steht in `ROADMAP.md` (Phasen, Produktthese,
 „Later“-Ideen, Ground Rules). **Entscheidungen** stehen in den ADRs
@@ -99,9 +102,13 @@ Damit ist aus dem alten P3-Befund nur noch offen:
 
 ## Struktur & Kosmetik (P4)
 
-* `tui.ex` aufteilen (~4400 Zeilen; interner Aufbau nur durch
-  `# --`-Kommentare getrennt) und den Mount-State **einmal** definieren
-  (`mount_picker` ~114, `mount_session` ~212).
+* `tui.ex` aufteilen (`4761` Zeilen auf `devel`, `4825` auf dem
+  Branch-HEAD; der interne Aufbau ist nur durch `# --`-Kommentare
+  getrennt) und den Mount-State **einmal** definieren (`mount_picker`
+  122 Zeilen auf beiden Bäumen, `mount_session` 220 auf `devel` / 224 auf
+  dem Branch — Funktionsspanne `defp` bis `end`). Die früheren Maße
+  (`~114/~212`) waren die von `935cf92`, dem Commit, in dem sie falsch
+  waren.
 * `TranscriptView.metrics/…` als **eine** Heimat der Pane-Geometrie —
   derzeit verstreut (`content_width`, `pane_size`, Overlay-Raum).
 * `test_mode?`-Branches durch injizierte Behaviours ersetzen, wo sie
