@@ -8,9 +8,13 @@ defmodule CodingAgent.Core.Events do
   `Registry.dispatch/3` + `send(pid, {:agent, event})` dance; a change to
   the delivery shape meant five edits.
 
-  `publish/2` is the one writer. Subscribers receive `{:agent, event}`
-  messages; the event terms are listed in `event/0` so the vocabulary is
-  greppable and the UI/core contract is explicit.
+  `publish/2` is the one writer. Subscribers receive `{:agent, id, event}`
+  messages — the SOURCE session id rides along, because a TUI may
+  subscribe to more than one session (a parent and its subagent children,
+  ADR 018) and must route each event to the right view rather than
+  blending a child's stream into the parent's transcript. The event terms
+  are listed in `event/0` so the vocabulary is greppable and the UI/core
+  contract is explicit.
   """
 
   @registry CodingAgent.EventRegistry
@@ -52,12 +56,16 @@ defmodule CodingAgent.Core.Events do
   @type event :: term()
 
   @doc """
-  Publishes `event` to every subscriber of `session_id`.
+  Publishes `event` to every subscriber of `session_id`. The delivered
+  message is `{:agent, session_id, event}`: the id is the SOURCE, so a
+  multi-session subscriber (the TUI with subagent tabs, ADR 018) can route
+  it. A single-session subscriber still finds the event in the third
+  element.
   """
   @spec publish(String.t(), event()) :: :ok
   def publish(session_id, event) do
     Registry.dispatch(@registry, {@key, session_id}, fn entries ->
-      for {pid, _} <- entries, do: send(pid, {:agent, event})
+      for {pid, _} <- entries, do: send(pid, {:agent, session_id, event})
     end)
 
     :ok

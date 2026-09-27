@@ -1712,15 +1712,44 @@ defmodule CodingAgent.Core.Session do
   # A failed delegation returns an error result (the model can correct the
   # subagent_type and retry) rather than crashing the parent turn.
   #
+  # A round's `task` calls run CONCURRENTLY, capped (ADR 018): delegating
+  # to N repos should not take N child-turns end to end. The cap defaults
+  # to Ollama's parallel limit and is configurable
+  # (`Config.subagent_concurrency/1`). Results keep call order
+  # (`ordered: true`), so a round's tool results are deterministic.
+  #
   # `{:tool_started, "task"}` is published per call (as `ToolRunner` does
   # for a gated tool), so the status band reads "running task" for the
-  # child's whole duration; the matching `{:tool_executed, ...}` is
+  # children's whole duration; the matching `{:tool_executed, ...}` is
   # published by `broadcast_tools/3` with the round's results.
   defp run_subagents(state, task_calls) do
-    Enum.map(task_calls, fn call ->
+    Enum.each(task_calls, fn _call ->
       Events.publish(state.id, {:tool_started, CodingAgent.Core.Tools.Task.name()})
-      CodingAgent.Core.Session.Subagent.run(state, call)
     end)
+
+    cap = CodingAgent.Core.Config.subagent_concurrency(state.scope_root)
+
+    task_calls
+    |> Task.async_stream(
+      fn call -> CodingAgent.Core.Session.Subagent.run(state, call) end,
+      max_concurrency: cap,
+      ordered: true,
+      # a child is a whole turn: it may run long, so no wall-clock cap.
+      # `Subagent.run/2` never raises, but a crashed task arrives as
+      # {:exit, _} — turn that into an error RESULT rather than letting
+      # the MatchError take the parent's worker down.
+      timeout: :infinity
+    )
+    |> Enum.zip(task_calls)
+    |> Enum.map(fn
+      {{:ok, result}, _call} -> result
+      {{:exit, reason}, call} -> subagent_exit_result(call, reason)
+    end)
+  end
+
+  defp subagent_exit_result(call, reason) do
+    {id, name, _args} = ToolCall.normalize(call)
+    %{id: id, name: name, content: "error: subagent crashed: #{inspect(reason)}"}
   end
 
   # Gate-side refusals are logged with their id and reason so a live

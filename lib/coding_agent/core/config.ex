@@ -32,6 +32,7 @@ defmodule CodingAgent.Core.Config do
   # longer repeats these). ------------------------------------------------
 
   @default_max_tool_rounds 100
+  @default_subagent_concurrency 3
   @default_context_window_tokens 500_000
   @default_compaction_wall_clock_ms 300_000
   @default_compaction_inactivity_ms 120_000
@@ -139,6 +140,33 @@ defmodule CodingAgent.Core.Config do
 
   defp configured_rounds(%__MODULE__{config: config}) do
     case config["max_tool_rounds"] do
+      n when is_integer(n) and n > 0 -> n
+      _ -> nil
+    end
+  end
+
+  @doc """
+  How many `task` subagents may run at once in one round (ADR 018).
+
+  A round's `task` calls run concurrently, capped here so a burst does not
+  stampede the provider (the default 3 matches Ollama's parallel limit;
+  raise it for a provider that allows more). Resolution, strongest first:
+  the layered ``subagent_concurrency`` in ``config.toml`` (project over
+  global), the app-env override, then the built-in default. Accepts a
+  scope root or an already-read snapshot.
+  """
+  @spec subagent_concurrency(String.t() | nil | t()) :: pos_integer()
+  def subagent_concurrency, do: subagent_concurrency(nil)
+
+  def subagent_concurrency(%__MODULE__{} = snapshot),
+    do:
+      configured_concurrency(snapshot) ||
+        app(:subagent_concurrency, @default_subagent_concurrency)
+
+  def subagent_concurrency(scope_root), do: subagent_concurrency(snapshot(scope_root))
+
+  defp configured_concurrency(%__MODULE__{config: config}) do
+    case config["subagent_concurrency"] do
       n when is_integer(n) and n > 0 -> n
       _ -> nil
     end

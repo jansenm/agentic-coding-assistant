@@ -204,6 +204,20 @@ defmodule CodingAgent.Core.ConfigTest do
       assert Config.max_tool_rounds(snapshot) == 100
     end
 
+    test "subagent_concurrency defaults to 3 (Ollama's parallel limit, ADR 018)" do
+      assert Config.subagent_concurrency(%Config{config: %{}}) == 3
+    end
+
+    test "subagent_concurrency honours a config.toml value over the default" do
+      snapshot = %Config{config: %{"subagent_concurrency" => 8}}
+      assert Config.subagent_concurrency(snapshot) == 8
+    end
+
+    test "subagent_concurrency ignores a non-positive config.toml value" do
+      snapshot = %Config{config: %{"subagent_concurrency" => 0}}
+      assert Config.subagent_concurrency(snapshot) == 3
+    end
+
     test "the no-model message names the user config path" do
       assert Config.no_model_message() =~ UserConfig.global_dir()
       assert Config.no_model_message() =~ "AGENT_MODEL"

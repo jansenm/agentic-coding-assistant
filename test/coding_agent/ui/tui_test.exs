@@ -85,7 +85,7 @@ defmodule CodingAgent.UI.TuiTest do
       sid = sync(pid).session_id
 
       Registry.dispatch(CodingAgent.EventRegistry, {:session_events, sid}, fn entries ->
-        for {p, _} <- entries, do: send(p, {:agent, {:llm_message, "broadcast"}})
+        for {p, _} <- entries, do: send(p, {:agent, sid, {:llm_message, "broadcast"}})
       end)
 
       # the dispatch sent from THIS process, so the sync call is fenced

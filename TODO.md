@@ -1,6 +1,6 @@
 # TODO — der aktive Backlog
 
-Stand: 2026-09-25, Branch `devel` @ `9dbfc00`. Gegen den Baum verifiziert.
+Stand: 2026-09-25, Branch `devel` @ `1b78de4`. Gegen den Baum verifiziert.
 
 Der **große Plan** steht in `ROADMAP.md` (Phasen, Produktthese,
 „Later“-Ideen, Ground Rules). **Entscheidungen** stehen in den ADRs
@@ -20,39 +20,33 @@ im jeweiligen ADR vermerkt.
   muss live bestätigt werden: der Dialog darf nach der Antwort bleiben,
   wenn der Agent nachfragt; der zweite identische Ask sollte ausbleiben.
   Nur mit echtem Provider prüfbar.
-* **Subagent (`task`) live.** Der Seam ist gebaut (ADR 018 Amendment,
-  2026-09-25), aber nur mit `test_mode`/Seam-Runner getestet: ein echter
-  Lauf startet den Provider im Kind, persistiert nicht, und sein Summary
-  landet als Tool-Result im Parent. Live prüfen, dass ein realer Lauf
-  sauber startet, das Band den Leaf nennt und der Parent-Kontext nur die
-  Zusammenfassung sieht.
-* **esc stoppt kein laufendes Kind.** Der Parent-Worker blockiert im
-  `task`-Call auf `Session.run/2` des Kindes; `Interrupt` wirkt zwischen
-  Tool-Calls, das Kind ist EIN Call. Der Parent-Stop kommt erst nach dem
-  Kind an. Die Kind-Id hat eine eigene Interrupt-Registrierung, das
-  Weiterleiten ist der natürliche Folge-Fix (zusammen mit „mid-tool hard
-  cancel“ in `ROADMAP.md`).
+* **Subagent (`task`) live.** Seam und Tab sind gebaut (ADR 018 Amendment
+  (ii), 2026-09-25), aber nur mit `test_mode`/Seam-Runner getestet: ein
+  echter Lauf startet den Provider im Kind, persistiert nicht, sein
+  Summary landet als Tool-Result im Parent, sein Stream im Tab. Live
+  prüfen: reale Läufe starten sauber (auch mehrere parallel), die
+  Tab-Leiste/crtl-x a zeigen sie, das Band nennt den Leaf, und der
+  Parent-Kontext sieht nur die Zusammenfassung.
+* **esc stoppt ein laufendes Kind.** Jetzt weitergeleitet: die TUI ruft
+  `Session.interrupt/1` für jedes aktive Kind (ADR 018 Amendment (ii)).
+  Live bestätigen, dass ein esc-Doppeldruck einen langen `task`-Lauf
+  wirklich abbricht; der Parent-Worker blockiert weiter im Task-Call, das
+  Kind wird aber über seine eigene Interrupt-Id gestoppt. Ein „mid-tool
+  hard cancel“ bleibt als `ROADMAP.md`-Notiz offen.
 
 ## Nächste Schritte (priorisiert)
 
-1. **Subagent-Tab (ADR 018 Teil 2, Rest).** Der Seam und die Events
-   existieren (`{:subagent_started, child_id, name, model}` /
-   `{:subagent_finished, ...}`), `Session.subscribe/1` funktioniert auf
-   einer Kind-Id. Es fehlt die reine View-Slice: an die aktive Kind-Id
-   subscriben, den Kind-Transcript in einem Tab rendern (nicht in den
-   Parent mischen), bei `:subagent_finished` unsubscriben. Die TUI hält
-   `subagents`/`active_subagent` bereits.
-2. **`todowrite`/Plan-Tool (T4).** opencodes Weg, Mehrschritt-Arbeit
+1. **`todowrite`/Plan-Tool (T4).** opencodes Weg, Mehrschritt-Arbeit
    sichtbar zu halten; dem Plan-Agenten fehlt sonst ein dauerhaftes
    Artefakt. Braucht eine kleine UI-Fläche.
-3. **Dateien anhängen (`@`-Trigger, B3).** Letzter offener
+2. **Dateien anhängen (`@`-Trigger, B3).** Letzter offener
    Dogfooding-Blocker (Track C). Design: Wortanfang-Trigger `@`, der
    Picker/Menü-Fläche wiederverwendet, Quelle `Core.Tools` unter
    `Tools.scope/1` + `Mounts`.
-4. **Slash-Commands / Command-Palette (T7).** `/new`, `/sessions`,
+3. **Slash-Commands / Command-Palette (T7).** `/new`, `/sessions`,
    `/models`, `/compact`, `/export`, `/undo`, `/help` machen die
    bestehenden Aktionen auffindbar statt Tastenkürzel-Archäologie.
-5. **Undo/Redo via Git-Checkpoint + `/undo` (T8).** „Git ist das Undo“
+4. **Undo/Redo via Git-Checkpoint + `/undo` (T8).** „Git ist das Undo“
    ist ADR-015-Prinzip, aber ohne Nutzer-Verb; ein Checkpoint pro Turn
    plus `/undo` paart mit der Permission-Story.
 
@@ -60,9 +54,9 @@ im jeweiligen ADR vermerkt.
 
 | # | Punkt | Stand |
 | --- | --- | --- |
-| T4 | `todowrite`/Plan-Tool (braucht UI-Fläche) | offen — nächste Schritte 2 |
-| T5 | `task`/Subagent (ADR 017/018) | **Seam gebaut** (2026-09-25, ADR 018 Amendment); offen nur der Subagent-Tab — nächste Schritte 1 |
-| T7 | Slash-Commands/Command-Palette | offen — nächste Schritte 4 |
+| T4 | `todowrite`/Plan-Tool (braucht UI-Fläche) | offen — nächste Schritte 1 |
+| T5 | `task`/Subagent inkl. Tab (ADR 017/018) | **erledigt** (2026-09-25): Seam + Tabs (Amendment (ii)) — Wire-Tagging, in-memory Tabs, Tab-Leiste/ctrl-x, Parallel-Cap |
+| T7 | Slash-Commands/Command-Palette | offen — nächste Schritte 3 |
 | T8 | Undo/Redo via Git-Checkpoint + `/undo` | offen — nächste Schritte 5 |
 | T9 | `websearch` neben `webfetch` | offen (Such-API-Abhängigkeit; `webfetch` ist da) |
 | T10 | `apply_patch`, LSP, Skills, MCP — inkl. fuzzy-match-Kette für `edit` | offen; `edit` ist exakt-match-only (opencode hat 9 Fuzzy-Strategien + LSP-Diagnostik nach jedem Edit) |
@@ -72,7 +66,7 @@ im jeweiligen ADR vermerkt.
 
 ## Dogfooding-Blocker (B)
 
-* **B3** Dateien anhängen — siehe nächste Schritte 3.
+* **B3** Dateien anhängen — siehe nächste Schritte 2.
 * **B5** Input-Auto-Wrap — **vom Owner vertagt** (2026-09-19), nicht
   anfassen, ohne dass es weh tut. Messung für die Wiederaufnahme:
   `%Textarea{}` hat **kein** `wrap`-Feld (die Crate
@@ -179,5 +173,6 @@ ADR 018 (Amendment „the running/next split gets its own row“) und im
 ## Offene ADR-Fragen
 
 Nicht duplizieren — sie stehen in den ADRs selbst: 025 q3, 026 q1–3,
-027 q1–3, 028 q1–3, 029 q1–3, 024 q2–3, 020 q2, 022, 018 (Subagent-Tabs),
-007 (Proposed: Spezialisten-Matrix, Produktthese, ungebaut).
+027 q1–3, 028 q1–3, 029 q1–3, 024 q2–3, 020 q2, 022, 018 (Tab-Design in
+Amendment (ii) beantwortet; offen nur die Keys/Cap-Config), 007 (Proposed:
+Spezialisten-Matrix, Produktthese, ungebaut).

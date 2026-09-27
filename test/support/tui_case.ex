@@ -118,7 +118,17 @@ defmodule CodingAgent.TuiCase do
   """
   @spec agent(pid(), tuple()) :: map()
   def agent(pid, event) do
-    send(pid, {:agent, event})
+    agent(pid, sync(pid).session_id, event)
+  end
+
+  @doc """
+  Fires an agent event tagged with an explicit SOURCE id (ADR 018): use the
+  parent id for a normal event, a child id to exercise a subagent tab. The
+  tag is what the TUI router routes on.
+  """
+  @spec agent(pid(), String.t(), tuple()) :: map()
+  def agent(pid, id, event) do
+    send(pid, {:agent, id, event})
     state = sync(pid)
 
     case event do

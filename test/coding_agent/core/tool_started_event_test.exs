@@ -67,7 +67,7 @@ defmodule CodingAgent.Core.ToolStartedEventTest do
       ])
 
     # the event carries the arguments
-    assert_receive {:agent, {:tool_executed, "read_file", _content, args}}, 1_000
+    assert_receive {:agent, _id, {:tool_executed, "read_file", _content, args}}, 1_000
     assert args == %{"path" => "target.txt"}
 
     # and they are persisted on the display row
@@ -77,9 +77,9 @@ defmodule CodingAgent.Core.ToolStartedEventTest do
 
   defp collect_tool_events(acc) do
     receive do
-      {:agent, {:tool_started, _} = ev} -> collect_tool_events([ev | acc])
-      {:agent, {:tool_executed, _, _, _} = ev} -> collect_tool_events([ev | acc])
-      {:agent, _other} -> collect_tool_events(acc)
+      {:agent, _id, {:tool_started, _} = ev} -> collect_tool_events([ev | acc])
+      {:agent, _id, {:tool_executed, _, _, _} = ev} -> collect_tool_events([ev | acc])
+      {:agent, _id, _other} -> collect_tool_events(acc)
     after
       200 -> Enum.reverse(acc)
     end

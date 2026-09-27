@@ -291,6 +291,89 @@ defmodule CodingAgent.Core.Session.SubagentTest do
     end
   end
 
+  describe "parallel delegation (ADR 018)" do
+    test "multiple task calls run concurrently (up to the cap)", %{root: root} do
+      write_agent(root, "explorer", "x", "mode: subagent\n")
+      id = "sub-par-#{System.unique_integer([:positive])}"
+      parent = self()
+
+      # The runner announces its pid on entry, then blocks until released:
+      # with a cap >= 3 all three enter BEFORE any is released, which is
+      # exactly the concurrency this test proves.
+      runner = fn state ->
+        send(parent, {:entered, self()})
+
+        receive do
+          :release -> :ok
+        after
+          5_000 -> :ok
+        end
+
+        state = Session.debug_complete_turn(state, "done", [{:assistant, "done"}])
+        {state, {:ok, state}}
+      end
+
+      start_parent(id, root, interactive: true, subagent_runner: runner)
+
+      calls = for i <- 1..3, do: task_call("t#{i}", "explorer", "go #{i}")
+
+      {gate_pid, monitor} =
+        spawn_monitor(fn -> Session.debug_gate(id, calls) end)
+
+      pids =
+        for _ <- 1..3 do
+          assert_receive {:entered, p}, 2_000
+          p
+        end
+
+      for p <- pids, do: send(p, :release)
+
+      assert_receive {:DOWN, ^monitor, :process, ^gate_pid, _}, 2_000
+
+      {:ok, state} = Session.state(id)
+      refute state.status == :error
+    end
+
+    test "results keep call order", %{root: root} do
+      write_agent(root, "explorer", "x", "mode: subagent\n")
+      id = "sub-order-#{System.unique_integer([:positive])}"
+
+      # The answer names the task prompt, so ordering is observable in the
+      # parent's context (the task tool results are appended in call order).
+      runner = fn state ->
+        prompt =
+          state.context
+          |> ReqLLM.Context.to_list()
+          |> Enum.find_value(fn
+            %ReqLLM.Message{role: :user} = msg -> message_text(msg)
+            _ -> nil
+          end)
+
+        answer = "summary for #{prompt}"
+        state = Session.debug_complete_turn(state, answer, [{:assistant, answer}])
+        {state, {:ok, state}}
+      end
+
+      start_parent(id, root, interactive: true, subagent_runner: runner)
+
+      :ok =
+        Session.debug_gate(id, [
+          task_call("t1", "explorer", "one"),
+          task_call("t2", "explorer", "two"),
+          task_call("t3", "explorer", "three")
+        ])
+
+      {:ok, state} = Session.state(id)
+
+      text =
+        state.context
+        |> ReqLLM.Context.to_list()
+        |> Enum.map_join("\n", &message_text/1)
+
+      assert text =~ ~r/summary for.*one.*summary for.*two.*summary for.*three/s
+    end
+  end
+
   describe "the parent events (ADR 018)" do
     test "started and finished are broadcast on the PARENT channel", %{root: root} do
       write_agent(root, "explorer", "x", "mode: subagent\n")
@@ -312,11 +395,11 @@ defmodule CodingAgent.Core.Session.SubagentTest do
     end
   end
 
-  # Collect every {:agent, event} the test process received (a short
+  # Collect every {:agent, id, event} the test process received (a short
   # settle window; the events are sent synchronously during debug_gate).
   defp drain_events(acc \\ []) do
     receive do
-      {:agent, event} -> drain_events([event | acc])
+      {:agent, _id, event} -> drain_events([event | acc])
     after
       50 -> Enum.reverse(acc)
     end

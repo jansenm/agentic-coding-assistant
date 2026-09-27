@@ -278,3 +278,129 @@ child, depth 1 and the fail-closed gate, the parent events),
 ``test/coding_agent/core/tools_test.exs`` (the task tool's presence by
 depth), and ``test/coding_agent/ui/tui_subagent_test.exs`` (the band's
 leaf identity and its revert).
+
+Amendment 2026-09-25 (ii): the subagent tab — the design, decided
+-----------------------------------------------------------------
+
+**Status: planned, not yet built.** This records the owner's decisions so
+the slice can be built without re-litigating them. The seam it builds on
+shipped in the amendment above; this amendment replaces the "active only,
+no history" direction of the brainstorming list in ``TODO.md``.
+
+Three things in the seam are not tab-ready. They were verified against
+the tree before deciding:
+
+1. **The event wire carries no source id.** ``Events.publish/2`` sends
+   ``{:agent, event}`` (``events.ex``), and every TUI handler matches the
+   event SHAPE, not its origin (the ``handle_info({:agent, ...})`` family
+   in ``tui.ex``). The TUI subscribes once, to the parent id. Subscribing
+   to ``child_id`` as well would make child deltas and ``:status_changed``
+   indistinguishable from the parent's and blend them into the parent
+   transcript — exactly what part 3 of this ADR forbids.
+2. **No unsubscribe, and no catch-up for early deltas.** Subscribing a
+   child is fine — a session runs its turn in a worker task, so its
+   process stays responsive and ``Session.subscribe/1`` does NOT block.
+   But there is no ``Session.unsubscribe/1`` (the TUI must
+   ``Registry.unregister`` itself), and there IS a race: the parent
+   publishes ``:subagent_started`` and immediately runs the child, so
+   deltas emitted before the TUI's subscribe lands are lost to the tab.
+3. **``Subagent.cleanup/1`` deletes the child's display rows.** The child
+   DOES write display rows through ``broadcast/2`` →
+   ``record_display_event`` regardless of ``persist?`` (only the
+   ``Store.save`` snapshot is skipped), but cleanup calls
+   ``Store.delete(child_id)``, so nothing survives the child. Reading a
+   RUNNING subagent's reasoning works only while it runs.
+
+Decisions (owner)
+..................
+
+- **Child transcript: in the TUI's memory, not the store.** The tab
+  accumulates the child's events in the ``subagents`` map the TUI already
+  holds. Nothing is written to disk; after a restart only the parent's
+  summary survives. This matches "only the summary is persisted" and
+  avoids a schema migration, a ``parent_id`` column, and touching
+  ``cleanup``.
+- **Route by tagging the wire: ``{:agent, id, event}``.** ``Events.publish/2``
+  carries the source session id; the TUI routes an event to a tab when the
+  id is a known child, else to the parent view. Explicit and future-proof
+  for several concurrent tabs. Unreleased, so no compatibility concern;
+  every handler and the test seam (``TuiCase.agent/2``) change.
+- **Parallel delegation with a configurable cap.** ``run_subagents/2``
+  becomes concurrent (default ~3, sized to Ollama's parallel limit,
+  configurable for a user who wants more), instead of the current
+  ``Enum.map`` that blocks the parent worker on each child in turn. N
+  repos can be delegated at once; the cap is a config value (ADR 014).
+- **Keep every child tab of a session.** All subagents of a session stay
+  readable, not just the running one. Because the store keeps only the
+  summary, "keep" means in the TUI's memory for the life of the session
+  view.
+- **Navigation: a bounded tab bar plus ``ctrl-x``.** The bar shows the
+  ACTIVE children (up to the cap) with a ``+N finished`` counter; finished
+  tabs stay reachable through a ``ctrl-x`` entry ("subagents") that lists
+  them. The bar stays bounded however many ran; ``ctrl-x`` reaches them
+  all.
+- **Render through the parent's transcript widgets, read-only.** The tab
+  reuses the same widget/scroll/tool-accordion path as the main transcript,
+  sourced from the child's event list — no second render truth (the
+  ``measure = paint`` discipline).
+- **Discard tabs on session switch.** Switching sessions via ``ctrl-x s``
+  drops the in-memory child tabs; they belong to one session.
+
+The slice, in order
+....................
+
+1. Tag the wire ``{:agent, id, event}``: ``Events.publish/2``, every TUI
+   handler, and ``TuiCase.agent/2``. The parent view is unchanged.
+2. Subscription hygiene: a self-register (``Process.monitor`` the
+   child, ``Registry.unregister`` at finish) — no ``Session.unsubscribe/1``
+   exists — and close the early-delta race: either have the parent relay
+   the child's events itself, or seed the tab from the child's Store
+   display rows when attaching (tool/info rows are written immediately
+   and reasoning/answer rows at each round boundary, all regardless of
+   ``persist?``), so the first moments are not lost.
+3. TUI: on ``:subagent_started`` subscribe to the child and start
+   accumulating its events; on ``:subagent_finished`` stop accumulating,
+   keep the tab (finished) and unregister.
+4. Route: child events go to the child's buffer, never the parent's.
+5. View: a tab bar (active + ``+N finished``) and a ``ctrl-x`` "subagents"
+   list; opening a tab renders the child's buffer read-only through the
+   parent transcript path.
+6. Parallel ``run_subagents/2`` with the cap, and forward the parent's esc
+   to every active child (the known limitation from the amendment above).
+
+**SHIPPED 2026-09-25.** All six steps above are implemented:
+
+- The wire is tagged ``{:agent, id, event}``; ``Events.publish/2`` and the
+  TUI router route a child's events to its tab, never the parent view.
+- A child tab accumulates its own transcript/stream (in-memory) and its
+  own scroll/open-tool state; the tab bar names the active children
+  (``@tab_bar_cap`` 5) plus ``+N running`` / ``+N finished`` counts, and
+  ``ctrl-x a`` opens the ``subagents`` popup (primary + every child,
+  finished ones marked). Render reuses the parent transcript path.
+- A finished tab is KEPT (read-only) until the view is discarded (a
+  session switch resets the map).
+- ``run_subagents/2`` runs a round's ``task`` calls concurrently, capped
+  by ``Config.subagent_concurrency/2`` (default 3, ``config.toml
+  subagent_concurrency``). Results keep call order.
+- esc forwards the stop to every active child (each has its own
+  ``Interrupt`` id), so a long delegation is cancellable.
+- ``subscribe_child/1`` is best-effort (a child may be gone before the
+  start event is processed).
+
+Acceptance: ``test/coding_agent/ui/tui_subagent_test.exs`` (child-event
+accumulation and parent isolation, the tab bar's appearance, opening a
+tab), ``test/coding_agent/core/session/subagent_test.exs`` (concurrency,
+result order), ``test/coding_agent/core/config_test.exs``
+(``subagent_concurrency``), and the events tests (the tagged wire).
+
+Still open
+...........
+
+- **Exact navigation keys** (open question 1): the ``subagents`` popup is
+  the home today (``ctrl-x a``); single-key next/previous-tab is not bound
+  (the popup covers the need; a chord would be a keymap addition, ADR 011).
+- **Memory bound** for keep-all tabs: many long child transcripts live for
+  the session's life. Accepted for now; revisit if it bites.
+- **A finished child's display rows are still deleted.** Since the tab is
+  in-memory this is fine today; a durable child transcript would need
+  ``cleanup`` and a ``parent_id`` link — recorded so the path is known.

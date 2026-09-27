@@ -80,7 +80,13 @@ defmodule CodingAgent.UI.Tui do
 
   defp input_height(state), do: Composer.height(composer(state))
 
-  defp layout_overhead(state), do: 2 + 2 + LiveBand.height() + input_height(state)
+  # The subagent tab bar (ADR 018) takes one row above the transcript when
+  # it is present (measure = paint, ADR 028): the pane height must drop by
+  # that row, or the viewport over-reserves and the last line clips.
+  defp layout_overhead(state) do
+    tab_h = if map_size(Map.get(state, :subagents, %{})) > 0, do: 1, else: 0
+    2 + 2 + LiveBand.height() + input_height(state) + tab_h
+  end
 
   # The room every OVERLAY (menu, approval, budget, doom, question) has:
   # the rows above the live band. An overlay may cover the transcript (the
@@ -249,11 +255,14 @@ defmodule CodingAgent.UI.Tui do
       # index: i, selected: [j], custom: nil|buf} while the agent waits for
       # an answer; a wizard, one question per screen
       question_prompt: nil,
-      # active subagent tabs (ADR 018): child_id => %{agent, model}; the
-      # live band names the leaf of the active delegation. Empty until a
-      # `task` call starts a child.
+      # subagent tabs (ADR 018): child_id => child state (identity,
+      # transcript, stream, finished?). The live band names the leaf of
+      # the active delegation. Empty until a `task` call starts a child.
       subagents: %{},
       active_subagent: nil,
+      # the child tab currently shown (nil = the parent transcript). The
+      # transcript pane renders this child's own entries read-only.
+      active_tab: nil,
       last_error: nil,
       scroll_offset: 0,
       open_tool_id: nil,
@@ -430,13 +439,14 @@ defmodule CodingAgent.UI.Tui do
         #                    own agent, so the two can differ.
         running_agent: session_agent(effective_id),
         next_agent: session_agent(effective_id),
-        # active subagent tabs (ADR 018): child_id => %{agent, model}.
-        # The live band names the LEAF of the active delegation while a
-        # child runs; entries are dropped on {:subagent_finished}. The
-        # child's transcript is never blended into the parent view (the
-        # tab view itself is a later slice; this map is what it will read).
+        # subagent tabs (ADR 018): child_id => child state. The live band
+        # names the LEAF of the active delegation while a child runs; a
+        # finished tab is KEPT (read-only) until the view is discarded.
+        # The child's transcript is never blended into the parent view;
+        # `active_tab` selects which transcript the pane renders.
         subagents: %{},
         active_subagent: nil,
+        active_tab: nil,
         # the agent executing the CURRENT turn (unknown until the
         # session broadcasts {:turn_started, agent}); used to attribute
         # live assistant/tool/compaction lines while a turn streams.
@@ -855,13 +865,11 @@ defmodule CodingAgent.UI.Tui do
   # maximum is discovered when the walk reaches the top, so there is no
   # stored bound to read — clamping IS the walk.
   def handle_event(%Event.Mouse{kind: "scroll_up"}, state) do
-    state = %{state | scroll_offset: Map.get(state, :scroll_offset, 0) + 2}
-    {:noreply, clamp_scroll_now(state)}
+    {:noreply, scroll_active(state, +2) |> clamp_scroll_now()}
   end
 
   def handle_event(%Event.Mouse{kind: "scroll_down"}, state) do
-    state = %{state | scroll_offset: max(Map.get(state, :scroll_offset, 0) - 2, 0)}
-    {:noreply, state}
+    {:noreply, scroll_active(state, -2) |> clamp_scroll_now()}
   end
 
   # Click a closed tool block header → open THAT block (single-open: any other
@@ -874,8 +882,8 @@ defmodule CodingAgent.UI.Tui do
     if y >= 1 and y <= transcript_visible_height(state) do
       case block_at_row(state, y - 1) do
         {:tool, id, _name, _content} ->
-          open = if state.open_tool_id == id, do: nil, else: id
-          {:noreply, %{state | open_tool_id: open} |> clamp_scroll_now()}
+          open = if active_open_id(state) == id, do: nil, else: id
+          {:noreply, put_open_id(state, open) |> clamp_scroll_now()}
 
         _ ->
           {:noreply, state}
@@ -1793,6 +1801,66 @@ defmodule CodingAgent.UI.Tui do
     end
   end
 
+  # Subagent tab picker (ADR 018): one row per child of THIS view plus a
+  # "primary" row back to the parent transcript. Finished children are
+  # listed after the active ones (the owner keeps every subagent of a
+  # session). Items carry {:tab, child_id | nil} as `id`.
+  defp subagents_popup(state) do
+    subs = Map.get(state, :subagents, %{})
+
+    if map_size(subs) == 0 do
+      {:noreply, status_note(%{state | menu_pending: false}, "no subagents in this session")}
+    else
+      primary = %{
+        id: {:tab, nil},
+        label: "primary transcript",
+        status: nil,
+        action: :open_tab
+      }
+
+      children =
+        subs
+        |> Enum.sort_by(fn {_id, c} -> {Map.get(c, :finished?, false), Map.get(c, :agent)} end)
+        |> Enum.map(fn {id, c} ->
+          state_mark =
+            cond do
+              id == Map.get(state, :active_tab) -> " (viewing)"
+              Map.get(c, :finished?, false) -> " (finished)"
+              true -> " (running)"
+            end
+
+          %{
+            id: {:tab, id},
+            label: "#{Map.get(c, :agent)} · #{Map.get(c, :model)}#{state_mark}",
+            status: nil,
+            action: :open_tab
+          }
+        end)
+
+      {:noreply,
+       %{
+         state
+         | menu_popup: %{
+             id: :subagents,
+             title: " subagents  (arrows, enter=open, esc=cancel)",
+             items: [primary | children]
+           },
+           menu_popup_id: :subagents,
+           menu_pending: false,
+           menu_index: 0
+       }}
+    end
+  end
+
+  # Selection from the subagents popup: swap the transcript pane to the
+  # chosen tab (nil = parent). The parent's own scroll/open state is
+  # untouched — each tab keeps its own.
+  defp open_subagent_tab(%{id: {:tab, tab}}, state) do
+    {:noreply, %{state | active_tab: tab, scroll_offset: Map.get(state, :scroll_offset, 0)}}
+  end
+
+  defp open_subagent_tab(_other, state), do: {:noreply, state}
+
   # model switch popup: one item per candidate model. Items are plain
   # maps ({id, source}) — the selection handler switches the session.
   # `current` is marked so the owner sees where they are.
@@ -1970,6 +2038,7 @@ defmodule CodingAgent.UI.Tui do
     case state.menu_popup_id do
       :switch_session -> attach_selected_session(selected, state)
       :switch_model -> model_selected(selected, state)
+      :subagents -> open_subagent_tab(selected, state)
       _ -> run_menu_action(selected.action, state)
     end
   end
@@ -1983,6 +2052,10 @@ defmodule CodingAgent.UI.Tui do
   defp handle_menu_popup_key(_ev, state), do: {:noreply, state}
 
   defp run_menu_action(:switch_session, state), do: switch_session_popup(state)
+
+  # Subagent tabs (ADR 018): open the tab of a child in this session, or
+  # the parent transcript. An empty list (no delegation yet) is a note.
+  defp run_menu_action(:subagents, state), do: subagents_popup(state)
 
   # model switch: catalog (req_llm) + discovered (GET, dialect per
   # provider entry) candidates, cached per mount. Never blocks the TUI
@@ -2098,11 +2171,10 @@ defmodule CodingAgent.UI.Tui do
         # that stale value then makes scroll-down feel dead (found live).
         # With lazy measurement (ADR 028) the clamp IS the walk — the
         # viewport discovers the top and returns the accepted offset.
-        state = %{state | scroll_offset: state.scroll_offset + 5}
-        {:noreply, clamp_scroll_now(state)}
+        {:noreply, scroll_active(state, +5) |> clamp_scroll_now()}
 
       :scroll_down ->
-        {:noreply, %{state | scroll_offset: max(state.scroll_offset - 5, 0)}}
+        {:noreply, scroll_active(state, -5)}
 
       :send_input ->
         {:noreply, send_input(state)}
@@ -2161,6 +2233,13 @@ defmodule CodingAgent.UI.Tui do
 
     if armed? do
       Session.interrupt(state.session_id)
+      # A running `task` child blocks the parent's turn worker inside the
+      # `task` call, so the parent's stop only lands between tool calls —
+      # after the child. Forward the stop to every ACTIVE child (its own
+      # interrupt id) so a long delegation is cancellable (ADR 018).
+      for {id, child} <- Map.get(state, :subagents, %{}), not Map.get(child, :finished?, false) do
+        Session.interrupt(id)
+      end
 
       {:noreply,
        %{
@@ -2406,6 +2485,23 @@ defmodule CodingAgent.UI.Tui do
          transcript: state.transcript ++ [{:info, "✖ decision failed: #{error_text(reason)}"}]
      }}
   end
+
+  # Events arrive TAGGED with their source session id (ADR 018). The TUI
+  # subscribes to the parent AND to each running child; the tag routes a
+  # child's events into its own tab buffer and NEVER into the parent
+  # transcript (the part-3 invariant: visibility is not context). A parent
+  # event forwards to the 2-tuple clauses below unchanged; an unknown
+  # source is dropped rather than blended anywhere.
+  def handle_info({:agent, id, event}, %{session_id: id} = state) do
+    handle_info({:agent, event}, state)
+  end
+
+  def handle_info({:agent, child_id, event}, %{subagents: subs} = state)
+      when is_map_key(subs, child_id) do
+    {:noreply, accumulate_child(state, child_id, event)}
+  end
+
+  def handle_info({:agent, _id, _event}, state), do: {:noreply, state}
 
   # Streaming deltas DEFER their render: fold the delta and return
   # `render?: false`, so the server processes the next message instead of
@@ -2677,12 +2773,26 @@ defmodule CodingAgent.UI.Tui do
   # events arrive on the child's channel; the parent event just tells the
   # UI a delegation is live, so the live band and sidebar can name the
   # LEAF. Its transcript is never blended into the parent view.
+  # A `task` call started a child session (ADR 017/018): subscribe to the
+  # child's channel so its stream reaches the tab buffer (the parent
+  # channel carries only the start/finish events). The tab is kept after
+  # the child finishes (the owner keeps every subagent of a session); the
+  # band names the LEAF while it runs.
   def handle_info({:agent, {:subagent_started, child_id, agent, model}}, state) do
     state = touch(state)
-    sub = %{agent: agent, model: model}
+    sub = child_state(agent, model)
 
-    {:noreply,
-     %{state | subagents: Map.put(state.subagents, child_id, sub), active_subagent: child_id}}
+    subscribe_child(child_id)
+
+    state = %{
+      state
+      | subagents: Map.put(state.subagents, child_id, sub),
+        active_subagent: child_id
+    }
+
+    # the tab bar appears with the first child: re-derive the pane height
+    # so the transcript viewport matches what render/2 will paint (ADR 028)
+    {:noreply, rederive_pane(state)}
   end
 
   def handle_info({:agent, {:subagent_finished, child_id, outcome}}, state) do
@@ -2694,10 +2804,22 @@ defmodule CodingAgent.UI.Tui do
         _ -> state.transcript
       end
 
+    # The tab is NOT deleted: it stays readable (finished) until the view
+    # is discarded (session switch). Unsubscribe — the child is stopped,
+    # so no further events will come; the registration would otherwise
+    # outlive the process as a dead entry.
+    Registry.unregister(CodingAgent.EventRegistry, {CodingAgent.Core.Events.key(), child_id})
+
+    subagents =
+      case Map.fetch(state.subagents, child_id) do
+        {:ok, child} -> Map.put(state.subagents, child_id, %{child | finished?: true})
+        :error -> state.subagents
+      end
+
     {:noreply,
      %{
        state
-       | subagents: Map.delete(state.subagents, child_id),
+       | subagents: subagents,
          active_subagent:
            if(state.active_subagent == child_id, do: nil, else: state.active_subagent),
          transcript: transcript
@@ -2998,13 +3120,24 @@ defmodule CodingAgent.UI.Tui do
     [mid_area, _air_area] =
       Layout.split(mid_area, :horizontal, [{:length, min(@measure, mid_area.width)}, {:min, 0}])
 
+    # The subagent tab bar (ADR 018) claims one row above the transcript
+    # only while a `task` child exists for this session — the parent-only
+    # view keeps its full height when nothing was delegated.
+    {tab_area, transcript_full} =
+      if map_size(Map.get(state, :subagents, %{})) > 0 do
+        [t, rest] = Layout.split(mid_area, :vertical, [{:length, 1}, {:min, 0}])
+        {t, rest}
+      else
+        {nil, mid_area}
+      end
+
     # three stacked regions sharing ONE air row between them: transcript,
     # the live band (what the running turn is doing), the input field
     # (what the next input will use). The air row is what separates them
     # visually — no borders anywhere in this stack.
     [transcript_area, _air1, band_area, _air2, input_area] =
       Layout.split(
-        mid_area,
+        transcript_full,
         :vertical,
         [{:min, 0}, {:length, 1}, {:length, band_h}, {:length, 1}, {:length, in_h}]
       )
@@ -3016,8 +3149,11 @@ defmodule CodingAgent.UI.Tui do
         []
       end
 
+    tab_widgets = if tab_area, do: [{tab_bar(state), tab_area}], else: []
+
     widgets =
-      transcript_widgets(state, transcript_area) ++
+      tab_widgets ++
+        transcript_widgets(state, transcript_area) ++
         sidebar_widgets ++
         LiveBand.placements(live_band(state), band_area) ++
         Composer.placements(composer(state), input_area)
@@ -3032,21 +3168,49 @@ defmodule CodingAgent.UI.Tui do
   # Viewport rendering: entries intersecting the pane get placed at
   # pane-relative positions; entries starting above the pane top scroll
   # via the widget's own :scroll (Paragraph/Markdown support it).
+  #
+  # The entry SOURCE is swappable (ADR 018): the parent transcript by
+  # default, or an active subagent child's own transcript when its tab is
+  # selected. The placement below is identical for both — the tab reuses
+  # the parent render path rather than forking a second one.
   defp transcript_widgets(state, pane) do
-    w = content_width(max(pane.width - 2, 10))
+    {entries, offset, open_id} = active_transcript(state)
+    place_entries(entries, pane, offset, open_id)
+  end
 
-    entries = display_entries(state)
+  # The transcript an active child tab shows: its own entries and its own
+  # scroll/open state, so scrolling a tab never moves the parent and vice
+  # versa. Falls back to the parent when no tab is selected.
+  defp active_transcript(state) do
+    case Map.get(state, :active_tab) do
+      nil ->
+        {display_entries(state), Map.get(state, :scroll_offset, 0), Map.get(state, :open_tool_id)}
+
+      child_id ->
+        child = Map.get(state, :subagents, %{}) |> Map.get(child_id)
+
+        if child do
+          {child_display_entries(child), Map.get(child, :scroll_offset, 0),
+           Map.get(child, :open_tool_id)}
+        else
+          {display_entries(state), Map.get(state, :scroll_offset, 0),
+           Map.get(state, :open_tool_id)}
+        end
+    end
+  end
+
+  defp place_entries(entries, pane, offset, open_id) do
+    w = content_width(max(pane.width - 2, 10))
 
     # ADR 028: the viewport measures LAZILY from the tail and returns the
     # clamped offset plus pane-relative positions. No eager total_height
     # here — on a long session that cost seconds per cold frame to
     # produce the same pixels.
-    {_clamped, selected} =
-      TranscriptView.viewport(entries, pane.height, state.scroll_offset, w, state.open_tool_id)
+    {_clamped, selected} = TranscriptView.viewport(entries, pane.height, offset, w, open_id)
 
     selected
     |> Enum.flat_map(fn {entry, rel, _h} ->
-      entry_widgets(entry, w, state.open_tool_id)
+      entry_widgets(entry, w, open_id)
       |> Enum.map(fn {widget, wh} -> {widget, wh, rel} end)
     end)
     |> Enum.map(fn {widget, h, rel} ->
@@ -3133,8 +3297,11 @@ defmodule CodingAgent.UI.Tui do
   # tail-first and knows the maximum only once the walk reaches the head,
   # returning the accepted offset either way. There is no stored maximum —
   # the accepted offset is the whole answer.
+  # Clamp the ACTIVE view's scroll (parent or child tab): collapsing or a
+  # resize can shrink the content extent below the offset, and the lazy
+  # viewport is the clamp (ADR 028).
   defp clamp_scroll_now(state) do
-    entries = display_entries(state)
+    {entries, offset, open_id} = active_transcript(state)
 
     pane_height =
       if is_integer(state.last_pane_height), do: state.last_pane_height, else: 24
@@ -3143,16 +3310,50 @@ defmodule CodingAgent.UI.Tui do
       content_width(if is_integer(state.last_pane_width), do: state.last_pane_width, else: 78)
 
     {clamped, _selected} =
-      TranscriptView.viewport(
-        entries,
-        pane_height,
-        Map.get(state, :scroll_offset, 0),
-        pane_width,
-        state.open_tool_id
-      )
+      TranscriptView.viewport(entries, pane_height, offset, pane_width, open_id)
 
-    %{state | scroll_offset: clamped}
+    put_scroll(state, clamped)
   end
+
+  # -- active-view scroll/open routing (parent or child tab) ---------------
+  # Each view owns its own scroll offset and open tool id, so switching
+  # tabs never disturbs the parent's position and vice versa.
+
+  defp scroll_active(state, delta) do
+    {_entries, offset, _open} = active_transcript(state)
+    put_scroll(state, max(offset + delta, 0))
+  end
+
+  defp put_scroll(%{active_tab: nil} = state, offset), do: %{state | scroll_offset: offset}
+
+  defp put_scroll(%{active_tab: id, subagents: subs} = state, offset) do
+    case Map.fetch(subs, id) do
+      {:ok, child} -> %{state | subagents: Map.put(subs, id, %{child | scroll_offset: offset})}
+      :error -> %{state | active_tab: nil, scroll_offset: offset}
+    end
+  end
+
+  defp put_scroll(state, offset), do: %{state | scroll_offset: offset}
+
+  defp active_open_id(%{active_tab: nil} = state), do: Map.get(state, :open_tool_id)
+
+  defp active_open_id(%{active_tab: id, subagents: subs} = state) do
+    case Map.fetch(subs, id) do
+      {:ok, child} -> Map.get(child, :open_tool_id)
+      :error -> Map.get(state, :open_tool_id)
+    end
+  end
+
+  defp put_open_id(%{active_tab: nil} = state, open), do: %{state | open_tool_id: open}
+
+  defp put_open_id(%{active_tab: id, subagents: subs} = state, open) do
+    case Map.fetch(subs, id) do
+      {:ok, child} -> %{state | subagents: Map.put(subs, id, %{child | open_tool_id: open})}
+      :error -> %{state | open_tool_id: open}
+    end
+  end
+
+  defp put_open_id(state, open), do: %{state | open_tool_id: open}
 
   # viewport scrolling happens inside the widget when the entry starts
   # above the pane top (Paragraph/Markdown both support :scroll)
@@ -3552,6 +3753,107 @@ defmodule CodingAgent.UI.Tui do
     )
   end
 
+  # -- Subagent tabs (ADR 018) -------------------------------------------------
+
+  # Subscribe to a child's channel for its tab. Best effort: the child may
+  # already be gone (a fast delegation that finished before this event was
+  # processed, or a synthetic test event with no live child) — a missing
+  # child is not an error, the tab simply has no live stream.
+  defp subscribe_child(child_id) do
+    Session.subscribe(child_id)
+  catch
+    :exit, _ -> :ok
+  end
+
+  # A child tab's state: its own transcript and stream (folded from its
+  # events, exactly like the parent's), its own scroll/open state so a tab
+  # scroll never moves the parent, and the identity the band and tab bar
+  # show. `finished?` flips at :subagent_finished; the tab is then kept
+  # (read-only) until the view is discarded.
+  defp child_state(agent, model) do
+    %{
+      agent: agent,
+      model: model,
+      finished?: false,
+      transcript: [],
+      stream: [],
+      active_agent: agent,
+      open_tool_id: nil,
+      scroll_offset: 0
+    }
+  end
+
+  # Fold one relayed child event into its tab. The vocabulary is the
+  # session event set; only the events that shape what the user SAW are
+  # recorded (deltas, answers, tools, info). The child's events arrive on
+  # the parent's channel tagged with the child id (Events.publish), and
+  # the router sends them here — never into the parent transcript.
+  defp accumulate_child(state, child_id, event) do
+    child = Map.fetch!(state.subagents, child_id)
+    %{touch(state) | subagents: Map.put(state.subagents, child_id, fold_child(child, event))}
+  end
+
+  defp fold_child(child, {:turn_started, agent}), do: %{child | active_agent: agent}
+
+  defp fold_child(child, {:llm_deltas, delta}),
+    do: %{child | stream: append_stream(child.stream, :assistant, delta)}
+
+  defp fold_child(child, {:reasoning_deltas, delta}),
+    do: %{child | stream: append_stream(child.stream, :reasoning, delta)}
+
+  defp fold_child(child, {:llm_message, text}),
+    do: %{
+      child
+      | transcript: child.transcript ++ persist_stream(child.stream, text),
+        stream: []
+    }
+
+  defp fold_child(child, {:tool_executed, name, content, _args}),
+    do: fold_child(child, {:tool_executed, name, content})
+
+  defp fold_child(child, {:tool_executed, name, content}) do
+    id = "tool-#{System.unique_integer([:positive])}"
+    content = cap_lines(content, @tool_cap)
+
+    %{
+      child
+      | transcript:
+          child.transcript ++
+            persist_stream(child.stream, nil) ++ [{:tool, id, name, content}],
+        stream: []
+    }
+  end
+
+  defp fold_child(child, {:info, text}),
+    do: %{child | transcript: child.transcript ++ [{:info, text}]}
+
+  # everything else (status, usage, tool_started, provider) is not part
+  # of the child's READING view; ignored rather than guessed at.
+  defp fold_child(child, _event), do: child
+
+  # A child's committed transcript + live stream as display entries (the
+  # same shapes the parent renderer consumes), every assistant/info entry
+  # attributed to the child's own agent.
+  defp child_display_entries(child) do
+    agent = Map.get(child, :agent)
+
+    committed =
+      Enum.map(Map.get(child, :transcript, []), fn
+        {:assistant, t} -> {:assistant, t, agent}
+        {:info, t} -> {:info, t, agent}
+        other -> other
+      end)
+
+    streaming =
+      streaming_entries(%{stream: Map.get(child, :stream, [])})
+      |> Enum.map(fn
+        {:assistant, t} -> {:assistant, t, agent}
+        other -> other
+      end)
+
+    committed ++ streaming
+  end
+
   # The band names the LEAF of the active delegation while a subagent runs
   # (ADR 018 amendment: "the running agent, whoever that is"), else the
   # primary's running identity. The child runs inside the parent's turn,
@@ -3648,25 +3950,27 @@ defmodule CodingAgent.UI.Tui do
   # lazy viewport (ADR 028) returns pane-relative rows directly, so no
   # absolute total is needed.
   defp block_at_row(state, y) do
-    entries = display_entries(state)
+    {entries, offset, open_id} = active_transcript(state)
 
     w = content_width(if is_integer(state.last_pane_width), do: state.last_pane_width, else: 78)
     ph = transcript_visible_height(state)
 
-    {_clamped, selected} =
-      TranscriptView.viewport(entries, ph, state.scroll_offset, w, state.open_tool_id)
+    {_clamped, selected} = TranscriptView.viewport(entries, ph, offset, w, open_id)
 
     Enum.find_value(selected, fn {entry, rel_top, h} ->
       if y >= rel_top and y <= rel_top + h - 1, do: entry
     end)
   end
 
-  # ctrl-t: open the most recent tool block (or close it if it is open).
+  # ctrl-t: open the most recent tool block of the ACTIVE view (or close
+  # it if it is open).
   defp toggle_last_tool(state) do
-    case Enum.reverse(state.transcript) |> Enum.find(&match?({:tool, _, _, _}, &1)) do
+    {entries, _offset, open_id} = active_transcript(state)
+
+    case Enum.reverse(entries) |> Enum.find(&match?({:tool, _, _, _}, &1)) do
       {:tool, id, _, _} ->
-        open = if state.open_tool_id == id, do: nil, else: id
-        %{state | open_tool_id: open} |> clamp_scroll_now()
+        open = if open_id == id, do: nil, else: id
+        put_open_id(state, open) |> clamp_scroll_now()
 
       nil ->
         state
@@ -3681,6 +3985,45 @@ defmodule CodingAgent.UI.Tui do
     |> Map.update!(:sidebar_visible?, &(not &1))
     |> clamp_scroll_now()
   end
+
+  # The subagent tab bar (ADR 018): a one-row strip naming the active
+  # children (up to @tab_bar_cap) plus a "+N finished" count, and marking
+  # which tab the transcript pane is showing. Bounded however many ran;
+  # "all" reach through the ctrl-x "subagents" popup. Navigation is by
+  # that popup, not by clicking (the bar is read-only, like the band).
+  @tab_bar_cap 5
+
+  defp tab_bar(state) do
+    subs = Map.get(state, :subagents, %{})
+    active_tab = Map.get(state, :active_tab)
+
+    {running, finished} =
+      subs
+      |> Enum.sort_by(fn {_id, c} -> Map.get(c, :agent) end)
+      |> Enum.split_with(fn {_id, c} -> not Map.get(c, :finished?, false) end)
+
+    shown = Enum.take(running, @tab_bar_cap)
+    hidden_running = length(running) - length(shown)
+
+    primary = tab_label("primary", active_tab == nil)
+
+    tabs = Enum.map(shown, fn {id, c} -> tab_label(Map.get(c, :agent), id == active_tab) end)
+
+    counts =
+      []
+      |> maybe_count(hidden_running, "running")
+      |> maybe_count(length(finished), "finished")
+
+    %Paragraph{
+      text: "  " <> Enum.join([primary | tabs] ++ counts, "  "),
+      style: Styles.role(:muted)
+    }
+  end
+
+  defp tab_label(name, true), do: "[#{name}]"
+  defp tab_label(name, false), do: " #{name} "
+  defp maybe_count(acc, 0, _word), do: acc
+  defp maybe_count(acc, n, word), do: acc ++ ["+#{n} #{word}"]
 
   defp sidebar_widget(state) do
     usage = CodingAgent.Core.Session.Usage.from_map(Map.get(state, :session_usage))
