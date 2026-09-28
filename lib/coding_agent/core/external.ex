@@ -96,4 +96,17 @@ defmodule CodingAgent.Core.External do
   """
   @spec skip_dirs() :: [String.t()]
   def skip_dirs, do: CodingAgent.Core.Containment.default_skip_dirs() |> MapSet.to_list()
+
+  @doc """
+  The `fd`/`rg` exclude arguments for the shared skip list (ADR 016).
+
+  A bare ``--exclude <name>`` also prunes a FILE of that name (measured:
+  a file called ``cover`` disappeared); ``**/<dir>/**`` prunes the
+  directory subtree at any depth and leaves same-named files alone. ONE
+  builder so ``glob`` and the ``@``-picker cannot drift.
+  """
+  @spec exclude_args() :: [String.t()]
+  def exclude_args do
+    Enum.flat_map(skip_dirs(), fn dir -> ["--exclude", "**/#{dir}/**"] end)
+  end
 end

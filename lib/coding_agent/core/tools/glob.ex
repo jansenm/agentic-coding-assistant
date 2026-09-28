@@ -52,14 +52,11 @@ defmodule CodingAgent.Core.Tools.Glob do
   """
 
   alias CodingAgent.Core.Containment
-  alias CodingAgent.Core.Exec
   alias CodingAgent.Core.External
   alias CodingAgent.Core.Tools
+  alias CodingAgent.Core.Tools.FdSearch
 
   @max_results 500
-
-  # fd runs through the one executor (Exec + Sandbox), like grep's rg.
-  @exec_timeout 60
 
   # The wide-enumeration budget for patterns fd would reinterpret: the
   # same order the retired walk used (2000 entries), so the bound is
@@ -100,38 +97,14 @@ defmodule CodingAgent.Core.Tools.Glob do
   defp validate(pattern) when is_binary(pattern) and pattern != "", do: :ok
   defp validate(_), do: Tools.error("pattern must be a non-empty string")
 
-  # -- fd delegation (ADR 016/030) ---------------------------------------------
+  # -- fd delegation (ADR 016/030/032) -----------------------------------------
 
   defp do_match(scope, pattern) do
-    case External.probe(:fd) do
-      {:ok, fd} ->
-        case fd_match(fd, scope, pattern) do
-          {:ok, _} = ok -> ok
-          :fallback -> Tools.error("fd failed to complete the search; check the pattern")
-        end
-
-      :error ->
-        Tools.error(
-          "fd is required for the glob tool and was not found on PATH; " <>
-            "install fd-find to enable filename search"
-        )
-    end
-  end
-
-  defp fd_match(fd, scope, pattern) do
     root = Path.expand(scope.root)
 
-    # Same confined-process path as grep: run fd through Exec under the
-    # read-only sandbox profile instead of a bare System.cmd.
-    profile = scope |> Tools.profile() |> Map.put(:root, root)
-
-    case Exec.run({:exec, fd, fd_args(root, pattern)}, root, @exec_timeout, profile) do
-      # 0 is the only success code: fd reports "no matches" with exit 0
-      # (the 0/1 convention belongs to --quiet; measured), so a 1 here
-      # is an error — whose text would otherwise reach the model as a
-      # tool result, because Exec collects stderr into stdout.
-      {:ok, out, 0} -> format_fd_matches(out, root, pattern)
-      _ -> :fallback
+    case FdSearch.run(scope, fd_args(root, pattern)) do
+      {:ok, out} -> format_fd_matches(out, root, pattern)
+      {:error, reason} -> Tools.error(FdSearch.error_message(reason))
     end
   end
 
@@ -180,10 +153,9 @@ defmodule CodingAgent.Core.Tools.Glob do
   # name prunes a FILE of that name too (measured: a file called `cover`
   # disappeared, because `default_skip_dirs/0` names *directories*).
   # `**/<dir>/**` prunes the directory subtree at any depth and leaves
-  # same-named files alone — the reference rule.
-  defp exclude_args do
-    Enum.flat_map(External.skip_dirs(), fn dir -> ["--exclude", "**/#{dir}/**"] end)
-  end
+  # same-named files alone — the reference rule. ONE builder in External,
+  # shared with the `@`-picker (ADR 032).
+  defp exclude_args, do: External.exclude_args()
 
   # The delegated result is filtered with the ONE reference rule
   # (`file_match?/3` + the hidden rule): fd decides nothing about the
@@ -192,14 +164,9 @@ defmodule CodingAgent.Core.Tools.Glob do
   defp format_fd_matches(out, root, pattern) do
     matches =
       out
-      |> String.split("\n", trim: true)
-      |> Enum.map(&String.trim_leading(&1, "./"))
-      |> Enum.map(&Path.expand(&1, root))
-      |> Enum.filter(&Tools.in_scope?(%{root: root}, &1))
-      |> Enum.map(&Path.relative_to(&1, root))
+      |> FdSearch.parse_paths(root)
       |> Enum.filter(&file_match?(pattern, &1, Path.basename(&1)))
       |> Containment.filter_hidden([pattern])
-      |> Enum.sort()
       |> Enum.take(@max_results)
 
     format_matches(matches)

@@ -29,6 +29,8 @@ defmodule CodingAgent.UI.Tui do
   alias CodingAgent.Core.Session.Store
   alias CodingAgent.Core.Session.Supervisor
   alias CodingAgent.Core.Session.Usage
+  alias CodingAgent.Core.Session.ToolRunner
+  alias CodingAgent.Core.Tools.ListFiles
 
   alias CodingAgent.UI.{
     Bridge,
@@ -259,6 +261,10 @@ defmodule CodingAgent.UI.Tui do
       # sidebar's fourth block; seeded on mount, updated by
       # {:todos_updated, todos}. Empty = the block is not painted.
       todos: [],
+      # the `@`-file picker (ADR 032): %{files: [...], query: ".", matches:
+      # [...], index: i} while open. `files` is the confined fd list
+      # fetched once; `matches` is the filtered view. nil = closed.
+      file_popup: nil,
       # subagent tabs (ADR 018): child_id => child state (identity,
       # transcript, stream, finished?). The live band names the leaf of
       # the active delegation. Empty until a `task` call starts a child.
@@ -509,6 +515,8 @@ defmodule CodingAgent.UI.Tui do
         # the model's todo list (ADR 031), mirrored for the sidebar's
         # fourth block; a resumed session shows the list it had
         todos: session_todos(effective_id),
+        # the `@`-file picker (ADR 032); nil = closed
+        file_popup: nil,
         last_error: nil,
         # 0 = follow the tail (auto-scroll); >0 = pinned N lines up
         scroll_offset: 0,
@@ -1424,10 +1432,18 @@ defmodule CodingAgent.UI.Tui do
         # text input disarms the esc confirms (only esc drives them)
         state = %{state | quit_confirm?: false, stop_confirm?: false}
 
-        if question? do
-          {:noreply, question_text(state, code)}
-        else
-          {:noreply, edit(state, {:text, code})}
+        cond do
+          question? ->
+            {:noreply, question_text(state, code)}
+
+          # `@` at a word boundary opens the file picker (ADR 032). The
+          # trigger is TEXT, not a keymap action: `@` is an ordinary char
+          # and must stay typable mid-word.
+          code == "@" and at_word_boundary?(state) ->
+            open_file_popup(state)
+
+          true ->
+            {:noreply, edit(state, {:text, code})}
         end
 
       {:key, km_event} ->
@@ -2005,6 +2021,10 @@ defmodule CodingAgent.UI.Tui do
     end
   end
 
+  defp handle_menu_or_normal_key(ev, %{file_popup: popup} = state) when popup != nil do
+    handle_file_popup_key(ev, state)
+  end
+
   defp handle_menu_or_normal_key(ev, state) do
     # any key clears the transient menu note
     state = %{state | menu_note: nil}
@@ -2072,6 +2092,115 @@ defmodule CodingAgent.UI.Tui do
   end
 
   defp handle_menu_popup_key(_ev, state), do: {:noreply, state}
+
+  # -- `@` file picker (ADR 032) ----------------------------------------------
+
+  # The trigger fires only when `@` starts a word: the char before the
+  # cursor is whitespace or the line start. `@` mid-word (an email, a
+  # handle) is plain text.
+  defp at_word_boundary?(state) do
+    {row, col} = ExRatatui.textarea_cursor(state.textarea)
+
+    line =
+      state.textarea |> ExRatatui.textarea_get_value() |> String.split("\n") |> Enum.at(row, "")
+
+    col <= 0 or
+      case String.at(line, col - 1) do
+        nil -> true
+        ch -> ch in [" ", "\t"]
+      end
+  end
+
+  # Opens the picker: fetch the confined file list ONCE (ADR 030 — the
+  # list is what the profile exposes, never a BEAM walk), then filter in
+  # memory per keystroke. The typed `@` is consumed by the trigger and
+  # only materializes on selection (or not at all on cancel).
+  defp open_file_popup(state) do
+    case ListFiles.list(file_scope(state)) do
+      {:ok, files} ->
+        popup = %{
+          files: files,
+          query: "",
+          matches: ListFiles.filter(files, ""),
+          index: 0
+        }
+
+        {:noreply, %{state | file_popup: popup}}
+
+      {:error, reason} ->
+        {:noreply, status_note(state, ListFiles.error_message(reason))}
+    end
+  end
+
+  # The scope the picker enumerates: the live session's (mounts/
+  # shell_mode/session_id), so hide/ro hold. Without a session (the
+  # picker view before attach) it falls back to the cwd root.
+  defp file_scope(state) do
+    case Session.state(state.session_id) do
+      {:ok, st} ->
+        ToolRunner.scope(st.scope_root, st.mounts, st.id, st.policy.shell_mode)
+
+      _ ->
+        %{root: session_scope(state.session_id)}
+    end
+  rescue
+    _ -> %{root: session_scope(state.session_id)}
+  end
+
+  # Text narrows the query; the hidden rule rides the query as its naming
+  # input (a hidden segment in the query opts in).
+  defp handle_file_popup_key(%Event.Key{code: "enter"}, state) do
+    case Enum.at(state.file_popup.matches, state.file_popup.index) do
+      nil ->
+        {:noreply, %{state | file_popup: nil}}
+
+      path ->
+        state = %{state | file_popup: nil}
+        {:noreply, edit(state, {:text, "@#{path} "})}
+    end
+  end
+
+  defp handle_file_popup_key(%Event.Key{code: code}, state) when code in ["esc", "escape"] do
+    {:noreply, %{state | file_popup: nil}}
+  end
+
+  defp handle_file_popup_key(%Event.Key{code: "up"}, state) do
+    idx = max(state.file_popup.index - 1, 0)
+    {:noreply, %{state | file_popup: %{state.file_popup | index: idx}}}
+  end
+
+  defp handle_file_popup_key(%Event.Key{code: "down"}, state) do
+    last = length(state.file_popup.matches) - 1
+    idx = min(state.file_popup.index + 1, max(last, 0))
+    {:noreply, %{state | file_popup: %{state.file_popup | index: idx}}}
+  end
+
+  defp handle_file_popup_key(%Event.Key{code: "backspace"}, state) do
+    query = String.slice(state.file_popup.query, 0..-2//1)
+    {:noreply, %{state | file_popup: refilter_file_popup(state.file_popup, query)}}
+  end
+
+  defp handle_file_popup_key(%Event.Key{code: code, modifiers: mods}, state)
+       when is_binary(code) do
+    if ctrl_or_alt?(mods) or String.length(code) != 1 do
+      {:noreply, state}
+    else
+      query = state.file_popup.query <> code
+      {:noreply, %{state | file_popup: refilter_file_popup(state.file_popup, query)}}
+    end
+  end
+
+  # other special keys (tab, page_up, …) are ignored: the picker owns the
+  # composer while open, and none of them is a text character
+  defp handle_file_popup_key(_ev, state), do: {:noreply, state}
+
+  defp refilter_file_popup(popup, query) do
+    %{popup | query: query, matches: ListFiles.filter(popup.files, query), index: 0}
+  end
+
+  defp ctrl_or_alt?(mods) do
+    (mods || []) |> Enum.any?(&(&1 in ["ctrl", "alt"]))
+  end
 
   defp run_menu_action(:switch_session, state), do: switch_session_popup(state)
 
@@ -3219,9 +3348,59 @@ defmodule CodingAgent.UI.Tui do
 
     widgets ++
       menu_widgets(state, area) ++
+      file_widgets(state, area) ++
       budget_widgets(state, area) ++
       doom_widgets(state, area) ++
       question_widgets(state, area) ++ dialog_widgets(state, area)
+  end
+
+  # The `@`-file picker popup (ADR 032): a bottom-anchored, windowed list
+  # above the live band, like the menu. The title carries the live query
+  # so the human sees what they are filtering by.
+  defp file_widgets(%{file_popup: nil}, _area), do: []
+
+  defp file_widgets(state, area) do
+    popup = state.file_popup
+    items = popup.matches
+
+    room = overlay_room(state, area)
+    visible = max(room - 3, 1)
+    offset = window_offset(popup.index, length(items), visible)
+    window = Enum.slice(items, offset, visible)
+
+    rows =
+      window
+      |> Enum.with_index(offset)
+      |> Enum.map(fn {path, i} ->
+        marker = if i == popup.index, do: "❯ ", else: "  "
+        "#{marker}#{path}"
+      end)
+
+    rows =
+      case rows do
+        [] -> ["  (no files match)"]
+        _ -> rows
+      end
+
+    body =
+      ([" @ #{popup.query}"] ++ rows)
+      |> Enum.join("\n")
+
+    w = min(70, area.width - 4)
+    rect = overlay_rect(state, area, length(rows) + 3, w)
+
+    widget = %Paragraph{
+      text: body,
+      style: Styles.surface(:chrome),
+      block:
+        Styles.panel(
+          title: " files ",
+          surface: :chrome,
+          border_style: Styles.role(:accent, :chrome)
+        )
+    }
+
+    [{%Clear{}, rect}, {widget, rect}]
   end
 
   # Viewport rendering: entries intersecting the pane get placed at

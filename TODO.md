@@ -80,14 +80,10 @@ ohne confinement. Alle sieben Slices sind gelandet:
 
 ## Nächste Schritte (priorisiert)
 
-1. **Dateien anhängen (`@`-Trigger, B3).** Letzter offener
-   Dogfooding-Blocker (Track C). Design: Wortanfang-Trigger `@`, der
-   Picker/Menü-Fläche wiederverwendet, Quelle `Core.Tools` unter
-   `Tools.scope/1` + `Mounts`.
-2. **Slash-Commands / Command-Palette (T7).** `/new`, `/sessions`,
+1. **Slash-Commands / Command-Palette (T7).** `/new`, `/sessions`,
    `/models`, `/compact`, `/export`, `/undo`, `/help` machen die
    bestehenden Aktionen auffindbar statt Tastenkürzel-Archäologie.
-3. **Undo/Redo via Git-Checkpoint + `/undo` (T8).** „Git ist das Undo“
+2. **Undo/Redo via Git-Checkpoint + `/undo` (T8).** „Git ist das Undo“
    ist ADR-015-Prinzip, aber ohne Nutzer-Verb; ein Checkpoint pro Turn
    plus `/undo` paart mit der Permission-Story.
 
@@ -97,8 +93,8 @@ ohne confinement. Alle sieben Slices sind gelandet:
 | --- | --- | --- |
 | T4 | `todowrite`/Plan-Tool | **erledigt** (2026-09-28, ADR 031) |
 | T5 | `task`/Subagent inkl. Tab (ADR 017/018) | **erledigt** (2026-09-25): Seam + Tabs (Amendment (ii)) — Wire-Tagging, in-memory Tabs, Tab-Leiste/ctrl-x, Parallel-Cap |
-| T7 | Slash-Commands/Command-Palette | offen — nächste Schritte 2 |
-| T8 | Undo/Redo via Git-Checkpoint + `/undo` | offen — nächste Schritte 3 |
+| T7 | Slash-Commands/Command-Palette | offen — nächste Schritte 1 |
+| T8 | Undo/Redo via Git-Checkpoint + `/undo` | offen — nächste Schritte 2 |
 | T9 | `websearch` neben `webfetch` | offen (Such-API-Abhängigkeit; `webfetch` ist da) |
 | T10 | `apply_patch`, LSP, Skills, MCP — inkl. fuzzy-match-Kette für `edit` | offen; `edit` ist exakt-match-only (opencode hat 9 Fuzzy-Strategien + LSP-Diagnostik nach jedem Edit) |
 | T13 | Verschachtelte `AGENTS.md` (Monorepo) | offen; wir lesen nur den Scope-Root einmal (`ProjectMemory.load/1`) |
@@ -107,7 +103,10 @@ ohne confinement. Alle sieben Slices sind gelandet:
 
 ## Dogfooding-Blocker (B)
 
-* **B3** Dateien anhängen — siehe nächste Schritte 1.
+* ~~**B3** Dateien anhängen~~ — **erledigt (ADR 032, 2026-09-28):**
+  `@` am Wortanfang öffnet einen menü-artigen Picker (confined `fd` via
+  `Core.Tools.ListFiles`, Profil/Mounts beachtet); Auswahl fügt den Pfad
+  ein. Inhalt-Anhängen bleibt eine offene Frage in ADR 032.
 * **B5** Input-Auto-Wrap — **vom Owner vertagt** (2026-09-19), nicht
   anfassen, ohne dass es weh tut. Messung für die Wiederaufnahme:
   `%Textarea{}` hat **kein** `wrap`-Feld (die Crate
