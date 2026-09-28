@@ -5,8 +5,9 @@ defmodule CodingAgent.Core.Events do
   A session broadcasts progress to whoever registered on
   `CodingAgent.EventRegistry` under `{:session_events, id}`. Before this
   module, five call sites each re-implemented the same
-  `Registry.dispatch/3` + `send(pid, {:agent, event})` dance; a change to
-  the delivery shape meant five edits.
+  `Registry.dispatch/3` + `send(pid, {:agent, event})` dance (the
+  untagged shape of the time); a change to the delivery shape meant five
+  edits.
 
   `publish/2` is the one writer. Subscribers receive `{:agent, id, event}`
   messages — the SOURCE session id rides along, because a TUI may

@@ -1,15 +1,13 @@
 # TODO — der aktive Backlog
 
-Stand: 2026-09-27, Branch `devel` @ `f830a8f` („subagent tabs, parallel
-delegation“, ADR 018 Teil 2). `dev/mjansen` ist **zweimal** auf `devel`
-rebased worden (erst auf `1b78de4`, dann auf `f830a8f`); die sechs
-ursprünglichen Branch-Commits haben dabei jedes Mal neue Hashes
-bekommen, die alte↔neue Zuordnung steht in `review.md` (Nachtrag und
-Abschnitt 5). Gegen den Baum verifiziert; die beiden Zeilenmaße im
-P4-Punkt gegen den Commit korrigiert, in dem sie falsch waren
-(Folge-Commit), zuletzt auf die heutigen Bäume nachgezogen. Die
-Sidebar-Einträge O4/O5 in Runde 5 auf `dev/mjansen` nachgezogen (noch
-nicht auf `devel`).
+Stand: 2026-09-27, Branch `devel` @ `ca6f734` (Merge `dev/mjansen`:
+Sidebar-Blöcke, Decimal-Alignment, Review-Record). `dev/mjansen` ist
+**zweimal** auf `devel` rebased worden (erst auf `1b78de4`, dann auf
+`f830a8f`) und danach fast-forward gemerged; die alte↔neue Zuordnung der
+Rebases steht in `review.md` (Nachtrag und Abschnitt 5). Der Merge ist
+verifiziert: 883 Tests grün (`mix test --seed 0`), das Follow-up zu
+`review.md` §7 ist als eigener Commit gelandet (F1–F5). `review.md` ist
+der Record und wird nicht weiter gepflegt.
 
 Der **große Plan** steht in `ROADMAP.md` (Phasen, Produktthese,
 „Later“-Ideen, Ground Rules). **Entscheidungen** stehen in den ADRs
@@ -42,6 +40,13 @@ im jeweiligen ADR vermerkt.
   wirklich abbricht; der Parent-Worker blockiert weiter im Task-Call, das
   Kind wird aber über seine eigene Interrupt-Id gestoppt. Ein „mid-tool
   hard cancel“ bleibt als `ROADMAP.md`-Notiz offen.
+* **Git-Editor/Pager im Agent-Prozess (Review F7).** `Core.Exec.run/4`
+  gibt keine `{:env, …}`-Option mit, also erbt jeder `git`/`shell`-Aufruf
+  die Umgebung des Owners (`EDITOR=vim`, `VISUAL=gvim -f`): ein
+  `git commit` ohne `-m`, `rebase --continue`, `tag -a` startet den
+  Editor und hängt. Fix bei Bedarf: `GIT_EDITOR=true
+  GIT_TERMINAL_PROMPT=0 GIT_PAGER=cat PAGER=cat` als Env für
+  Agent-Aufrufe (kein Config-Eingriff). Entscheidung offen.
 
 ## Nächste Schritte (priorisiert)
 
@@ -102,13 +107,11 @@ Damit ist aus dem alten P3-Befund nur noch offen:
 
 ## Struktur & Kosmetik (P4)
 
-* `tui.ex` aufteilen (`4761` Zeilen auf `devel`, `4825` auf dem
-  Branch-HEAD; der interne Aufbau ist nur durch `# --`-Kommentare
-  getrennt) und den Mount-State **einmal** definieren (`mount_picker`
-  122 Zeilen auf beiden Bäumen, `mount_session` 220 auf `devel` / 224 auf
-  dem Branch — Funktionsspanne `defp` bis `end`). Die früheren Maße
-  (`~114/~212`) waren die von `935cf92`, dem Commit, in dem sie falsch
-  waren.
+* `tui.ex` aufteilen (`4865` Zeilen auf `devel@ca6f734`; der interne
+  Aufbau ist nur durch `# --`-Kommentare getrennt) und den Mount-State
+  **einmal** definieren (`mount_picker` 122 Zeilen, `mount_session` 224 —
+  Funktionsspanne `defp` bis `end`). Die früheren Maße (`~114/~212`)
+  waren die von `935cf92`, dem Commit, in dem sie falsch waren.
 * `TranscriptView.metrics/…` als **eine** Heimat der Pane-Geometrie —
   derzeit verstreut (`content_width`, `pane_size`, Overlay-Raum).
 * `test_mode?`-Branches durch injizierte Behaviours ersetzen, wo sie

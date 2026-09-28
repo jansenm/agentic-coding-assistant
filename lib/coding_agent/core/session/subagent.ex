@@ -50,9 +50,13 @@ defmodule CodingAgent.Core.Session.Subagent do
   @type result :: %{id: String.t(), name: String.t(), content: String.t()}
 
   @doc """
-  Runs one `task` call. Always returns a result (never raises), so a
-  failed delegation steers the parent model with an error string instead
-  of crashing the turn.
+  Runs one `task` call. Every handled failure (unknown type, a refused
+  primary, a failed or summary-less child) returns a result carrying an
+  error string, so the parent model can correct itself instead of the
+  turn crashing. An UNEXPECTED raise inside this function (it loads
+  definitions and reads a child state) is contained one level up:
+  `run_subagents/2` runs these under a supervisor and turns the task
+  exit into the same error-result shape.
   """
   @spec run(State.t(), term()) :: result()
   def run(%State{} = parent, call) do
@@ -76,17 +80,31 @@ defmodule CodingAgent.Core.Session.Subagent do
   defp delegate(parent, definition, args) do
     prompt = (arg(args, "prompt") || "") <> @summary_instruction
     child_id = child_id(parent)
+    model = child_model(parent, definition)
 
     case start_child(parent, child_id, definition) do
       {:ok, _pid} ->
-        model = child_model(parent, definition)
-        announce_started(parent, child_id, definition.name, model)
+        # The child's event lifecycle is started -> finished, ALWAYS: a
+        # subscriber (the TUI tab) keeps the tab "running" until the
+        # finish event, and `cleanup/1` retires the child session. An
+        # unexpected raise while reading the child's result (e.g.
+        # `summarize/1` on a corrupted state) must not skip either —
+        # nolink containment in `run_subagents/2` handles exits/kills,
+        # this rescue handles exceptions.
+        try do
+          announce_started(parent, child_id, definition.name, model)
 
-        outcome = run_child(child_id, prompt)
-        summary = summarize(outcome)
-        announce_finished(parent, child_id, if(match?({:ok, _}, outcome), do: :ok, else: :error))
-        cleanup(child_id)
-        summary
+          outcome = run_child(child_id, prompt)
+          summary = summarize(outcome)
+          announce_finished(parent, child_id, if(match?({:ok, _}, outcome), do: :ok, else: :error))
+          summary
+        rescue
+          e ->
+            announce_finished(parent, child_id, :error)
+            {:error, "subagent crashed: #{Exception.message(e)}"}
+        after
+          cleanup(child_id)
+        end
 
       {:error, reason} ->
         {:error, "could not start subagent #{inspect(definition.name)}: #{inspect(reason)}"}

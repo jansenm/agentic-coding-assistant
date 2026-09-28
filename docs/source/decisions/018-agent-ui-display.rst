@@ -20,10 +20,9 @@ UI: running vs. next agent, and subagent views
    session, the parent events (``{:subagent_started, child_id, name,
    model}`` / ``{:subagent_finished, child_id, outcome}``), the
    summary-only return, the depth-1 bound, and the live band naming the
-   leaf of the active delegation. **Not yet built: the subagent TAB**
-   (opening the child's transcript by key binding) — the seam and the
-   events exist, so the tab is a pure view slice (recorded in
-   ``TODO.md``).
+   leaf of the active delegation. **The subagent TAB shipped in
+   amendment (ii)** (2026-09-25): the tagged wire, the in-memory child
+   tabs, the bounded tab bar and ``ctrl-x a``.
 
 Context
 -------
@@ -289,13 +288,14 @@ leaf identity and its revert).
 Amendment 2026-09-25 (ii): the subagent tab — the design, decided
 -----------------------------------------------------------------
 
-**Status: planned, not yet built.** This records the owner's decisions so
-the slice can be built without re-litigating them. The seam it builds on
+**Status: Accepted — SHIPPED 2026-09-25** (see the block at the end of
+this amendment). This records the owner's decisions so the slice could
+be built without re-litigating them. The seam it builds on
 shipped in the amendment above; this amendment replaces the "active only,
 no history" direction of the brainstorming list in ``TODO.md``.
 
-Three things in the seam are not tab-ready. They were verified against
-the tree before deciding:
+Three things in the seam were not tab-ready. They were verified against
+the tree before deciding (the build below then changed 1 and 2):
 
 1. **The event wire carries no source id.** ``Events.publish/2`` sends
    ``{:agent, event}`` (``events.ex``), and every TUI handler matches the
@@ -387,7 +387,7 @@ The slice, in order
 - A finished tab is KEPT (read-only) until the view is discarded (a
   session switch resets the map).
 - ``run_subagents/2`` runs a round's ``task`` calls concurrently, capped
-  by ``Config.subagent_concurrency/2`` (default 3, ``config.toml
+  by ``Config.subagent_concurrency/1`` (default 3, ``config.toml
   subagent_concurrency``). Results keep call order.
 - esc forwards the stop to every active child (each has its own
   ``Interrupt`` id), so a long delegation is cancellable.

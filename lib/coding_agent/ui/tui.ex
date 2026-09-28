@@ -1828,7 +1828,7 @@ defmodule CodingAgent.UI.Tui do
         |> Enum.map(fn {id, c} ->
           state_mark =
             cond do
-              id == Map.get(state, :active_tab) -> " (viewing)"
+              id == active_tab_id(state) -> " (viewing)"
               Map.get(c, :finished?, false) -> " (finished)"
               true -> " (running)"
             end
@@ -2500,6 +2500,24 @@ defmodule CodingAgent.UI.Tui do
     handle_info({:agent, event}, state)
   end
 
+  # A child's delta defers its render exactly like the parent's (F2):
+  # marking the dirty flag and returning `render?: false` means one
+  # throttle frame per @stream_render_ms instead of a full paint per
+  # delta. The child path used to fall through to the default
+  # `render?: true`, so a delegating parent painted every child delta —
+  # O(n²) with the growing stream buffer. The tick is armed by
+  # `subscriptions/1` (which looks at child streams too, not just the
+  # parent's).
+  def handle_info({:agent, child_id, {kind, _delta} = event}, %{subagents: subs} = state)
+      when is_map_key(subs, child_id) and kind in [:llm_deltas, :reasoning_deltas] do
+    state =
+      state
+      |> accumulate_child(child_id, event)
+      |> Map.put(:stream_dirty?, true)
+
+    {:noreply, state, %{render?: false}}
+  end
+
   def handle_info({:agent, child_id, event}, %{subagents: subs} = state)
       when is_map_key(subs, child_id) do
     {:noreply, accumulate_child(state, child_id, event)}
@@ -2994,7 +3012,7 @@ defmodule CodingAgent.UI.Tui do
   @impl true
   def subscriptions(%{test_mode?: false} = state) do
     stream =
-      if Map.get(state, :stream_dirty?, false) and match?([_ | _], Map.get(state, :stream)) do
+      if Map.get(state, :stream_dirty?, false) and any_stream?(state) do
         [
           %ExRatatui.Subscription{
             id: :stream_render,
@@ -3025,6 +3043,18 @@ defmodule CodingAgent.UI.Tui do
   end
 
   def subscriptions(_state), do: []
+
+  # Is there an unpainted stream anywhere — the parent's or a child
+  # tab's? A delegating parent's own stream is typically EMPTY while the
+  # child streams (the parent blocks in the `task` call), so checking
+  # only `state.stream` retired the throttle exactly when the child
+  # needed it (F2).
+  defp any_stream?(state) do
+    match?([_ | _], Map.get(state, :stream)) or
+      Enum.any?(Map.get(state, :subagents, %{}), fn {_id, child} ->
+        match?([_ | _], Map.get(child, :stream, []))
+      end)
+  end
 
   # -- activity tracking -----------------------------------------------------
 
@@ -3186,20 +3216,13 @@ defmodule CodingAgent.UI.Tui do
   # scroll/open state, so scrolling a tab never moves the parent and vice
   # versa. Falls back to the parent when no tab is selected.
   defp active_transcript(state) do
-    case Map.get(state, :active_tab) do
+    case active_child(state) do
       nil ->
         {display_entries(state), Map.get(state, :scroll_offset, 0), Map.get(state, :open_tool_id)}
 
-      child_id ->
-        child = Map.get(state, :subagents, %{}) |> Map.get(child_id)
-
-        if child do
-          {child_display_entries(child), Map.get(child, :scroll_offset, 0),
-           Map.get(child, :open_tool_id)}
-        else
-          {display_entries(state), Map.get(state, :scroll_offset, 0),
-           Map.get(state, :open_tool_id)}
-        end
+      {_id, child} ->
+        {child_display_entries(child), Map.get(child, :scroll_offset, 0),
+         Map.get(child, :open_tool_id)}
     end
   end
 
@@ -3319,45 +3342,65 @@ defmodule CodingAgent.UI.Tui do
     put_scroll(state, clamped)
   end
 
-  # -- active-view scroll/open routing (parent or child tab) ---------------
+  # -- active-view routing (parent or child tab) ----------------------------
   # Each view owns its own scroll offset and open tool id, so switching
   # tabs never disturbs the parent's position and vice versa.
+  #
+  # `active_tab` is a POINTER into `subagents`, not an independent
+  # selection: a tab id that is no longer a key reads as the parent view.
+  # Every consumer goes through `active_child/1`, so the lifetime rule has
+  # one implementation (F4); `open_subagent_tab/2` is the only writer.
+
+  defp active_child(state) do
+    with id when not is_nil(id) <- Map.get(state, :active_tab),
+         {:ok, child} <- Map.fetch(Map.get(state, :subagents, %{}), id) do
+      {id, child}
+    else
+      _ -> nil
+    end
+  end
+
+  # The effective active tab id: nil when no tab is selected OR when the
+  # pointer names a tab that no longer exists (viewers treat it as the
+  # parent view — the one lifetime rule, F4).
+  defp active_tab_id(state) do
+    case active_child(state) do
+      nil -> nil
+      {id, _child} -> id
+    end
+  end
 
   defp scroll_active(state, delta) do
     {_entries, offset, _open} = active_transcript(state)
     put_scroll(state, max(offset + delta, 0))
   end
 
-  defp put_scroll(%{active_tab: nil} = state, offset), do: %{state | scroll_offset: offset}
+  defp put_scroll(state, offset) do
+    case active_child(state) do
+      nil ->
+        %{state | scroll_offset: offset}
 
-  defp put_scroll(%{active_tab: id, subagents: subs} = state, offset) do
-    case Map.fetch(subs, id) do
-      {:ok, child} -> %{state | subagents: Map.put(subs, id, %{child | scroll_offset: offset})}
-      :error -> %{state | active_tab: nil, scroll_offset: offset}
+      {id, child} ->
+        %{state | subagents: Map.put(state.subagents, id, %{child | scroll_offset: offset})}
     end
   end
 
-  defp put_scroll(state, offset), do: %{state | scroll_offset: offset}
-
-  defp active_open_id(%{active_tab: nil} = state), do: Map.get(state, :open_tool_id)
-
-  defp active_open_id(%{active_tab: id, subagents: subs} = state) do
-    case Map.fetch(subs, id) do
-      {:ok, child} -> Map.get(child, :open_tool_id)
-      :error -> Map.get(state, :open_tool_id)
+  defp active_open_id(state) do
+    case active_child(state) do
+      nil -> Map.get(state, :open_tool_id)
+      {_id, child} -> Map.get(child, :open_tool_id)
     end
   end
 
-  defp put_open_id(%{active_tab: nil} = state, open), do: %{state | open_tool_id: open}
+  defp put_open_id(state, open) do
+    case active_child(state) do
+      nil ->
+        %{state | open_tool_id: open}
 
-  defp put_open_id(%{active_tab: id, subagents: subs} = state, open) do
-    case Map.fetch(subs, id) do
-      {:ok, child} -> %{state | subagents: Map.put(subs, id, %{child | open_tool_id: open})}
-      :error -> %{state | open_tool_id: open}
+      {id, child} ->
+        %{state | subagents: Map.put(state.subagents, id, %{child | open_tool_id: open})}
     end
   end
-
-  defp put_open_id(state, open), do: %{state | open_tool_id: open}
 
   # viewport scrolling happens inside the widget when the entry starts
   # above the pane top (Paragraph/Markdown both support :scroll)
@@ -3781,7 +3824,6 @@ defmodule CodingAgent.UI.Tui do
       finished?: false,
       transcript: [],
       stream: [],
-      active_agent: agent,
       open_tool_id: nil,
       scroll_offset: 0
     }
@@ -3796,8 +3838,6 @@ defmodule CodingAgent.UI.Tui do
     child = Map.fetch!(state.subagents, child_id)
     %{touch(state) | subagents: Map.put(state.subagents, child_id, fold_child(child, event))}
   end
-
-  defp fold_child(child, {:turn_started, agent}), do: %{child | active_agent: agent}
 
   defp fold_child(child, {:llm_deltas, delta}),
     do: %{child | stream: append_stream(child.stream, :assistant, delta)}
@@ -3999,7 +4039,7 @@ defmodule CodingAgent.UI.Tui do
 
   defp tab_bar(state) do
     subs = Map.get(state, :subagents, %{})
-    active_tab = Map.get(state, :active_tab)
+    active_tab = active_tab_id(state)
 
     {running, finished} =
       subs

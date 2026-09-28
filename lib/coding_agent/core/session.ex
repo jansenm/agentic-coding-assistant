@@ -126,7 +126,9 @@ defmodule CodingAgent.Core.Session do
 
   @doc """
   Subscribes the CALLER to session events (streaming deltas, status
-  changes). Events arrive as `{:agent, event}` messages.
+  changes). Events arrive as `{:agent, id, event}` messages, where `id`
+  is the SOURCE session id (ADR 018): a subscriber watching a parent and
+  its subagent children routes on the tag instead of blending the two.
 
   Registry registration is process-local, so it must happen in the
   caller — the historical :subscribe call registered the *session*
@@ -1722,6 +1724,14 @@ defmodule CodingAgent.Core.Session do
   # for a gated tool), so the status band reads "running task" for the
   # children's whole duration; the matching `{:tool_executed, ...}` is
   # published by `broadcast_tools/3` with the round's results.
+  #
+  # The tasks run under the turn supervisor with `async_stream_nolink`:
+  # a raise inside `Subagent.run/2` (the seam loads definitions and
+  # summarises a child state — third-party-adjacent code) must arrive as
+  # an `{:exit, _}` element, not as an exit SIGNAL. Linked `Task.async_stream`
+  # kills the caller instead — found in review F1 (a corrupted child
+  # context made `summarize/1` raise, taking the parent's turn worker
+  # down and leaving the session failed with no summary).
   defp run_subagents(state, task_calls) do
     Enum.each(task_calls, fn _call ->
       Events.publish(state.id, {:tool_started, CodingAgent.Core.Tools.Task.name()})
@@ -1729,15 +1739,13 @@ defmodule CodingAgent.Core.Session do
 
     cap = CodingAgent.Core.Config.subagent_concurrency(state.scope_root)
 
-    task_calls
-    |> Task.async_stream(
+    Task.Supervisor.async_stream_nolink(
+      task_supervisor(),
+      task_calls,
       fn call -> CodingAgent.Core.Session.Subagent.run(state, call) end,
       max_concurrency: cap,
       ordered: true,
       # a child is a whole turn: it may run long, so no wall-clock cap.
-      # `Subagent.run/2` never raises, but a crashed task arrives as
-      # {:exit, _} — turn that into an error RESULT rather than letting
-      # the MatchError take the parent's worker down.
       timeout: :infinity
     )
     |> Enum.zip(task_calls)

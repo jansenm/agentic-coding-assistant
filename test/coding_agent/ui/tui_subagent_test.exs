@@ -138,6 +138,50 @@ defmodule CodingAgent.UI.TuiSubagentTest do
              end)
     end
 
+    # F2: a child delta DEFERS its render exactly like the parent's
+    # (render?: false), so a delegating parent paints one throttle frame
+    # per window, not a full frame per child delta.
+    test "a child delta defers its render and arms the throttle", %{pid: pid} do
+      agent(pid, {:subagent_started, "c1", "explorer", "m"})
+
+      send(pid, {:agent, "c1", {:llm_deltas, "deferred child"}})
+      st = sync(pid)
+
+      # the fold happened, the paint did not
+      assert st.subagents["c1"].stream == [{:assistant, "deferred child"}]
+      assert st.stream_dirty? == true
+
+      # in production the throttle is declared while a CHILD stream is
+      # dirty: the parent's own stream is empty here.
+      prod = %{st | test_mode?: false}
+
+      assert [%ExRatatui.Subscription{id: :stream_render}] = Tui.subscriptions(prod)
+
+      # ...and retires once the tick clears the flag
+      state = fire(pid, :__stream_render__)
+      assert state.stream_dirty? == false
+      assert Tui.subscriptions(%{prod | stream_dirty?: false}) == []
+    end
+
+    test "child deltas paint through the throttle tick, not per delta", %{pid: pid} do
+      agent(pid, {:subagent_started, "c1", "explorer", "m"})
+
+      send(pid, {:agent, "c1", {:llm_deltas, "child paint"}})
+      # deferred: the pane shows the parent, and the child's stream is
+      # not on screen yet
+      refute Enum.any?(buffer(pid), &String.contains?(&1, "child paint"))
+
+      # open the child tab, then fire the tick: the child's stream paints
+      state = run_menu(pid, "a")
+      child = Enum.find(state.menu_popup.items, &match?(%{id: {:tab, "c1"}}, &1))
+      :ok = open_popup_selection(pid, state, child)
+
+      fire(pid, :__stream_render__)
+
+      # the delta text is visible in the active child tab
+      assert Enum.any?(buffer(pid), &String.contains?(&1, "child paint"))
+    end
+
     test "the tab bar appears only once a subagent exists", %{pid: pid} do
       refute Enum.any?(buffer(pid), &String.contains?(&1, "primary"))
 
@@ -195,6 +239,44 @@ defmodule CodingAgent.UI.TuiSubagentTest do
       :ok = open_popup_selection(pid, state, primary)
 
       assert sync(pid).active_tab == nil
+    end
+
+    # F4: `active_tab` is a POINTER into `subagents`, not an independent
+    # selection. A pointer naming a tab that no longer exists must read
+    # as the parent view for EVERY consumer (transcript, scroll, open
+    # tool, tab bar, popup mark) — one rule, not a per-consumer fallback.
+    test "a stale active_tab pointer falls back to the parent everywhere", %{pid: pid} do
+      agent(pid, {:subagent_started, "c1", "explorer", "m"})
+      agent(pid, "c1", {:llm_deltas, "child text"})
+      agent(pid, "c1", {:llm_message, "child text"})
+      agent(pid, {:subagent_started, "c2", "reviewer", "m"})
+
+      state = run_menu(pid, "a")
+      child = Enum.find(state.menu_popup.items, &match?(%{id: {:tab, "c1"}}, &1))
+      :ok = open_popup_selection(pid, state, child)
+      assert sync(pid).active_tab == "c1"
+
+      # simulate the lifetime case: c1 is gone (a later slice may drop
+      # tabs), the pointer stays
+      :sys.replace_state(pid, fn rt ->
+        update_in(rt.user_state.subagents, &Map.delete(&1, "c1"))
+      end)
+
+      # repaint (the spinner tick renders)
+      fire(pid, :__spin__)
+
+      # the pane renders the parent view, not a child that no longer
+      # exists
+      refute Enum.any?(buffer(pid), &String.contains?(&1, "child text"))
+
+      # scrolling routes to the parent, not to a phantom tab
+      key(pid, "page_up")
+      st = sync(pid)
+
+      refute Map.has_key?(st.subagents, "c1")
+
+      # the tab bar marks the PARENT as viewing (the effective pointer)
+      assert Enum.any?(buffer(pid), &String.contains?(&1, "[primary]"))
     end
   end
 

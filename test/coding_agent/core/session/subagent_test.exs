@@ -159,6 +159,45 @@ defmodule CodingAgent.Core.Session.SubagentTest do
       assert text =~ "subagent failed"
     end
 
+    # F1: `Subagent.run/2` is documented to always return a result, but a
+    # raise INSIDE it (the seam runs third-party-adjacent code: agent
+    # loading, summarising a child state) must still become an error
+    # result — and must still close the child's lifecycle. Linked
+    # `Task.async_stream` killed the delegating caller before the
+    # `{:exit, _}` branch could ever run; a skipped finish event left the
+    # TUI tab "running" forever.
+    test "a raise inside Subagent.run/2 becomes an error result, not a dead parent", %{root: root} do
+      write_agent(root, "grumpy", "You fail.")
+      id = "sub-child-raise-#{System.unique_integer([:positive])}"
+
+      # the runner completes the child turn, but with a context that
+      # `summarize/1` cannot read: `ReqLLM.Context.to_list/1` raises.
+      corrupting = fn state -> {state, {:ok, %{state | context: :garbage}}} end
+
+      start_parent(id, root, interactive: true, subagent_runner: corrupting)
+      :ok = Session.subscribe(id)
+      :ok = Session.debug_gate(id, [task_call("t1", "grumpy", "go")])
+
+      {:ok, state} = Session.state(id)
+      refute state.status == :error
+
+      text =
+        state.context
+        |> ReqLLM.Context.to_list()
+        |> Enum.map_join("\n", &message_text/1)
+
+      assert text =~ "subagent crashed"
+
+      # the lifecycle closed: the finish event was published (the tab
+      # would otherwise stay "running"), and the child session was
+      # retired by cleanup/1 (no longer registered)
+      events = drain_events()
+      assert Enum.any?(events, &match?({:subagent_finished, _, :error}, &1))
+
+      child_id = child_id_of(events)
+      assert Registry.lookup(CodingAgent.Registry, {:session, child_id}) == []
+    end
+
     test "a task call alongside a gated sibling defers the sibling and still runs the child",
          %{root: root} do
       write_agent(root, "explorer", "x", "mode: subagent\n")
@@ -403,6 +442,14 @@ defmodule CodingAgent.Core.Session.SubagentTest do
     after
       50 -> Enum.reverse(acc)
     end
+  end
+
+  # The child id named by a {:subagent_finished, child_id, outcome} event.
+  defp child_id_of(events) do
+    Enum.find_value(events, fn
+      {:subagent_finished, child_id, _} -> child_id
+      _ -> nil
+    end)
   end
 
   defp message_text(%ReqLLM.Message{content: parts}) when is_list(parts) do
