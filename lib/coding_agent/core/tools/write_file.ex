@@ -40,6 +40,7 @@ defmodule CodingAgent.Core.Tools.WriteFile do
 
     if is_binary(path) and path != "" do
       content = if is_binary(content), do: content, else: ""
+
       case Tools.FileExec.write(scope, path, content, @timeout_secs) do
         {:ok, _path} -> {:ok, "wrote #{path} (#{String.length(content)} chars)"}
         {:error, message} -> Tools.error(message)

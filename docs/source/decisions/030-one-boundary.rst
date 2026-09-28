@@ -10,13 +10,19 @@ One boundary: the sandbox enforces reach, and a confining sandbox is required to
    :tags: sandbox, permissions, tools, containment, architecture
 
 .. note::
-   **Status: accepted, not yet implemented.** This is a deliberate
-   architecture correction. It supersedes the ``None`` fallback path of
+   **Status: accepted and implemented 2026-09-27.** A deliberate
+   architecture correction: it supersedes the ``None`` fallback path of
    ADR 015 for the production case and removes the second boundary the
-   native file tools carry. The tree today has **two half-boundaries**
-   (see Context); the project is early enough that fixing the model now
-   is far cheaper than migrating tools later. Implementation follows in
-   slices; ``TODO.md`` tracks them.
+   native file tools carried.
+
+   Shipped in two commits (slices 1–4, then 5–7). ``Tools.FileExec``
+   runs the file tools as confined ``cat``/``tee``/``ls``; ``Exec``
+   carries stdin and env; session start refuses without confinement;
+   ``rg``/``fd`` are required; shell/git are allow-by-default. A live
+   bwrap bug surfaced while implementing this: ``hide`` for a FILE used
+   ``--ro-bind /dev/null``, which is unreadable under the ``nodev``
+   mount of an unprivileged userns; ``--dev-bind`` gives the intended
+   empty-image semantic.
 
 Context
 -------
@@ -175,13 +181,16 @@ Open questions
    must not read the other's material). The session-level profile is the
    first shape; per-definition profiles (ADR 017) are the natural
    extension. Wanted, not scheduled.
-2. **``grep``/``glob`` fallback.** Require ``rg``/``fd``, or route the
-   Elixir walk through confined processes? Nothing may stay a second
-   boundary.
+2. **``grep``/``glob`` fallback — ANSWERED (implemented): require
+   ``rg``/``fd``.** A missing binary is a clear error; the Elixir walk
+   is gone, and the reference dialect survives only as the filter applied
+   to the engine's output.
 3. **``edit`` atomicity / the long-lived helper.** Deferred until
    measured need.
 4. **macOS/Windows equivalent.** Keep the profile contract identical;
    the implementation is the work.
-5. **Test seam shape.** ``Sandbox.None`` as an explicitly-selected test
-   implementation, plus what the suite asserts about the production
-   refusal path.
+5. **Test seam shape — ANSWERED (implemented).** A confining test double
+   is the suite default (``config/test.exs``); ``Sandbox.None`` appears
+   only where the unconfined seam or the refusal path is under test, and
+   ``SandboxCase.put_sandbox/1`` restores the env on exit. The refusal
+   path is asserted in ``Sandbox.GateTest``.

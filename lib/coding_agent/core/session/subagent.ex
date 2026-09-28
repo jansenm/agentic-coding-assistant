@@ -96,7 +96,13 @@ defmodule CodingAgent.Core.Session.Subagent do
 
           outcome = run_child(child_id, prompt)
           summary = summarize(outcome)
-          announce_finished(parent, child_id, if(match?({:ok, _}, outcome), do: :ok, else: :error))
+
+          announce_finished(
+            parent,
+            child_id,
+            if(match?({:ok, _}, outcome), do: :ok, else: :error)
+          )
+
           summary
         rescue
           e ->

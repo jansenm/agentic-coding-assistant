@@ -22,7 +22,8 @@ defmodule CodingAgent.Core.Sandbox.FileToolsConfinementTest do
   alias CodingAgent.Core.Sandbox.Bwrap
   alias CodingAgent.Core.Tools
 
-  @tmp_root System.tmp_dir!() |> Path.join("agent-file-conf-#{System.unique_integer([:positive])}")
+  @tmp_root System.tmp_dir!()
+            |> Path.join("agent-file-conf-#{System.unique_integer([:positive])}")
 
   setup do
     File.rm_rf!(@tmp_root)
@@ -40,7 +41,10 @@ defmodule CodingAgent.Core.Sandbox.FileToolsConfinementTest do
   defp tool(name, scope), do: Enum.find(Tools.all(scope), &(&1.name == name))
 
   defp scope(root, opts \\ []) do
-    %{root: root, mounts: %{rw: [], ro: Keyword.get(opts, :ro, []), hide: Keyword.get(opts, :hide, [])}}
+    %{
+      root: root,
+      mounts: %{rw: [], ro: Keyword.get(opts, :ro, []), hide: Keyword.get(opts, :hide, [])}
+    }
   end
 
   describe "hide (ADR 030: works for the native tools now)" do
@@ -105,9 +109,12 @@ defmodule CodingAgent.Core.Sandbox.FileToolsConfinementTest do
         scoped = scope(root, ro: [ro_dir])
 
         read = tool("read_file", scoped)
-        assert {:ok, "readable"} = ReqLLM.Tool.execute(read, %{"path" => Path.join(ro_dir, "data.txt")})
+
+        assert {:ok, "readable"} =
+                 ReqLLM.Tool.execute(read, %{"path" => Path.join(ro_dir, "data.txt")})
 
         write = tool("write_file", scoped)
+
         {:error, msg} =
           ReqLLM.Tool.execute(write, %{"path" => Path.join(ro_dir, "new.txt"), "content" => "x"})
 

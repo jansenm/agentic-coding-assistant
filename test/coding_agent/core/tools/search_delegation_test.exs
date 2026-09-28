@@ -246,14 +246,25 @@ defmodule CodingAgent.Core.Tools.SearchDelegationTest do
 
         # capped output carries a suffix; compare the body only
         actual = tool_answer(glob(s), %{"pattern" => pattern})
-        assert String.starts_with?(actual, expected), "glob #{inspect(pattern)}: #{actual} != #{expected}"
+
+        assert String.starts_with?(actual, expected),
+               "glob #{inspect(pattern)}: #{actual} != #{expected}"
       end
     end
 
     test "grep with a glob filter equals the reference filter over the tree", %{scope: s} do
       # the oracle: every file the reference glob rule accepts, searched
       # for the literal; the tool must return exactly those matches.
-      for glob <- ["*.ex", "**/*.ex", "lib/**/*.ex", "src/*.ex", "*.txt", ".hidden.ex", ".github/**/*.yml", "*.yml"] do
+      for glob <- [
+            "*.ex",
+            "**/*.ex",
+            "lib/**/*.ex",
+            "src/*.ex",
+            "*.txt",
+            ".hidden.ex",
+            ".github/**/*.yml",
+            "*.yml"
+          ] do
         accepted =
           all_files(@root)
           |> Enum.filter(&CodingAgent.Core.Tools.Glob.file_match?(glob, &1, Path.basename(&1)))

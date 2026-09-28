@@ -185,7 +185,11 @@ defmodule CodingAgent.Core.Tools.FileToolsTest do
       tool = find_tool("edit", scope)
 
       {:error, msg} =
-        ReqLLM.Tool.execute(tool, %{"path" => "gone.txt", "old_string" => "a", "new_string" => "b"})
+        ReqLLM.Tool.execute(tool, %{
+          "path" => "gone.txt",
+          "old_string" => "a",
+          "new_string" => "b"
+        })
 
       assert msg =~ "no such file"
     end
