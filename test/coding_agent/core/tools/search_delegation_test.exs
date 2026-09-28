@@ -77,17 +77,49 @@ defmodule CodingAgent.Core.Tools.SearchDelegationTest do
   defp grep(scope), do: scope |> Tools.read_only() |> Enum.find(&(&1.name == "grep"))
   defp glob(scope), do: scope |> Tools.read_only() |> Enum.find(&(&1.name == "glob"))
 
-  # Run the same call twice: once with the external engine as found on
-  # this machine, once with it forced off (the reference engine).
-  defp both_engines(tool, args, engine) do
+  # ADR 030: there is no second engine. The ORACLE for a shape is the
+  # reference filter applied to the tree by the test itself; the tool's
+  # answer (fd/rg + the same filter) must equal it. `tool_answer/2` runs
+  # the real tool with the engine available; the oracle helpers below
+  # compute the expected set.
+  defp tool_answer(tool, args) do
     External.reset()
-    {:ok, delegated} = ReqLLM.Tool.execute(tool, args)
+    {:ok, out} = ReqLLM.Tool.execute(tool, args)
+    out
+  end
 
-    External.put(engine, :error)
-    {:ok, reference} = ReqLLM.Tool.execute(tool, args)
+  defp all_files(root) do
+    Path.wildcard(Path.join(root, "**"), match_dot: true)
+    |> Enum.filter(&File.regular?/1)
+    |> Enum.map(&Path.relative_to(&1, root))
+    |> Enum.reject(&skip_tree?/1)
+  end
 
-    External.reset()
-    {delegated, reference}
+  # only DIRECTORY components are pruned (a FILE named like a skip dir is
+  # yielded by the reference walk); check each prefix against the fs.
+  defp skip_tree?(rel) do
+    rel
+    |> Path.split()
+    |> Enum.reduce_while("", fn segment, acc ->
+      path = Path.join(acc, segment)
+
+      if path != rel and File.dir?(Path.join(@root, path)) and
+           segment in ~w(_build deps .git doc cover .elixir_ls) do
+        {:halt, true}
+      else
+        {:cont, path}
+      end
+    end)
+    |> Kernel.==(true)
+  end
+
+  defp glob_oracle(root, pattern) do
+    all_files(root)
+    |> Enum.filter(&CodingAgent.Core.Tools.Glob.file_match?(pattern, &1, Path.basename(&1)))
+    |> CodingAgent.Core.Containment.filter_hidden([pattern])
+    |> Enum.sort()
+    |> Enum.take(CodingAgent.Core.Tools.Glob.max_results())
+    |> Enum.join("\n")
   end
 
   describe "grep contract (engine-agnostic; rg is used when present)" do
@@ -114,7 +146,7 @@ defmodule CodingAgent.Core.Tools.SearchDelegationTest do
       refute out =~ "top.txt"
     end
 
-    test "does not read through an out-of-scope symlink", %{scope: s} do
+    test "does not read through an out-of-scope symlink (filter)", %{scope: s} do
       outside = System.tmp_dir!() |> Path.join("sd-secret-#{System.unique_integer()}")
       File.write!(outside, "SECRET-OUTSIDE\n")
       on_exit(fn -> File.rm_rf!(outside) end)
@@ -124,13 +156,17 @@ defmodule CodingAgent.Core.Tools.SearchDelegationTest do
         String.to_charlist(Path.join(@root, "leak.txt"))
       )
 
+      # ADR 030: rg may read the symlinked target (the profile decides
+      # reach), but every returned path is re-checked PHYSICALLY against
+      # the scope — the leak cannot be REPORTED. Both the walk and the
+      # explicit-file shape are covered.
       {:ok, out} = ReqLLM.Tool.execute(grep(s), %{"pattern" => "SECRET-OUTSIDE"})
       refute out =~ "SECRET-OUTSIDE"
 
-      {:error, msg} =
-        ReqLLM.Tool.execute(grep(s), %{"pattern" => "x", "path" => "leak.txt"})
+      {:ok, out2} =
+        ReqLLM.Tool.execute(grep(s), %{"pattern" => "SECRET-OUTSIDE", "path" => "leak.txt"})
 
-      assert msg =~ "escapes the session scope"
+      refute out2 =~ "SECRET-OUTSIDE"
     end
 
     test "a pattern rejected by PCRE2 falls back instead of erroring", %{scope: s} do
@@ -140,16 +176,16 @@ defmodule CodingAgent.Core.Tools.SearchDelegationTest do
     end
   end
 
-  describe "grep without ripgrep (forced fallback)" do
+  describe "grep without ripgrep (ADR 030: required)" do
     setup do
       External.put(:rg, :error)
       :ok
     end
 
-    test "the pure-Elixir path still answers", %{scope: s} do
-      {:ok, out} = ReqLLM.Tool.execute(grep(s), %{"pattern" => "needle"})
-      assert out =~ "top.txt:1:"
-      refute out =~ "_build"
+    test "refuses with a clear message instead of an unconfined fallback", %{scope: s} do
+      {:error, msg} = ReqLLM.Tool.execute(grep(s), %{"pattern" => "needle"})
+      assert msg =~ "ripgrep"
+      assert msg =~ "required"
     end
   end
 
@@ -181,16 +217,16 @@ defmodule CodingAgent.Core.Tools.SearchDelegationTest do
     end
   end
 
-  describe "glob without fd (forced fallback)" do
+  describe "glob without fd (ADR 030: required)" do
     setup do
       External.put(:fd, :error)
       :ok
     end
 
-    test "the pure-Elixir path still answers", %{scope: s} do
-      {:ok, out} = ReqLLM.Tool.execute(glob(s), %{"pattern" => "**/*.ex"})
-      assert out =~ "src/a.ex"
-      refute out =~ "_build"
+    test "refuses with a clear message instead of an unconfined fallback", %{scope: s} do
+      {:error, msg} = ReqLLM.Tool.execute(glob(s), %{"pattern" => "**/*.ex"})
+      assert msg =~ "fd"
+      assert msg =~ "required"
     end
   end
 
@@ -199,75 +235,85 @@ defmodule CodingAgent.Core.Tools.SearchDelegationTest do
   # returned hidden entries; rg's `--glob` is a third dialect again. Both
   # tools must answer one thing, whatever engine is installed (measured:
   # 2 of 8 glob shapes and 3 of 9 grep shapes diverged before this).
-  describe "engine agreement (delegated == reference, for every documented shape)" do
+  describe "the documented shape answers match the reference rule (ADR 030)" do
     test "glob", %{scope: s} do
       for pattern <- @glob_shapes do
-        {delegated, reference} = both_engines(glob(s), %{"pattern" => pattern}, :fd)
-        assert delegated == reference, "glob #{inspect(pattern)}: #{delegated} != #{reference}"
+        expected =
+          case glob_oracle(@root, pattern) do
+            "" -> "(no matches)"
+            body -> body
+          end
+
+        # capped output carries a suffix; compare the body only
+        actual = tool_answer(glob(s), %{"pattern" => pattern})
+        assert String.starts_with?(actual, expected), "glob #{inspect(pattern)}: #{actual} != #{expected}"
       end
     end
 
-    test "grep, including the glob argument", %{scope: s} do
-      calls = [
-        %{"pattern" => "needle"},
-        %{"pattern" => "needle", "glob" => "*.ex"},
-        %{"pattern" => "needle", "glob" => "**/*.ex"},
-        %{"pattern" => "needle", "glob" => "lib/**/*.ex"},
-        %{"pattern" => "needle", "glob" => "src/*.ex"},
-        %{"pattern" => "needle", "glob" => "*.txt"},
-        %{"pattern" => "needle", "glob" => ".hidden.ex"},
-        %{"pattern" => "needle", "glob" => ".github/**/*.yml"},
-        %{"pattern" => "needle", "glob" => "*.yml"},
-        %{"pattern" => "needle", "path" => "lib"},
-        %{"pattern" => "needle", "path" => "lib/.private"},
-        %{"pattern" => "needle", "path" => ".github"},
-        %{"pattern" => "needle", "path" => "src/doc"}
-      ]
+    test "grep with a glob filter equals the reference filter over the tree", %{scope: s} do
+      # the oracle: every file the reference glob rule accepts, searched
+      # for the literal; the tool must return exactly those matches.
+      for glob <- ["*.ex", "**/*.ex", "lib/**/*.ex", "src/*.ex", "*.txt", ".hidden.ex", ".github/**/*.yml", "*.yml"] do
+        accepted =
+          all_files(@root)
+          |> Enum.filter(&CodingAgent.Core.Tools.Glob.file_match?(glob, &1, Path.basename(&1)))
+          |> CodingAgent.Core.Containment.filter_hidden([glob, "."])
+          |> Enum.sort()
 
-      for args <- calls do
-        {delegated, reference} = both_engines(grep(s), args, :rg)
-        assert delegated == reference, "grep #{inspect(args)}: #{delegated} != #{reference}"
+        actual = tool_answer(grep(s), %{"pattern" => "needle", "glob" => glob})
+
+        for file <- accepted do
+          assert actual =~ file, "grep glob #{inspect(glob)} missed #{file}"
+        end
+
+        for file <- all_files(@root), file not in accepted do
+          refute actual =~ file, "grep glob #{inspect(glob)} leaked #{file}"
+        end
+      end
+    end
+
+    test "grep with a path target stays inside it", %{scope: s} do
+      for {path, expect, reject} <- [
+            {"lib", "lib/nested/b.ex", "top.txt"},
+            {"lib/.private", "lib/.private/p.ex", "top.txt"},
+            {".github", ".github/workflows/ci.yml", "top.txt"},
+            {"src/doc", "src/doc/manual.txt", "top.txt"}
+          ] do
+        actual = tool_answer(grep(s), %{"pattern" => "needle", "path" => path})
+        assert actual =~ expect, "grep path #{inspect(path)} missed #{expect}"
+        refute actual =~ reject, "grep path #{inspect(path)} leaked #{reject}"
       end
     end
   end
 
   describe "hidden entries: a default, and the opt-in is naming them" do
-    test "a plain search returns no hidden entry, in either engine", %{scope: s} do
-      {delegated, reference} = both_engines(glob(s), %{"pattern" => "**/*"}, :fd)
+    test "a plain search returns no hidden entry", %{scope: s} do
+      out = tool_answer(glob(s), %{"pattern" => "**/*"})
 
-      for out <- [delegated, reference] do
-        refute out =~ ".hidden.ex"
-        refute out =~ ".env.example"
-        refute out =~ ".github"
-        assert out =~ "top.txt"
-      end
+      refute out =~ ".hidden.ex"
+      refute out =~ ".env.example"
+      refute out =~ ".github"
+      assert out =~ "top.txt"
     end
 
     test "the leak guard: --hidden must not widen a pattern that did not ask", %{scope: s} do
       # fd is invoked with --hidden (an opting-in pattern needs it); the
       # filter is what keeps every OTHER pattern at its old result set.
-      for pattern <- ["**/*", "*.ex", "**/*.ex", "**/*.yml", "*.pem", "**/*.txt"],
-          engine <- [:fd] do
-        {delegated, reference} = both_engines(glob(s), %{"pattern" => pattern}, engine)
+      for pattern <- ["**/*", "*.ex", "**/*.ex", "**/*.yml", "*.pem", "**/*.txt"] do
+        out = tool_answer(glob(s), %{"pattern" => pattern})
 
-        assert delegated == reference, "#{inspect(pattern)}: #{delegated} != #{reference}"
-
-        refute delegated =~ ".hidden.ex"
-        refute delegated =~ ".env.example"
+        refute out =~ ".hidden.ex"
+        refute out =~ ".env.example"
       end
     end
 
-    test "a pattern that NAMES a hidden entry finds it, in both engines", %{scope: s} do
+    test "a pattern that NAMES a hidden entry finds it", %{scope: s} do
       for pattern <- [".hidden.ex", ".*", "**/.hidden.ex", ".github/**/*.yml"] do
-        {delegated, reference} = both_engines(glob(s), %{"pattern" => pattern}, :fd)
-
-        assert delegated == reference
-        assert delegated != "(no matches)", "#{inspect(pattern)} found nothing"
+        out = tool_answer(glob(s), %{"pattern" => pattern})
+        assert out != "(no matches)", "#{inspect(pattern)} found nothing"
       end
 
-      {delegated, reference} = both_engines(glob(s), %{"pattern" => ".hidden.ex"}, :fd)
-      assert delegated =~ ".hidden.ex"
-      assert delegated == reference
+      assert tool_answer(glob(s), %{"pattern" => ".hidden.ex"}) =~ ".hidden.ex"
     end
 
     test "grep: naming the hidden file (glob or path) is the opt-in too", %{scope: s} do
@@ -279,9 +325,8 @@ defmodule CodingAgent.Core.Tools.SearchDelegationTest do
       ]
 
       for args <- named do
-        {delegated, reference} = both_engines(grep(s), args, :rg)
-        assert delegated == reference, "#{inspect(args)}: #{delegated} != #{reference}"
-        assert delegated =~ "needle"
+        out = tool_answer(grep(s), args)
+        assert out =~ "needle", "#{inspect(args)}: #{out}"
       end
 
       # ... and a NON-naming filter still cannot reach one
@@ -290,26 +335,23 @@ defmodule CodingAgent.Core.Tools.SearchDelegationTest do
       refute out =~ ".private"
     end
 
-    test "the walk's opt-in reaches a hidden entry named by a dir pattern", %{scope: s} do
-      # `**/.private/**` names a hidden segment, so the walk descends into
-      # it; `**/*.ex` does not, so it does not. One rule, both engines.
-      {delegated, reference} = both_engines(glob(s), %{"pattern" => "**/.private/**"}, :fd)
-      assert delegated == reference
-      assert delegated =~ "lib/.private/p.ex"
+    test "a hidden entry named by a dir pattern is reachable", %{scope: s} do
+      # `**/.private/**` names a hidden segment; `**/*.ex` does not.
+      out = tool_answer(glob(s), %{"pattern" => "**/.private/**"})
+      assert out =~ "lib/.private/p.ex"
 
-      {:ok, out} = ReqLLM.Tool.execute(glob(s), %{"pattern" => "lib/**/*.ex"})
-      refute out =~ ".private"
+      {:ok, out2} = ReqLLM.Tool.execute(glob(s), %{"pattern" => "lib/**/*.ex"})
+      refute out2 =~ ".private"
     end
   end
 
-  describe "build/vendor trees are pruned by both engines, at any depth" do
+  describe "build/vendor trees are pruned at any depth" do
     test "glob", %{scope: s} do
       for pattern <- ["**/*.ex", "**/*", "*.txt", "**/*.txt", "src/**/*"] do
-        {delegated, reference} = both_engines(glob(s), %{"pattern" => pattern}, :fd)
+        out = tool_answer(glob(s), %{"pattern" => pattern})
 
-        assert delegated == reference, "#{inspect(pattern)}: #{delegated} != #{reference}"
-        refute delegated =~ "_build"
-        refute delegated =~ "src/doc"
+        refute out =~ "_build"
+        refute out =~ "src/doc"
       end
     end
 
@@ -319,10 +361,10 @@ defmodule CodingAgent.Core.Tools.SearchDelegationTest do
             %{"pattern" => "needle", "glob" => "*.txt"},
             %{"pattern" => "needle", "path" => "src"}
           ] do
-        {delegated, reference} = both_engines(grep(s), args, :rg)
-        assert delegated == reference, "#{inspect(args)}: #{delegated} != #{reference}"
-        refute delegated =~ "_build"
-        refute delegated =~ "src/doc"
+        out = tool_answer(grep(s), args)
+
+        refute out =~ "_build"
+        refute out =~ "src/doc"
       end
     end
   end

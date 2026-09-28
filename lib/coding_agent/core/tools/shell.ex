@@ -293,7 +293,7 @@ defmodule CodingAgent.Core.Tools.Shell do
     started = System.monotonic_time(:millisecond)
     profile = profile(scope, args)
 
-    case Exec.run({:shell, command}, cwd, secs, profile) do
+    case Exec.run({:shell, command}, cwd, secs, profile, env: Exec.agent_env()) do
       {:ok, output, status} ->
         elapsed = System.monotonic_time(:millisecond) - started
         {:ok, Exec.format(command, output, {:exit, status}, elapsed, secs)}

@@ -15,6 +15,29 @@ defmodule CodingAgent.Core.Exec do
   @max_bytes 256 * 1024
   @tail_bytes 128 * 1024
 
+  @doc """
+  Environment overrides every agent-initiated command runs with (review
+  F7): the human is not at the terminal the process runs on, so an
+  interactive program must never wait for one. Git is the concrete
+  case — the owner's `EDITOR`/`VISUAL` leaked into agent `git commit`
+  (no `-m`), `rebase --continue`, `tag -a`, which opened gvim and hung
+  the turn. `GIT_EDITOR=true` accepts the default message, the sequence
+  editor is neutralized, prompts are disabled and pagers are bypassed
+  (output is captured anyway).
+
+  Shared by the `git` and `shell` tools so the rule exists once.
+  """
+  @spec agent_env() :: [{String.t(), String.t()}]
+  def agent_env do
+    [
+      {"GIT_EDITOR", "true"},
+      {"GIT_SEQUENCE_EDITOR", "true"},
+      {"GIT_TERMINAL_PROMPT", "0"},
+      {"GIT_PAGER", "cat"},
+      {"PAGER", "cat"}
+    ]
+  end
+
   @typedoc "Execution outcome before formatting."
   @type outcome ::
           {:ok, String.t(), non_neg_integer()}

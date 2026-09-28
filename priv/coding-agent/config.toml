@@ -40,8 +40,8 @@ discover = "openai"
 # base_url = "http://localhost:4000/v1"
 # discover = "openai"
 
-# Sandbox mount schema (ADR 015). Applies only when a confining sandbox
-# is active (Linux with bubblewrap); with no sandbox these are ignored.
+# Sandbox mount schema (ADR 015). A confining sandbox is required for a
+# session to start (ADR 030), so these apply on every session.
 #
 #   rw   = [...]   bind read-write, shared with the host
 #   ro   = [...]   bind read-only

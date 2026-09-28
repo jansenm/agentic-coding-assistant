@@ -5,10 +5,9 @@ Stand: 2026-09-27, Branch `devel`. Der Merge `dev/mjansen` landete als
 F1–F5-Follow-up aus `review.md` §7 als `2879018`; `dev/mjansen` war
 davor **zweimal** auf `devel` rebased worden (erst auf `1b78de4`, dann
 auf `f830a8f`), die alte↔neue Zuordnung steht in `review.md` (Nachtrag
-und Abschnitt 5). Der Merge ist verifiziert: 883 Tests grün (`mix test
---seed 0`). `review.md` ist der Record und wird nicht weiter gepflegt.
-**ADR 030 ist accepted und ungebaut**; die Slice-Liste steht unten
-(`## ADR 030 — One boundary`).
+und Abschnitt 5). **ADR 030 ist umgesetzt** (Slices 1–7, Commit folgt);
+der Merge ist verifiziert: 910 Tests grün (`mix test --seed 0`).
+`review.md` ist der Record und wird nicht weiter gepflegt.
 
 Der **große Plan** steht in `ROADMAP.md` (Phasen, Produktthese,
 „Later“-Ideen, Ground Rules). **Entscheidungen** stehen in den ADRs
@@ -41,39 +40,44 @@ im jeweiligen ADR vermerkt.
   wirklich abbricht; der Parent-Worker blockiert weiter im Task-Call, das
   Kind wird aber über seine eigene Interrupt-Id gestoppt. Ein „mid-tool
   hard cancel“ bleibt als `ROADMAP.md`-Notiz offen.
-* **Git-Editor/Pager im Agent-Prozess (Review F7).** `Core.Exec.run/4`
-  gibt keine `{:env, …}`-Option mit, also erbt jeder `git`/`shell`-Aufruf
-  die Umgebung des Owners (`EDITOR=vim`, `VISUAL=gvim -f`): ein
-  `git commit` ohne `-m`, `rebase --continue`, `tag -a` startet den
-  Editor und hängt. Gehört zu ADR 030 (Slice 7 unten), nicht in die
-  Sandbox-Arbeit davor.
+* **ADR 030 live.** Der Umbau ist test-verifiziert (910 grün), aber der
+  bwrap-Datei-Pfad lief nur in den Integrationstests: live prüfen, dass
+  `read_file`/`write_file`/`edit`/`list_dir` unter echtem bwrap sauber
+  arbeiten (inkl. `hide`/`ro`), der Session-Start auf einem Host ohne
+  bwrap verständlich verweigert, und `shell`/`git` ohne Rückfrage laufen.
+* **hide für Dateien mit `--dev-bind`** wurde live gefunden und gefixt
+  (Nodev-EACCES); ein Live-Lauf über die Mount-Konfiguration bestätigt es.
 
-## ADR 030 — One boundary (Accepted, nicht gebaut)
+## ADR 030 — One boundary (umgesetzt 2026-09-27)
 
 Der Umbau aus `docs/source/decisions/030-one-boundary.rst`: **eine**
 Grenze (bwrap), Datei-Tools als confined Prozesse, kein Session-Start
-ohne confinement. Slices voraussichtlich in dieser Reihenfolge:
+ohne confinement. Alle sieben Slices sind gelandet:
 
-1. **Session-Start verweigert ohne confining Sandbox.** `Sandbox.impl/0`
-   ohne `None`-Fallback für Produktion; Diagnose (bwrap, unprivileged
-   userns) im Fehler. `Sandbox.None` nur noch expliziter Test-Seam;
-   Tests, die ihn brauchen, wählen ihn sichtbar.
-2. **`Exec` bekommt stdin** (`Port.open` kann `{:env, …}` und stdin) —
-   Voraussetzung für `write_file` als confined `tee`.
-3. **Datei-Tools über `Exec`:** `read_file` → confined `cat`,
-   `write_file` → confined `tee`, `list_dir` → confined `ls`, `edit` →
-   confined read + Ersetzung im BEAM + confined write (read/write-Split
-   akzeptiert, ADR 030).
-4. **Allow-by-default für `shell`/`git`:** `confinement_allows?/2` wird
-   immer true, der `default_for("shell") = :ask`-Apparat fällt weg.
-5. **`Tools.in_scope?/2` + `Containment.walk/3` degradieren** zu
-   Discovery-Helfern; kein Tool stützt Enforcement darauf.
-6. **`grep`/`glob`-Fallback entscheiden:** `rg`/`fd` zur Pflicht machen
-   oder den Elixir-Walk durch confined Prozesse ersetzen (ADR 030 offene
-   Frage 2). Keine zweite Grenze.
-7. **F7 (Git-Editor)** passt hierher: `Exec` erhält die Env-Option, und
-   der Agent-Aufruf setzt `GIT_EDITOR=true GIT_TERMINAL_PROMPT=0
-   GIT_PAGER=cat PAGER=cat`.
+1. **Session-Start verweigert ohne confining Sandbox.** ✅ `Sandbox.impl/0`
+   ohne `None`-Fallback; `Sandbox.refusal_message/0`; `Session.init/1`
+   verweigert. `Sandbox.None` ist Test-Seam; `config/test.exs` pinnt den
+   confining Stub, `SandboxCase.put_sandbox/1` restauriert.
+2. **`Exec` bekommt stdin + env.** ✅ `run/5` mit `:stdin` (als
+   `{:stdin, count, spec}`; der Pipe-Close ist EOF) und `:env`.
+3. **Datei-Tools über `Exec`.** ✅ `Tools.FileExec`: `cat`/`tee`/`ls -
+   1 -p`; `edit` = confined read + BEAM-Ersetzung + confined write.
+4. **Allow-by-default für `shell`/`git`.** ✅ `Gate.fallback_for/2` ohne
+   Confinement-Probe; Escalations fragen weiter; die Allow-Klasse umfasst
+   shell/git.
+5. **`in_scope?/2` + `Containment.walk/3` sind Discovery.** ✅ Moduldocs
+   und der Path-Hardening-Test sagen das; die Tool-Escapes laufen über
+   die echte Profil-Semantik (`Sandbox.FileToolsConfinementTest`).
+6. **`grep`/`glob`-Fallback entfernt.** ✅ `rg`/`fd` sind Pflicht; ein
+   fehlendes Binary ist ein klarer Fehler. Die Referenz-DIALEKT lebt als
+   Filter (`Glob.file_match?`, hidden-Regeln), die fd-Enumeration ist
+   breit + gefiltert.
+7. **F7 (Git-Editor).** ✅ `Exec.agent_env/0` (GIT_EDITOR/GIT_PAGER/…),
+   von `git` und `shell` genutzt.
+
+Offen aus dem Umbau (nicht Slice-relevant): `check_scope!/2` hat keinen
+Produktionsnutzer mehr — als Discovery-Baustein behalten oder in einem
+späteren Aufräumschritt entfernen.
 
 ## Nächste Schritte (priorisiert)
 

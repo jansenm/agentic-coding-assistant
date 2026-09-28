@@ -100,7 +100,8 @@ Decision
    already bounds it.
 5. **``Sandbox.None`` is unchanged.** The no-op runs against the real
    ``/tmp``, which is already persistent for the process's life; the
-   ``:scratch`` profile key is ignored there.
+   ``:scratch`` profile key is ignored there. (ADR 030 makes ``None`` a
+   test seam; the statement holds for that seam.)
 
 Why ``/tmp`` and not a new name
 -------------------------------
@@ -156,8 +157,8 @@ Consequences
 - The host's shared ``/tmp`` remains invisible and unreachable; the
   writable surface grows by exactly one private directory per session.
 - ADR 015's scratch-tmpfs cap is replaced by the session lifetime plus
-  ``ulimit -f``; the tmpfs-size figure (``@tmpfs_bytes``) becomes
-  meaningful only for the fallback path.
+  ``ulimit -f``; the tmpfs-size figure (``@tmpfs_bytes``) matters only
+  for a scope with no session scratch.
 - ``Store.delete/1`` gains a scratch-removal step (pruning loops over
   ``Store.delete/1`` in the mix task, so it inherits the cleanup) and
   ``Store.rename/2`` a move — the existing lifecycle verbs, no new

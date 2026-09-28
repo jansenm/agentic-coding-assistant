@@ -16,6 +16,14 @@ Read tools delegate to ripgrep/fd when available, fall back to Elixir
    prompt, so their justification changes. Implemented in
    ``Core.External`` + the two tools.
 
+   **Amended by ADR 030** (2026-09-27): the Elixir fallback is gone —
+   ``rg``/``fd`` are REQUIRED for ``grep``/``glob``, because the walk was
+   a second, unconfined boundary. The delegation contract below (the
+   result-schema guarantee, the physical re-check, the ``--no-config``
+   rule, the ``Exec`` + sandbox path) stands unchanged; the "when
+   available / when absent" selection is replaced by "present, or a
+   clear refusal".
+
 Context
 -------
 
@@ -35,24 +43,27 @@ to ADR 010 ("a shell grep duplicate should use the grep tool") becomes
 actively questionable in confined mode: it pushes the agent from the
 better engine to the worse one.
 
-The second reason survives and is not small: portability (machines with
-no ``rg``/``fd``, and no network to install one), the ``Sandbox.None``
-fallback path (macOS, hardened hosts) where there is no confinement at
-all, and a stable, containment-checked, capped result schema independent
-of a foreign tool's configuration.
+The second reason **did not survive ADR 030**: portability cannot be
+bought with an unconfined BEAM walk when the whole model is "the sandbox
+is the one boundary". ``rg``/``fd`` are therefore required; a host
+without them cannot use the search tools (it can still use
+read/write/edit/list_dir, whose confinement does not depend on them).
+The result-schema guarantee — containment re-check, caps, one dialect —
+is unchanged, and is now the whole reason the tools exist.
 
 Decision
 --------
 
-Keep the native ``grep`` and ``glob`` tools as the **fallback and the
-containment guarantee**, and let them **delegate to ``rg``/``fd`` when
-those binaries are present**:
+Keep the native ``grep`` and ``glob`` tools as the **model-facing
+contract** (one dialect, caps, a physical scope re-check) over an
+external engine, and delegate to ``rg``/``fd``:
 
 - At session start (or first use) the tool probes for ``rg`` (``grep``)
   and ``fd`` (``glob``) on ``PATH``.
 - If present, the tool shells out to it and maps the output into the same
   result schema it returns today.
-- If absent, it uses the existing pure-Elixir implementation, unchanged.
+- **ADR 030: if absent, the tool returns a clear error naming the
+  missing binary.** There is no Elixir fallback.
 
 Delegation is not an Elixir dependency (no NIF, no library, no build-time
 requirement), so it is compatible with ADR 002. It is a runtime use of an
@@ -88,24 +99,23 @@ preserves that:
   re-checked the same way;
 - the ``rg`` probe requires the ``pcre2`` feature, because the tool's
   patterns come from Elixir's ``Regex`` (PCRE) — a Rust-regex-only build
-  could reject or reinterpret a valid pattern, so we fall back instead;
-- any non-``0``/``1`` exit (including a pattern Elixir accepts but PCRE2
-  rejects) triggers the Elixir fallback rather than an engine-specific
-  error.
+  could reject or reinterpret a valid pattern;
+- **ADR 030: a non-``0``/``1`` exit is an error result**, not a fallback
+  (there is nothing to fall back to).
 
-The security argument is layered: in confined mode the sandbox is the
-boundary and the native tool is defence in depth; in ``Sandbox.None``
-mode the native tool's own containment is the only boundary, which is
-today's status quo.
+The security argument: the sandbox is the boundary for every tool; the
+native tool's schema (caps, the physical re-check) is defence in depth
+and the model-facing contract.
 
 Consequences
 ------------
 
-- Best available search when the binaries exist; no regression when they
-  do not.
-- Two code paths per tool, both tested (the fallback is forceable in tests
-  via ``External.put/2``); the Elixir path cannot be deleted because it is
-  the fallback.
+- The best available search when the binaries exist; a clear refusal
+  when they do not (``grep``/``glob`` need ``rg``/``fd``).
+- One code path per tool. The reference dialect survives as pure
+  functions (`GlobMatch`, the hidden rule) that FILTER the engine's
+  output; the retired walk lives on only as a discovery helper in
+  ``Containment``.
 - Amendment 2's shell-grep redirect stays as UX steering but should not
   claim the native tool is *better* — only that a tool call is cleaner
   than shell.

@@ -16,6 +16,14 @@ Shell confinement: bound the process, not the command text
    process confinement. Every mechanism below was measured on the target
    machine (bubblewrap 0.11.2, kernel 7.2.2) before being written down.
 
+   **Partially superseded by ADR 030** (2026-09-27): the ``None``
+   fallback path, the unconfined operating mode, and the tool-level
+   split it left standing (file tools doing BEAM I/O with a path
+   predicate) are replaced by "one boundary": the sandbox enforces reach
+   for EVERY tool, and a confining sandbox is a session-start
+   precondition. The threat model, the bwrap profile, the mount schema
+   and the escalation decisions below stand unchanged.
+
 Threat model (read this first)
 ------------------------------
 
@@ -269,22 +277,24 @@ A behaviour with swappable implementations, selected like
    end
 
 - ``Sandbox.Bwrap`` — the real profile above.
-- ``Sandbox.None`` — returns ``{:ok, "/bin/sh", ["-c", command]}``, i.e.
-  today's behaviour exactly. This makes macOS, Windows, CI without
-  userns, and hardened hosts a **no-op fallback**, not a special case.
+- ``Sandbox.None`` — returns ``{:ok, "/bin/sh", ["-c", command]}``. A
+  deliberate no-op for the **test seam and an explicit opt-out**;
+  **superseded by ADR 030**: it is no longer an automatic fallback, and
+  a session refuses to start without confinement.
 
 ``confines?/0`` is distinct from "a sandbox is configured": it is the
-gate's question (``None.confines?`` is false). ``configured/0`` returns
-what was asked for, ``impl/0`` what will actually run — a confining
-implementation that is unavailable resolves to ``None``.
+gate's question (``None.confines?`` is false). **ADR 030 supersedes**
+``configured/0``/``impl/0``'s silent fallback: an unavailable confining
+implementation now yields ``nil`` and a refusal, never ``None``.
 
 **Bwrap is the shipped default.** ``config/config.exs`` sets
-``sandbox: Sandbox.Bwrap``; tests pin ``Sandbox.None`` so a run behaves
-identically on a machine without bwrap. Where a confining sandbox is
+``sandbox: Sandbox.Bwrap``; the test suite pins a confining test double
+so a run behaves identically on a machine without bwrap. **ADR 030
+supersedes the fallback paragraph**: where a confining sandbox is
 requested but cannot run, ``Application.start/2`` logs one warning with
 the reason (missing binary, disabled unprivileged user namespaces) and
-continues on the fallback: ``confines?/0`` is false, so shell/git keep
-asking — the pre-ADR-015 behaviour. The check is a *functional probe*
+the first session start REFUSES with that reason — an unconfined
+production mode no longer exists. The check is a *functional probe*
 (``Bwrap.check/0`` launches a trivial bwrap command from the BEAM), not a
 version string, because bwrap < 0.11.1 has the SIGCHLD bug that only
 manifests when the parent ignores SIGCHLD — which the Erlang VM does.
@@ -326,9 +336,11 @@ once in ``Core.Exec``, the single ``Sandbox.wrap`` call site.
   ``sh -c 'ulimit …; exec "$@"' sh git <args>``; the shell exists only to
   apply the rlimits, and ``exec`` replaces it without re-parsing.
 - ``Sandbox.confines?/0`` is the gate's question, distinct from "a
-  sandbox is configured": ``None.confines?`` is false (so the unconfined
-  path keeps ask-everything), and a confining implementation that is
-  ``available?/0 == false`` also yields false.
+  sandbox is configured": ``None.confines?`` is false, and a confining
+  implementation that is ``available?/0 == false`` also yields false.
+  **ADR 030 changed the consequence**: a session refuses to start when
+  this is false, so the gate's confinement fallback is unconditional in
+  practice (shell/git allow-by-default; only escalations ask).
 - The port loop (spawn, deadline, kill, truncate) lives once in
   ``Core.Exec``, the single ``Sandbox.wrap`` call site shared by ``Shell``
   and ``Git``.
@@ -347,8 +359,10 @@ Residual risks (stated, not hidden)
   unprivileged user namespaces (the RHEL 9 DISA STIG, finding V-257816,
   requires ``user.max_user_namespaces=0``; Ubuntu 24.04+ restricts them
   via AppArmor). Re-enabling is one sysctl and root, but on a
-  STIG-compliant host it is not permitted — those hosts fall back to
-  ``Sandbox.None`` (today's ask-everything), which is acceptable.
+  STIG-compliant host it is not permitted — **ADR 030 supersedes the
+  fallback**: those hosts cannot run the agent at all (no confining
+  sandbox, no session), which is the accepted answer for a tool whose
+  model is "confine or refuse".
 - **bwrap version floor.** bwrap 0.11.1 fixed a SIGCHLD disposition bug
   that specifically affects being launched from a process that ignores
   SIGCHLD — **such as the Erlang VM** (upstream issue #705). RHEL 9
@@ -381,9 +395,14 @@ Decisions taken (2026-09-17)
 Implementation order
 --------------------
 
-The first code step is intentionally trivial and behaviour-neutral: the
+The first code step was intentionally trivial and behaviour-neutral: the
 ``Core.Sandbox`` behaviour with ``Sandbox.None`` only, wired at the Shell
-call site, so the full test suite stays green before any bwrap code
-exists. Then ``Sandbox.Bwrap`` with the functional probe, then the
+call site, so the full test suite stayed green before any bwrap code
+existed. Then ``Sandbox.Bwrap`` with the functional probe, then the
 ``rw``/``ro``/``hide`` mount schema, then the dedicated ``git`` tool and
 the ``git_write`` escalation.
+
+**ADR 030 (2026-09-25) finished the model**: ``Sandbox.None`` is now the
+test seam rather than a runtime path, the native file tools run as
+confined processes under the same profile, and session start requires
+confinement. See ``030-one-boundary.rst``.

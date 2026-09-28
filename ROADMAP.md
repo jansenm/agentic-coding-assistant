@@ -41,9 +41,10 @@ post-milestone:
   unknowns — dogfooding is how we find out.
 - Safety: shipping the project policy file hardened from day one
   (`.coding-agent/permissions.toml`, ADR 014; the legacy
-  `agent-permissions.toml` at the scope root is still read) —
-  shell always-ask, `git` behind the gate — with git as the undo
-  mechanism.
+  `agent-permissions.toml` at the scope root is still read) — a
+  confining sandbox is required (ADR 030), shell/git run
+  allow-by-default inside the profile unless policy says otherwise —
+  with git as the undo mechanism.
 
 Explicitly *not* needed for the milestone: webfetch, websearch, lsp,
 skills execution, todowrite, question — see "Later". (Webfetch (ADR 013)
@@ -74,8 +75,8 @@ containers), so the claim must be precise. What is rare is the
 - **declarative mount schema** (`rw` / `ro` / `hide`) rather than
   imperative flags — the policy is data, most-restrictive-wins;
 - **fail-safe**: declarations only ever *narrow* access; where bwrap
-  cannot run the effective sandbox is `None` and the gate asks for
-  *every* shell/git call, exactly the pre-confinement behavior (ADR 015);
+  cannot run there is no session at all (ADR 030) — the tool refuses
+  rather than degrading to an unconfined mode;
 - **approval gates visible in the UI** instead of silent isolation.
 
 The power is the **semantics above the namespace**: say declaratively
@@ -118,18 +119,19 @@ same problem viewed from different ends.
      :reject`), `write_file` behind the gate, stdin approval stub.
      Acceptance demo passed → ADR 010 Accepted.
    - **2c. Shell execution** ✅ — command semantics per ADR 010 (always-
-     ask in v1). Output capture (stdout+stderr merged through /bin/sh,
+     ask in v1; ADR 030 made the profile the boundary and the class
+     default allow). Output capture (stdout+stderr merged through /bin/sh,
      head+tail keep on truncation — *tail* is what matters for test
      output), exit code, timeout: model-supplied `timeout_secs` per
      call (default 300s = soft cap, hard cap 1800s — fits a 12-min
      Java integration suite; kill on expiry and return captured output
-     + timeout note). Soft cap: above 300s the approval prompt shows
-     the requested timeout so the user can edit via the gate's
-     `:edit` decision; when shell allow-rules arrive later, soft-cap
-     excess forces `:ask` even for allow-listed commands. Cwd pinned
-     to scope root, no path containment in v1 (that's *why* it is
-     always-ask). Port-based exec with kill on expiry; background
-     runs parked in "Later".
+     + timeout note). Soft cap: above 300s the (policy-driven)
+     approval prompt shows the requested timeout so the user can edit
+     via the gate's `:edit` decision. Cwd pinned to scope root; since
+     ADR 030 the sandbox profile — not a path check — is what bounds
+     the command, and shell is allow-by-default inside the profile.
+     Port-based exec with kill on expiry; background runs parked in
+     "Later".
      *Runnable:* `mix run demo/acceptance_2c.exs` (ask → approve →
      output back; soft-cap visible; edit respected). LLM round-trip
      demo (agent summarizes real failures) still to do live.
@@ -156,9 +158,13 @@ same problem viewed from different ends.
      rule for files and dirs with *naming* as the opt-in
      (`.gitignore`, `.*`). Both binaries now run through `Exec` under
      the read-only sandbox profile, the same process path as
-     `shell`/`git`. Pinned by `SearchDelegationTest` "engine
-     agreement" — every documented shape run twice, binary and walk,
-     answers identical.
+     `shell`/`git`. Pinned by `SearchDelegationTest` — every documented
+     shape compared against the reference filter.
+     **Fallback retired (2026-09-27, ADR 030):** the Elixir walk was a
+     second, unconfined boundary (it ignored `hide`/`ro`/`root_ro`), so
+     `rg`/`fd` are now required and a missing binary is a clear error.
+     The reference DIALECT survives as pure filter functions; the walk
+     survives only as a discovery helper in `Containment`.
    - **2e. edit** ✅ — targeted string replacement (fail-closed:
      refuses on 0 or 2+ matches with re-read/widen guidance), gated
      like `write_file`; empty old_string creates a file. Ends the era
@@ -491,10 +497,10 @@ TUI wish-list (user's own list, keyboard-first, from the live sessions):
 
 | opencode tool | Ours | Note |
 |---|---|---|
-| `read` | `read_file` ✅ | parity (containment is *structural* here, not config-advised) |
-| `write` | `write_file` ✅ | parity; allow-by-default since the 2026-09-15 ADR 010 amendment (contained + reviewable via the VCS diff); an out-of-scope path is refused by containment, not prompted |
-| `bash` | `shell` ✅ (2c) | parity; ours always-ask in v1 vs their config-optional |
-| `glob` | `glob` ✅ (2d) | slot into existing read-only containment |
+| `read` | `read_file` ✅ | parity (the sandbox profile is the boundary; ADR 030) |
+| `write` | `write_file` ✅ | parity; allow-by-default (ADR 010 amendment + ADR 030: confined `tee`); a path the profile denies fails at the write, not at a prompt |
+| `bash` | `shell` ✅ (2c) | parity; allow-by-default inside the profile since ADR 030 (escalations and explicit policy still ask) |
+| `glob` | `glob` ✅ (2d) | confined `fd`, required since ADR 030 |
 | `grep` | `grep` ✅ (2d) | line-numbered, capped |
 | `edit`/`apply_patch` | `edit` ✅ (2e) | fail-closed on non-unique match |
 | `webfetch` | `webfetch` ✅ | ADR 013: always-ask, scheme allowlist, SSRF private-net block (re-checked per redirect hop), 128 KiB cap; de-tagged text (markdown conversion one day) |

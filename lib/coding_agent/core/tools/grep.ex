@@ -3,16 +3,17 @@ defmodule CodingAgent.Core.Tools.Grep do
   Read-only content search tool (slice 2d), per the ROADMAP 2d design:
   line-numbered matches, capped results.
 
-  **Delegates to ripgrep when available** (ADR 016): `rg` is a materially
-  better engine (PCRE2, speed, built-in binary skipping), so when it is
-  present and produces a clean result the tool uses it; otherwise the
-  pure-Elixir walk runs unchanged (portability: a machine with no `rg` and
-  no network to install one, and the fallback is always the reference
-  behaviour).
+  **Delegates to ripgrep** (ADR 016): `rg` is a materially better engine
+  (PCRE2, speed, built-in binary skipping). ADR 030 made it REQUIRED:
+  the pure-Elixir fallback was a second, unconfined boundary (a BEAM walk
+  that ignored `hide`/`ro`/`root_ro`), and one boundary is the whole
+  point. When `rg` is missing or rejects a pattern, the tool returns a
+  clear error naming the dependency — never an unconfined search.
 
   Containment is preserved under delegation:
 
-    * the requested `path` is scope-checked *before* `rg` runs;
+    * the requested `path` is reachable only through the sandbox profile
+      (`rg` runs through `Exec` under it);
     * every returned path is re-checked physically against the scope, so
       no symlinked escape can be listed;
     * `--no-config` is mandatory — `RIPGREP_CONFIG_PATH` can carry a
@@ -21,11 +22,7 @@ defmodule CodingAgent.Core.Tools.Grep do
     * `rg` does not follow symlinks in traversal (verified), and the
       explicit-path case is caught by the pre-check.
 
-  The Elixir path enforces containment via `CodingAgent.Core.Containment`
-  (the ONE walk implementation). Binary files are skipped; hidden entries
-  and `_build`/`deps`/`.git` are skipped in both paths.
-
-  ## Engine agreement: one glob rule, one hidden rule
+  ## One glob rule, one hidden rule
 
   `rg` filters by its own glob dialect and its own hidden defaults, and
   both differ from ours (measured): `--glob '*.ex'` made it list
@@ -35,10 +32,7 @@ defmodule CodingAgent.Core.Tools.Grep do
   caller's glob at all: it searches wide and every match is filtered by
   the reference rule (`Glob.file_match?/3` + `Containment.hidden_allowed?/2`).
   `rg` runs `--hidden` so that a search which NAMED a hidden entry
-  (`glob: ".env.example"`, `path: ".github"`) can find it, and the walk
-  asks for `:include_hidden` under the same naming test. Both engines
-  therefore return the same set for every shape the tool documents — the
-  test that pins it is `SearchDelegationTest` "engine agreement".
+  (`glob: ".env.example"`, `path: ".github"`) can find it.
   """
 
   alias CodingAgent.Core.Containment
@@ -49,11 +43,9 @@ defmodule CodingAgent.Core.Tools.Grep do
 
   @max_results 200
   @max_line_length 500
-  @max_bytes 1024 * 1024
 
   # rg runs through the one executor (Exec + Sandbox), so the process is
-  # confined like shell/git are. A search that outlives this bound falls
-  # back to the reference engine rather than hanging the turn.
+  # confined like shell/git are.
   @exec_timeout 60
 
   @spec tool(Tools.scope()) :: ReqLLM.Tool.t()
@@ -96,9 +88,7 @@ defmodule CodingAgent.Core.Tools.Grep do
     path = Map.get(args, :path) || Map.get(args, "path") || "."
     glob = Map.get(args, :glob) || Map.get(args, "glob")
 
-    with :ok <- validate_pattern(pattern),
-         :ok <- ensure_exists(scope, path),
-         :ok <- check_in_scope_path(scope, path) do
+    with :ok <- validate_pattern(pattern) do
       do_search(scope, pattern, path, glob)
     end
   end
@@ -112,35 +102,18 @@ defmodule CodingAgent.Core.Tools.Grep do
 
   defp validate_pattern(_), do: Tools.error("pattern must be a non-empty string")
 
-  defp ensure_exists(scope, path) do
-    abs = abs_path(scope, path)
-
-    cond do
-      File.regular?(abs) or File.dir?(abs) -> :ok
-      true -> Tools.error("no such file or directory: #{inspect(path)}")
-    end
-  end
-
-  defp check_in_scope_path(scope, path) do
-    Containment.check_scope!(scope, path)
-  end
-
-  # -- Engine selection (ADR 016) ---------------------------------------------
+  # -- Engine selection (ADR 016/030) -----------------------------------------
 
   defp do_search(scope, pattern, path, glob) do
     case External.probe(:rg) do
       {:ok, rg} ->
-        case rg_search(rg, scope, pattern, path, glob) do
-          {:ok, _} = ok -> ok
-          # rg failed for a reason that is not "no matches" (e.g. a
-          # pattern Elixir's regex accepts but its PCRE2 rejects): fall
-          # back to the reference implementation rather than report an
-          # engine-specific error.
-          :fallback -> elixir_search(scope, pattern, path, glob)
-        end
+        rg_search(rg, scope, pattern, path, glob)
 
       :error ->
-        elixir_search(scope, pattern, path, glob)
+        Tools.error(
+          "ripgrep (rg) is required for the grep tool and was not found on PATH; " <>
+            "install ripgrep to enable content search"
+        )
     end
   end
 
@@ -160,17 +133,33 @@ defmodule CodingAgent.Core.Tools.Grep do
         ["-e", pattern, "--", target]
 
     # The command runs through Exec under the sandbox profile, exactly
-    # like shell/git. read_only/1 builds the profile; a confining
+    # like shell/git. Tools.profile/1 builds the profile; a confining
     # sandbox bounds the process (no writes, no network), and the scope
     # is already mountable, so delegation needs nothing else.
     profile = scope |> Tools.profile() |> Map.put(:root, root)
 
     case Exec.run({:exec, rg, args}, root, @exec_timeout, profile) do
-      {:ok, out, 0} -> format_rg_matches(out, root, glob, path)
+      # The target does not exist (or is out of the profile's reach):
+      # rg's own diagnostic is the model-readable answer.
+      {:ok, out, 2} when out != "" ->
+        {:error, String.trim(out)}
+
       # exit 1 is "no match" for rg (unlike fd, where 1 is an error —
-      # measured); anything else is a failed run we do not want to show.
-      {:ok, out, 1} -> format_rg_matches(out, root, glob, path)
-      _ -> :fallback
+      # measured)
+      {:ok, out, code} when code in [0, 1] ->
+        format_rg_matches(out, root, glob, path)
+
+      {:ok, out, _code} ->
+        Tools.error("rg failed: #{String.trim(out)}")
+
+      {:timeout, _partial} ->
+        Tools.error("rg search timed out after #{@exec_timeout}s")
+
+      {:sandbox_error, reason} ->
+        Tools.error("cannot confine the search: #{inspect(reason)}")
+
+      {:error, reason} ->
+        Tools.error("cannot run rg: #{inspect(reason)}")
     end
   end
 
@@ -236,39 +225,7 @@ defmodule CodingAgent.Core.Tools.Grep do
     Path.relative_to(abs, root)
   end
 
-  # -- pure-Elixir reference implementation ------------------------------------
-
-  defp elixir_search(scope, pattern, path, glob) do
-    re = Regex.compile!(pattern)
-    root = Path.expand(scope.root)
-    {files, explicit?} = collect_files(scope, path, glob)
-
-    results =
-      files
-      |> Enum.flat_map(fn file ->
-        case search_file(re, file) do
-          # oversized/binary files in a walk are noise; only an explicit
-          # single-file search gets a diagnostic
-          :skip ->
-            []
-
-          :too_big ->
-            if explicit?,
-              do: [{rel(root, file), -1, "(file larger than 1 MiB, skipped)"}],
-              else: []
-
-          lines ->
-            Enum.map(lines, fn {file, line, text} -> {rel(root, file), line, text} end)
-        end
-      end)
-      # the SAME report rule and the SAME order as the rg path
-      # (see keep_match?/2 + format_rg_matches/4)
-      |> Enum.filter(&keep_match?(&1, [glob, path]))
-      |> Enum.sort()
-      |> Enum.take(@max_results)
-
-    format_results(results)
-  end
+  # -- result formatting -------------------------------------------------------
 
   defp format_results(results) do
     total = length(results)
@@ -286,62 +243,6 @@ defmodule CodingAgent.Core.Tools.Grep do
     {:ok, body <> truncated}
   end
 
-  # Files to search: a single explicit file, or a containment-respecting
-  # walk of the target directory (Containment owns the discipline). The
-  # second element says whether the caller named one file — it decides
-  # whether an oversized file is reported or silently skipped.
-  defp collect_files(scope, path, glob) do
-    start = abs_path(scope, path)
-
-    if File.regular?(start) do
-      {Containment.walk(scope, path), true}
-    else
-      match_files =
-        if glob do
-          fn name, rel -> Glob.file_match?(glob, rel, name) end
-        end
-
-      walk =
-        Containment.walk(scope, path,
-          match_files: match_files,
-          include_hidden: Containment.hidden_pattern?(glob || path)
-        )
-
-      {walk, false}
-    end
-  end
-
-  defp search_file(re, file) do
-    case File.read(file) do
-      {:ok, bytes} when byte_size(bytes) > @max_bytes ->
-        :too_big
-
-      {:ok, bytes} ->
-        if printable?(bytes) do
-          bytes
-          |> String.split("\n")
-          |> Enum.with_index(1)
-          |> Enum.flat_map(fn {line, n} ->
-            if Regex.match?(re, line), do: [{file, n, clip(line)}], else: []
-          end)
-        else
-          :skip
-        end
-
-      {:error, _} ->
-        :skip
-    end
-  rescue
-    # unreadable or invalid-UTF-8 files are not grep targets
-    _ -> :skip
-  end
-
-  defp printable?(bytes) do
-    sample = binary_part(bytes, 0, min(byte_size(bytes), 1000))
-    # NUL byte is the cheap binary detector
-    :binary.match(sample, <<0>>) == :nomatch
-  end
-
   defp clip(line) do
     if String.length(line) <= @max_line_length do
       line
@@ -351,6 +252,4 @@ defmodule CodingAgent.Core.Tools.Grep do
   end
 
   defp abs_path(scope, path), do: Path.expand(path, Path.expand(scope.root))
-
-  defp rel(root, file), do: Path.relative_to(file, root)
 end

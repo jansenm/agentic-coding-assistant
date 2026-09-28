@@ -29,6 +29,44 @@ defmodule CodingAgent.Core.Tools.GitTest do
     end
   end
 
+  describe "agent env (review F7)" do
+    test "the editor/pager neutralization is shared and complete" do
+      env = CodingAgent.Core.Exec.agent_env()
+
+      assert {"GIT_EDITOR", "true"} in env
+      assert {"GIT_SEQUENCE_EDITOR", "true"} in env
+      assert {"GIT_TERMINAL_PROMPT", "0"} in env
+      assert {"GIT_PAGER", "cat"} in env
+      assert {"PAGER", "cat"} in env
+    end
+
+    # the live proof: `git commit` without -m must NOT hang or open an
+    # editor (the owner's EDITOR is ignored)
+    test "git commit without -m does not wait for an editor", %{root: root} do
+      # the owner's editor would BLOCK forever if it leaked through; the
+      # agent env must override it with `true`
+      System.put_env("GIT_EDITOR", "false")
+      on_exit(fn -> System.delete_env("GIT_EDITOR") end)
+
+      File.write!(Path.join(root, "a.txt"), "x\n")
+      git = Git.tool(%{root: root})
+
+      # init + config (the sandbox allows .git writes through this tool)
+      {:ok, _} = ReqLLM.Tool.execute(git, %{"args" => ["init", "-q", "-b", "main"]})
+      {:ok, _} = ReqLLM.Tool.execute(git, %{"args" => ["config", "user.email", "t@example.com"]})
+      {:ok, _} = ReqLLM.Tool.execute(git, %{"args" => ["config", "user.name", "Test"]})
+      {:ok, _} = ReqLLM.Tool.execute(git, %{"args" => ["add", "."]})
+
+      # `true` accepts the (empty) default message, so git itself refuses
+      # the empty commit — promptly, with a diagnostic. The point is that
+      # it RETURNS: with the owner's `false` editor, or with a real editor
+      # on a closed stdin, this would hang until the timeout.
+      {:ok, out} = ReqLLM.Tool.execute(git, %{"args" => ["commit"]})
+      refute out =~ "TIMED OUT"
+      assert out =~ "Aborting commit due to empty commit message"
+    end
+  end
+
   describe "argv/1 (pure)" do
     test "accepts a non-empty string list" do
       assert {:ok, ["status"]} = Git.argv(%{"args" => ["status"]})

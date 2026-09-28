@@ -65,14 +65,17 @@ defmodule CodingAgent.Core.Tools.GrepGlobTest do
       refute out =~ Path.basename(outside)
     end
 
-    test "absolute-ish patterns never leak outside (relative match only)", %{scope: scope} do
+    test "out-of-scope symlink targets are never listed", %{scope: scope} do
       :file.make_symlink(
         String.to_charlist(System.tmp_dir!()),
         String.to_charlist(Path.join(@root, "outdir"))
       )
 
       {:ok, out} = ReqLLM.Tool.execute(glob_tool(scope), %{"pattern" => "outdir/**"})
-      assert out == "(no matches)"
+      # fd may ENUMERATE through the link; the physical re-check drops
+      # every path that resolves outside the scope, so nothing leaks.
+      refute out =~ "outdir/"
+      refute out =~ Path.basename(System.tmp_dir!())
     end
   end
 
@@ -103,7 +106,7 @@ defmodule CodingAgent.Core.Tools.GrepGlobTest do
       refute out =~ "z.bin"
     end
 
-    test "containment: symlinked files and dirs outside the scope are invisible", %{
+    test "out-of-scope symlinks are never REPORTED (ADR 030 physical re-check)", %{
       scope: scope,
       outside: outside
     } do
@@ -117,20 +120,19 @@ defmodule CodingAgent.Core.Tools.GrepGlobTest do
         String.to_charlist(Path.join(@root, "outdir"))
       )
 
-      # direct link read
+      # the profile may let rg READ the target; every returned path is
+      # re-checked physically, so the leak cannot appear in a result
       {:ok, out} = ReqLLM.Tool.execute(grep_tool(scope), %{"pattern" => "SECRET-FROM-OUTSIDE"})
-      assert String.trim(out) == ""
+      refute out =~ "SECRET"
 
-      # and the walk must not descend through the out-of-scope dir
       {:ok, out2} = ReqLLM.Tool.execute(grep_tool(scope), %{"pattern" => "."})
       refute out2 =~ "outdir"
       refute out2 =~ "SECRET"
 
-      # single-file read through the link rejects
-      {:error, msg} =
+      {:ok, out3} =
         ReqLLM.Tool.execute(grep_tool(scope), %{"pattern" => "x", "path" => "leak.txt"})
 
-      assert msg =~ "escapes the session scope"
+      refute out3 =~ "SECRET"
     end
 
     test "invalid regex is rejected", %{scope: scope} do
@@ -138,11 +140,11 @@ defmodule CodingAgent.Core.Tools.GrepGlobTest do
       assert msg =~ "invalid regex"
     end
 
-    test "missing target path is rejected", %{scope: scope} do
+    test "missing target path is reported (rg's own diagnostic)", %{scope: scope} do
       {:error, msg} =
         ReqLLM.Tool.execute(grep_tool(scope), %{"pattern" => "x", "path" => "nope/missing"})
 
-      assert msg =~ "no such file"
+      assert msg =~ "nope/missing"
     end
 
     test "results are capped", %{scope: scope} do

@@ -3,36 +3,36 @@ defmodule CodingAgent.Core.Tools.Glob do
   Read-only filename search tool (slice 2d): glob patterns over the
   scope, sorted, capped.
 
-  **Delegates to `fd` when available** (ADR 016), with the pure-Elixir
-  walk as the reference fallback (portability, and `fd` may be absent).
+  **Delegates to `fd`** (ADR 016). ADR 030 made the external engine
+  REQUIRED: the pure-Elixir walk was a second, unconfined boundary (a
+  BEAM walk that ignored `hide`/`ro`/`root_ro`). When `fd` is absent the
+  tool refuses with a clear error naming the dependency; there is no
+  unconfined search.
 
   ## The dialect
 
   `**` spans zero or more segments, `*`/`?` are per-segment, `{a,b}`
   braces expand. "Same dialect in both paths" is a CONTRACT, not a
-  hope, and the reference engine (`Core.GlobMatch`) defines it. Three
-  measured divergences are closed in `fd_match/3`:
+  hope, and the reference engine (`Core.GlobMatch`) defines it. `fd`'s
+  dialect is RICHER than ours in a few measured places, so a pattern
+  using one of those is not handed to fd at all:
 
-    * `fd` matches the entry NAME unless `--full-path` is given, so
-      every pattern with a `/` goes to it ROOT-ANCHORED and absolute
-      (`--absolute-path --full-path`, pattern `Path.join(root,
-      pattern)`). Without that, `lib/**/*.ex` matched nothing while the
-      Elixir path found 59 files;
-    * `fd`'s smart case answers `*.EX` case-insensitively; the
-      reference engine does not, so `fd` runs `--case-sensitive`;
-    * `fd`'s dialect is RICHER than ours — it also reads `[...]`
-      classes, a leading `!` as negation and `\` as a quote. A pattern
-      using one of those asks a different question than the walk
-      answers (`[ab].ex` listed `a.ex`+`b.ex` under `fd`, nothing in the
-      walk; measured), so `fd_dialect?/1` keeps it on the reference
-      engine. Same for shapes that are not a plain scope-relative path
-      (`/x`, `./x`, `x/`, `a//b`): `fd` normalizes those its own way
-      (`**/` matched every file).
+    * `[...]` classes, a leading `!` as negation, `\\` as a quote —
+      ours reads them literally (`[ab].ex` listed `a.ex`+`b.ex` under
+      fd's class, nothing under ours);
+    * shapes that are not a plain scope-relative path (`/x`, `./x`,
+      `x/`, `a//b`) — fd normalizes them its own way (`**/` matched
+      every file).
 
-  A non-zero exit is always treated as a failure (fd reports "no
-  matches" with exit 0 — the 0/1 convention belongs to its `--quiet`
-  flag; measured), so an engine error falls back instead of being shown
-  to the model as a result.
+  Such a pattern uses fd's WIDE enumeration (`--glob '*'` with a
+  bounded result budget), and the reference rule filters every
+  candidate — one filter, so the answer is ours, not fd's. A
+  dialect-clean pattern is passed to fd directly (anchored at the root
+  when it contains a `/`) and the result is STILL filtered by the same
+  rule, so the two branches cannot disagree.
+
+  A non-zero exit is treated as a failure, so an engine error is refused
+  rather than shown to the model as a result.
 
   ## Hidden entries: a default, not a wall
 
@@ -41,18 +41,14 @@ defmodule CodingAgent.Core.Tools.Glob do
   `.idea/*`. The caller's pattern is the opt-in; there is nothing else
   to remember. `fd` is invoked with `--hidden` so the opt-in pattern can
   match, and the result is filtered afterwards, so a pattern that did
-  NOT ask for hidden entries cannot get them (without that filter
-  `--hidden` would be a net widening — `**/*` would start listing
-  dotfiles it never listed before).
+  NOT ask for hidden entries cannot get them.
 
-  Build/vendor trees (`_build`, `deps`, …) are pruned by `fd --exclude`
-  and by the walk's skip list.
+  Build/vendor trees (`_build`, `deps`, …) are pruned by `fd --exclude`.
 
   Containment is preserved: `fd` is run with `--no-ignore` (our skip
-  rules, not the repo's, decide); every returned path is re-checked
-  physically against the scope, so an out-of-scope symlink can never be
-  listed. The pure-Elixir path enforces the same via
-  `CodingAgent.Core.Containment` (the ONE walk implementation).
+  rules, not the repo's, decide), under the session profile through
+  `Exec`; every returned path is re-checked physically against the
+  scope, so an out-of-scope symlink can never be listed.
   """
 
   alias CodingAgent.Core.Containment
@@ -62,9 +58,13 @@ defmodule CodingAgent.Core.Tools.Glob do
 
   @max_results 500
 
-  # fd runs through the one executor (Exec + Sandbox), like grep's rg. A
-  # search that outlives this bound falls back to the reference walk.
+  # fd runs through the one executor (Exec + Sandbox), like grep's rg.
   @exec_timeout 60
+
+  # The wide-enumeration budget for patterns fd would reinterpret: the
+  # same order the retired walk used (2000 entries), so the bound is
+  # familiar and the output stays inside Exec's truncation window.
+  @enumeration_cap 2000
 
   @spec tool(Tools.scope()) :: ReqLLM.Tool.t()
   def tool(scope) do
@@ -100,53 +100,46 @@ defmodule CodingAgent.Core.Tools.Glob do
   defp validate(pattern) when is_binary(pattern) and pattern != "", do: :ok
   defp validate(_), do: Tools.error("pattern must be a non-empty string")
 
+  # -- fd delegation (ADR 016/030) ---------------------------------------------
+
   defp do_match(scope, pattern) do
     case External.probe(:fd) do
       {:ok, fd} ->
         case fd_match(fd, scope, pattern) do
           {:ok, _} = ok -> ok
-          :fallback -> elixir_match(scope, pattern)
+          :fallback -> Tools.error("fd failed to complete the search; check the pattern")
         end
 
       :error ->
-        elixir_match(scope, pattern)
+        Tools.error(
+          "fd is required for the glob tool and was not found on PATH; " <>
+            "install fd-find to enable filename search"
+        )
     end
   end
-
-  # -- fd delegation -----------------------------------------------------------
 
   defp fd_match(fd, scope, pattern) do
-    if fd_dialect?(pattern) do
-      root = Path.expand(scope.root)
+    root = Path.expand(scope.root)
 
-      # Same confined-process path as grep: run fd through Exec under the
-      # read-only sandbox profile instead of a bare System.cmd.
-      profile = scope |> Tools.profile() |> Map.put(:root, root)
+    # Same confined-process path as grep: run fd through Exec under the
+    # read-only sandbox profile instead of a bare System.cmd.
+    profile = scope |> Tools.profile() |> Map.put(:root, root)
 
-      case Exec.run({:exec, fd, fd_args(root, pattern)}, root, @exec_timeout, profile) do
-        # 0 is the only success code: fd reports "no matches" with exit 0
-        # (the 0/1 convention belongs to --quiet; measured), so a 1 here
-        # is an error — whose text would otherwise reach the model as a
-        # tool result, because Exec collects stderr into stdout.
-        {:ok, out, 0} -> format_fd_matches(out, root, pattern)
-        _ -> :fallback
-      end
-    else
-      :fallback
+    case Exec.run({:exec, fd, fd_args(root, pattern)}, root, @exec_timeout, profile) do
+      # 0 is the only success code: fd reports "no matches" with exit 0
+      # (the 0/1 convention belongs to --quiet; measured), so a 1 here
+      # is an error — whose text would otherwise reach the model as a
+      # tool result, because Exec collects stderr into stdout.
+      {:ok, out, 0} -> format_fd_matches(out, root, pattern)
+      _ -> :fallback
     end
   end
 
-  # Where fd would answer a DIFFERENT question, the reference engine
-  # answers instead (see moduledoc). Every clause is a measured
-  # divergence, in fd's own language:
-  #
-  #   * `[...]` / `\` — fd reads a character class / a quote, our
-  #     dialect reads literals (`[ab].ex` matched a.ex+b.ex under fd);
-  #   * a leading `!` — fd reads negation (`!*` listed everything);
-  #   * `/x`, `./x`, `x/`, `a//b` — not a plain scope-relative path; fd
-  #     normalizes them its own way (`**/` matched every file, `/lib/*.ex`
-  #     was silently re-anchored).
-  defp fd_dialect?(pattern) do
+  # Whether fd reads the pattern exactly as the reference dialect does.
+  # False for the measured divergences (see the moduledoc): an exotic
+  # pattern goes through the wide enumeration instead, so fd never gets
+  # to reinterpret it.
+  defp direct_pattern?(pattern) do
     pattern != "" and
       not String.starts_with?(pattern, ["!", "/", "./", "../"]) and
       not String.ends_with?(pattern, "/") and
@@ -154,24 +147,33 @@ defmodule CodingAgent.Core.Tools.Glob do
   end
 
   defp fd_args(root, pattern) do
-    # A pattern with a slash addresses a PATH; fd matches the entry NAME
-    # unless --full-path is given, and then it matches the path fd
-    # PRINTS, which must be absolute for the scope root to be the
-    # anchor. Both flags together, pattern anchored at the root, make
-    # fd agree with the reference engine (the "engine agreement" test).
-    {flags, target} =
-      if String.contains?(pattern, "/"),
-        do: {["--absolute-path", "--full-path"], Path.join(root, pattern)},
-        else: {[], pattern}
+    if direct_pattern?(pattern) do
+      # A pattern with a slash addresses a PATH; fd matches the entry NAME
+      # unless --full-path is given, and then it matches the path fd
+      # PRINTS, which must be absolute for the scope root to be the
+      # anchor. Both flags together, pattern anchored at the root, make
+      # fd agree with the reference engine (the "engine agreement" test).
+      {flags, target} =
+        if String.contains?(pattern, "/"),
+          do: {["--absolute-path", "--full-path"], Path.join(root, pattern)},
+          else: {[], pattern}
 
-    # --hidden so an opting-in pattern can match (see moduledoc; the
-    # result is filtered below, so nothing else gains hidden entries).
-    # --case-sensitive because fd's default is smart case: it answered
-    # "*.EX" case-insensitively where the reference engine does not.
-    ["--glob", "--color=never", "--no-ignore", "--hidden", "--case-sensitive", "--type", "f"] ++
-      flags ++
-      exclude_args() ++
-      [target, "."]
+      # --hidden so an opting-in pattern can match (see moduledoc; the
+      # result is filtered below, so nothing else gains hidden entries).
+      # --case-sensitive because fd's default is smart case: it answered
+      # "*.EX" case-insensitively where the reference engine does not.
+      ["--glob", "--color=never", "--no-ignore", "--hidden", "--case-sensitive", "--type", "f"] ++
+        flags ++
+        exclude_args() ++
+        [target, "."]
+    else
+      # Wide enumeration, bounded; the reference rule decides what is a
+      # match. `--glob '*'` is the whole filter fd gets.
+      ["--glob", "--color=never", "--no-ignore", "--hidden", "--case-sensitive", "--type", "f"] ++
+        ["--max-results", to_string(@enumeration_cap)] ++
+        exclude_args() ++
+        ["*", "."]
+    end
   end
 
   # fd's --exclude is a glob matched against the whole path, and a bare
@@ -183,10 +185,10 @@ defmodule CodingAgent.Core.Tools.Glob do
     Enum.flat_map(External.skip_dirs(), fn dir -> ["--exclude", "**/#{dir}/**"] end)
   end
 
-  # The delegated result is re-filtered with the SAME rule the reference
-  # engine applies (`file_match?/3` + the hidden rule): fd decides by its
-  # own dialect and its own hidden defaults, and this makes "the pattern
-  # means one thing" true in code, not just in measurement.
+  # The delegated result is filtered with the ONE reference rule
+  # (`file_match?/3` + the hidden rule): fd decides nothing about the
+  # caller's pattern; it enumerates or pre-filters, and this filter is
+  # what makes "the pattern means one thing" true in code.
   defp format_fd_matches(out, root, pattern) do
     matches =
       out
@@ -197,21 +199,6 @@ defmodule CodingAgent.Core.Tools.Glob do
       |> Enum.map(&Path.relative_to(&1, root))
       |> Enum.filter(&file_match?(pattern, &1, Path.basename(&1)))
       |> Containment.filter_hidden([pattern])
-      |> Enum.sort()
-      |> Enum.take(@max_results)
-
-    format_matches(matches)
-  end
-
-  # -- pure-Elixir reference implementation ------------------------------------
-
-  defp elixir_match(scope, pattern) do
-    root = Path.expand(scope.root)
-
-    matches =
-      Containment.walk(scope, ".", include_hidden: Containment.hidden_pattern?(pattern))
-      |> Enum.map(&Path.relative_to(&1, root))
-      |> Enum.filter(&file_match?(pattern, &1, Path.basename(&1)))
       |> Enum.sort()
       |> Enum.take(@max_results)
 

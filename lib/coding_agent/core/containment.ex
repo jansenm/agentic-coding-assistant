@@ -1,29 +1,33 @@
 defmodule CodingAgent.Core.Containment do
   @moduledoc """
-  THE containment discipline for every filesystem access a tool makes
-  (ADR 010 + the path-hardening lessons).
+  The DISCOVERY discipline for filesystem walks (ADR 010 lessons; role
+  changed by ADR 030).
 
-  One rule, now encoded in one place so tools cannot re-forget it:
+  One rule, encoded in one place so walkers cannot re-forget it:
 
-  > In any filesystem walk, **every** entry — file *or* directory —
+  > In a filesystem walk, **every** entry — file *or* directory —
   > passes the scope check before it is used. A symlinked directory
   > pointing outside the scope is a walkable escape (slice 2d bug #1);
   > a symlinked file pointing out is a listing/read leak (slice 2d
   > bug #2). Both variants of the same mistake.
 
+  **ADR 030: this is no longer a security boundary.** The sandbox
+  profile enforces reach; the native file tools run as confined
+  processes and `grep`/`glob` delegate to confined `rg`/`fd`. What
+  remains here is *discovery*: a walk that lists what exists inside the
+  scope (for a picker or an autocomplete), a scope predicate for
+  filtering and anchoring, and the hidden-entry vocabulary both engines
+  share. Nothing may rely on these for enforcement.
+
   Consumers:
 
-  - `path_allowed?/2` — the single-path predicate (physical symlink
-    resolution included). For one-file tools (`read_file`,
-    `write_file`, `list_dir`).
-  - `walk/3` — THE containment-respecting directory walk. Any tool
-    that lists or searches a tree goes through here; there is exactly
-    one `cond` to guard, and the guard tests attack exactly it.
+  - `path_allowed?/2` — the single-path scope predicate (physical
+    symlink resolution included). Discovery/filtering, not enforcement.
+  - `walk/3` — the scope-respecting directory walk (used by a discovery
+    feature, not by the search tools any more).
   - `default_skip_dirs/0` — the shared build/vendor/hidden skip list.
-  - `hidden_entry?/1` / `hidden_pattern?/1` — THE hidden rule (below).
-
-  If you are about to call `CodingAgent.Core.Tools.in_scope?/2` to
-  hand-roll a walk: don't. Use `walk/3` (or extend it).
+  - `hidden_entry?/1` / `hidden_pattern?/1` — THE hidden rule (below),
+    still applied to `rg`/`fd` output.
 
   ## The hidden rule
 
@@ -32,22 +36,19 @@ defmodule CodingAgent.Core.Containment do
 
     * `hidden_entry?/1` decides what counts as hidden for a path (any
       segment starting with a dot) — one definition, so `fd`'s path and
-      the Elixir walk cannot disagree. It covers FILES and DIRS alike:
-      `fd` skips a hidden file exactly as it skips a hidden dir, and
-      before this rule the walk only pruned hidden *dirs*, so a plain
-      `grep`/`glob` walk saw dotfiles that `rg`/`fd` never returned
+      any walk cannot disagree. It covers FILES and DIRS alike:
+      `fd` skips a hidden file exactly as it skips a hidden dir, so a
+      plain `grep`/`glob` must not return dotfiles it never returned
       (measured: 5 files of difference on this repo).
-    * `hidden_pattern?/1` decides whether a glob pattern names a hidden
-      entry, i.e. whether the caller asked for it (`.gitignore`,
-      `.*`, `.idea/*`, `**/.gitconfig`). That is the opt-in, and it is
-      POSIX spelling (`ls .*`, `cat .gitignore`), not a new vocabulary.
-    * `walk/3` with `:include_hidden` is the walk's half of the opt-in;
-      the caller's pattern is the tool's half.
+    * `hidden_pattern?/1` decides whether a glob pattern or a named
+      path asks for a hidden entry (`.gitignore`, `.*`, `.idea/*`,
+      `**/.gitconfig`). That is the opt-in, and it is POSIX spelling
+      (`ls .*`, `cat .gitignore`), not a new vocabulary.
+    * `filter_hidden/2` applies the rule to an engine's result list.
 
   Containment is untouched by this: it is about the scope root, and the
   same hidden file is reachable by name through `read_file` either way
-  (`walk/3` on an explicitly named file yields it — naming is the
-  opt-in at every layer).
+  (naming is the opt-in at every layer).
   """
 
   alias CodingAgent.Core.Tools

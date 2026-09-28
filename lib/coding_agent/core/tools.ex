@@ -3,19 +3,20 @@ defmodule CodingAgent.Core.Tools do
   Tool registry (slice 2a): the tools a session may use, as plain data.
 
   Per ADR 007 and the roadmap policy layer, a tool definition carries a
-  `scope` alongside its name/description/schema; 2a tools are read-only
-  and therefore allow-by-policy (no gate) — the scope plus path-escape
-  checks still confine *what* they can read. The permission gate
-  governs state-changing tools from slice 2b.
+  `scope` alongside its name/description/schema. The permission gate
+  governs state-changing tools (slice 2b); since ADR 030 the sandbox
+  profile is what confines what every tool can reach.
 
   Tools are plain `ReqLLM.Tool` structs (req_llm streams, validates and
   schema-encodes them); this module only owns their construction and
-  the read-only policy boundary.
+  the tool registry.
 
-  Containment discipline (paths *and* directory walks) lives in
-  `CodingAgent.Core.Containment`: single paths use
-  `Containment.path_allowed?/2`, any tree walk goes through
-  `Containment.walk/3`. Do not hand-roll walks on `in_scope?/2`.
+  ADR 030: the **sandbox profile** is the one boundary. The native file
+  tools run as confined processes (`Tools.FileExec`); `shell`/`git` and
+  the `grep`/`glob` delegations run through `Core.Exec` under the same
+  profile abstraction. `Tools.in_scope?/2` and `Core.Containment.walk/3`
+  remain as *discovery* helpers (a picker, an autocomplete) — no tool
+  relies on them for enforcement any more.
   """
 
   alias CodingAgent.Core.Tools.Edit
@@ -69,11 +70,11 @@ defmodule CodingAgent.Core.Tools do
   @doc """
   State-changing tools; always executed behind the permission gate.
 
-  `shell` has no path containment by design (ADR 010): a shell trivially
-  bypasses file checks, so it is gated — though under ADR 015 confinement
-  the gate allows it by default. `git` runs with `.git` writable through
-  its own sandbox profile; it is allow-by-default only under confinement,
-  and policy-configurable either way.
+  Since ADR 030 a session only exists under a confining sandbox, so the
+  gate allows `shell`/`git` by default (only a stated escalation, e.g.
+  `network`, asks). `git` runs with `.git` writable through its own
+  sandbox profile; both are policy-configurable (`[permissions.shell]`
+  etc.).
   """
   @spec gated(scope() | nil) :: [ReqLLM.Tool.t()]
   def gated(scope \\ nil) do
@@ -147,22 +148,20 @@ defmodule CodingAgent.Core.Tools do
   end
 
   @doc """
-  Resolves a path against the scope root and rejects escapes.
+  Whether a path lies inside the scope tree — a DISCOVERY predicate
+  (ADR 030), not a boundary.
 
-  **This is the low-level predicate.** If you are calling it to
-  hand-roll a directory walk: don't — use
-  `CodingAgent.Core.Containment.walk/3`, which enforces the full
-  walk discipline (check *files and directories*, in that order).
-  Hand-rolled walkers that only checked files caused two escape bugs
-  in slice 2d.
+  Used to filter enumerator output (a `grep`/`glob` result the search
+  engine produced) and to anchor a relative path. Enforcement is the
+  sandbox profile; do not treat a `true` here as permission to touch the
+  path.
 
-  Read-only tools are safe only as long as the path they touch stays
-  inside the scope; `..` traversal must not leave `scope.root`, and
-  **symlinks are resolved physically** before the check — a link inside
-  the scope pointing outside it is rejected (a symlinked root itself is
-  fine: the root is resolved first).
-
-  Returns true when access should be permitted.
+  `..` traversal must not leave `scope.root`, and **symlinks are
+  resolved physically** before the check — a link inside the scope
+  pointing outside it is rejected (a symlinked root itself is fine: the
+  root is resolved first). That is what makes the result filter honest:
+  an out-of-scope symlink's target can never be REPORTED, even if the
+  engine read it.
   """
   @spec in_scope?(scope(), String.t()) :: boolean()
   def in_scope?(scope, path) do

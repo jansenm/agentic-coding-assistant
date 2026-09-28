@@ -29,16 +29,22 @@ registry's ``read_only/1`` — which is therefore the single audit point: a
 tool that writes must never appear there, and must not bypass the
 permission gate introduced in slice 2b.
 
-Two defenses apply even to the read-only tools:
+Since **ADR 030 the sandbox profile is the one boundary**: the native
+file tools run their operation as a *confined child process* (a
+``cat``/``tee``/``ls`` under the session's profile), so what they can
+reach is exactly what the profile exposes — a ``hide``\ d path reads as
+the empty image, read-only binds fail a write, and the scope root's
+read-write bind is the only writable tree. Two properties are worth
+keeping in mind:
 
 - **Scope**: every tool receives a scope root (the session's working
-  directory); all paths are resolved against it.
-- **Physical path resolution**: the scope check runs on the *resolved*
-  path, not the textual one. ``..`` segments are normalized first, then
-  every path component is walked from the filesystem root, following
-  symlinks — including symlinked **directories** inside the path. A
-  link (or link-dir) pointing outside the scope is rejected the same as
-  an explicit ``../`` escape.
+  directory); relative paths resolve against it, and the process's
+  working directory is pinned there.
+- **Physical path resolution** still guards every *enumeration*: a
+  ``grep``/``glob`` engine must not REPORT a path that resolves outside
+  the scope through a link (the ``in_scope?/2`` re-check). A symlinked
+  **directory** in a walk is the same escape in the other direction —
+  the guard suite enforced this twice before the engines were unified.
 
   Why the walk matters: ``Path.expand`` is *textual* — it normalizes
   ``..`` but never follows links. Both escape shapes were verified
@@ -50,8 +56,8 @@ Two defenses apply even to the read-only tools:
   be distinguished from a regular file by the filesystem interface and
   a VCS-driven workspace cannot create them.
 
-- **Read caps** (256 KiB per file, 1 MiB per grepped file, 200 grep
-  matches, 500 glob results, 2000 files per walk) and a **per-turn
+- **Read caps** (256 KiB per file, 200 grep
+  matches, 500 glob results) and a **per-turn
   tool-round budget** bound context growth and runaway loops — both exist
   because tool output, not the user, is what fills a working context
   fastest. The budget is layered (``max_tool_rounds`` in ``config.toml``,
@@ -68,16 +74,16 @@ execution, with human-in-the-loop pause on ``:ask`` (design: ADR 010;
 the registry's ``gated/1`` lists them, and the gate inserts at the
 loop checkpoint where slice 2a executed unconditionally).
 
-**Class defaults, 2026-09-15** — ``edit`` and ``write_file`` joined
-the allow class (alongside the read-only tools) via the ADR 010
-amendment: gate tests proved allow-by-default for contained paths,
-with ``shell`` still asking on every call. The safety argument is
-structural: physical containment plus VCS reviewability (every
-landed change is a git diff). ``webfetch`` remains :ask — a fetch
-pulls foreign content in. A repo or user layer can still turn
-``edit``/``write_file`` back into ask/deny per path
+**Class defaults, ADR 030 (2026-09-27)** — ``edit``/``write_file``
+joined the allow class in 2026-09-15 (contained, reviewable as a git
+diff); ``shell``/``git`` joined with ADR 030, because a session only
+exists under a confining sandbox and the profile is their boundary.
+A stated escalation (``network``/``git_write``) still asks, and
+``webfetch`` remains :ask — a fetch pulls foreign content in. A repo
+or user layer can turn any tool back into ask/deny per path
 (``[permissions.edit] "src/**" = "ask"``); the class default is only
-what applies when nothing matches.
+what applies when nothing matches, and since ADR 030 a session start
+REFUSES when no confining sandbox is available.
 
 Searching: grep and glob (slice 2d)
 -----------------------------------
@@ -89,13 +95,11 @@ evidence says text search wins on trivial lookups and dies on deep
 traces — these tools are the cheap baseline tier; the structural tier
 (outlines, call graphs) stays on the roadmap's "Later" list.
 
-Both are read-only and inherit the full containment machinery:
-every file and directory that enters a walk must pass
-``Tools.in_scope?/2`` — *dirs included*, because a symlinked
-directory is a walkable path out of the scope (a lesson the guard
-suite enforced twice: first in glob, then again in grep's walk, which
-initially descended through an out-of-scope dir link and looped until
-the symlink-hop cap tripped).
+``rg``/``fd`` are **required** since ADR 030: the retired Elixir walk
+was a second, unconfined boundary, so a missing binary is a clear error
+instead of an unconfined search. Every returned path is still re-checked
+with ``Tools.in_scope?/2`` (*dirs included*, physically resolved), so an
+engine can never REPORT an out-of-scope path however it traversed.
 
 Pure-string glob matching is compiled to a regex: ``**`` = zero or
 more complete segments (``lib/**/*.ex`` reaches ``lib/a.ex`` *and*
@@ -184,23 +188,21 @@ sanctioned creation; on an existing file the same call refuses.
 Shell execution (slice 2c)
 --------------------------
 
-``shell`` is the one tool with **no path containment** — by design.
-A shell trivially bypasses any file-tool check (``cat /etc/passwd``
-never touches ``in_scope?``), which is precisely *why* it is gated on
-*every* call: v1 has no allow-list for commands, only :ask. The safety
-argument changes shape here: file tools are fenced *structurally*
-(the check decides), the shell is fenced *socially* (the human
-decides, every time).
+``shell`` has **no path containment** — by design. A shell trivially
+bypasses any file-tool check (``cat /etc/passwd`` never touches
+``in_scope?``), which is why it always ran behind the gate; ADR 030
+made the *profile* its boundary, so inside a confining sandbox it is
+allow-by-default (a stated escalation still asks). The fence is now the
+namespace, not a command inspection.
 
 The timeout is a three-layer contract, because suites differ — a
 ``mix test`` takes seconds, a Java integration suite takes minutes:
 
 - **model-supplied** ``timeout_secs`` per call (default 300 s) — the
   model knows the job, we don't;
-- **soft cap** at the default: higher values are shown prominently at
-  the approval prompt so the user can edit them (via the gate's
-  ``:edit`` decision) — once shell allow-rules arrive, exceeding the
-  soft cap will force :ask even for allow-listed commands;
+- **soft cap** at the default: higher values would be shown at a
+  (policy-driven) approval prompt so the user can edit them (via the
+  gate's ``:edit`` decision);
 - **hard cap** at 1800 s: the tool refuses and tells the model to
   split the work. Kill on expiry returns the output captured so far
   plus a timeout note — diagnosis half done.

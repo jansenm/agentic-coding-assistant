@@ -13,11 +13,14 @@ defmodule CodingAgent.Core.Tools.Git do
   quoting/`&&`/subshells in a git command are not a thing here. For a
   script that commits, use `shell` with the `git_write` escalation.
 
-  Gate: allow-by-default when a confining sandbox is active (the tool's
-  own profile confines the process), policy-configurable otherwise. Like
-  `shell`, it is `:ask` when no sandbox confines the process, and an
-  explicit policy entry always wins — so a user who wants every git call
+  Gate: since ADR 030 a session only exists under a confining sandbox, so
+  the tool is allow-by-default (the profile confines the process); an
+  explicit policy entry always wins — a user who wants every git call
   reviewed writes `[permissions.git] "*" = "ask"`.
+
+  Every run carries `Exec.agent_env/0`: an agent `git commit` without
+  `-m` (or `rebase --continue`, `tag -a`) must not open the owner's
+  editor and hang the turn (review F7).
   """
 
   alias CodingAgent.Core.Exec
@@ -112,7 +115,7 @@ defmodule CodingAgent.Core.Tools.Git do
     profile = profile(scope)
     command = Enum.join(["git" | git_args], " ")
 
-    case Exec.run({:exec, "git", git_args}, cwd, secs, profile) do
+    case Exec.run({:exec, "git", git_args}, cwd, secs, profile, env: Exec.agent_env()) do
       {:ok, output, status} ->
         elapsed = System.monotonic_time(:millisecond) - started
         {:ok, Exec.format(command, output, {:exit, status}, elapsed, secs)}

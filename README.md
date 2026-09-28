@@ -27,21 +27,21 @@ header).
 
 ## What can it do
 
-Eight tools, all scope-contained — every path is resolved physically
-(symlinks followed) and must stay inside the session scope
-(details: about-tools.rst):
+Eleven tools, all confined by the session's sandbox profile (ADR 030:
+the profile is the one boundary; a session refuses to start when no
+confining sandbox is available):
 
-- Read-only, run without approval: `list_dir`, `read_file`, `grep`,
-  `glob` — plus `edit` and `write_file` (allow-by-policy 2026-09-15:
-  contained paths, every change reviewable as a git diff; see the
-  ADR 010 amendment). A repo/user policy file can still turn them
-  back to ask/deny per path.
-- State-changing, paused for y/n approval in the terminal (approve, edit
-  the parameters, or reject): `shell`, `webfetch`
+- Read-only: `list_dir`, `read_file`, `grep`, `glob`, `question` —
+  plus `edit` and `write_file` (allow-by-policy; every change reviewable
+  as a git diff). A repo/user policy file can still turn them back to
+  ask/deny per path.
+- State-changing: `shell`, `git`, `webfetch`, `task` (delegation).
 
-`shell` runs through `/bin/sh` with model-supplied `timeout_secs`
-(default 300 s, hard cap 1800 s) and is asked on *every* call — no
-allow-list in v1.
+`shell`/`git` are allow-by-default inside the profile — a stated
+escalation (`network`, `git_write`) still asks, and every call can be
+made ask/deny by policy. `shell` runs through `/bin/sh` with
+model-supplied `timeout_secs` (default 300 s, hard cap 1800 s).
+`grep`/`glob` use `rg`/`fd` (required; there is no unconfined fallback).
 
 ## Development
 

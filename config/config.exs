@@ -15,14 +15,13 @@ import Config
 # or the AGENT_MODEL env override). Missing default fails with a
 # message naming the config file.
 #
-# Process confinement (ADR 015): Bwrap is the default. shell/git run
-# inside a bubblewrap profile and are allow-by-default, with only network
-# and git-write escalations prompting. Where bwrap cannot run (no binary,
-# or unprivileged user namespaces disabled by host hardening) the app
-# logs a warning at startup and falls back to Sandbox.None — unconfined,
-# so the gate asks for every shell/git call, exactly the pre-ADR-015
-# behaviour. Set `sandbox: CodingAgent.Core.Sandbox.None` to disable
-# confinement deliberately; the tests do exactly that.
+# Process confinement (ADR 015/030): Bwrap is the default and a session
+# REQUIRES confinement — where bwrap cannot run (no binary, or
+# unprivileged user namespaces disabled by host hardening) the app logs a
+# warning at startup and every session start refuses with the diagnostic.
+# shell/git run allow-by-default inside the profile, with only network and
+# git-write escalations prompting. `Sandbox.None` exists as a test seam
+# and an explicit opt-out; selecting it means the session runs unconfined.
 
 # Credentials are NOT configured here: secrets come from the environment
 # (ADR 008), and Request resolves them per provider as `<NAME>_API_KEY`
