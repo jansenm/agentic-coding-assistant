@@ -1,13 +1,14 @@
 # TODO — der aktive Backlog
 
-Stand: 2026-09-27, Branch `devel` @ `ca6f734` (Merge `dev/mjansen`:
-Sidebar-Blöcke, Decimal-Alignment, Review-Record). `dev/mjansen` ist
-**zweimal** auf `devel` rebased worden (erst auf `1b78de4`, dann auf
-`f830a8f`) und danach fast-forward gemerged; die alte↔neue Zuordnung der
-Rebases steht in `review.md` (Nachtrag und Abschnitt 5). Der Merge ist
-verifiziert: 883 Tests grün (`mix test --seed 0`), das Follow-up zu
-`review.md` §7 ist als eigener Commit gelandet (F1–F5). `review.md` ist
-der Record und wird nicht weiter gepflegt.
+Stand: 2026-09-27, Branch `devel`. Der Merge `dev/mjansen` landete als
+`ca6f734` (Sidebar-Blöcke, Decimal-Alignment, Review-Record), das
+F1–F5-Follow-up aus `review.md` §7 als `2879018`; `dev/mjansen` war
+davor **zweimal** auf `devel` rebased worden (erst auf `1b78de4`, dann
+auf `f830a8f`), die alte↔neue Zuordnung steht in `review.md` (Nachtrag
+und Abschnitt 5). Der Merge ist verifiziert: 883 Tests grün (`mix test
+--seed 0`). `review.md` ist der Record und wird nicht weiter gepflegt.
+**ADR 030 ist accepted und ungebaut**; die Slice-Liste steht unten
+(`## ADR 030 — One boundary`).
 
 Der **große Plan** steht in `ROADMAP.md` (Phasen, Produktthese,
 „Later“-Ideen, Ground Rules). **Entscheidungen** stehen in den ADRs
@@ -44,9 +45,35 @@ im jeweiligen ADR vermerkt.
   gibt keine `{:env, …}`-Option mit, also erbt jeder `git`/`shell`-Aufruf
   die Umgebung des Owners (`EDITOR=vim`, `VISUAL=gvim -f`): ein
   `git commit` ohne `-m`, `rebase --continue`, `tag -a` startet den
-  Editor und hängt. Fix bei Bedarf: `GIT_EDITOR=true
-  GIT_TERMINAL_PROMPT=0 GIT_PAGER=cat PAGER=cat` als Env für
-  Agent-Aufrufe (kein Config-Eingriff). Entscheidung offen.
+  Editor und hängt. Gehört zu ADR 030 (Slice 7 unten), nicht in die
+  Sandbox-Arbeit davor.
+
+## ADR 030 — One boundary (Accepted, nicht gebaut)
+
+Der Umbau aus `docs/source/decisions/030-one-boundary.rst`: **eine**
+Grenze (bwrap), Datei-Tools als confined Prozesse, kein Session-Start
+ohne confinement. Slices voraussichtlich in dieser Reihenfolge:
+
+1. **Session-Start verweigert ohne confining Sandbox.** `Sandbox.impl/0`
+   ohne `None`-Fallback für Produktion; Diagnose (bwrap, unprivileged
+   userns) im Fehler. `Sandbox.None` nur noch expliziter Test-Seam;
+   Tests, die ihn brauchen, wählen ihn sichtbar.
+2. **`Exec` bekommt stdin** (`Port.open` kann `{:env, …}` und stdin) —
+   Voraussetzung für `write_file` als confined `tee`.
+3. **Datei-Tools über `Exec`:** `read_file` → confined `cat`,
+   `write_file` → confined `tee`, `list_dir` → confined `ls`, `edit` →
+   confined read + Ersetzung im BEAM + confined write (read/write-Split
+   akzeptiert, ADR 030).
+4. **Allow-by-default für `shell`/`git`:** `confinement_allows?/2` wird
+   immer true, der `default_for("shell") = :ask`-Apparat fällt weg.
+5. **`Tools.in_scope?/2` + `Containment.walk/3` degradieren** zu
+   Discovery-Helfern; kein Tool stützt Enforcement darauf.
+6. **`grep`/`glob`-Fallback entscheiden:** `rg`/`fd` zur Pflicht machen
+   oder den Elixir-Walk durch confined Prozesse ersetzen (ADR 030 offene
+   Frage 2). Keine zweite Grenze.
+7. **F7 (Git-Editor)** passt hierher: `Exec` erhält die Env-Option, und
+   der Agent-Aufruf setzt `GIT_EDITOR=true GIT_TERMINAL_PROMPT=0
+   GIT_PAGER=cat PAGER=cat`.
 
 ## Nächste Schritte (priorisiert)
 
