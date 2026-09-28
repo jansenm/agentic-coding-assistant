@@ -152,17 +152,6 @@ defmodule CodingAgent.Core.Sandbox do
     if usable_module?(module), do: module
   end
 
-  @doc """
-  Whether a configured implementation can be used on this machine
-  (ADR 030). False when the configured implementation is missing/invalid
-  or is confining but unavailable; true for an explicit, deliberately
-  unconfined implementation (`None`).
-  """
-  @spec usable?() :: boolean()
-  def usable? do
-    impl() != nil
-  end
-
   defp usable_module?(module) when is_atom(module) and not is_nil(module) do
     cond do
       # A non-confining implementation (None) has nothing to check.
@@ -257,14 +246,4 @@ defmodule CodingAgent.Core.Sandbox do
       impl -> impl.wrap(spec, profile)
     end
   end
-
-  @doc "Convenience: wrap a shell command string."
-  @spec shell(String.t(), profile()) :: {:ok, String.t(), [String.t()]} | {:error, term()}
-  def shell(command, profile) when is_binary(command), do: wrap({:shell, command}, profile)
-
-  @doc "Convenience: wrap a direct executable + argv (no shell)."
-  @spec exec(String.t(), [String.t()], profile()) ::
-          {:ok, String.t(), [String.t()]} | {:error, term()}
-  def exec(file, args, profile) when is_binary(file) and is_list(args),
-    do: wrap({:exec, file, args}, profile)
 end

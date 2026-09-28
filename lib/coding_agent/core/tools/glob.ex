@@ -178,9 +178,9 @@ defmodule CodingAgent.Core.Tools.Glob do
 
   # fd's --exclude is a glob matched against the whole path, and a bare
   # name prunes a FILE of that name too (measured: a file called `cover`
-  # disappeared while the walk keeps it, because `default_skip_dirs/0`
-  # names *directories*). `**/<dir>/**` prunes the directory subtree at
-  # any depth and leaves same-named files alone — the walk's rule.
+  # disappeared, because `default_skip_dirs/0` names *directories*).
+  # `**/<dir>/**` prunes the directory subtree at any depth and leaves
+  # same-named files alone — the reference rule.
   defp exclude_args do
     Enum.flat_map(External.skip_dirs(), fn dir -> ["--exclude", "**/#{dir}/**"] end)
   end

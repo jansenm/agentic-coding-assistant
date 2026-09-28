@@ -65,19 +65,18 @@ ohne confinement. Alle sieben Slices sind gelandet:
 4. **Allow-by-default für `shell`/`git`.** ✅ `Gate.fallback_for/2` ohne
    Confinement-Probe; Escalations fragen weiter; die Allow-Klasse umfasst
    shell/git.
-5. **`in_scope?/2` + `Containment.walk/3` sind Discovery.** ✅ Moduldocs
-   und der Path-Hardening-Test sagen das; die Tool-Escapes laufen über
-   die echte Profil-Semantik (`Sandbox.FileToolsConfinementTest`).
+5. **`in_scope?/2` ist Discovery.** ✅ Moduldocs und der Path-Hardening-Test
+   sagen das; die Tool-Escapes laufen über die echte Profil-Semantik
+   (`Sandbox.FileToolsConfinementTest`). `check_scope!/2` und
+   `Containment.walk/3` wurden im Aufräumschritt gelöscht (keine
+   Produktionsnutzer mehr); `Containment` hält nur noch die
+   hidden-Regeln und `default_skip_dirs/0`.
 6. **`grep`/`glob`-Fallback entfernt.** ✅ `rg`/`fd` sind Pflicht; ein
    fehlendes Binary ist ein klarer Fehler. Die Referenz-DIALEKT lebt als
    Filter (`Glob.file_match?`, hidden-Regeln), die fd-Enumeration ist
    breit + gefiltert.
 7. **F7 (Git-Editor).** ✅ `Exec.agent_env/0` (GIT_EDITOR/GIT_PAGER/…),
    von `git` und `shell` genutzt.
-
-Offen aus dem Umbau (nicht Slice-relevant): `check_scope!/2` hat keinen
-Produktionsnutzer mehr — als Discovery-Baustein behalten oder in einem
-späteren Aufräumschritt entfernen.
 
 ## Nächste Schritte (priorisiert)
 

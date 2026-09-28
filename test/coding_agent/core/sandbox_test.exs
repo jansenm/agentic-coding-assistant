@@ -17,7 +17,6 @@ defmodule CodingAgent.Core.SandboxTest do
     test "a confining implementation that is available is used" do
       put_sandbox(Stub)
       assert Sandbox.impl() == Stub
-      assert Sandbox.usable?()
     end
 
     # ADR 030: the silent fallback to None is gone. An unavailable
@@ -25,13 +24,11 @@ defmodule CodingAgent.Core.SandboxTest do
     test "a confining implementation that is unavailable yields nil (no fallback)" do
       put_sandbox(Unavailable)
       assert Sandbox.impl() == nil
-      refute Sandbox.usable?()
     end
 
     test "an explicit None is honored (the deliberate seam)" do
       put_sandbox(None)
       assert Sandbox.impl() == None
-      assert Sandbox.usable?()
     end
 
     test "wrap/2 delegates to the effective implementation" do

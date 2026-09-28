@@ -115,10 +115,13 @@ Everything follows from that:
    ``shell``/``git`` class-default ``:ask`` and its whole apparatus go
    away. ``shell``/``git`` are allow-by-default, bounded by the profile.
 
-5. **``Tools.in_scope?/2`` and ``Containment.walk/3`` stop being
-   boundaries.** They remain useful as *discovery* helpers (a walk that
-   lists what exists, a relative-path anchor) but no tool may rely on
-   them for enforcement; enforcement is the sandbox.
+5. **``Tools.in_scope?/2`` stops being a boundary.** It remains useful
+   as a *discovery* filter (re-checking an engine's returned paths) but
+   no tool may rely on it for enforcement; enforcement is the sandbox.
+   The BEAM-side ``Containment.walk/3`` is deleted with its
+   unconfigured-engine tests: once ``rg``/``fd`` are required there is no
+   production caller, and keeping a second traversal path would re-open
+   the disagreement this ADR closes.
 
 Why per-call wrapping (not a long-lived helper)
 ...............................................

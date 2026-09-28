@@ -131,10 +131,11 @@ same problem viewed from different ends.
      ADR 030 the sandbox profile — not a path check — is what bounds
      the command, and shell is allow-by-default inside the profile.
      Port-based exec with kill on expiry; background runs parked in
-     "Later".
-     *Runnable:* `mix run demo/acceptance_2c.exs` (ask → approve →
-     output back; soft-cap visible; edit respected). LLM round-trip
-     demo (agent summarizes real failures) still to do live.
+     "Later". The ask → approve → output-back arc and the soft-cap
+     `:edit` path are pinned by `session_decisions_test.exs` /
+     `shell_test.exs`; the former `demo/acceptance_2c.exs` asserted the
+     pre-ADR-030 "shell is always-ask" behaviour and was removed.
+     LLM round-trip demo (agent summarizes real failures) still to do live.
    - **2d. grep + glob** ✅ — read-only tools, slot into existing
      containment (`read_only/1` + `in_scope?/2`; dirs in walks are
      scope-checked too — the symlinked-dir lesson twice). Grep:
@@ -163,8 +164,8 @@ same problem viewed from different ends.
      **Fallback retired (2026-09-27, ADR 030):** the Elixir walk was a
      second, unconfined boundary (it ignored `hide`/`ro`/`root_ro`), so
      `rg`/`fd` are now required and a missing binary is a clear error.
-     The reference DIALECT survives as pure filter functions; the walk
-     survives only as a discovery helper in `Containment`.
+     The reference DIALECT survives as pure filter functions; the
+     `Containment` walk helper was deleted with the fallback.
    - **2e. edit** ✅ — targeted string replacement (fail-closed:
      refuses on 0 or 2+ matches with re-read/widen guidance), gated
      like `write_file`; empty old_string creates a file. Ends the era

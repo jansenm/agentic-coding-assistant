@@ -381,9 +381,10 @@ defmodule CodingAgent.Core.Tools.SearchDelegationTest do
   end
 
   describe "the delegated invocation itself (guard against regressions in the flags)" do
-    # These tests are about fd/rg, so they need the binaries on this
-    # machine. Without them the reference engine answers (covered above)
-    # and there is nothing to pin here.
+    # These tests are about the delegated invocation, so they need the
+    # binaries on this machine. Since ADR 030 rg/fd are required and
+    # there is no reference engine to fall back to; without the binaries
+    # the tool returns a clear error (covered elsewhere).
     setup do
       %{delegated?: External.available?(:fd) and External.available?(:rg)}
     end

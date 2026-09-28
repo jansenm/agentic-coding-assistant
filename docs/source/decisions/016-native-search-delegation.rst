@@ -158,17 +158,18 @@ The fix keeps the decision (delegate) and makes the contract real:
    root-anchored and absolute (``--absolute-path --full-path``, pattern
    ``Path.join(root, pattern)``) so a path pattern means a path, and
    ``--case-sensitive`` so case means case. Patterns that fd's dialect
-   would read differently stay on the reference engine
-   (``fd_dialect?/1``). ``rg`` no longer receives the caller's glob at
+   would read differently fall back to a wide enumeration
+   (``--glob '*'`` + ``--max-results``) filtered by the reference rule
+   — since ADR 030 there is no Elixir walk to fall back to. ``rg`` no
+   longer receives the caller's glob at
    all: it searches wide and the result is filtered by
    ``Glob.file_match?/3``.
 2. **One hidden rule.** ``--hidden`` is passed so a search that *names* a
    hidden entry can find it, and the result is filtered afterwards
    (``Containment.filter_hidden/2``), so a pattern that did not ask cannot
-   gain one. Before this the walk and the external engines disagreed about
-   *files* too (the walk pruned hidden directories only, ``fd``/``rg``
-   prune hidden files as well); the walk now applies the same rule, and
-   the opt-in is POSIX spelling (``.gitignore``, ``.*``, ``.github/*``).
+   gain one. The rule covers *files* and directories alike
+   (``Containment.hidden_entry?/1``), and the opt-in is POSIX spelling
+   (``.gitignore``, ``.*``, ``.github/*``).
 3. **Naming beats filtering at every layer** — ``path: ".github"`` or
    ``glob: ".env.example"`` is the same opt-in in both tools and both
    engines, and a named target is exempt from the skip list that would
@@ -176,14 +177,16 @@ The fix keeps the decision (delegate) and makes the contract real:
 4. **The skip lists now mean the same thing.** ``fd --exclude <name>``
    also prunes a *file* of that name; the excludes are ``**/<dir>/**``, so
    only directories are pruned, like ``Containment.default_skip_dirs/0``.
-5. **Errors are not results.** A non-zero exit falls back (fd reports
-   "no matches" with exit 0 — the 0/1 convention belongs to ``--quiet``).
+5. **Errors are not results.** A non-zero exit falls back to the wide,
+   filtered enumeration (fd reports "no matches" with exit 0 — the 0/1
+   convention belongs to ``--quiet``); it is never formatted as a
+   result.
 
-The reference engine is now the definition and both engines are measured
-against it: ``SearchDelegationTest`` "engine agreement" runs every
-documented shape twice, once with the binary and once with the probe
-forced off, and asserts the two answers are identical. That test is the
-part that was missing — the previous tests used only rootless patterns
-(``*.ex``, ``**/*.ex``), the one region where every engine agreed by
-accident.
+The reference engine is now the definition: ``SearchDelegationTest``
+compares every documented shape against the reference filter. That test
+is the part that was missing — the previous tests used only rootless
+patterns (``*.ex``, ``**/*.ex``), the one region where every engine
+agreed by accident. Since ADR 030 there is no second engine to run off,
+so the old "with the binary / with the probe forced off" pairing
+collapsed into one filtered answer.
 

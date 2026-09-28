@@ -14,9 +14,9 @@ defmodule CodingAgent.Core.Tools do
   ADR 030: the **sandbox profile** is the one boundary. The native file
   tools run as confined processes (`Tools.FileExec`); `shell`/`git` and
   the `grep`/`glob` delegations run through `Core.Exec` under the same
-  profile abstraction. `Tools.in_scope?/2` and `Core.Containment.walk/3`
-  remain as *discovery* helpers (a picker, an autocomplete) — no tool
-  relies on them for enforcement any more.
+  profile abstraction. `Tools.in_scope?/2` remains as a *discovery*
+  filter (re-checking an engine's returned paths) — no tool relies on it
+  for enforcement any more.
   """
 
   alias CodingAgent.Core.Tools.Edit

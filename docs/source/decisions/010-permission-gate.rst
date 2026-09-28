@@ -15,6 +15,14 @@ Permission gate and policy file format
    ``agent-permissions.toml`` (with a session restart — policy pins at
    start). Demo: ``demo/acceptance_2b.exs``.
 
+   **Amended by ADR 030** (2026-09-27): the boundary for file reach
+   moved from the BEAM path check (``Containment.check_scope!/2`` and
+   the walk discipline) to the process sandbox — the file tools now run
+   as confined processes. The gate's policy model, decision API and
+   ``:allow | :ask | :deny`` vocabulary are unchanged; the read-only and
+   write-only "structural fence" described below is now enforced by the
+   sandbox profile instead of a path predicate.
+
 Context
 -------
 
@@ -234,9 +242,9 @@ working tree does not already give. The fence is containment plus
 VCS reviewability, enforced in the tools themselves, not by the gate:
 
 1. **Contained** — every path is resolved physically (symlinks
-   followed) and must stay inside the session scope
-   (``Containment.check_scope!/2``); the walk discipline of the
-   read-only tools (the path-hardening lessons). The tool cannot
+   followed) and must stay inside the session scope; since ADR 030 this
+   is enforced by the confined file tools (``Tools.FileExec``) rather
+   than a BEAM predicate. The tool cannot
    touch anything outside the workspace, no matter what the model
    asks for.
 2. **Reviewable** — every landed change sits in the VCS working tree

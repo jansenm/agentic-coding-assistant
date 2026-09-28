@@ -40,18 +40,18 @@ keeping in mind:
 - **Scope**: every tool receives a scope root (the session's working
   directory); relative paths resolve against it, and the process's
   working directory is pinned there.
-- **Physical path resolution** still guards every *enumeration*: a
-  ``grep``/``glob`` engine must not REPORT a path that resolves outside
-  the scope through a link (the ``in_scope?/2`` re-check). A symlinked
-  **directory** in a walk is the same escape in the other direction —
-  the guard suite enforced this twice before the engines were unified.
+- **Physical path resolution** is the discovery filter on every
+  *enumeration*: a ``grep``/``glob`` engine must not REPORT a path that
+  resolves outside the scope through a link (the ``Tools.in_scope?/2``
+  re-check). Enforcement is the engine's confinement; this filter only
+  keeps an out-of-scope result from being shown.
 
-  Why the walk matters: ``Path.expand`` is *textual* — it normalizes
-  ``..`` but never follows links. Both escape shapes were verified
-  exploitable before the fix
-  (``scope/docs/innocent.txt → /etc/shadow`` and
+  Why textual expansion is not enough: ``Path.expand`` normalizes
+  ``..`` but never follows links, so an in-scope-looking symlink can
+  point out. Both escape shapes were verified exploitable before the
+  fix (``scope/docs/innocent.txt → /etc/shadow`` and
   ``scope/docs/outside-dir → /etc``, then ``outside-dir/passwd``): both
-  now return a scope error. Symlinks *inside* the scope (even chains)
+  are now filtered. Symlinks *inside* the scope (even chains)
   keep working; hard links are deliberately out of scope — they cannot
   be distinguished from a regular file by the filesystem interface and
   a VCS-driven workspace cannot create them.
@@ -108,53 +108,50 @@ expand. Elixir 1.20 removed ``Path.match/2``, so the matcher lives in
 :mod:`CodingAgent.Core.Tools.Glob` — plain functions, unit-tested
 against the classic glob table.
 
-Delegation: two engines, one answer (ADR 016)
----------------------------------------------
+Delegation: one engine, one answer (ADR 016 / ADR 030)
+------------------------------------------------------
 
-Both tools delegate to the native engine when it is on ``PATH``
-(``rg`` for grep, ``fd`` for glob) and keep the Elixir walk as the
-reference fallback (portability, and a machine with no ``rg``/``fd``
-and no network to install one). The delegated run goes through
-``Exec`` under the read-only sandbox profile — the same single
-execution path as ``shell`` and ``git``.
+Both tools delegate to the native engine (``rg`` for grep, ``fd`` for
+glob). Since ADR 030 there is no Elixir fallback: the walk was a second,
+unconfined boundary, so the binaries are required and a missing one is a
+clear error, not an unconfined search. The delegated run goes through
+``Exec`` under the read-only sandbox profile — the same single execution
+path as ``shell`` and ``git``.
 
-The reference engine **defines** the answer; the native engine is
-measured against it. Measured, the two used to be two tools wearing
-one name: ``fd --glob`` matches the entry *name*, so every documented
-shape with a ``/`` (``lib/**/*.ex``) returned 0 files where the walk
-found 59; both binaries are smart-case by default; ``fd``'s dialect is
-richer (character classes, ``!`` negation, ``\`` quotes); ``rg``'s own
-glob was *narrower* than ours and silently dropped matches; a
-non-zero exit was formatted as a result (``Exec`` merges stderr into
-stdout). So:
+The delegated engine does not define the answer; a reference rule does,
+and the engine's output is measured against it. Measured, ``fd
+--glob`` matches the entry *name*, so every documented shape with a
+``/`` (``lib/**/*.ex``) returned 0 files where the reference rule found
+59; both binaries are smart-case by default; ``fd``'s dialect is
+richer (character classes, ``!`` negation, ``\`` quotes). So the engine
+only ever **enumerates or pre-filters**, and the filter decides:
 
-- a pattern with a ``/`` goes to ``fd`` root-anchored and absolute
-  (``--absolute-path --full-path``), and a pattern fd would read
-  differently stays on the reference engine (``fd_dialect?/1``);
+- ``fd`` is called wide (``--glob '*'``, bounded by ``--max-results``)
+  when the caller's pattern is not a shape fd reads the same way;
+  otherwise it is called root-anchored and absolute
+  (``--absolute-path --full-path``);
 - ``rg`` never receives the caller's glob: it searches wide and every
   match is re-filtered by ``Glob.file_match?/3`` — the one rule, in
   one function, so a pattern means the same thing in ``glob`` and in
   ``grep``'s ``glob`` argument;
-- errors are not results: a non-zero exit falls back to the walk
-  (``fd`` reports "no matches" with exit 0 — the 0/1 convention
+- an error is not a result: a non-zero exit is formatted as the error
+  it is (``fd`` reports "no matches" with exit 0 — the 0/1 convention
   belongs to its ``--quiet`` flag).
 
-``SearchDelegationTest`` "engine agreement" pins it: every documented
-shape runs twice, once with the binary and once with the probe forced
-off, and the two answers must be identical.
+``SearchDelegationTest`` pins the reference rule: every documented shape
+is checked against the engine's enumeration and the filter's answer, and
+the two must agree.
 
 Hidden entries: a default, not a wall
 -------------------------------------
 
-Hidden entries are skipped in both engines by the *same* rule
+Hidden entries are skipped by the *same* rule in both
 (``Containment.hidden_entry?/1`` — any dot segment, files and
-directories alike; before it the walk pruned hidden *dirs* only, so a
-plain search saw dotfiles that ``rg``/``fd`` never returned), and the
-way to ask for them is to **name** them (``.gitignore``, ``.*``,
-``.idea/*``, ``path: ".github"``) — POSIX spelling, nothing new to
-remember. ``--hidden`` is passed to both binaries so a named entry can
-be found, and the result is filtered afterwards so a pattern that did
-not ask cannot gain one.
+directories alike), and the way to ask for them is to **name** them
+(``.gitignore``, ``.*``, ``.idea/*``, ``path: ".github"``) — POSIX
+spelling, nothing new to remember. ``--hidden`` is passed to both
+binaries so a named entry can be found, and the result is filtered
+afterwards so a pattern that did not ask cannot gain one.
 
 The build/vendor list is separate and always applies: ``_build``,
 ``deps``, ``.git``, ``doc``, ``cover``, ``.elixir_ls`` are never
