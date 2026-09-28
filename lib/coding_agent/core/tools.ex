@@ -121,13 +121,14 @@ defmodule CodingAgent.Core.Tools do
   end
 
   @doc """
-  The sandbox profile for a read-only tool: the scope root plus its
-  configured mounts, no network and no `.git` write.
+  The sandbox profile for the native file tools and the read-only
+  delegations (`grep`/`glob`): the scope root plus its configured mounts,
+  no network and no `.git` write.
 
-  Read-only tools that shell out to a runtime binary (`grep`/`glob` via
-  `External`) run that process through `Exec` under this profile, so
-  they are confined like `shell`/`git` instead of using a bare
-  `System.cmd`.
+  ADR 030: this is the ONE profile for every non-git tool. A read-only
+  agent (`shell_mode: :ro`, e.g. the plan agent) gets `root_ro: true`, so
+  the profile itself refuses writes — the tool list is not relied on as
+  an enforcement boundary.
   """
   @spec profile(scope()) :: CodingAgent.Core.Sandbox.profile()
   def profile(scope) do
@@ -137,6 +138,7 @@ defmodule CodingAgent.Core.Tools do
       root: Map.fetch!(scope, :root),
       network: false,
       git_write: false,
+      root_ro: Map.get(scope, :shell_mode) == :ro,
       scratch: CodingAgent.Core.Session.Scratch.from_scope(scope),
       rw: Map.get(mounts, :rw, []),
       ro: Map.get(mounts, :ro, []),

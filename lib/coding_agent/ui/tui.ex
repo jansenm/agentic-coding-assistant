@@ -574,9 +574,13 @@ defmodule CodingAgent.UI.Tui do
   # The resume mapping (base policy, restored agent, usage, parked round)
   # lives in Core.Session.resume_opts/2 — the view does not reconstruct
   # State field-by-field.
+  #
+  # A refused start (ADR 030: no confining sandbox) is not a crash: it
+  # comes back as `{:error, reason}` and the caller decides what to show.
   defp start_resumed({:ok, state}, _id, _opts, _resume_id) do
-    with {:ok, pid} <- Session.resume(state, interactive: true) do
-      {:ok, pid, state, nil}
+    case Session.resume(state, interactive: true) do
+      {:ok, pid} -> {:ok, pid, state, nil}
+      {:error, reason} -> {:error, start_refusal(reason)}
     end
   end
 
@@ -595,21 +599,28 @@ defmodule CodingAgent.UI.Tui do
         {:error, {:no_model, CodingAgent.Core.Config.no_model_message()}}
 
       model ->
-        with {:ok, pid} <-
-               Supervisor.start_session(
-                 id: id,
-                 scope_root: Keyword.get(opts, :scope_root) || File.cwd!(),
-                 model: model,
-                 agent: Keyword.get(opts, :agent),
-                 # the TUI can answer a mid-turn question: at the round
-                 # budget the session ASKS continue/stop (ADR 025) instead
-                 # of auto-summarizing
-                 interactive: true
-               ) do
-          {:ok, pid, nil, notice}
+        case Supervisor.start_session(
+               id: id,
+               scope_root: Keyword.get(opts, :scope_root) || File.cwd!(),
+               model: model,
+               agent: Keyword.get(opts, :agent),
+               # the TUI can answer a mid-turn question: at the round
+               # budget the session ASKS continue/stop (ADR 025) instead
+               # of auto-summarizing
+               interactive: true
+             ) do
+          {:ok, pid} -> {:ok, pid, nil, notice}
+          {:error, reason} -> {:error, start_refusal(reason)}
         end
     end
   end
+
+  # Session start refused (ADR 030) or failed for another reason: surface
+  # the message the core gave, never a raw exception tuple.
+  defp start_refusal({%{__struct__: _} = exception, _stack}) when is_exception(exception),
+    do: {:session_start_failed, Exception.message(exception)}
+
+  defp start_refusal(reason), do: {:session_start_failed, inspect(reason)}
 
   # A friendly, jargon-free line for the transcript when a resume fails.
   defp resume_failure_notice(resume_id, reason) do

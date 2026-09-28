@@ -22,10 +22,13 @@ defmodule CodingAgent.Core.PermissionsTest do
       policy = Permissions.load(nil, nil)
       assert policy.entries == %{}
       assert Permissions.default_for("read_file") == :allow
-      assert Permissions.default_for("shell") == :ask
+      # ADR 030: shell/git are allow-by-class under the (required)
+      # confining sandbox; their escalation path is handled by the gate.
+      assert Permissions.default_for("shell") == :allow
+      assert Permissions.default_for("git") == :allow
 
       # ADR 010 amendment 2026-09-15: edit AND write_file are
-      # allow-by-class (contained, VCS-reviewable); shell is not
+      # allow-by-class (contained, VCS-reviewable)
       assert Permissions.default_for("edit") == :allow
       assert Permissions.default_for("write_file") == :allow
       assert Permissions.default_for("webfetch") == :ask
@@ -350,8 +353,10 @@ defmodule CodingAgent.Core.PermissionsTest do
   describe "effective/4 role parameter" do
     test "ignores role for now (only default exists in 2b)" do
       policy = Permissions.load(nil, nil)
-      assert Permissions.effective(policy, "shell", "x", "default") == :ask
-      assert Permissions.effective(policy, "shell", "x", "future-role") == :ask
+      # ADR 030: shell's class default is :allow (the gate adds the
+      # escalation ask when the call widens the profile)
+      assert Permissions.effective(policy, "shell", "x", "default") == :allow
+      assert Permissions.effective(policy, "shell", "x", "future-role") == :allow
     end
   end
 end

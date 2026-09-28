@@ -62,9 +62,12 @@ defmodule CodingAgent.Core.Permissions do
   # construction and contained (see Containment): grep/glob joined in
   # 2d; edit and write_file joined by the 2026-09-15 ADR 010 amendment
   # — contained (physically-resolved paths) and reviewable (every
-  # landed change sits in the VCS diff). shell (no containment at all)
-  # and webfetch (foreign content ingress) stay ask.
-  @allow_class ["list_dir", "read_file", "grep", "glob", "edit", "write_file"]
+  # landed change sits in the VCS diff). shell and git joined with ADR
+  # 030: a session only exists under a confining sandbox, so the profile
+  # is their boundary and they are allow-by-default (an escalation, e.g.
+  # network, still asks). webfetch stays ask (foreign content ingress;
+  # no sandbox profile governs it).
+  @allow_class ["list_dir", "read_file", "grep", "glob", "edit", "write_file", "shell", "git"]
 
   @decisions ~w(allow ask deny)
 

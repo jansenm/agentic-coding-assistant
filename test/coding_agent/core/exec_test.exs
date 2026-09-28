@@ -1,0 +1,132 @@
+defmodule CodingAgent.Core.ExecTest do
+  use ExUnit.Case, async: true
+
+  alias CodingAgent.Core.Exec
+  alias CodingAgent.Core.Sandbox
+
+  @tmp_root System.tmp_dir!() |> Path.join("agent-exec-#{System.unique_integer([:positive])}")
+
+  setup_all do
+    File.mkdir_p!(@tmp_root)
+    on_exit(fn -> File.rm_rf!(@tmp_root) end)
+    :ok
+  end
+
+  setup do
+    File.rm_rf!(@tmp_root)
+    File.mkdir_p!(@tmp_root)
+    %{profile: %{root: @tmp_root}}
+  end
+
+  defp tmp(name), do: Path.join(@tmp_root, name)
+
+  describe "run/5 stdin (ADR 030)" do
+    test "feeds the payload to the child's standard input", %{profile: profile} do
+      file = tmp("via-tee.txt")
+
+      assert {:ok, output, 0} =
+               Exec.run({:exec, "tee", [file]}, @tmp_root, 10, profile, stdin: "hello\n")
+
+      # tee echoes stdin to stdout AND writes the file
+      assert output =~ "hello"
+      assert File.read!(file) == "hello\n"
+    end
+
+    test "is byte-exact, including multibyte and empty payloads", %{profile: profile} do
+      file = tmp("bytes.txt")
+      content = String.duplicate("ü✓ line\n", 500)
+
+      assert {:ok, _, 0} =
+               Exec.run({:exec, "tee", [file]}, @tmp_root, 10, profile, stdin: content)
+
+      assert File.read!(file) == content
+
+      empty = tmp("empty.txt")
+      assert {:ok, _, 0} = Exec.run({:exec, "tee", [empty]}, @tmp_root, 10, profile, stdin: "")
+      assert File.read!(empty) == ""
+    end
+
+    test "the writer sees EOF: the child terminates without a timeout", %{profile: profile} do
+      # `cat` with no path reads stdin until EOF; without the pipe-close
+      # trick it would hang until the deadline.
+      assert {:ok, output, 0} =
+               Exec.run({:exec, "cat", []}, @tmp_root, 10, profile, stdin: "drained\n")
+
+      assert output == "drained\n"
+    end
+
+    test "works through the shell spec form too", %{profile: profile} do
+      file = tmp("shell-stdin.txt")
+
+      assert {:ok, _, 0} =
+               Exec.run({:shell, "cat > #{file}"}, @tmp_root, 10, profile, stdin: "via shell\n")
+
+      assert File.read!(file) == "via shell\n"
+    end
+
+    test "a payload larger than one port message arrives whole", %{profile: profile} do
+      file = tmp("large.txt")
+      content = :crypto.strong_rand_bytes(300_000)
+
+      assert {:ok, _, 0} =
+               Exec.run({:exec, "tee", [file]}, @tmp_root, 30, profile, stdin: content)
+
+      assert File.read!(file) == content
+    end
+  end
+
+  describe "run/5 env" do
+    test "overrides are visible to the child", %{profile: profile} do
+      assert {:ok, output, 0} =
+               Exec.run({:shell, "printf '%s' \"$CA_TEST_VAR\""}, @tmp_root, 10, profile,
+                 env: [{"CA_TEST_VAR", "from-env"}]
+               )
+
+      assert output == "from-env"
+    end
+
+    test "an override wins over the inherited value", %{profile: profile} do
+      System.put_env("CA_TEST_INHERITED", "parent")
+      on_exit(fn -> System.delete_env("CA_TEST_INHERITED") end)
+
+      assert {:ok, output, 0} =
+               Exec.run({:shell, "printf '%s' \"$CA_TEST_INHERITED\""}, @tmp_root, 10, profile,
+                 env: [{"CA_TEST_INHERITED", "child"}]
+               )
+
+      assert output == "child"
+    end
+
+    test "the git editor neutralization shape works (review F7)", %{profile: profile} do
+      assert {:ok, output, 0} =
+               Exec.run(
+                 {:shell, "printf '%s %s' \"$GIT_EDITOR\" \"$GIT_PAGER\""},
+                 @tmp_root,
+                 10,
+                 profile,
+                 env: [{"GIT_EDITOR", "true"}, {"GIT_PAGER", "cat"}]
+               )
+
+      assert output == "true cat"
+    end
+  end
+
+  describe "stdin_command/2 (shared EOF spelling)" do
+    test "wraps a shell spec in a head -c pipeline" do
+      assert {:ok, "/bin/sh", ["-c", command]} =
+               Sandbox.stdin_command(7, {:shell, "tee out.txt"})
+
+      assert command =~ "head -c 7"
+      assert command =~ "tee out.txt"
+    end
+
+    test "keeps exec argv as positional parameters (no re-parsing)" do
+      assert {:ok, "/bin/sh", ["-c", command, "sh", exe, "a b", "; rm -rf /"]} =
+               Sandbox.stdin_command(3, {:exec, "sh", ["a b", "; rm -rf /"]})
+
+      assert command =~ "head -c 3"
+      assert command =~ ~s(exec "$@")
+      assert Path.type(exe) == :absolute
+    end
+  end
+end

@@ -17,5 +17,9 @@ config :ex_ratatui, detach_local_input: false
 
 # Tests must not depend on the host: the shipped default is bwrap (ADR
 # 015), but a test run must behave identically on a machine without it.
-# Tests that exercise confinement set the implementation explicitly.
-config :coding_agent, sandbox: CodingAgent.Core.Sandbox.None
+# ADR 030 makes a confining sandbox a session-start precondition, so the
+# suite runs under a confining TEST DOUBLE by default; tests that exercise
+# real bwrap select it explicitly (and self-skip when it is unavailable),
+# and `Sandbox.None` appears only where the unconfined seam itself is
+# under test (the refusal path, the None unit tests).
+config :coding_agent, sandbox: CodingAgent.TestSandbox.Stub

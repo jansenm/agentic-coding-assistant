@@ -1,44 +1,54 @@
 defmodule CodingAgent.Core.SandboxTest do
   use ExUnit.Case, async: false
 
+  import CodingAgent.SandboxCase
+
   alias CodingAgent.Core.Sandbox
   alias CodingAgent.Core.Sandbox.None
   alias CodingAgent.TestSandbox.Stub
   alias CodingAgent.TestSandbox.Unavailable
 
-  setup do
-    Application.put_env(:coding_agent, :sandbox, None)
-    :ok
-  end
-
   describe "selection" do
     test "configured/0 returns what was asked for, even if unusable" do
-      Application.put_env(:coding_agent, :sandbox, Unavailable)
+      put_sandbox(Unavailable)
       assert Sandbox.configured() == Unavailable
     end
 
     test "a confining implementation that is available is used" do
-      Application.put_env(:coding_agent, :sandbox, Stub)
+      put_sandbox(Stub)
       assert Sandbox.impl() == Stub
+      assert Sandbox.usable?()
     end
 
-    test "a confining implementation that is unavailable falls back to None" do
-      Application.put_env(:coding_agent, :sandbox, Unavailable)
+    # ADR 030: the silent fallback to None is gone. An unavailable
+    # confining implementation yields nil, so callers must refuse.
+    test "a confining implementation that is unavailable yields nil (no fallback)" do
+      put_sandbox(Unavailable)
+      assert Sandbox.impl() == nil
+      refute Sandbox.usable?()
+    end
+
+    test "an explicit None is honored (the deliberate seam)" do
+      put_sandbox(None)
       assert Sandbox.impl() == None
+      assert Sandbox.usable?()
     end
 
     test "wrap/2 delegates to the effective implementation" do
-      Application.put_env(:coding_agent, :sandbox, Stub)
+      put_sandbox(Stub)
 
       assert {:ok, "/bin/sh", ["-c", "echo hi"]} =
                Sandbox.wrap({:shell, "echo hi"}, %{root: "/repo"})
     end
 
-    test "wrap/2 falls back to the no-op when the configured sandbox is unusable" do
-      Application.put_env(:coding_agent, :sandbox, Unavailable)
+    # ADR 030: an unusable sandbox refuses — it never runs unconfined.
+    test "wrap/2 refuses when the configured sandbox is unusable" do
+      put_sandbox(Unavailable)
 
-      assert {:ok, "/bin/sh", ["-c", "echo hi"]} =
+      assert {:error, {:sandbox_unavailable, message}} =
                Sandbox.wrap({:shell, "echo hi"}, %{root: "/repo"})
+
+      assert message =~ "no usable sandbox"
     end
   end
 
@@ -49,7 +59,7 @@ defmodule CodingAgent.Core.SandboxTest do
 
     test "does not confine" do
       refute None.confines?()
-      Application.put_env(:coding_agent, :sandbox, None)
+      put_sandbox(None)
       refute Sandbox.confines?()
     end
 
@@ -75,42 +85,53 @@ defmodule CodingAgent.Core.SandboxTest do
 
   describe "confines?/0" do
     test "is true for a confining implementation that is available" do
-      Application.put_env(:coding_agent, :sandbox, Stub)
+      put_sandbox(Stub)
       assert Sandbox.confines?()
     end
 
     test "is false when the confining implementation is unavailable" do
-      Application.put_env(:coding_agent, :sandbox, Unavailable)
+      put_sandbox(Unavailable)
       refute Sandbox.confines?()
     end
 
     test "is false for the no-op" do
-      Application.put_env(:coding_agent, :sandbox, None)
+      put_sandbox(None)
       refute Sandbox.confines?()
     end
   end
 
   describe "diagnose/0" do
     test "is :ok for the no-op" do
-      Application.put_env(:coding_agent, :sandbox, None)
+      put_sandbox(None)
       assert Sandbox.diagnose() == :ok
     end
 
     test "surfaces the reason when a confining implementation cannot run" do
-      Application.put_env(:coding_agent, :sandbox, Unavailable)
+      put_sandbox(Unavailable)
       assert {:error, reason} = Sandbox.diagnose()
       assert is_binary(reason)
     end
 
     test "is :ok when the confining implementation works" do
-      Application.put_env(:coding_agent, :sandbox, Stub)
+      put_sandbox(Stub)
       assert Sandbox.diagnose() == :ok
     end
 
     test "reports an invalid configuration" do
-      Application.put_env(:coding_agent, :sandbox, "not a module")
+      put_sandbox("not a module")
       assert {:error, reason} = Sandbox.diagnose()
       assert reason =~ "invalid"
+    end
+  end
+
+  describe "refusal_message/0 (ADR 030)" do
+    test "names the missing piece and the way out" do
+      put_sandbox(Unavailable)
+      message = Sandbox.refusal_message()
+
+      assert message =~ "no usable sandbox"
+      assert message =~ "unprivileged user namespaces"
+      assert message =~ "Sandbox.None"
     end
   end
 end

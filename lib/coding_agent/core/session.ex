@@ -383,6 +383,16 @@ defmodule CodingAgent.Core.Session do
         Config.model(snapshot) ||
         raise(Config.no_model_message())
 
+    # ADR 030: a confining sandbox is a precondition for EVERY session,
+    # test or production. There is no unconfined operating mode; the
+    # suite selects a confining test double in config/test.exs (and
+    # `Sandbox.None` only for the refusal path itself). A raise here is
+    # an init failure, not a crash: `start_session/1` returns a readable
+    # `{:error, reason}` either way.
+    unless CodingAgent.Core.Sandbox.confines?() do
+      raise CodingAgent.Core.Sandbox.refusal_message()
+    end
+
     test_mode = Keyword.get(opts, :test_mode, false)
     policy = Keyword.get(opts, :policy) || snapshot.permissions
 

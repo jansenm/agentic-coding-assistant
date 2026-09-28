@@ -186,21 +186,26 @@ defmodule CodingAgent.Core.Tools.ShellTest do
   end
 
   describe "gate integration (ADR 010, LLM-free)" do
-    test "shell defaults to :ask (write_file is allow by the 2026-09-15 amendment)" do
+    test "shell defaults to :allow under the (required) confining sandbox (ADR 030)" do
       policy = Permissions.load(nil, nil)
-      assert Permissions.effective(policy, "shell", "", "default") == :ask
+      # shell/git joined the allow class with ADR 030; the escalation
+      # ask is the GATE's fallback, not the pure policy default.
+      assert Permissions.effective(policy, "shell", "", "default") == :allow
       #    (write_file comparison for regression clarity)
       assert Permissions.effective(policy, "write_file", "", "default") == :allow
     end
 
-    test "a shell call interrupts the session and executes on approval" do
+    test "an explicit ask policy still interrupts and executes on approval" do
       id = "shell-gate-#{System.unique_integer()}"
+      toml = Path.join(@tmp_root, "ask-shell.toml")
+      File.write!(toml, "[permissions.shell]\n\"*\" = \"ask\"\n")
 
       {:ok, _} =
         CodingAgent.Core.Session.Supervisor.start_session(
           id: id,
           scope_root: @tmp_root,
-          test_mode: true
+          test_mode: true,
+          policy: Permissions.load(nil, toml)
         )
 
       marker = Path.join(@tmp_root, "shell-ran-#{System.unique_integer()}")
@@ -347,7 +352,7 @@ defmodule CodingAgent.Core.Tools.ShellTest do
       assert log =~ "\"m1\""
     end
 
-    test "non-blacklisted shell calls still interrupt (touch stays gated)" do
+    test "non-blacklisted shell calls run allow-by-default (ADR 030)" do
       id = "shell-bl-neg-#{System.unique_integer()}"
 
       {:ok, _} =
@@ -363,19 +368,22 @@ defmodule CodingAgent.Core.Tools.ShellTest do
         ])
 
       {:ok, state} = Session.state(id)
-      assert state.status == :interrupted
-      refute File.exists?(Path.join(@tmp_root, "bl-neg-marker"))
+      refute state.status == :interrupted
+      assert File.exists?(Path.join(@tmp_root, "bl-neg-marker"))
     end
   end
 
   defp reject_rejected_shell do
     id = "shell-gate-#{System.unique_integer()}"
+    toml = Path.join(@tmp_root, "reject-shell.toml")
+    File.write!(toml, "[permissions.shell]\n\"*\" = \"ask\"\n")
 
     {:ok, _} =
       CodingAgent.Core.Session.Supervisor.start_session(
         id: id,
         scope_root: @tmp_root,
-        test_mode: true
+        test_mode: true,
+        policy: Permissions.load(nil, toml)
       )
 
     marker = Path.join(@tmp_root, "never-#{System.unique_integer()}")

@@ -1,6 +1,8 @@
 defmodule CodingAgent.Core.Sandbox.BwrapTest do
   use ExUnit.Case, async: false
 
+  import CodingAgent.SandboxCase
+
   alias CodingAgent.Core.Sandbox.Bwrap
   alias CodingAgent.Core.Session.Scratch
   alias CodingAgent.Core.Tools.Shell
@@ -16,7 +18,9 @@ defmodule CodingAgent.Core.Sandbox.BwrapTest do
   setup do
     File.rm_rf!(@tmp_root)
     File.mkdir_p!(@tmp_root)
-    Application.put_env(:coding_agent, :sandbox, CodingAgent.Core.Sandbox.None)
+    # NOTE: the argv/3 tests are pure and need no configured sandbox; the
+    # integration tests below select Bwrap explicitly via put_sandbox/1
+    # (restored on exit, ADR 030).
     {:ok, root: @tmp_root}
   end
 
@@ -119,7 +123,10 @@ defmodule CodingAgent.Core.Sandbox.BwrapTest do
       argv = Bwrap.argv(root, {:shell, "echo hi"}, %{root: root, hide: [dir, file]})
 
       assert triple_in(argv, {"--tmpfs", dir})
-      assert triple_in(argv, {"--ro-bind", "/dev/null", file})
+      # --dev-bind, not --ro-bind: a ro-bound device is unreadable under
+      # the nodev mount of an unprivileged userns (EACCES). Found live by
+      # the ADR 030 file-tool integration test.
+      assert triple_in(argv, {"--dev-bind", "/dev/null", file})
     end
 
     test "sets resource caps in the shell prelude", %{root: root} do
@@ -229,7 +236,7 @@ defmodule CodingAgent.Core.Sandbox.BwrapTest do
       if ctx[:skip] do
         :ok
       else
-        Application.put_env(:coding_agent, :sandbox, Bwrap)
+        put_sandbox(Bwrap)
         tool = Shell.tool(%{root: root})
 
         assert {:ok, out} = ReqLLM.Tool.execute(tool, %{"command" => "pwd"})
@@ -246,7 +253,7 @@ defmodule CodingAgent.Core.Sandbox.BwrapTest do
         git!(root, ~w(add app.txt))
         git!(root, ~w(commit -m init))
 
-        Application.put_env(:coding_agent, :sandbox, Bwrap)
+        put_sandbox(Bwrap)
         tool = Shell.tool(%{root: root})
 
         assert {:ok, out} =
@@ -264,7 +271,7 @@ defmodule CodingAgent.Core.Sandbox.BwrapTest do
         :ok
       else
         init_git!(root)
-        Application.put_env(:coding_agent, :sandbox, Bwrap)
+        put_sandbox(Bwrap)
         tool = Shell.tool(%{root: root})
 
         assert {:ok, _out} = ReqLLM.Tool.execute(tool, %{"command" => "rm -rf .git"})
@@ -279,7 +286,7 @@ defmodule CodingAgent.Core.Sandbox.BwrapTest do
         init_git!(root)
         File.write!(Path.join(root, "app.txt"), "v1\n")
 
-        Application.put_env(:coding_agent, :sandbox, Bwrap)
+        put_sandbox(Bwrap)
         tool = CodingAgent.Core.Tools.Git.tool(%{root: root})
 
         assert {:ok, out} =
@@ -305,7 +312,7 @@ defmodule CodingAgent.Core.Sandbox.BwrapTest do
       if ctx[:skip] do
         :ok
       else
-        Application.put_env(:coding_agent, :sandbox, Bwrap)
+        put_sandbox(Bwrap)
         session_id = "bwrap-scratch-#{System.unique_integer([:positive])}"
         scope = %{root: root, session_id: session_id}
         scratch = Scratch.path(session_id)
@@ -331,7 +338,7 @@ defmodule CodingAgent.Core.Sandbox.BwrapTest do
       if ctx[:skip] do
         :ok
       else
-        Application.put_env(:coding_agent, :sandbox, Bwrap)
+        put_sandbox(Bwrap)
         host_marker = Path.join(Scratch.base_dir(), "host-only-#{System.unique_integer()}")
         File.mkdir_p!(Scratch.base_dir())
         File.write!(host_marker, "secret")
@@ -353,7 +360,7 @@ defmodule CodingAgent.Core.Sandbox.BwrapTest do
         {wt, _repo} = init_worktree!(root)
         File.write!(Path.join(wt, "b.txt"), "b\n")
 
-        Application.put_env(:coding_agent, :sandbox, Bwrap)
+        put_sandbox(Bwrap)
         tool = CodingAgent.Core.Tools.Git.tool(%{root: wt})
 
         assert {:ok, out} = ReqLLM.Tool.execute(tool, %{"args" => ["add", "b.txt"]})
@@ -373,7 +380,7 @@ defmodule CodingAgent.Core.Sandbox.BwrapTest do
       else
         init_git!(root)
         marker = Path.join(root, "injected-#{System.unique_integer()}")
-        Application.put_env(:coding_agent, :sandbox, Bwrap)
+        put_sandbox(Bwrap)
         tool = CodingAgent.Core.Tools.Git.tool(%{root: root})
 
         assert {:ok, _out} =

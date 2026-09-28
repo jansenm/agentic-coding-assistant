@@ -246,6 +246,20 @@ defmodule CodingAgent.Core.Sandbox.Bwrap do
     ["/bin/sh", "-c", prelude() <> ~s(exec "$@"), "sh", file | args]
   end
 
+  # `{:stdin, count, spec}` (ADR 030): feed exactly `count` bytes, then
+  # close the pipe — that close is the inner process's EOF, which a port
+  # cannot signal any other way. The pipeline wraps the SAME inner forms,
+  # so the exec form keeps its argv as positional parameters and the
+  # rlimits still apply to the whole pipeline.
+  defp inner({:stdin, count, {:shell, command}}) when is_integer(count) and count >= 0 do
+    ["/bin/sh", "-c", prelude() <> "{ head -c #{count}; } | " <> command]
+  end
+
+  defp inner({:stdin, count, {:exec, file, args}})
+       when is_integer(count) and count >= 0 do
+    ["/bin/sh", "-c", prelude() <> ~s({ head -c #{count}; } | exec "$@"), "sh", file | args]
+  end
+
   # The scratch over /tmp (ADR 022): a session-scoped host directory,
   # bound so `/tmp` persists across calls but stays private to the
   # session (the host's shared /tmp is never visible). Without a session
@@ -371,6 +385,15 @@ defmodule CodingAgent.Core.Sandbox.Bwrap do
 
   # hide: a directory becomes an empty writable tmpfs; a file becomes
   # /dev/null. The distinction is by host type (ADR 015 mount schema).
+  #
+  # A file is bound with `--dev-bind`, not `--ro-bind`: unprivileged
+  # user namespaces mount with `nodev`, so a `--ro-bind`ed character
+  # device is NOT readable and `cat` fails with EACCES. `--dev-bind`
+  # grants device access for this one fixed, agent-inaccessible source,
+  # so a hidden file reads as empty (the /dev/null image) and writes are
+  # discarded — exactly the ADR 015 semantic. Found live by the ADR 030
+  # integration test (`Sandbox.FileToolsConfinementTest`); the argv test
+  # had only compared flags, never run a read.
   defp hide_args(profile) do
     profile
     |> Map.get(:hide, [])
@@ -378,7 +401,7 @@ defmodule CodingAgent.Core.Sandbox.Bwrap do
     |> Enum.flat_map(fn path ->
       cond do
         File.dir?(path) -> ["--tmpfs", path]
-        File.exists?(path) -> ["--ro-bind", "/dev/null", path]
+        File.exists?(path) -> ["--dev-bind", "/dev/null", path]
         true -> []
       end
     end)

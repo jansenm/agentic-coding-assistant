@@ -1,21 +1,27 @@
 defmodule CodingAgent.Core.PathHardeningTest do
   @moduledoc """
-  Security guard tests for path containment (ADR 002 trust model).
+  Resolution-discipline tests for `Tools.in_scope?/2`.
 
-  These tests exist so that nobody can accidentally reopen the symlink
-  or traversal holes. They attack `in_scope?/2` directly (the single
-  audit point every tool must pass) and via a real tool; if you are here
-  because one of them fails after a refactor: the old behavior leaked
-  /etc/passwd through a symlinked directory (see ADR 002, about-tools).
+  Historically this was THE security audit point (ADR 002 trust model):
+  every tool had to pass it, and the symlink/traversal holes it closed
+  once leaked `/etc/passwd`. ADR 030 changed its ROLE: the sandbox
+  profile is the one enforcement boundary, and `in_scope?/2` is a
+  *discovery* helper (does this path belong to the scope tree? — a walk
+  filter, a relative-path anchor). The predicate's physical resolution
+  rules still matter and these tests keep them honest.
 
-  Every case could once read /etc/passwd or an outside file — do not
-  weaken these without an ADR.
+  The ENFORCEMENT semantics (hide, ro, root_ro; a symlink's target bind
+  mode) are asserted under real bwrap in
+  `CodingAgent.Core.Sandbox.FileToolsConfinementTest`.
   """
 
   use ExUnit.Case, async: true
 
-  # Runs the guard at the tool-registry API level; eventually all tools
-  # must go through Tools.in_scope?/2 — these tests pin that contract.
+  # `Tools.in_scope?/2` is the DISCOVERY predicate (does this path belong
+  # to the scope tree?). ADR 030 removed it as an enforcement boundary —
+  # the sandbox profile enforces reach — but the predicate still anchors
+  # relative paths, and these tests keep its resolution discipline
+  # honest (symlinks followed physically, dot-dot normalized).
   alias CodingAgent.Core.Tools
 
   setup do
@@ -135,22 +141,14 @@ defmodule CodingAgent.Core.PathHardeningTest do
 
   # -- Through the actual tools (integration) -------------------------------------
 
-  describe "read_file tool containment" do
-    test "leak attempts all fail with a scope error", %{root: root, secret_file: secret} do
-      symlink(secret, Path.join(root, "leak.txt"))
-      symlink(secret, Path.join(root, "leakdir"))
-      tool = find("read_file", %{root: root})
-
-      for path <- ["leak.txt", "/etc/passwd", "../../../etc/passwd"] do
-        # containment may reject with a scope error (string) or fail the
-        # callback (exception struct) — both mean "did not read".
-        {:error, msg} = ReqLLM.Tool.execute(tool, %{"path" => path})
-        text = if is_binary(msg), do: msg, else: Exception.message(msg)
-        assert text != "", "path #{path}"
-        # the secret content must not appear in any error
-        refute text =~ "SECRET", "path #{path}"
-      end
-    end
+  describe "read_file tool under the profile (ADR 030)" do
+    # ADR 030 dissolved the tool-level path boundary: the PROFILE is the
+    # one boundary, so reading a path outside the scope read-only is
+    # permitted by construction, and `hide`/`ro` are the exclusion tools.
+    # A symlink is just a path the profile resolves; its target's bind
+    # mode decides. The real semantics are asserted under real bwrap in
+    # `Sandbox.FileToolsConfinementTest`; the suite's confining double
+    # does not confine, so nothing is asserted here beyond read success.
 
     test "in-scope reads still work", %{root: root} do
       tool = find("read_file", %{root: root})

@@ -1,6 +1,7 @@
 defmodule CodingAgent.Core.Sandbox.GateTest do
   use ExUnit.Case, async: false
 
+  import CodingAgent.SandboxCase
   import ExUnit.CaptureLog
 
   alias CodingAgent.Core.Permissions
@@ -19,7 +20,9 @@ defmodule CodingAgent.Core.Sandbox.GateTest do
   setup do
     File.rm_rf!(@tmp_root)
     File.mkdir_p!(@tmp_root)
-    Application.put_env(:coding_agent, :sandbox, CodingAgent.Core.Sandbox.None)
+    # the suite default (config/test.exs): confining test double — a
+    # session requires confinement (ADR 030)
+    put_sandbox(Stub)
     :ok
   end
 
@@ -34,24 +37,23 @@ defmodule CodingAgent.Core.Sandbox.GateTest do
 
   defp gate(id, calls), do: Session.debug_gate(id, calls)
 
-  describe "without confinement (Sandbox.None, the default)" do
-    test "shell keeps the class-default :ask and interrupts" do
-      id = "none-ask-#{System.unique_integer()}"
-      start_session(id)
+  describe "without confinement (ADR 030: no session starts)" do
+    test "a session refuses to start under Sandbox.None" do
+      put_sandbox(CodingAgent.Core.Sandbox.None)
 
-      :ok = gate(id, [%{id: "c1", name: "shell", arguments: %{"command" => "echo hi"}}])
+      assert {:error, {%RuntimeError{message: message}, _stack}} =
+               CodingAgent.Core.Session.Supervisor.start_session(
+                 id: "none-refuse-#{System.unique_integer()}",
+                 scope_root: @tmp_root,
+                 test_mode: true
+               )
 
-      {:ok, state} = Session.state(id)
-      assert state.status == :interrupted
+      assert message =~ "no usable sandbox"
+      assert message =~ "Sandbox.None"
     end
   end
 
   describe "with confinement" do
-    setup do
-      Application.put_env(:coding_agent, :sandbox, Stub)
-      :ok
-    end
-
     test "shell is allow-by-default and does not interrupt" do
       id = "conf-allow-#{System.unique_integer()}"
       start_session(id)

@@ -1,0 +1,167 @@
+defmodule CodingAgent.Core.Tools.FileExec do
+  @moduledoc """
+  The confined file-operation executor for the native file tools (ADR
+  030): `read_file`, `write_file`, `edit` and `list_dir` run their
+  operation as a CHILD PROCESS under the session's sandbox profile,
+  exactly as `shell`/`git` do. The BEAM performs no scope-relevant
+  filesystem access itself.
+
+  One boundary: the bwrap profile. `hide`ed paths read as their empty
+  image, `ro`-bound paths fail with `EROFS`, and the scope root's
+  read-write bind is the only writable tree — all by construction, with
+  no second predicate to keep in sync (`Tools.in_scope?/2` degrades to a
+  discovery helper).
+
+  The operation is a small, fixed program per tool (`cat`, `tee`, `ls`);
+  the PATH is passed as an argument, never interpolated into the script,
+  so a quote in a filename cannot escape the command. `Exec.run/5`
+  carries the profile and, for writes, the payload on stdin (see
+  `{:stdin, ...}` in `CodingAgent.Core.Sandbox`).
+
+  A relative path is resolved against the sandbox's working directory
+  (the scope root, set by `{:cd, cwd}`), so the confined program sees the
+  same tree the profile describes. An absolute path is used as-is — the
+  profile decides what is reachable.
+  """
+
+  alias CodingAgent.Core.Exec
+  alias CodingAgent.Core.Tools
+
+  # The fixed programs, by bare name so each sandbox resolves them its
+  # own way (`None`/the stub via PATH; bwrap's inner `sh` inside the
+  # namespace). `--` terminates option parsing so a path that starts
+  # with `-` is a filename, not a flag. `cat`/`tee`/`ls` are POSIX.
+  @cat "cat"
+  @tee "tee"
+  @ls "ls"
+
+  @doc """
+  Reads a file through a confined `cat`. Returns `{:ok, contents}` or
+  `{:error, message}`. The size cap is enforced by reading the output
+  back (a larger file is reported, not truncated).
+  """
+  @spec read(Tools.scope(), String.t(), pos_integer(), pos_integer()) ::
+          {:ok, String.t()} | {:error, String.t()}
+  def read(scope, path, secs, max_bytes) do
+    profile = Tools.profile(scope)
+
+    case Exec.run({:exec, @cat, ["--", path]}, cwd(scope), secs, profile) do
+      {:ok, output, 0} when byte_size(output) <= max_bytes ->
+        {:ok, output}
+
+      {:ok, _output, 0} ->
+        Tools.error("file larger than #{div(max_bytes, 1024)} KiB: #{path}")
+
+      {:ok, output, _code} ->
+        {:error, failure(output, path)}
+
+      {:timeout, _partial} ->
+        {:error, "timed out reading #{path}"}
+
+      {:sandbox_error, reason} ->
+        {:error, "cannot read #{path} under the sandbox: #{inspect(reason)}"}
+
+      {:error, reason} ->
+        {:error, "cannot read #{path}: #{inspect(reason)}"}
+    end
+  end
+
+  @doc """
+  Writes `content` through a confined `tee`. Returns `{:ok, path}` or
+  `{:error, message}`. The content goes on stdin; the payload's byte size
+  is computed here and the pipe close is the child's EOF.
+  """
+  @spec write(Tools.scope(), String.t(), iodata(), pos_integer()) ::
+          {:ok, String.t()} | {:error, String.t()}
+  def write(scope, path, content, secs) do
+    profile = Tools.profile(scope)
+
+    case Exec.run({:exec, @tee, ["--", path]}, cwd(scope), secs, profile, stdin: content) do
+      # tee echoes the payload to stdout; a zero exit means the bytes were
+      # written (and flushed) before it returned.
+      {:ok, _output, 0} ->
+        {:ok, path}
+
+      {:ok, output, _code} ->
+        {:error, failure(output, path)}
+
+      {:timeout, _partial} ->
+        {:error, "timed out writing #{path}"}
+
+      {:sandbox_error, reason} ->
+        {:error, "cannot write #{path} under the sandbox: #{inspect(reason)}"}
+
+      {:error, reason} ->
+        {:error, "cannot write #{path}: #{inspect(reason)}"}
+    end
+  end
+
+  @doc """
+  Lists a directory through a confined `ls`. Returns the raw listing or an
+  error. `opts` are passed to `ls` (e.g. `["-a"]`); `--` guards the path.
+  """
+  @spec list(Tools.scope(), String.t(), [String.t()], pos_integer()) ::
+          {:ok, String.t()} | {:error, String.t()}
+  def list(scope, path, opts, secs) do
+    profile = Tools.profile(scope)
+
+    case Exec.run({:exec, @ls, opts ++ ["--", path]}, cwd(scope), secs, profile) do
+      {:ok, output, 0} ->
+        {:ok, output}
+
+      {:ok, output, _code} ->
+        {:error, failure(output, path)}
+
+      {:timeout, _partial} ->
+        {:error, "timed out listing #{path}"}
+
+      {:sandbox_error, reason} ->
+        {:error, "cannot list #{path} under the sandbox: #{inspect(reason)}"}
+
+      {:error, reason} ->
+        {:error, "cannot list #{path}: #{inspect(reason)}"}
+    end
+  end
+
+  @doc """
+  Existence + type probe through a confined `ls`: `:dir`, `:file` or
+  `:missing`. Used by `edit`'s fail-closed shape check without a BEAM
+  `File.stat/1`.
+  """
+  @spec stat(Tools.scope(), String.t(), pos_integer()) :: :dir | :file | :missing
+  def stat(scope, path, secs) do
+    profile = Tools.profile(scope)
+
+    # `ls -d` succeeds for a file OR a directory; `--` guards the path.
+    case Exec.run({:exec, @ls, ["-d", "--", path]}, cwd(scope), secs, profile) do
+      {:ok, _output, 0} -> type_probe(scope, path, secs)
+      _ -> :missing
+    end
+  end
+
+  # `ls -d -- path/.` succeeds only if path is a directory (the trailing
+  # `/.` fails for a regular file). One more argument to the same fixed
+  # program; the path is never interpolated into a script.
+  defp type_probe(scope, path, secs) do
+    profile = Tools.profile(scope)
+
+    case Exec.run({:exec, @ls, ["-d", "--", path <> "/."]}, cwd(scope), secs, profile) do
+      {:ok, _output, 0} -> :dir
+      _ -> :file
+    end
+  end
+
+  defp cwd(%{root: root}), do: Path.expand(root)
+
+  # The confined program's stderr (merged into stdout by Exec) is the
+  # error text; trim and cap it so the model reads a sentence, not a dump.
+  defp failure(output, path) do
+    detail =
+      output
+      |> to_string()
+      |> String.trim()
+      |> String.slice(0, 500)
+
+    if detail == "", do: "operation failed: #{path}", else: detail
+  end
+end

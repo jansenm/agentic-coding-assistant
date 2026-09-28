@@ -24,20 +24,34 @@ defmodule CodingAgent.Core.Exec do
 
   @doc """
   Runs a command spec in `cwd` under `profile`, killing it after `secs`.
+
+  `opts`:
+
+    * `:stdin` — iodata written to the process's standard input. A port
+      cannot signal EOF, so `run/5` wraps the spec as
+      `{:stdin, byte_size, spec}`: the sandbox pipes exactly those bytes
+      from `head -c N` and the pipe close is the child's EOF (ADR 030,
+      `write_file` as a confined `tee`).
+    * `:env` — environment overrides (`{name, value}` string pairs),
+      merged over the inherited environment. Used to neutralize
+      interactive tools (`GIT_EDITOR=true`; ADR 030 / review F7).
   """
-  @spec run(Sandbox.spec(), String.t(), pos_integer(), Sandbox.profile()) :: outcome()
-  def run(spec, cwd, secs, profile) do
+  @spec run(Sandbox.spec(), String.t(), pos_integer(), Sandbox.profile(), keyword()) :: outcome()
+  def run(spec, cwd, secs, profile, opts \\ []) do
+    stdin = Keyword.get(opts, :stdin)
+    env = Keyword.get(opts, :env, [])
+
+    spec =
+      case stdin do
+        nil -> spec
+        data -> {:stdin, IO.iodata_length(data), spec}
+      end
+
     case Sandbox.wrap(spec, profile) do
       {:ok, executable, argv} ->
-        port =
-          Port.open({:spawn_executable, executable}, [
-            :binary,
-            :exit_status,
-            :stderr_to_stdout,
-            :hide,
-            {:args, argv},
-            {:cd, cwd}
-          ])
+        port = open(executable, argv, cwd, env)
+
+        deliver_stdin(port, stdin)
 
         deadline = System.monotonic_time(:millisecond) + secs * 1000
         collect(port, deadline, "")
@@ -45,6 +59,36 @@ defmodule CodingAgent.Core.Exec do
       {:error, reason} ->
         {:sandbox_error, reason}
     end
+  end
+
+  defp open(executable, argv, cwd, env) do
+    options = [
+      :binary,
+      :exit_status,
+      :stderr_to_stdout,
+      :hide,
+      {:args, argv},
+      {:cd, cwd}
+    ]
+
+    options =
+      if env == [] do
+        options
+      else
+        options ++ [{:env, Enum.map(env, fn {k, v} -> {to_charlist(k), to_charlist(v)} end)}]
+      end
+
+    Port.open({:spawn_executable, executable}, options)
+  end
+
+  # The payload for `{:stdin, count, _}`. `Port.command/2` is
+  # synchronous, so the bytes are in the port's buffer before `collect/3`
+  # starts reading; the child sees them as its standard input.
+  defp deliver_stdin(_port, nil), do: :ok
+
+  defp deliver_stdin(port, data) do
+    Port.command(port, data)
+    :ok
   end
 
   # Ports deliver :exit_status then :closed. We never Port.close/1 by

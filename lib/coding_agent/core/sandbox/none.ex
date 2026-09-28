@@ -1,13 +1,13 @@
 defmodule CodingAgent.Core.Sandbox.None do
   @moduledoc """
   No confinement: run the command through `/bin/sh` exactly as the Shell
-  tool has always done.
+  tool always did.
 
-  This is the default (ADR 015) so that behaviour is unchanged on
-  platforms where no sandbox is available — macOS, Windows, CI without
-  unprivileged user namespaces, and hardened Linux hosts. It is a
-  deliberate no-op, not a stub: there is nothing to honour, and the
-  permission gate remains the only boundary, as before.
+  ADR 030: this is a **test seam and an explicit opt-out**, never an
+  automatic fallback. Session start requires a confining sandbox, so a
+  session only runs under `None` when a test selects it deliberately
+  (`config/test.exs` pins a confining double; `None` appears where the
+  refusal path or the no-op itself is under test).
 
   The one grant it must REFUSE is `root_ro`: it cannot make the scope
   read-only, and silently running read-write would let a read-only agent
@@ -39,6 +39,13 @@ defmodule CodingAgent.Core.Sandbox.None do
         exe -> {:ok, exe, args}
       end
     end)
+  end
+
+  # `{:stdin, count, spec}` (ADR 030): the same shell pipeline the
+  # confining implementations use, so the file tools behave identically
+  # under the test seam.
+  def wrap({:stdin, count, spec} = _inner, profile) when is_integer(count) and count >= 0 do
+    refuse_root_ro(profile, fn -> CodingAgent.Core.Sandbox.stdin_command(count, spec) end)
   end
 
   defp refuse_root_ro(%{root_ro: true}, _fun), do: {:error, :root_ro_unavailable}

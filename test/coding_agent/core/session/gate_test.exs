@@ -1,6 +1,8 @@
 defmodule CodingAgent.Core.Session.GateTest do
   use ExUnit.Case, async: false
 
+  import CodingAgent.SandboxCase
+
   alias CodingAgent.Core.Permissions
   alias CodingAgent.Core.Session.Gate
   alias CodingAgent.TestSandbox.Stub
@@ -10,7 +12,10 @@ defmodule CodingAgent.Core.Session.GateTest do
 
   setup do
     File.mkdir_p!(@tmp_root)
-    Application.put_env(:coding_agent, :sandbox, CodingAgent.Core.Sandbox.None)
+    # ADR 030: a session requires a confining sandbox. The stub is the
+    # suite's confining double; the gate's class-default behavior under it
+    # is what these tests pin.
+    put_sandbox(Stub)
     on_exit(fn -> File.rm_rf!(@tmp_root) end)
     :ok
   end
@@ -20,16 +25,12 @@ defmodule CodingAgent.Core.Session.GateTest do
   defp policy, do: Permissions.load(nil, nil)
 
   describe "decision/4" do
-    test "class defaults apply without confinement" do
+    test "read-only tools are allow; shell is allow-by-default under confinement (ADR 030)" do
       assert Gate.decision(policy(), @tmp_root, "read_file", %{"path" => "a"}) == :allow
-      assert Gate.decision(policy(), @tmp_root, "shell", %{"command" => "ls"}) == :ask
+      assert Gate.decision(policy(), @tmp_root, "shell", %{"command" => "ls"}) == :allow
     end
 
-    test "shell yields to confinement, except with an escalation" do
-      Application.put_env(:coding_agent, :sandbox, Stub)
-
-      assert Gate.decision(policy(), @tmp_root, "shell", %{"command" => "ls"}) == :allow
-
+    test "an escalation still asks even under confinement" do
       assert Gate.decision(policy(), @tmp_root, "shell", %{
                "command" => "curl x",
                "network" => true,
@@ -38,7 +39,6 @@ defmodule CodingAgent.Core.Session.GateTest do
     end
 
     test "an explicit policy entry always wins over confinement" do
-      Application.put_env(:coding_agent, :sandbox, Stub)
       path = Path.join(@tmp_root, "deny.toml")
       File.write!(path, "[permissions.shell]\n\"*\" = \"deny\"\n")
       policy = Permissions.load(nil, path)
@@ -65,13 +65,24 @@ defmodule CodingAgent.Core.Session.GateTest do
       calls = [
         call("read_file", %{"path" => "a"}),
         call("write_file", %{"path" => "secret/x"}),
+        call("write_file", %{"path" => "a"}),
         call("shell", %{"command" => "ls"})
       ]
 
       plan = Gate.classify("s", policy, @tmp_root, calls)
 
-      assert length(plan.auto) == 1
+      assert length(plan.auto) == 3
       assert length(plan.denied) == 1
+      assert plan.pending == []
+    end
+
+    test "an explicit ask still parks" do
+      path = Path.join(@tmp_root, "ask-shell.toml")
+      File.write!(path, "[permissions.shell]\n\"*\" = \"ask\"\n")
+      policy = Permissions.load(nil, path)
+
+      plan = Gate.classify("s", policy, @tmp_root, [call("shell", %{"command" => "ls"})])
+
       assert length(plan.pending) == 1
     end
 
@@ -83,8 +94,6 @@ defmodule CodingAgent.Core.Session.GateTest do
     end
 
     test "an escalation without a reason is its own bucket, never pending" do
-      Application.put_env(:coding_agent, :sandbox, Stub)
-
       plan =
         Gate.classify("s", policy(), @tmp_root, [
           call("shell", %{"command" => "curl x", "network" => true})

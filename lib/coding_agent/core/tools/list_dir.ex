@@ -1,24 +1,30 @@
 defmodule CodingAgent.Core.Tools.ListDir do
   @moduledoc """
-  Read-only directory listing tool (slice 2a).
+  Read-only directory listing tool (slice 2a; ADR 030).
+
+  The listing is a confined `ls` through `Tools.FileExec`; the profile
+  decides what exists to be listed. Names are emitted one per line with
+  directories marked by a trailing slash — the shape the previous BEAM
+  implementation produced, so the model-visible contract is unchanged.
   """
 
-  alias CodingAgent.Core.Containment
   alias CodingAgent.Core.Tools
+
+  @timeout_secs 30
 
   @spec tool(Tools.scope()) :: ReqLLM.Tool.t()
   def tool(scope) do
     ReqLLM.Tool.new!(
       name: "list_dir",
       description:
-        "List the entries of a directory inside the session scope. " <>
+        "List the entries of a directory. " <>
           "Returns names, one per line, directories marked with a trailing slash.",
       parameter_schema: [
         path: [
           type: :string,
           required: false,
           default: ".",
-          doc: "Relative or absolute path within the session scope"
+          doc: "Directory to list (relative paths resolve against the session scope root)"
         ]
       ],
       callback: fn args -> execute(scope, args) end
@@ -28,28 +34,15 @@ defmodule CodingAgent.Core.Tools.ListDir do
   defp execute(scope, args) do
     path = Map.get(args, :path) || Map.get(args, "path") || "."
 
-    with :ok <- Containment.check_scope!(scope, path),
-         {:ok, entries} <- do_list(scope, path) do
-      {:ok, entries}
-    end
-  end
+    # `-p` marks directories with a trailing slash (POSIX); `-1` forces
+    # one name per line even when stdout is not a tty. `FileExec.list/4`
+    # adds `--` before the path, so a name starting with `-` is safe.
+    case Tools.FileExec.list(scope, path, ["-1", "-p"], @timeout_secs) do
+      {:ok, output} ->
+        {:ok, output |> String.split("\n", trim: true) |> Enum.sort() |> Enum.join("\n")}
 
-  defp do_list(scope, path) do
-    dir = Path.expand(path, Path.expand(scope.root))
-
-    case File.ls(dir) do
-      {:ok, entries} ->
-        lines =
-          entries
-          |> Enum.sort()
-          |> Enum.map(fn entry ->
-            if File.dir?(Path.join(dir, entry)), do: entry <> "/", else: entry
-          end)
-
-        {:ok, Enum.join(lines, "\n")}
-
-      {:error, reason} ->
-        Tools.error("cannot list #{path}: #{:file.format_error(reason)}")
+      {:error, message} ->
+        Tools.error("cannot list #{path}: #{message}")
     end
   end
 end

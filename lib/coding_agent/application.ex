@@ -35,13 +35,11 @@ defmodule CodingAgent.Application do
     Supervisor.start_link(children, strategy: :one_for_one, name: CodingAgent.Supervisor)
   end
 
-  # Startup sandbox check (ADR 015). The configured implementation may be
-  # confining (bwrap) but unusable on this machine — no binary, or
-  # unprivileged user namespaces disabled by host hardening. We do not
-  # abort: the effective implementation falls back to Sandbox.None, and
-  # because `Sandbox.confines?/0` is then false the gate keeps asking for
-  # every shell/git call, i.e. the pre-ADR-015 behaviour. The check is
-  # purely so the condition is not silent.
+  # Startup sandbox check (ADR 015/030). This is a DIAGNOSTIC, not the
+  # guard: the guard is session start (`Session.init/1`), which refuses
+  # when `Sandbox.confines?/0` is false. The app itself still boots, so
+  # the store/picker stay usable and the refusal surfaces with a readable
+  # reason on the first session start.
   defp check_sandbox do
     case CodingAgent.Core.Sandbox.diagnose() do
       :ok ->
@@ -49,8 +47,8 @@ defmodule CodingAgent.Application do
 
       {:error, reason} ->
         Logger.warning(
-          "sandbox: confinement requested but unavailable — running unconfined " <>
-            "(shell/git will ask for approval). Reason: #{reason}"
+          "sandbox: confinement requested but unavailable — sessions will refuse " <>
+            "to start. Reason: #{reason}"
         )
     end
   end

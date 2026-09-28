@@ -16,16 +16,18 @@ defmodule CodingAgent.Core.Session.Gate do
     * `:auto` — `allow`: executed without a prompt;
     * `:pending` — `ask`: the session parks until `decide/2`.
 
-  `decision/4` is the one production policy path. The class default
-  yields to confinement only when there is NO explicit entry: an
-  explicit `allow`/`ask`/`deny` is the user's own choice and always
-  wins. `Permissions` answers the pure-policy question (explicit entry,
-  else a supplied fallback), and this module supplies the confinement
-  fallback — so there is no second policy lookup implementation.
+  `decision/4` is the one production policy path. Since ADR 030 a
+  session only exists under a confining sandbox, so `shell`/`git` are
+  allow-by-default: the confinement fallback no longer depends on a
+  runtime probe. An explicit `allow`/`ask`/`deny` entry is the user's
+  own choice and always wins; an escalation (`network`/`git_write`)
+  still asks, because it widens the profile the agent stated it needs.
+  `Permissions` answers the pure-policy question (explicit entry, else a
+  supplied fallback), and this module supplies the confinement fallback
+  — so there is no second policy lookup implementation.
   """
 
   alias CodingAgent.Core.Permissions
-  alias CodingAgent.Core.Sandbox
   alias CodingAgent.Core.ToolCall
   alias CodingAgent.Core.Tools.Shell
 
@@ -79,15 +81,14 @@ defmodule CodingAgent.Core.Session.Gate do
   @doc """
   The gate decision for one call. Delegates the policy lookup to
   `Permissions.effective/4`, supplying the confinement fallback for the
-  no-explicit-entry case (ADR 015).
+  no-explicit-entry case (ADR 015/030).
   """
   @spec decision(Permissions.t(), String.t() | nil, String.t(), term()) :: Permissions.decision()
   def decision(policy, scope_root, name, args) do
     tool = tool_name(name)
     rel_path = call_rel_path(scope_root, args)
-    fallback = if confinement_allows?(tool, args), do: :allow, else: Permissions.default_for(tool)
 
-    Permissions.effective(policy, tool, rel_path, fallback: fallback)
+    Permissions.effective(policy, tool, rel_path, fallback: fallback_for(tool, args))
   end
 
   @doc "The result for an explicit-policy-denied call."
@@ -161,25 +162,22 @@ defmodule CodingAgent.Core.Session.Gate do
 
   def call_rel_path(_scope_root, _args), do: ""
 
-  # An explicit policy entry (allow/ask/deny) always wins: the user's own
-  # choice is never overridden. Only the CLASS DEFAULT `ask` for `shell`
-  # yields to confinement — when a real sandbox is active, shell is
-  # allow-by-default inside the profile. Two escalations re-enable the
-  # prompt even then: the agent asking for the network, or for git write
-  # (coarse booleans it states, never inferred from command text).
-  defp confinement_allows?("shell", args) do
-    Sandbox.confines?() and not Shell.escalated?(args)
+  # The confinement fallback (ADR 030). A session only exists when a
+  # confining sandbox is active (`Session.init/1`), so `shell`/`git` are
+  # allow-by-default here — with one exception: a stated escalation
+  # (network / git_write) widens the profile and therefore re-enables the
+  # prompt. An explicit policy entry always wins over this fallback
+  # (`Permissions.effective/4`).
+  defp fallback_for("shell", args) do
+    if Shell.escalated?(args), do: :ask, else: :allow
   end
 
-  # git always runs with `.git` writable and confines the process, so it
-  # is allow-by-default under a real sandbox. No escalations: the network
-  # stays off and the scope is the only writable tree. A user who wants
-  # every git call reviewed writes `[permissions.git] "*" = "ask"`.
-  defp confinement_allows?("git", _args) do
-    Sandbox.confines?()
-  end
+  # git always runs with `.git` writable inside the profile; no
+  # escalations. A user who wants every git call reviewed writes
+  # `[permissions.git] "*" = "ask"`.
+  defp fallback_for("git", _args), do: :allow
 
-  defp confinement_allows?(_tool, _args), do: false
+  defp fallback_for(tool, _args), do: Permissions.default_for(tool)
 
   defp tool_name(name) when is_binary(name), do: name
   defp tool_name(other), do: to_string(other)

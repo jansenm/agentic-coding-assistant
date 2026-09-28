@@ -11,14 +11,18 @@ defmodule CodingAgent.Core.Sandbox do
   Two implementations:
 
     * `CodingAgent.Core.Sandbox.None` — `{:ok, "/bin/sh", ["-c", command]}`,
-      i.e. today's behaviour exactly. The no-op fallback for platforms
-      without an available sandbox (macOS, Windows, hardened Linux hosts).
-    * `CodingAgent.Core.Sandbox.Bwrap` — bubblewrap on Linux.
+      the deliberately-unconfined no-op. ADR 030: a **test seam and an
+      explicit opt-out**, never an automatic fallback.
+    * `CodingAgent.Core.Sandbox.Bwrap` — bubblewrap on Linux, the shipped
+      default.
 
   Selection mirrors `CodingAgent.Core.Providers.resolve/2`: the
-  implementation is data (`:sandbox` application env), defaulting to the
-  no-op so behaviour is unchanged until a sandbox is deliberately
-  enabled.
+  implementation is data (`:sandbox` application env). When the configured
+  implementation is confining but cannot run on this machine, there is
+  **no silent fallback to `None`** (ADR 030): `wrap/2` returns
+  `{:error, {:sandbox_unavailable, reason}}`, `diagnose/0` reports why,
+  and a session refuses to start (`refusal_message/0`). An explicitly
+  configured `None` still runs unconfined — that is the deliberate seam.
   """
 
   @typedoc """
@@ -56,7 +60,36 @@ defmodule CodingAgent.Core.Sandbox do
   #     into a shell string would make them injectable (`["-m", "x; rm
   #     -rf /"]`), so the sandbox must not introduce a shell around a
   #     list that was never one.
-  @type spec :: {:shell, String.t()} | {:exec, String.t(), [String.t()]}
+  #   * {:stdin, count, spec} — feed exactly `count` bytes to the inner
+  #     spec's standard input (ADR 030: `write_file` writes through a
+  #     confined process). A port cannot signal EOF, so the wrapper pipes
+  #     `{ head -c <count>; }` into the inner command: the reader exits
+  #     after exactly `count` bytes, which closes the pipe and gives the
+  #     inner process its EOF. `count` is an integer we computed, never
+  #     agent input.
+  @type spec ::
+          {:shell, String.t()}
+          | {:exec, String.t(), [String.t()]}
+          | {:stdin, non_neg_integer(), spec()}
+
+  @doc false
+  # The unconfined stdin wrapper shared by `Sandbox.None` and the test
+  # double: a shell pipeline feeding exactly `count` bytes, then closing
+  # the pipe (that close is the inner process's EOF). The exec form keeps
+  # its argv as positional parameters, so a path with spaces or quotes is
+  # never re-parsed by the shell.
+  @spec stdin_command(non_neg_integer(), spec()) ::
+          {:ok, String.t(), [String.t()]} | {:error, term()}
+  def stdin_command(count, {:shell, command}) when is_binary(command) do
+    {:ok, "/bin/sh", ["-c", "head -c #{count} | " <> command]}
+  end
+
+  def stdin_command(count, {:exec, file, args}) when is_binary(file) and is_list(args) do
+    case System.find_executable(file) do
+      nil -> {:error, {:executable_not_found, file}}
+      exe -> {:ok, "/bin/sh", ["-c", ~s(head -c #{count} | exec "$@"), "sh", exe | args]}
+    end
+  end
 
   @doc "Stable identifier for the implementation."
   @callback id() :: atom()
@@ -105,22 +138,32 @@ defmodule CodingAgent.Core.Sandbox do
   end
 
   @doc """
-  The effective sandbox implementation: the configured module when it is
-  usable, otherwise `#{inspect(@none)}`.
+  The effective sandbox implementation, or `nil` when the configured one
+  cannot run on this machine.
 
-  A confining implementation that is not available on this machine (no
-  `bwrap`, disabled user namespaces) falls back to the no-op, so a shell
-  call never fails at runtime merely because confinement is impossible —
-  it runs unconfined, and `confines?/0` is false so the gate keeps asking.
+  ADR 030 removed the silent fallback to `#{inspect(@none)}`: an
+  unavailable confining implementation yields `nil`, so callers must
+  refuse rather than run unconfined. An explicitly configured `None` (the
+  test seam / deliberate opt-out) is honored and returned as-is.
   """
-  @spec impl() :: module()
+  @spec impl() :: module() | nil
   def impl do
     module = configured()
-
-    (usable?(module) && module) || @none
+    if usable_module?(module), do: module
   end
 
-  defp usable?(module) when is_atom(module) and not is_nil(module) do
+  @doc """
+  Whether a configured implementation can be used on this machine
+  (ADR 030). False when the configured implementation is missing/invalid
+  or is confining but unavailable; true for an explicit, deliberately
+  unconfined implementation (`None`).
+  """
+  @spec usable?() :: boolean()
+  def usable? do
+    impl() != nil
+  end
+
+  defp usable_module?(module) when is_atom(module) and not is_nil(module) do
     cond do
       # A non-confining implementation (None) has nothing to check.
       not exports?(module, :confines?, 0) -> true
@@ -131,7 +174,7 @@ defmodule CodingAgent.Core.Sandbox do
     end
   end
 
-  defp usable?(_), do: false
+  defp usable_module?(_), do: false
 
   # `function_exported?/3` does not load a module, and `Code.ensure_loaded?/1`
   # only succeeds for modules on the code path — but an in-memory module (a
@@ -145,22 +188,22 @@ defmodule CodingAgent.Core.Sandbox do
   defp module_loaded?(module), do: :erlang.module_loaded(module) != false
 
   @doc """
-  Whether the *effective* implementation confines (ADR 015). This is the
-  gate's question: `shell`/`git` may be allow-by-default only when it is
-  true.
+  Whether the *effective* implementation confines (ADR 015/030). An
+  unusable configuration confines nothing.
   """
   @spec confines?() :: boolean()
   def confines? do
-    impl = impl()
-
-    exports?(impl, :confines?, 0) and impl.confines?()
+    case impl() do
+      nil -> false
+      impl -> exports?(impl, :confines?, 0) and impl.confines?()
+    end
   end
 
   @doc """
   A startup diagnostic for the configured sandbox: `:ok` when it is the
   no-op or the confining implementation works, `{:error, reason}` when a
   confining implementation was requested but cannot run, with a
-  human-readable reason. The caller logs it and continues on the fallback.
+  human-readable reason.
   """
   @spec diagnose() :: :ok | {:error, String.t()}
   def diagnose do
@@ -185,12 +228,34 @@ defmodule CodingAgent.Core.Sandbox do
   end
 
   @doc """
+  The message a session start refuses with when no usable sandbox is
+  configured (ADR 030). Names the missing piece and the way out.
+  """
+  @spec refusal_message() :: String.t()
+  def refusal_message do
+    reason =
+      case diagnose() do
+        :ok -> "no usable sandbox implementation is configured"
+        {:error, reason} -> reason
+      end
+
+    "no usable sandbox: #{reason}. " <>
+      "Install bubblewrap and enable unprivileged user namespaces, or set " <>
+      "`sandbox: CodingAgent.Core.Sandbox.None` explicitly to run unconfined."
+  end
+
+  @doc """
   Wraps `command` as a shell command with the active implementation.
+  Refuses (`{:error, {:sandbox_unavailable, message}}`) when no usable
+  implementation is configured — never runs unconfined.
   """
   @spec wrap(spec(), profile()) ::
           {:ok, String.t(), [String.t()]} | {:error, term()}
   def wrap(spec, profile) do
-    impl().wrap(spec, profile)
+    case impl() do
+      nil -> {:error, {:sandbox_unavailable, refusal_message()}}
+      impl -> impl.wrap(spec, profile)
+    end
   end
 
   @doc "Convenience: wrap a shell command string."
