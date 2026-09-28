@@ -255,6 +255,10 @@ defmodule CodingAgent.UI.Tui do
       # index: i, selected: [j], custom: nil|buf} while the agent waits for
       # an answer; a wizard, one question per screen
       question_prompt: nil,
+      # the model's todo list (ADR 031), mirrored from the session for the
+      # sidebar's fourth block; seeded on mount, updated by
+      # {:todos_updated, todos}. Empty = the block is not painted.
+      todos: [],
       # subagent tabs (ADR 018): child_id => child state (identity,
       # transcript, stream, finished?). The live band names the leaf of
       # the active delegation. Empty until a `task` call starts a child.
@@ -502,6 +506,9 @@ defmodule CodingAgent.UI.Tui do
         budget_prompt: budget_prompt,
         doom_prompt: doom_prompt,
         question_prompt: question_prompt,
+        # the model's todo list (ADR 031), mirrored for the sidebar's
+        # fourth block; a resumed session shows the list it had
+        todos: session_todos(effective_id),
         last_error: nil,
         # 0 = follow the tail (auto-scroll); >0 = pinned N lines up
         scroll_offset: 0,
@@ -2802,6 +2809,13 @@ defmodule CodingAgent.UI.Tui do
     {:noreply, %{state | transcript: state.transcript ++ [{:info, "· context compacted"}]}}
   end
 
+  # The model updated its todo list (ADR 031): mirror it for the sidebar's
+  # fourth block. The session has already stored it; the UI holds a copy
+  # so the render path never calls into the session per frame.
+  def handle_info({:agent, {:todos_updated, todos}}, state) do
+    {:noreply, %{touch(state) | todos: todos}}
+  end
+
   # A `task` call started a child session (ADR 017/018). The child's own
   # events arrive on the child's channel; the parent event just tells the
   # UI a delegation is live, so the live band and sidebar can name the
@@ -4158,11 +4172,13 @@ defmodule CodingAgent.UI.Tui do
       Styles.section_header("ctrl-x p hides panel", :sidebar)
     ]
 
+    todo_lines = todo_section(Map.get(state, :todos, []))
+
     lines =
       [Styles.heading(scope_name(Map.get(state, :scope_root)), :sidebar), Styles.gap()] ++
         Styles.definition_list(identity, :sidebar) ++
         [Styles.gap()] ++
-        Styles.definition_list(stats, :sidebar) ++ cost_line ++ help
+        Styles.definition_list(stats, :sidebar) ++ cost_line ++ todo_lines ++ help
 
     %Paragraph{
       text: lines,
@@ -4175,6 +4191,29 @@ defmodule CodingAgent.UI.Tui do
       block: Styles.panel(borders: [:right], surface: :sidebar)
     }
   end
+
+  # The sidebar's TODO block (ADR 031): a gap, a muted "todo" header, then
+  # one row per item. Empty when there is no list, so a session that never
+  # plans gains no chrome. A long list is capped (the panel height stays
+  # bounded) with an overflow line naming the hidden count.
+  @todo_cap 8
+
+  defp todo_section([]), do: []
+
+  defp todo_section(todos) when is_list(todos) do
+    shown = Enum.take(todos, @todo_cap)
+
+    overflow =
+      case length(todos) - @todo_cap do
+        n when n > 0 -> [Styles.section_header("… +#{n} more", :sidebar)]
+        _ -> []
+      end
+
+    [Styles.gap(), Styles.section_header("todo", :sidebar)] ++
+      Styles.todo_lines(shown, @sidebar_width - 4, :sidebar) ++ overflow
+  end
+
+  defp todo_section(_), do: []
 
   # The identity rows for the agent slot (B4/ADR 018). While a turn is IN
   # FLIGHT, running and next are BOTH shown so they can differ (Tab only
@@ -4270,6 +4309,15 @@ defmodule CodingAgent.UI.Tui do
   defp session_turn_agents(id) do
     case Session.state(id) do
       {:ok, %{turn_agents: agents}} when is_list(agents) -> agents
+      _ -> []
+    end
+  end
+
+  # The model's todo list (ADR 031), mirrored for the sidebar. Empty for a
+  # fresh session and safe for snapshots that predate the field.
+  defp session_todos(id) do
+    case Session.state(id) do
+      {:ok, %{todos: todos}} when is_list(todos) -> todos
       _ -> []
     end
   end

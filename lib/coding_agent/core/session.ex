@@ -187,6 +187,8 @@ defmodule CodingAgent.Core.Session do
       doom_pause: state.doom_pause,
       # a question pause is durable too (ADR 027)
       question_pause: state.question_pause,
+      # the model's todo list is durable (ADR 031)
+      todos: state.todos,
       # subagent seams (ADR 017/018): a resumed primary keeps depth 0;
       # a resumed child would too (children are ephemeral and not resumed)
       depth: state.depth,
@@ -519,6 +521,8 @@ defmodule CodingAgent.Core.Session do
        doom_pause: Keyword.get(opts, :doom_pause),
        # a resumed question pause re-offers too (ADR 027)
        question_pause: Keyword.get(opts, :question_pause),
+       # the model's todo list survives a resume (ADR 031)
+       todos: Keyword.get(opts, :todos, []),
        test_mode: test_mode,
        turn_runner: turn_runner,
        subagent_runner: subagent_runner
@@ -1606,7 +1610,15 @@ defmodule CodingAgent.Core.Session do
   defp execute_round(state, calls, answered \\ []) do
     q_calls = question_calls(calls)
     t_calls = task_calls(calls)
-    answerable = Enum.reject(calls, &(&1 in q_calls or &1 in t_calls))
+    d_calls = todo_calls(calls)
+
+    answerable =
+      Enum.reject(calls, &(&1 in q_calls or &1 in t_calls or &1 in d_calls))
+
+    # A `todowrite` call mutates session state, not the filesystem, and
+    # never parks (ADR 031). Apply it up front so the round's sibling
+    # calls and the next request see the new list.
+    {state, todo_results} = apply_todos(state, d_calls)
 
     plan = Gate.classify(state.id, state.policy, state.scope_root, answerable)
 
@@ -1623,11 +1635,12 @@ defmodule CodingAgent.Core.Session do
       end)
 
     # Results already decided for this round, before any human input, plus
-    # the question answers.
+    # the question answers and the todo updates.
     known_calls = plan.blacklisted ++ plan.no_reason ++ plan.denied
 
     known_results =
       answered ++
+        todo_results ++
         blacklist_results ++
         no_reason_results ++ Enum.map(plan.denied, &Gate.denied_result/1)
 
@@ -1652,7 +1665,7 @@ defmodule CodingAgent.Core.Session do
 
         broadcast_tools(
           state,
-          known_calls ++ t_calls ++ plan.auto ++ plan.pending ++ q_calls,
+          known_calls ++ t_calls ++ plan.auto ++ plan.pending ++ q_calls ++ d_calls,
           results
         )
 
@@ -1662,15 +1675,16 @@ defmodule CodingAgent.Core.Session do
       plan.pending == [] ->
         auto_results = execute_tools(state, plan.auto)
         results = known_results ++ task_results ++ auto_results
-        broadcast_tools(state, known_calls ++ t_calls ++ plan.auto ++ q_calls, results)
+        broadcast_tools(state, known_calls ++ t_calls ++ plan.auto ++ q_calls ++ d_calls, results)
         state = complete_round(state, calls, results)
         finish_round(state)
 
       true ->
         # SOME call needs a human. The exchange is appended atomically
         # only once the whole round is decided, so nothing half-formed
-        # ever reaches the wire. The auto/denied/question/task results
-        # computed now are carried in state across the pause (and a resume).
+        # ever reaches the wire. The auto/denied/question/task/todo
+        # results computed now are carried in state across the pause (and
+        # a resume).
         auto_results = execute_tools(state, plan.auto)
 
         state = %{
@@ -1683,7 +1697,7 @@ defmodule CodingAgent.Core.Session do
 
         broadcast_tools(
           state,
-          known_calls ++ t_calls ++ plan.auto,
+          known_calls ++ t_calls ++ plan.auto ++ d_calls,
           known_results ++ task_results ++ auto_results
         )
 
@@ -1691,6 +1705,60 @@ defmodule CodingAgent.Core.Session do
         persist(state)
         {state, {:ok, state}}
     end
+  end
+
+  # The `todowrite` calls in a round (ADR 031). Like `question`/`task`,
+  # they are intercepted before the gate: they mutate session state, not
+  # the filesystem, and never park.
+  defp todo_calls(calls) do
+    Enum.filter(calls, fn call ->
+      {_id, name, _args} = ToolCall.normalize(call)
+      name == CodingAgent.Core.Tools.TodoWrite.name()
+    end)
+  end
+
+  # Applies each todo call (the LAST one wins, as a full replace) and
+  # returns the updated state plus one result per call. A malformed call
+  # is an error result the model can correct; it changes nothing. The
+  # list is broadcast so the TUI sidebar repaints.
+  defp apply_todos(state, []), do: {state, []}
+
+  defp apply_todos(state, d_calls) do
+    {state, results} =
+      Enum.reduce(d_calls, {state, []}, fn call, {state, acc} ->
+        {id, _name, args} = ToolCall.normalize(call)
+
+        case CodingAgent.Core.Tools.TodoWrite.parse(args) do
+          {:ok, todos} ->
+            broadcast(state, {:todos_updated, todos})
+
+            result = %{
+              id: id,
+              name: CodingAgent.Core.Tools.TodoWrite.name(),
+              content: todo_summary(todos)
+            }
+
+            {%{state | todos: todos}, [result | acc]}
+
+          {:error, reason} ->
+            result = %{
+              id: id,
+              name: CodingAgent.Core.Tools.TodoWrite.name(),
+              content: "error: #{reason}"
+            }
+
+            {state, [result | acc]}
+        end
+      end)
+
+    {state, Enum.reverse(results)}
+  end
+
+  defp todo_summary([]), do: "Cleared the todo list."
+
+  defp todo_summary(todos) do
+    open = Enum.count(todos, &(&1["status"] != "completed"))
+    "Updated the todo list (#{length(todos)} items, #{open} open)."
   end
 
   # The `task` (subagent) calls in a round. Like `question`, they are
@@ -1996,6 +2064,7 @@ defmodule CodingAgent.Core.Session do
         |> put_reasoning_effort(state.reasoning_effort)
 
       context = Prompt.with_environment(context, model, state.scope_root)
+      context = Prompt.with_todos(context, state.todos)
       {:ok, model_input, opts, context}
     end
   end

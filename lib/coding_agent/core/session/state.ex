@@ -29,6 +29,14 @@ defmodule CodingAgent.Core.Session.State do
     # so a model switch recomposes from it, and a resume carries it.
     # nil means "use the per-model prompt file".
     prompt_override: nil,
+    # The model's todo list (ADR 031): a list of
+    # `%{"content" => ..., "status" => "pending" | "in_progress" | "completed"}`
+    # (maps with string keys, as they arrive from the tool arguments).
+    # `todowrite` REPLACES the whole list each call; the session never
+    # edits it. Injected into every request (Prompt.with_todos/2) and
+    # rendered by the TUI sidebar. Durable: it round-trips in the store's
+    # state BLOB, so there is no migration.
+    todos: [],
     # Sandbox mount schema (ADR 015): %{rw: [...], ro: [...], hide: [...]}.
     # Read from UserConfig layers at start (rw only from shipped+global,
     # never the project layer). Empty means "no extra mounts".
@@ -157,6 +165,7 @@ defmodule CodingAgent.Core.Session.State do
           base_policy: CodingAgent.Core.Permissions.t() | nil,
           base_prompt: String.t() | nil,
           prompt_override: String.t() | nil,
+          todos: [map()],
           pending_tool_calls: [map()],
           pending_round_calls: [map()],
           pending_round_results: [map()],
@@ -281,6 +290,8 @@ defmodule CodingAgent.Core.Session.State do
       interactive: false,
       # per-turn agent attribution (old snapshots lack it)
       turn_agents: Map.get(state, :turn_agents, []),
+      # the model's todo list (ADR 031); old snapshots lack it
+      todos: Map.get(state, :todos, []),
       # nested structs: heal the Elixir 1.20 missing-default trap one
       # level down (see above)
       policy: heal(state.policy, CodingAgent.Core.Permissions),

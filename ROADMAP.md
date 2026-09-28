@@ -47,9 +47,9 @@ post-milestone:
   with git as the undo mechanism.
 
 Explicitly *not* needed for the milestone: webfetch, websearch, lsp,
-skills execution, todowrite, question — see "Later". (Webfetch (ADR 013)
-and question (ADR 027) have since shipped anyway; dogfood showed the
-need.)
+skills execution, todowrite, question — see "Later". (Webfetch (ADR 013),
+question (ADR 027) and todowrite (ADR 031) have since shipped anyway;
+dogfood showed the need.)
 
 ## Decided
 
@@ -509,7 +509,7 @@ TUI wish-list (user's own list, keyboard-first, from the live sessions):
 | `lsp` | unlikely | language-server surface is huge; compile/test loop covers most agent needs |
 | `skill` | ADR 007 territory | frontmatter loading documented in configuration-landscape; execution later |
 | `task` (subagent) | `task` ✅ (6b) | isolated child context, summary-only return, depth 1 (ADR 017/018). Shipped 2026-09-25; per-subagent tabs, parallel cap and esc forwarding shipped the same day (ADR 018 Amendment (ii)) |
-| `todowrite` | one day | session scratchpad, pure state, cheap — after dogfood |
+| `todowrite` | ✅ (ADR 031) | the model's durable plan: full-list replace, session state (no migration), injected into every request, rendered as a sidebar block. Shipped 2026-09-28 |
 | background shell runs | one day | the real escape hatch for very long jobs: tool returns "started, job id", agent polls / gets notified, user keeps working; needs session+TUI machinery (phases 3-4) — v1 answer is generous `timeout_secs` |
 | mid-tool hard cancel | one day | `Core.Interrupt` stops a running turn between tools/at loop boundaries, but a single long `shell` still runs to its timeout (up to 1800 s). Needs `Shell` to expose a registered port-kill handle (same `Interrupt.register/2` seam) so esc kills the in-flight command |
 | runtime introspection (BEAM) | one day | the Elixir-native cousin of Tidewave's runtime tools (Dashbit; requires a hosted Phoenix app — not our path): eval-in-node (gated always-ask like shell), process/supervisor state, ETS inspection. Valuable once the agent debugs its own runtime; also a reason to keep an eye on ACP as the interop layer |

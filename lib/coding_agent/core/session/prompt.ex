@@ -16,6 +16,9 @@ defmodule CodingAgent.Core.Session.Prompt do
     * the **environment block** (`environment/2`) — the model id, the
       working directory, the platform, the date. Baking that into the
       stored prompt would make it stale and non-cacheable;
+    * the **todo block** (`with_todos/2`, ADR 031) — the model's current
+      list, rebuilt from session state per call so compaction cannot eat
+      it;
     * the model selection that chose layer 1. A model switch recomposes
       the prefix (see `Session`), so the framework prompt follows the
       model the next turn will actually use.
@@ -149,8 +152,50 @@ defmodule CodingAgent.Core.Session.Prompt do
   @spec with_environment(ReqLLM.Context.t(), String.t() | nil, String.t() | nil) ::
           ReqLLM.Context.t()
   def with_environment(context, model, scope_root) do
-    block = environment(model, scope_root)
+    append_system_block(context, environment(model, scope_root))
+  end
 
+  @doc """
+  Appends the model's current todo list to the system message of
+  `context`, returning a context for ONE call (ADR 031). An empty list
+  adds nothing, so a session that never plans sends an unchanged
+  request.
+
+  This is the channel that survives compaction: the list is not an old
+  message that can be summarized away, it is rebuilt from live session
+  state on every request — the same reason the environment block is
+  per-call (ADR 024).
+  """
+  @spec with_todos(ReqLLM.Context.t(), [map()]) :: ReqLLM.Context.t()
+  def with_todos(context, todos) do
+    case todos_block(todos) do
+      nil -> context
+      block -> append_system_block(context, block)
+    end
+  end
+
+  # The todo block for the system prompt, or nil when there is no list.
+  # Plain `[status] content` lines: the sidebar owns glyphs and color.
+  @spec todos_block([map()]) :: String.t() | nil
+  def todos_block([]), do: nil
+
+  def todos_block(todos) when is_list(todos) do
+    items =
+      Enum.map_join(todos, "\n", fn todo ->
+        status = todo["status"] || todo[:status] || "pending"
+        content = todo["content"] || todo[:content] || ""
+        "- [#{status}] #{content}"
+      end)
+
+    "Current todo list (maintained with `todowrite`; send the complete list to update):\n" <>
+      items
+  end
+
+  def todos_block(_), do: nil
+
+  # Appends `block` to the system message (the first message) of
+  # `context`, one blank line between. The stored context is untouched.
+  defp append_system_block(context, block) do
     case ReqLLM.Context.to_list(context) do
       [%ReqLLM.Message{role: :system} = sys | rest] ->
         ReqLLM.Context.new([append_text(sys, block) | rest])

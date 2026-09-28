@@ -27,6 +27,7 @@ defmodule CodingAgent.Core.Tools do
   alias CodingAgent.Core.Tools.ReadFile
   alias CodingAgent.Core.Tools.Question
   alias CodingAgent.Core.Tools.Shell
+  alias CodingAgent.Core.Tools.TodoWrite
   alias CodingAgent.Core.Tools.WebFetch
   alias CodingAgent.Core.Tools.WriteFile
 
@@ -63,7 +64,10 @@ defmodule CodingAgent.Core.Tools do
       Glob.tool(scope),
       # asking is read-only, and the session intercepts the call before
       # execution (ADR 027); available to every agent including plan
-      Question.tool(scope)
+      Question.tool(scope),
+      # pure session state, intercepted before execution (ADR 031);
+      # available to every agent including plan
+      TodoWrite.tool(scope)
     ]
   end
 

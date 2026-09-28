@@ -216,6 +216,50 @@ defmodule CodingAgent.UI.Styles do
   @spec gap() :: Text.Line.t()
   def gap, do: Text.Line.new([Text.Span.new("", style: %Style{})])
 
+  @doc """
+  One line per todo (ADR 031): a status glyph and the item's content,
+  truncated to `max_width` columns with an ellipsis.
+
+  Status is stated once and colours both the glyph and the text: a
+  completed item is `:muted` (done, de-emphasised), the in-progress item
+  carries the `:agent` role (the thing happening now), a pending item is
+  plain `:text`. The caller caps the list and appends its own overflow
+  line; this function is pure per-item layout.
+  """
+  @spec todo_lines([map()], pos_integer(), surface()) :: [Text.Line.t()]
+  def todo_lines(todos, max_width, surface \\ :base) when is_list(todos) do
+    Enum.map(todos, fn todo ->
+      status = todo["status"] || todo[:status]
+      {glyph, role} = todo_marker(status)
+      content = todo["content"] || todo[:content] || ""
+
+      Text.Line.new([
+        Text.Span.new(glyph <> " ", style: role(role, surface)),
+        Text.Span.new(truncate(to_string(content), max(max_width - 2, 1)),
+          style: role(todo_text_role(status), surface)
+        )
+      ])
+    end)
+  end
+
+  # Geometric Unicode only, like the status badge (emoji width is
+  # unreliable and breaks the row math).
+  defp todo_marker("completed"), do: {"✔", :muted}
+  defp todo_marker("in_progress"), do: {"▸", :agent}
+  defp todo_marker(_), do: {"·", :muted}
+
+  defp todo_text_role("completed"), do: :muted
+  defp todo_text_role("in_progress"), do: :text
+  defp todo_text_role(_), do: :text
+
+  defp truncate(text, budget) do
+    if String.length(text) <= budget do
+      text
+    else
+      String.slice(text, 0, max(budget - 1, 1)) <> "…"
+    end
+  end
+
   # -- panels and headers ----------------------------------------------------
 
   @doc """

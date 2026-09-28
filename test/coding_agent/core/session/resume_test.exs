@@ -58,6 +58,11 @@ defmodule CodingAgent.Core.Session.ResumeTest do
       assert opts[:system_prompt] == "MY-OVERRIDE"
     end
 
+    test "carries the todo list (ADR 031)" do
+      todos = [%{"content" => "Ship it", "status" => "in_progress"}]
+      assert Session.resume_opts(state(todos: todos))[:todos] == todos
+    end
+
     test "restores the BASE policy, not the agent-narrowed one" do
       base = Permissions.load(nil, nil)
       narrowed = Permissions.apply_agent(base, %{disallowed_tools: ["shell"], tools: nil})
