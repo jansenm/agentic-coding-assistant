@@ -59,6 +59,7 @@ defmodule CodingAgent.UI.CommandsTest do
       :new_session => :special,
       :switch_agent => :special,
       :export => :special,
+      :undo => :special,
       :switch_session => :menu,
       :switch_model => :menu,
       :subagents => :menu,

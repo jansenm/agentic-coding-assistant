@@ -88,7 +88,11 @@ ohne confinement. Alle sieben Slices sind gelandet:
    sie gibt: `reference/cli.rst` (`mix tui`-Flags), `reference/tools.rst`
    (Tool-Schemas). Anwender-Doku = Reference (Fakten); Tutorials/How-tos
    später.
-1. **Undo/Redo via Git-Checkpoint + `/undo` (T8).**
+1. **Nächster offener Feature-Punkt.** T8 ist erledigt (ADR 036); die
+   verbleibenden T-Punkte sind T9 (`websearch`), T10 (`apply_patch`/LSP/
+   Skills/MCP/Fuzzy-Edit), T13 (verschachtelte `AGENTS.md`), T14
+   (Truncation in eine abrufbare Datei). T14 ist der kleinste,
+   T10 der größte Brocken.
 
 ## Kern-Features gegen opencode (T-Liste)
 
@@ -97,7 +101,7 @@ ohne confinement. Alle sieben Slices sind gelandet:
 | T4 | `todowrite`/Plan-Tool | **erledigt** (2026-09-28, ADR 031) |
 | T5 | `task`/Subagent inkl. Tab (ADR 017/018) | **erledigt** (2026-09-25): Seam + Tabs (Amendment (ii)) — Wire-Tagging, in-memory Tabs, Tab-Leiste/ctrl-x, Parallel-Cap |
 | T7 | Slash-Commands/Command-Palette | **erledigt** (2026-09-29, ADR 034): `/`-Palette, `/help`, `ctrl-x`-Menü aus einer Registry |
-| T8 | Undo/Redo via Git-Checkpoint + `/undo` | offen — nächste Schritte 1 |
+| T8 | Undo/Redo via Git-Checkpoint + `/undo` | **erledigt** (2026-09-29, ADR 036): Checkpoint pro Turn, `/undo` stellt Dateien wieder her |
 | T9 | `websearch` neben `webfetch` | offen (Such-API-Abhängigkeit; `webfetch` ist da) |
 | T10 | `apply_patch`, LSP, Skills, MCP — inkl. fuzzy-match-Kette für `edit` | offen; `edit` ist exakt-match-only (opencode hat 9 Fuzzy-Strategien + LSP-Diagnostik nach jedem Edit) |
 | T13 | Verschachtelte `AGENTS.md` (Monorepo) | offen; wir lesen nur den Scope-Root einmal (`ProjectMemory.load/1`) |

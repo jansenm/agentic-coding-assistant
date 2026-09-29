@@ -101,6 +101,11 @@ naming the file (ADR 014).
      - integer
      - ``5000``
      - Milliseconds to wait between provider-timeout retries (ADR 033).
+   * - ``checkpoint_depth``
+     - integer
+     - ``1``
+     - How many file checkpoints a session keeps for ``/undo`` (ADR 036).
+       ``0`` disables checkpoints.
    * - ``store``
      - string
      - *unset*

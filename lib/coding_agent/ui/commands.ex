@@ -49,6 +49,7 @@ defmodule CodingAgent.UI.Commands do
       cmd("model", "switch model", "/model [name]", :switch_model, key: "m", arg: :optional),
       cmd("agent", "switch agent", "/agent [name]", :switch_agent, arg: :optional),
       cmd("export", "export this session", "/export [md|json]", :export, arg: :optional),
+      cmd("undo", "restore files to the last checkpoint", "/undo", :undo),
       cmd("subagents", "subagents", "/subagents", :subagents, key: "a"),
       cmd("tools", "toggle tool output", "/tools", :toggle_tool_output, key: "t"),
       cmd("sidebar", "toggle sidebar", "/sidebar", :toggle_sidebar, key: "p"),

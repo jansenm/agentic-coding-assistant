@@ -65,6 +65,12 @@ defmodule CodingAgent.Core.Session.State do
     # while the human is answering. nil otherwise. The whole round is held
     # so the exchange stays atomic.
     question_pause: nil,
+    # File checkpoints for /undo (ADR 036), newest LAST: a list of
+    # `%{ref, commit, tree, index_backup, untracked, at}`. A checkpoint is
+    # written before every turn; `/undo` restores the newest and drops it,
+    # bounded by `checkpoint_depth`. Durable (the store state BLOB), so a
+    # resumed session can undo across a restart. Old snapshots heal to [].
+    checkpoints: [],
     # Subagent seams (ADR 017/018). `depth` is 0 for a primary session and
     # 1 for a delegated child; depth 1 excludes the `task` tool (bounded
     # fan-out). `subagents` is the names a `task` call may delegate to,
@@ -292,6 +298,8 @@ defmodule CodingAgent.Core.Session.State do
       turn_agents: Map.get(state, :turn_agents, []),
       # the model's todo list (ADR 031); old snapshots lack it
       todos: Map.get(state, :todos, []),
+      # file checkpoints (ADR 036); old snapshots lack them
+      checkpoints: Map.get(state, :checkpoints, []),
       # nested structs: heal the Elixir 1.20 missing-default trap one
       # level down (see above)
       policy: heal(state.policy, CodingAgent.Core.Permissions),

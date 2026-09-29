@@ -43,6 +43,7 @@ defmodule CodingAgent.Core.Session do
   require Logger
 
   alias CodingAgent.Core.Config
+  alias CodingAgent.Core.Checkpoint
   alias CodingAgent.Core.Events
   alias CodingAgent.Core.Interrupt
   alias CodingAgent.Core.Permissions
@@ -293,6 +294,17 @@ defmodule CodingAgent.Core.Session do
   """
   @spec interrupt(String.t()) :: :ok
   defdelegate interrupt(id), to: CodingAgent.Core.Interrupt, as: :request
+
+  @doc """
+  Restores the worktree to the newest checkpoint (ADR 036, `/undo`).
+  See `CodingAgent.Core.Checkpoint` for the mechanism.
+
+  Returns `{:ok, n}` where `n` is the number of checkpoints left, or
+  `{:error, :nothing_to_undo}` when the session has none. Refused while a
+  turn is in flight (`{:error, :busy}`) — undo is a boundary verb.
+  """
+  @spec undo(String.t()) :: {:ok, non_neg_integer()} | {:error, term()}
+  def undo(id), do: GenServer.call(via(id), :undo, @call_timeout)
 
   @doc """
   Supplies decisions for pending tool calls (ADR 010: approve / edit /
@@ -594,6 +606,30 @@ defmodule CodingAgent.Core.Session do
 
   @impl true
   def handle_call(:state, _from, state), do: {:reply, {:ok, state}, state}
+
+  # /undo (ADR 036): a boundary verb. Refused mid-turn (the worker would
+  # race the restore); otherwise restore the newest checkpoint, drop it,
+  # and persist.
+  def handle_call(:undo, _from, %{worker_ref: ref} = state) when is_reference(ref),
+    do: {:reply, {:error, :busy}, state}
+
+  def handle_call(:undo, _from, %{checkpoints: []} = state),
+    do: {:reply, {:error, :nothing_to_undo}, state}
+
+  def handle_call(:undo, _from, state) do
+    [cp | rest] = Enum.reverse(state.checkpoints)
+
+    case Checkpoint.restore(tool_scope(state), cp) do
+      :ok ->
+        state = %{state | checkpoints: Enum.reverse(rest)}
+        persist(state)
+        broadcast(state, {:info, "· undid the last checkpoint (files restored)"})
+        {:reply, {:ok, length(state.checkpoints)}, state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
 
   def handle_call({:set_id, new_id}, _from, state) do
     {:reply, :ok, struct!(state, id: new_id)}
@@ -1151,6 +1187,12 @@ defmodule CodingAgent.Core.Session do
     # aligned with real turns, one entry per user prompt.
     agent = if state.agent, do: state.agent.name, else: nil
 
+    # Checkpoint the worktree before the turn can write anything (ADR
+    # 036). Runs in the SESSION process (synchronous), before the worker
+    # starts: a snapshot taken any later could already contain the turn's
+    # own edits. A read-only or non-git scope is a no-op.
+    state = take_checkpoint(state)
+
     # the loop guard is PER TURN: the counter previously only reset in
     # the debug path, so it accumulated across a session's lifetime —
     # found live: the review session died at the 25-round limit after
@@ -1174,6 +1216,39 @@ defmodule CodingAgent.Core.Session do
     broadcast(state, {:turn_started, agent})
     broadcast(state, {:status_changed, :running})
     state
+  end
+
+  # -- File checkpoints (ADR 036) ---------------------------------------------
+
+  # Snapshot the worktree before a turn and keep the newest
+  # `checkpoint_depth` checkpoints. Best effort: a snapshot failure must
+  # never block the turn (the human can always fall back to git); it is
+  # logged, not raised.
+  defp take_checkpoint(state) do
+    depth = Config.checkpoint_depth(state.scope_root)
+
+    cond do
+      depth == 0 or state.test_mode or state.depth > 0 ->
+        state
+
+      true ->
+        previous = state.checkpoints |> List.last() |> then(&(&1 && &1.commit))
+
+        case Checkpoint.snapshot(tool_scope(state), state.id, previous) do
+          {:ok, cp} ->
+            kept = Enum.take(state.checkpoints ++ [cp], -depth)
+            dropped = (state.checkpoints ++ [cp]) |> Enum.drop(-depth)
+            Enum.each(dropped, &Checkpoint.drop(tool_scope(state), &1))
+            %{state | checkpoints: kept}
+
+          :skip ->
+            state
+
+          {:error, reason} ->
+            Logger.warning("checkpoint failed for #{state.id}: #{inspect(reason)}")
+            state
+        end
+    end
   end
 
   # Starts the worker under the turn supervisor and returns the monitor

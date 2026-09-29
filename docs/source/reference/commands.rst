@@ -35,6 +35,11 @@ by ``test/coding_agent/ui/commands_test.exs`` and
    * - ``/export [md|json]``
      - Write this session as a transcript (default ``md``).
      -
+   * - ``/undo``
+     - Restore the working tree to the checkpoint taken before the last
+       turn (files only; the conversation is kept). Repeated ``/undo``
+       goes further back, up to ``checkpoint_depth``.
+     -
    * - ``/subagents``
      - Open a subagent tab.
      - ``ctrl-x a``

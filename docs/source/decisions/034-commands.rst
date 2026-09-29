@@ -15,8 +15,8 @@ Slash commands: one registry for dispatch, help and the reference
    the composer, backed by ONE command registry
    (``CodingAgent.UI.Commands``) that also feeds the ``ctrl-x`` menu,
    ``/help`` and the reference page, so dispatch, help and docs cannot
-   drift. ``/undo`` is deferred (its machinery does not exist yet); the
-   rest of the action set (including ``/new``) is wired.
+   drift. The action set (including ``/new``) is wired; ``/undo`` joined
+   later with ADR 036.
 
 Context
 -------
@@ -114,10 +114,9 @@ Consequences
 Open questions
 --------------
 
-1. **``/undo``.** ``/undo`` (git checkpoint, T8) is listed in the TODO's
-   target set but depends on machinery not built yet (undo does not
-   exist). It joins the registry when its action exists; the registry is
-   not the place to invent it.
+1. **``/undo``.** Shipped as a command (ADR 036, 2026-09-29) once the
+   checkpoint machinery existed — the registry gained a record, not a
+   new mechanism.
 2. **User-defined commands.** opencode lets commands come from Markdown
    files. Deferred: it needs a prompt-template mechanism and a trust
    story. The registry shape (``name``/``summary``/``usage``/``run``)

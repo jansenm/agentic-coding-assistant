@@ -234,6 +234,14 @@ defmodule CodingAgent.Core.ConfigTest do
       assert Config.provider_retries(snapshot) == 3
     end
 
+    test "checkpoint depth defaults to 1 and honors config.toml" do
+      assert Config.checkpoint_depth(%Config{config: %{}}) == 1
+      assert Config.checkpoint_depth(%Config{config: %{"checkpoint_depth" => 0}}) == 0
+      assert Config.checkpoint_depth(%Config{config: %{"checkpoint_depth" => 5}}) == 5
+      # non-positive is allowed (0 disables); only non-integers fall through
+      assert Config.checkpoint_depth(%Config{config: %{"checkpoint_depth" => "x"}}) == 1
+    end
+
     test "the no-model message names the user config path" do
       assert Config.no_model_message() =~ UserConfig.global_dir()
       assert Config.no_model_message() =~ "AGENT_MODEL"

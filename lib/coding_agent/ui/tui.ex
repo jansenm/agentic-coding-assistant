@@ -2318,6 +2318,20 @@ defmodule CodingAgent.UI.Tui do
 
   defp run_command_action(:export, [], state), do: export_current(state, "md")
 
+  # /undo (ADR 036): restore the worktree to the newest checkpoint. The
+  # session refuses mid-turn; report the outcome in the composer note.
+  defp run_command_action(:undo, _args, state) do
+    state = %{state | command_popup: nil}
+
+    case Session.undo(state.session_id) do
+      {:ok, 0} -> {:noreply, status_note(state, "undone — no earlier checkpoint left")}
+      {:ok, n} -> {:noreply, status_note(state, "undone — #{n} earlier checkpoint(s) left")}
+      {:error, :nothing_to_undo} -> {:noreply, status_note(state, "nothing to undo")}
+      {:error, :busy} -> {:noreply, status_note(state, "cannot undo while a turn runs")}
+      {:error, reason} -> {:noreply, status_note(state, "undo failed: #{inspect(reason)}")}
+    end
+  end
+
   # commands whose action is a plain menu action: reuse the one resolver
   defp run_command_action(action, _args, state)
        when action in [

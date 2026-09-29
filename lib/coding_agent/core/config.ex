@@ -38,6 +38,7 @@ defmodule CodingAgent.Core.Config do
   @default_compaction_inactivity_ms 120_000
   @default_provider_retries 3
   @default_provider_retry_delay_ms 5_000
+  @default_checkpoint_depth 1
 
   # req_llm's canonical reasoning efforts (ADR 029); the accepted
   # config.toml strings, one to one.
@@ -233,6 +234,26 @@ defmodule CodingAgent.Core.Config do
         app(:provider_retry_delay_ms, @default_provider_retry_delay_ms)
 
   def provider_retry_delay_ms(scope_root), do: provider_retry_delay_ms(snapshot(scope_root))
+
+  @doc """
+  How many git checkpoints a session keeps for ``/undo`` (ADR 036).
+
+  A checkpoint is written before every turn; ``/undo`` restores the most
+  recent and drops it, so the depth bounds how far back a session can
+  rewind its files. Resolution mirrors the other runtime knobs: the
+  layered ``checkpoint_depth`` in ``config.toml`` (project over global),
+  the app-env override, then the built-in default (1). ``0`` disables
+  checkpoints entirely (``/undo`` then reports there is nothing to undo).
+  """
+  @spec checkpoint_depth(String.t() | nil | t()) :: non_neg_integer()
+  def checkpoint_depth, do: checkpoint_depth(nil)
+
+  def checkpoint_depth(%__MODULE__{} = snapshot) do
+    configured_count(snapshot, "checkpoint_depth") ||
+      app(:checkpoint_depth, @default_checkpoint_depth)
+  end
+
+  def checkpoint_depth(scope_root), do: checkpoint_depth(snapshot(scope_root))
 
   # A non-negative integer in the layered config, else nil (absent/invalid
   # falls through to the next source, matching max_tool_rounds/1's shape).
