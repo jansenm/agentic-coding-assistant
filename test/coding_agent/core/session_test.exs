@@ -247,8 +247,13 @@ defmodule CodingAgent.Core.SessionTest do
 
       {:ok, state} = Session.state(id)
 
-      trigger = CodingAgent.Core.Session.Compactor.trigger()
-      assert CodingAgent.Core.Session.Compactor.decide(state, trigger) == :none
+      # 90k chars ≈ 22.5k tokens, and the provider saw 50k: both are far
+      # below the limits derived from the 500k fallback window. The old
+      # chars fallback would have fired at 80k chars.
+      assert CodingAgent.Core.Session.Compactor.decide(
+               state,
+               CodingAgent.Core.Session.Compactor.soft_limit(state)
+             ) == :none
     end
   end
 

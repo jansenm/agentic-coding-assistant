@@ -153,7 +153,8 @@ defmodule CodingAgent.UI.Styles do
       tokens in:      0
       tokens out:  10.0k
       context:    480.0k (96% win)
-      compacts at: 180.0k tok
+      soft at:    250.0k tok
+      hard at:    436.0k tok
 
   The suffix is not aligned — column-aligning it too would need a second
   column and reads as a table, not a definition list.

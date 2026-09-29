@@ -94,6 +94,18 @@ ohne confinement. Alle sieben Slices sind gelandet:
    (Truncation in eine abrufbare Datei). T14 ist der kleinste,
    T10 der größte Brocken.
 
+2. **Compaction: zwei Limits + verlustfreie Summaries (ADR 037).**
+   **erledigt (2026-09-29):** Der Trigger ist jetzt prozentual vom
+   Modell-Fenster (soft 50 %, idle-Hintergrund) mit absoluter Reserve
+   unter dem Top (hard, pre-call); `Compaction.render/1` trägt
+   Tool-Namen/-Argumente, der System-Prompt überlebt, die Tail-Grenze
+   ist exchange-sicher. Details in
+   `docs/source/decisions/037-compaction-two-limits.rst`.
+   **Reminder / bewusst vertagt (Owner 2026-09-29):** das Fenster wird
+   **einmal** beim Init aufgelöst; ein Modellwechsel (`apply_model/2`)
+   löst es **nicht** neu auf (ADR 037 offene Frage 1). Später
+   wieder aufgreifen — ggf. pro-Modell-Tabelle.
+
 ## Kern-Features gegen opencode (T-Liste)
 
 | # | Punkt | Stand |

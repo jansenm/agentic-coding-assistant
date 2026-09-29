@@ -51,7 +51,9 @@ defmodule CodingAgent.Core.Events do
       them, so an export can say *what* a tool was asked to do)
     * `{:usage_updated, usage}` — cumulative token/cost accounting
     * `{:info, text}` — a dim one-line note (compaction, notices)
-    * `{:context_compacted, keep_recent}`
+    * `{:context_compacted, min_keep}` — a compaction replaced the old
+      span with a summary; the payload is how many recent messages were
+      kept verbatim
     * `{:provider_status, :up}` / `{:provider_status, :down, reason}`
   """
   @type event :: term()

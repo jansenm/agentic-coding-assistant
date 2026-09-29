@@ -143,10 +143,13 @@ defmodule CodingAgent.UI.TuiResumeTest do
 
     {:ok, live} = CodingAgent.Core.Session.state(sid)
     assert live.usage == canonical
-    # >80K chars (chars fallback would fire) but 50k tokens < the 180k
-    # trigger: the decision must be :none
-    trigger = CodingAgent.Core.Session.Compactor.trigger()
-    assert CodingAgent.Core.Session.Compactor.decide(live, trigger) == :none
+    # >80K chars (chars fallback would fire) but 50k tokens, and the
+    # projected size is far below the limits for the fallback window:
+    # the decision must be :none
+    assert CodingAgent.Core.Session.Compactor.decide(
+             live,
+             CodingAgent.Core.Session.Compactor.soft_limit(live)
+           ) == :none
   end
 
   describe "tool entries on resume (5c regression)" do

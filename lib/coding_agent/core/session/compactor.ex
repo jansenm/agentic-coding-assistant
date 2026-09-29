@@ -1,35 +1,40 @@
 defmodule CodingAgent.Core.Session.Compactor do
   @moduledoc """
-  The compaction operation (slice 4b): trigger decision, summarize
-  call, apply, backoff. The pure message plumbing lives in
-  `CodingAgent.Core.Compaction`; this module owns the policy and the
-  one provider call, so the session loop stays loop-shaped — it asks
-  "should the context shrink?" and gets `{state, changed?}` back
-  without knowing how.
+  The compaction operation (slice 4b, two-limit policy ADR 037): trigger
+  decision, summarize call, apply, backoff. The pure message plumbing
+  lives in `CodingAgent.Core.Compaction`; this module owns the policy and
+  the one provider call, so the session loop stays loop-shaped — it asks
+  "should the context shrink?" and gets `{state, changed?}` back without
+  knowing how.
 
-  Policy (docs/source/explanation/memory.rst):
+  Policy (docs/source/explanation/memory.rst, ADR 037):
 
-  - **Trigger**: the provider's own last-turn input_tokens against an
-    ABSOLUTE threshold (`compaction_trigger_tokens`, default 180k —
-    the opencode lesson: a big window with a %-trigger compacts far
-    too late, and per-turn cost scales with context size). Chars are
-    only the FIRST-TURN fallback (usage unknown); known-but-below
-    usage NEVER compacts — the old chars fallback fired at ~20k
-    tokens on fat contexts and stalled every turn behind a
-    minutes-long summarize call (found live: a fresh review session
-    hit compaction after a handful of file reads, then hung).
+  - **Two limits derived from the model window.** A **soft** limit
+    (`round(window * compaction_soft_ratio)`, default 50%) fires while
+    the session is IDLE: after a turn ends the session summarizes down in
+    the background, so the next prompt does not pay the latency. A
+    **hard** limit (`window - compaction_hard_reserve_tokens`, default
+    64k reserve) fires PRE-CALL, busy or not: the reserve is one maximum
+    tool result plus response headroom, so a single big result cannot
+    overflow the window mid-turn. If the hard limit is at or below the
+    soft one (a very small window), soft collapses to hard.
+  - **Projected size, not the stale count.** The decision uses
+    `max(last_input_tokens, chars/4)`: the last provider count is ground
+    truth but does not include tool results produced after that call —
+    the bulk of the growth — so a big `read_file`/`shell` result could
+    cross the window between the check and the send (found live).
   - **The plan is decided ONCE** and its summary span passed through:
-    re-planning with a different threshold (the old code compacted on
-    tokens, then re-planned on chars) summarized a different span
-    than the trigger decided on — or no span at all, which made the
-    task exit abnormally.
+    re-planning with a different threshold summarized a different span
+    than the trigger decided on — or none, which made the task exit
+    abnormally.
   - **Every task exit is handled**: result, error, crash, budget
-    timeout. Failure degrades (keep the full context, back off),
-    never errors the turn. Found live twice: an unhandled
-    `{:exit, _}` from `Task.yield/2` crashed the session mid-turn
-    with a CaseClauseError, and an unbounded summary hung past
-    2 minutes (receive_timeout only covers INACTIVITY — hence the
-    hard wall-clock budget).
+    timeout. Failure degrades. On a HARD failure the session no longer
+    keeps a full, over-window context: it falls back to a deterministic
+    trim of the oldest complete exchanges (loud, and lossy by design —
+    proceeding over the window is the one outcome the reserve prevents).
+  - **The idle pass is fingerprint-guarded**: if the context changed
+    while the summarize task ran (a new turn started), the summary is
+    discarded, never applied to a context it no longer matches.
 
   The compacted state is returned with `changed?: true`; the caller
   persists it before the next provider call — a crash right after
@@ -37,22 +42,11 @@ defmodule CodingAgent.Core.Session.Compactor do
   """
 
   alias CodingAgent.Core.Compaction
+  alias CodingAgent.Core.Config
   alias CodingAgent.Core.Session.{Request, State, Usage}
   alias ReqLLM.Context
 
   require Logger
-
-  # Hard wall-clock bound on the summarize call: receive_timeout only
-  # covers INACTIVITY, and a slow cloud model can hold the summary
-  # call open indefinitely (found live — compaction hung past 2
-  # minutes mid-turn). After the wall: give up, keep the full
-  # context, back off. The defaults live in Core.Config; env-overridable
-  # so tests can exercise the budget branch in milliseconds.
-  #
-  # The inactivity bound is shorter than the wall clock so a HUNG
-  # provider ends the task with a proper {:error, _} long before the
-  # wall; a slow-but-alive model stays under it and hits the wall
-  # instead (that is the budget's job).
 
   # Consecutive turn-skips after a failed summarize (the summary call
   # is minutes of cloud time; a per-turn retry is 2+ min of dead
@@ -65,60 +59,92 @@ defmodule CodingAgent.Core.Session.Compactor do
   @type summarize_fn :: (State.t(), String.t() -> {:ok, String.t()} | {:error, term()})
 
   @doc """
-  Runs the compaction check before an LLM call. Returns `{state,
-  changed?}` — the caller persists when `changed?` is true.
+  The HARD, pre-call compaction check (ADR 037). Runs before an LLM call,
+  busy or not. Returns `{state, changed?}` — the caller persists when
+  `changed?` is true.
 
-  The summarizer is injectable (tests are LLM-free); the default is
-  `summarize/2`, bounded by `:compaction_inactivity_ms` (inactivity)
-  and `:compaction_wall_clock_ms` (wall clock).
+  On summarize failure this keeps the context and backs off, EXCEPT at
+  the hard limit, where it degrades to a deterministic trim
+  (`trim_hard/1`) rather than send an over-window request.
   """
   @spec maybe_compact(State.t(), summarize_fn() | nil) :: {State.t(), boolean()}
   def maybe_compact(state, summarize_fn \\ nil)
 
+  # structural guard for the tests-are-LLM-free discipline: the
+  # summarizer IS a provider call. Checked BEFORE the backoff clause: the
+  # backoff path can now trim the context (a hard-limit mutation), and a
+  # test-mode session must stay structurally inert.
+  def maybe_compact(%State{test_mode: true} = state, _summarize_fn), do: {state, false}
+
   def maybe_compact(%State{compaction_backoff: backoff} = state, _summarize_fn)
       when backoff > 0 do
-    # compaction failed recently — skip and count down. (Countdown
-    # ticks are not persisted; the turn boundary saves whatever state
-    # the turn ends in.)
-    {%{state | compaction_backoff: backoff - 1}, false}
+    # compaction failed recently — skip and count down. The hard
+    # limit is a safety net, so a backoff must still not let the
+    # context overflow: if the projected size is past the hard limit,
+    # trim deterministically instead of skipping.
+    if projected_tokens(state) >= hard_limit(state) do
+      trim_hard(state)
+    else
+      {%{state | compaction_backoff: backoff - 1}, false}
+    end
   end
-
-  # structural guard for the tests-are-LLM-free discipline: the
-  # summarizer IS a provider call. (The loud backstop lives in
-  # Session.continue_loop/1 — this is the quiet structural skip.)
-  def maybe_compact(%State{test_mode: true} = state, _summarize_fn), do: {state, false}
 
   def maybe_compact(%State{} = state, nil), do: maybe_compact(state, &summarize/2)
 
   def maybe_compact(%State{} = state, summarize_fn) do
-    trigger = trigger()
+    limit = hard_limit(state)
 
-    case decide(state, trigger) do
-      {:ok, {old, _keep}} -> compact(state, old, summarize_fn)
-      :none -> warn_approaching(state, trigger)
+    case decide(state, limit) do
+      {:ok, {old, _keep}} -> compact(state, old, summarize_fn, :hard)
+      :none -> warn_approaching(state)
+    end
+  end
+
+  @doc """
+  The SOFT, idle compaction check (ADR 037). Intended to run in a
+  background task after a turn ends (the caller owns the task and the
+  fingerprint guard). Uses the soft limit; on failure it simply backs
+  off — the soft pass is an optimization, not a gate.
+  """
+  @spec maybe_compact_idle(State.t(), summarize_fn() | nil) :: {State.t(), boolean()}
+  def maybe_compact_idle(state, summarize_fn \\ nil)
+
+  def maybe_compact_idle(%State{test_mode: true} = state, _summarize_fn), do: {state, false}
+
+  def maybe_compact_idle(%State{compaction_backoff: backoff} = state, _summarize_fn)
+      when backoff > 0 do
+    {%{state | compaction_backoff: backoff - 1}, false}
+  end
+
+  def maybe_compact_idle(%State{} = state, nil), do: maybe_compact_idle(state, &summarize/2)
+
+  def maybe_compact_idle(%State{} = state, summarize_fn) do
+    limit = soft_limit(state)
+
+    case decide(state, limit) do
+      {:ok, {old, _keep}} -> compact(state, old, summarize_fn, :soft)
+      :none -> {state, false}
     end
   end
 
   @doc """
   Pure trigger decision: `:none`, or `{:ok, {summary_span, keep_span}}`.
-  Known usage below the trigger NEVER compacts (the chars fallback
-  fired at ~20k tokens and stalled every turn — found live); unknown
-  usage (first turn, `last_input_tokens: 0`) falls back to the
-  chars-based plan. Public: tests are LLM-free.
+  Uses the PROJECTED size (see the moduledoc); genuinely unknown usage
+  (first turn, `last_input_tokens: 0`) falls back to the chars-based
+  plan. Known-but-below usage NEVER compacts. Public: tests are
+  LLM-free.
   """
   @spec decide(State.t(), pos_integer()) :: :none | {:ok, {list(), list()}}
-  def decide(%State{} = state, trigger) do
+  def decide(%State{} = state, limit) do
     last_in = Usage.last_input_tokens(state.usage)
 
     cond do
-      last_in >= trigger ->
-        # provider-reported input tokens are ground truth (the token
-        # path compacts exactly when the real context is past trigger)
-        to_plan(Compaction.plan_tokens(state.context, last_in, trigger))
-
-      # usage is genuinely unknown (first turn): conservative chars heuristic
       last_in == 0 ->
+        # usage is genuinely unknown (first turn): conservative chars heuristic
         to_plan(Compaction.plan(state.context))
+
+      projected_tokens(state) >= limit ->
+        to_plan(Compaction.plan_tokens(state.context, projected_tokens(state), limit))
 
       true ->
         :none
@@ -128,24 +154,36 @@ defmodule CodingAgent.Core.Session.Compactor do
   defp to_plan(:none), do: :none
   defp to_plan({:ok, old, keep}), do: {:ok, {old, keep}}
 
-  @doc """
-  Warns once at 80% of the trigger so compaction is never a silent
-  surprise (the opencode lesson: users trained on "it will auto
-  compact" stop watching and then burn quota). Returns `{state,
-  warned?}`. Public: tests are LLM-free.
-  """
-  @spec warn_approaching(State.t(), pos_integer()) :: {State.t(), boolean()}
-  def warn_approaching(%State{} = state, trigger) do
-    last_in = Usage.last_input_tokens(state.usage)
-    warn_at = trunc(trigger * @warn_fraction)
+  # The size compaction decides on: the provider's own last-turn input
+  # count (ground truth) or a chars/4 estimate of the CURRENT context,
+  # whichever is larger. The count lags the context by the tool results
+  # produced after the last call, so the max closes that gap (ADR 037).
+  @doc false
+  @spec projected_tokens(State.t()) :: non_neg_integer()
+  def projected_tokens(%State{usage: usage, context: %Context{messages: msgs}}) do
+    max(Usage.last_input_tokens(usage), div(Compaction.total_chars(msgs), 4))
+  end
 
-    if last_in >= warn_at and not state.compaction_warned do
+  def projected_tokens(%State{usage: usage}), do: Usage.last_input_tokens(usage)
+
+  @doc """
+  Warns once at 80% of the soft limit so compaction is never a silent
+  surprise (the opencode lesson: users trained on "it will auto compact"
+  stop watching and then burn quota). Returns `{state, warned?}`.
+  Public: tests are LLM-free.
+  """
+  @spec warn_approaching(State.t()) :: {State.t(), boolean()}
+  def warn_approaching(%State{} = state) do
+    current = projected_tokens(state)
+    warn_at = warn_threshold(state)
+
+    if current >= warn_at and not state.compaction_warned do
       state = %{state | compaction_warned: true}
 
       broadcast(
         state,
         {:info,
-         "· context at #{div(last_in, 1000)}k tokens — compaction at #{div(trigger, 1000)}k will summarize older messages"}
+         "· context at #{div(current, 1000)}k tokens — compaction at #{div(soft_limit(state), 1000)}k will summarize older messages"}
       )
 
       {state, true}
@@ -165,12 +203,7 @@ defmodule CodingAgent.Core.Session.Compactor do
   # the provider stack would then kill the whole session process before
   # Task.yield/2 could ever observe it (verified: a raising summarizer
   # takes the linked caller down; the {:exit, _} clause never fires).
-  # With the supervisor the crash is contained there and surfaces HERE
-  # as {:exit, reason} — one more failure mode that degrades instead of
-  # killing the session. The supervisor lives in the application tree;
-  # tests without the tree get a lazy one (same pattern as the
-  # interrupt ETS table).
-  defp compact(state, old, summarize_fn) do
+  defp compact(state, old, summarize_fn, kind) do
     Logger.debug("compacting context (#{Compaction.total_chars(old)} chars)")
     broadcast(state, {:info, "· compacting context (this can take a while)…"})
 
@@ -184,32 +217,20 @@ defmodule CodingAgent.Core.Session.Compactor do
         apply_summary(state, summary_text)
 
       {:ok, {:error, reason}} ->
-        compaction_failed(state, reason)
+        compaction_failed(state, reason, kind)
 
-      # An abnormal task exit must degrade like any other failure — an
-      # unhandled {:exit, _} here was a CaseClauseError that killed the
-      # session mid-turn (found live). With async_nolink this is also
-      # the path a provider-stack crash takes (see compact/3).
       {:exit, reason} ->
-        compaction_failed(state, {:summarize_task_exit, reason})
+        compaction_failed(state, {:summarize_task_exit, reason}, kind)
 
-      # a well-behaved summarizer only ever returns the two tuples above
       {:ok, other} ->
-        compaction_failed(state, {:unexpected_summarizer_result, other})
+        compaction_failed(state, {:unexpected_summarizer_result, other}, kind)
 
-      # wall-clock budget exceeded (Task.shutdown(:brutal_kill) => nil):
-      # keep the full context, back off
       nil ->
         Logger.warning(
           "compaction summarize exceeded #{div(wall_clock(), 1000)}s, keeping full context"
         )
 
-        broadcast(
-          state,
-          {:info, "· compaction timed out; skipping the next #{@consecutive_failures} turns"}
-        )
-
-        {%{state | compaction_backoff: @consecutive_failures}, false}
+        compaction_failed(state, :wall_clock_exceeded, kind)
     end
   end
 
@@ -219,11 +240,14 @@ defmodule CodingAgent.Core.Session.Compactor do
     # compaction_warned resets with the new context: the NEXT approach
     # to the trigger deserves its warning again (warn-once per approach)
     state = %{state | context: context, compaction_backoff: 0, compaction_warned: false}
-    broadcast(state, {:context_compacted, Compaction.keep_recent()})
+    broadcast(state, {:context_compacted, Compaction.min_keep()})
     {state, true}
   end
 
-  defp compaction_failed(state, reason) do
+  # A failure degrades. The soft pass simply backs off. The hard pass
+  # must not leave an over-window context: when the projected size is
+  # still past the hard limit, trim deterministically (loud).
+  defp compaction_failed(state, reason, kind) do
     Logger.warning("compaction failed, keeping full context: #{inspect(reason)}")
 
     broadcast(
@@ -232,18 +256,48 @@ defmodule CodingAgent.Core.Session.Compactor do
        "· compaction failed (#{inspect(reason, printable_limit: 40)}); skipping the next #{@consecutive_failures} turns"}
     )
 
-    {%{state | compaction_backoff: @consecutive_failures}, false}
+    state = %{state | compaction_backoff: @consecutive_failures}
+
+    if kind == :hard and projected_tokens(state) >= hard_limit(state) do
+      trim_hard(state)
+    else
+      {state, false}
+    end
+  end
+
+  # The deterministic hard-limit fallback: drop the oldest complete
+  # exchanges (the system message is pinned) until the estimated size
+  # is under the limit, with a loud note. Lossy by design — it is the
+  # alternative to sending a request the provider would reject.
+  @doc false
+  @spec trim_hard(State.t()) :: {State.t(), boolean()}
+  def trim_hard(%State{} = state) do
+    limit = hard_limit(state)
+
+    case Compaction.trim(state.context, limit) do
+      {:ok, trimmed, dropped} ->
+        Logger.warning("hard compaction limit: trimmed #{dropped} old messages keeping context")
+
+        broadcast(
+          state,
+          {:info, "· context over the hard limit — trimmed #{dropped} old messages"}
+        )
+
+        {%{state | context: trimmed, compaction_warned: false}, true}
+
+      :none ->
+        # nothing left to trim (a huge single exchange): keep it and let
+        # the provider answer — the reserve already bought the headroom.
+        Logger.warning("hard compaction limit reached but nothing trimmable remains")
+        {state, false}
+    end
   end
 
   # The default summarizer. Sees the OLD span only (the keep span is
   # excluded — the model would otherwise copy it into the summary),
   # rendered by `Compaction.render/1`. Everything is CONTAINED: a
   # raise, exit or throw inside req_llm or a provider adapter must
-  # surface as {:error, _}, never as a linked crash — under the
-  # supervisor (compact/3) an unwrapped crash would only surface as
-  # {:exit, _}, and containment here keeps the failure legible
-  # (reason inspectable, classified, broadcast) instead of a bare
-  # process exit.
+  # surface as {:error, _}, never as a linked crash.
   @doc false
   @spec summarize(State.t(), String.t()) :: {:ok, String.t()} | {:error, term()}
   def summarize(state, old_span_text) do
@@ -270,13 +324,7 @@ defmodule CodingAgent.Core.Session.Compactor do
   end
 
   # GLM on an 80K-char context takes minutes; without an inactivity cap
-  # a hung summary stalls every turn's start (found live). Shorter than
-  # the wall clock so a hung provider becomes a proper error result.
-  #
-  # `Request.build/2`'s opts (base_url for indirected providers — the
-  # ollama-cloud case) MUST be kept: the old code discarded them, so a
-  # summary call went to the wrong (default) endpoint while the turn
-  # loop used the configured one.
+  # a hung summary stalls every turn's start (found live).
   defp summarize_opts(base_opts) do
     Keyword.put(base_opts, :receive_timeout, inactivity())
   end
@@ -287,33 +335,63 @@ defmodule CodingAgent.Core.Session.Compactor do
     |> Context.append(ReqLLM.Context.user(old_span_text))
   end
 
+  # The instruction demands FACTS, not narrative: a prose summary lost
+  # the measured numbers and the resumed agent re-derived them (found
+  # live: 29 rewrites of one document). Tool calls/arguments are now in
+  # the rendered span (`Compaction.render/1`), so "which file / which
+  # command" is answerable; the prompt makes preserving them explicit.
   defp summary_prompt do
     "Summarize the following (possibly interrupted) coding-agent " <>
-      "conversation for later reuse. Preserve: the user's goals, " <>
-      "decisions made, files touched, commands run and their " <>
-      "outcomes, and anything explicitly promised. Be factual and " <>
-      "complete; omit small talk."
+      "conversation for later reuse. Preserve, as compact bullet facts: " <>
+      "the user's goals; decisions made and why; every file touched " <>
+      "(exact paths); every command/tool run (exact command and its " <>
+      "outcome, including test counts and error messages); numbers " <>
+      "measured; and anything explicitly promised or left unfinished. " <>
+      "Keep exact identifiers, paths and numbers verbatim — do not " <>
+      "paraphrase them away. Omit small talk."
   end
 
-  # -- Configuration ------------------------------------------------------------
+  # -- The two limits (ADR 037) -------------------------------------------------
 
-  # Absolute threshold from config — visible in the sidebar, predictable
-  # (the opencode lesson: compaction must be a known quantity, not a
-  # silent %-of-window surprise). Public: the sidebar renders the same
-  # number, and there must be ONE reader of the config key.
-  @spec trigger() :: pos_integer()
-  def trigger, do: CodingAgent.Core.Config.compaction_trigger_tokens()
+  @doc """
+  The model context window the session resolved (ADR 037), or a config
+  fallback for a hand-built state. Public: the sidebar renders it.
+  """
+  @spec window(State.t()) :: pos_integer()
+  def window(%State{context_window: window}) when is_integer(window), do: window
+
+  def window(%State{} = state), do: limits(state) |> elem(0)
+
+  @doc """
+  The HARD limit: `window - reserve`, at least 1. Fires pre-call.
+  """
+  @spec hard_limit(State.t()) :: pos_integer()
+  def hard_limit(%State{compaction_hard_limit: hard}) when is_integer(hard), do: hard
+  def hard_limit(%State{} = state), do: limits(state) |> elem(2)
+
+  @doc """
+  The SOFT limit: `round(window * ratio)`, clamped to the hard limit so
+  the order is never inverted on a small window. Fires while idle.
+  """
+  @spec soft_limit(State.t()) :: pos_integer()
+  def soft_limit(%State{compaction_soft_limit: soft}) when is_integer(soft), do: soft
+  def soft_limit(%State{} = state), do: limits(state) |> elem(1)
 
   @doc """
   The token count at which the approaching-compaction warning fires
-  (`#{@warn_fraction}` of the trigger). Public so the sidebar and
-  `warn_approaching/2` cannot drift apart on the fraction.
+  (`#{@warn_fraction}` of the soft limit). Public so the sidebar and
+  `warn_approaching/1` cannot drift apart.
   """
-  @spec warn_threshold() :: non_neg_integer()
-  def warn_threshold, do: trunc(trigger() * @warn_fraction)
+  @spec warn_threshold(State.t()) :: non_neg_integer()
+  def warn_threshold(%State{} = state), do: trunc(soft_limit(state) * @warn_fraction)
 
-  defp wall_clock, do: CodingAgent.Core.Config.compaction_wall_clock_ms()
-  defp inactivity, do: CodingAgent.Core.Config.compaction_inactivity_ms()
+  # The one read of the window/limit policy for a state that did not
+  # resolve it at init (a hand-built state in a test). The session
+  # resolves and stores these, so production never re-reads config.
+  defp limits(%State{} = state), do: Config.compaction_limits(state.scope_root, state.model)
+
+  defp wall_clock, do: Config.compaction_wall_clock_ms()
+  defp inactivity, do: Config.compaction_inactivity_ms()
 
   # The summarize task must never be linked to the session (see
   # compact/3): the supervisor is a permanent child of the application
@@ -332,13 +410,9 @@ defmodule CodingAgent.Core.Session.Compactor do
   end
 
   # Broadcast to the session's event subscribers — same channel as the
-  # session loop; compaction progress must be visible while it runs.
-  #
-  # Also record the display view (ADR 020): compaction notes and the
-  # "context compacted" marker are part of what the user SAW, and the
-  # display view is the immutable record compaction must never touch.
-  # (The agent view is rewritten by apply_summary; this is the other
-  # view, and it only grows.)
+  # session loop; compaction progress must be visible while it runs. Also
+  # records the display view (ADR 020): compaction notes are what the
+  # user SAW, and the display view is the immutable record.
   defp broadcast(state, event) do
     case event do
       {:info, text} ->

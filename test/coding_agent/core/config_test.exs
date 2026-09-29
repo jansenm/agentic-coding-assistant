@@ -188,10 +188,30 @@ defmodule CodingAgent.Core.ConfigTest do
   describe "runtime knobs" do
     test "defaults are defined here, not duplicated in config.exs" do
       assert Config.max_tool_rounds() == 100
-      assert Config.context_window_tokens() == 500_000
-      assert Config.compaction_trigger_tokens() == 180_000
+      assert Config.context_window(%Config{config: %{}}, nil) == 500_000
+      assert Config.compaction_soft_ratio(%Config{config: %{}}) == 0.5
+      assert Config.compaction_hard_reserve_tokens(%Config{config: %{}}) == 64_000
       assert Config.compaction_wall_clock_ms() == 300_000
       assert Config.compaction_inactivity_ms() == 120_000
+    end
+
+    test "compaction limits derive from the window (ADR 037)" do
+      snapshot = %Config{config: %{"context_window" => 200_000}}
+      # soft = round(200k * 0.5), hard = 200k - 64k
+      assert Config.compaction_limits(snapshot, nil) == {200_000, 100_000, 136_000}
+    end
+
+    test "compaction limits collapse soft onto hard on a tiny window" do
+      snapshot = %Config{config: %{"context_window" => 50_000}}
+      {window, soft, hard} = Config.compaction_limits(snapshot, nil)
+      assert window == 50_000
+      assert soft == hard
+      assert hard == max(50_000 - 64_000, 1)
+    end
+
+    test "context_window honours a config.toml value over the catalog/default" do
+      snapshot = %Config{config: %{"context_window" => 123_456}}
+      assert Config.context_window(snapshot, "ollama:whatever") == 123_456
     end
 
     test "max_tool_rounds honours a config.toml value over the default (ADR 025)" do

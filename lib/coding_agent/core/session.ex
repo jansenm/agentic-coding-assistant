@@ -438,6 +438,9 @@ defmodule CodingAgent.Core.Session do
     # test seam for the CHILD session a `task` call starts (ADR 017/018):
     # the child's blocking body. Never set in production.
     subagent_runner = Keyword.get(opts, :subagent_runner)
+    # test seam for the background IDLE compaction pass (ADR 037): the
+    # body that would summarize. Never set in production.
+    idle_compaction_runner = Keyword.get(opts, :idle_compaction_runner)
 
     # A session that was parked at the gate when it last stopped resumes
     # PARKED, not idle: the pending calls (and the half of the round that
@@ -468,6 +471,20 @@ defmodule CodingAgent.Core.Session do
         {:ok, agent, policy, prompt} -> {agent, policy, prompt}
         {:error, reason} -> raise ArgumentError, format_agent_error(reason)
       end
+
+    # The compaction window and its two limits (ADR 037), resolved ONCE
+    # here from the layered config / catalog / fallback and stored on the
+    # state, so the sidebar, the warning and the decision read the same
+    # numbers (ADR 029 — the display must not re-derive what the decision
+    # uses). Resolved against the EFFECTIVE model: an agent definition may
+    # pin its own model (ADR 017), and the switch re-resolves later.
+    effective_model =
+      case agent do
+        %{model: pinned} when is_binary(pinned) and pinned != "" -> pinned
+        _ -> model
+      end
+
+    {window, soft_limit, hard_limit} = Config.compaction_limits(snapshot, effective_model)
 
     # Resume support (4a): a caller may pass a persisted :context (and
     # then model/policy come from the snapshot too); otherwise a fresh
@@ -530,6 +547,10 @@ defmodule CodingAgent.Core.Session do
        # layered config.toml; rides every request via wire_request/2.
        # A malformed value raises inside Config (loud, never a no-op).
        reasoning_effort: Config.reasoning_effort(snapshot),
+       # the model window and the two compaction limits (ADR 037)
+       context_window: window,
+       compaction_soft_limit: soft_limit,
+       compaction_hard_limit: hard_limit,
        # a driver that can answer a mid-turn question (the TUI sets this);
        # a headless driver gets the automatic wrap-up at the budget
        interactive: Keyword.get(opts, :interactive, false),
@@ -550,7 +571,8 @@ defmodule CodingAgent.Core.Session do
        todos: Keyword.get(opts, :todos, []),
        test_mode: test_mode,
        turn_runner: turn_runner,
-       subagent_runner: subagent_runner
+       subagent_runner: subagent_runner,
+       idle_compaction_runner: idle_compaction_runner
      )}
   end
 
@@ -1122,6 +1144,23 @@ defmodule CodingAgent.Core.Session do
     {:noreply, finish_worker(state, state, {:error, {:turn_worker_exit, reason}})}
   end
 
+  # The IDLE (soft-limit) compaction task returned. Apply only when the
+  # context is UNCHANGED since the task started (fingerprint match) —
+  # otherwise a new turn began while the summary ran and the result is
+  # stale. Never reply/broadcast idle: the session was already idle.
+  def handle_info({ref, {new_state, _changed?}}, %{idle_compaction_ref: ref} = state)
+      when is_reference(ref) do
+    Process.demonitor(ref, [:flush])
+    {:noreply, apply_idle_compaction(state, new_state)}
+  end
+
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, %{idle_compaction_ref: ref} = state)
+      when is_reference(ref) do
+    # the idle task crashed/shut down: drop the handles, keep the context
+    # (the hard, pre-call pass still guards the window)
+    {:noreply, %{state | idle_compaction_ref: nil, idle_compaction_fp: nil}}
+  end
+
   # A subscribed process died: drop its monitor.
   def handle_info({:DOWN, monitor, :process, _pid, _reason}, state) do
     {:noreply, %{state | subscribers: List.delete(state.subscribers, monitor)}}
@@ -1192,6 +1231,21 @@ defmodule CodingAgent.Core.Session do
     # starts: a snapshot taken any later could already contain the turn's
     # own edits. A read-only or non-git scope is a no-op.
     state = take_checkpoint(state)
+
+    # A new turn invalidates any in-flight idle compaction: its result
+    # would be for a context that no longer matches (the fingerprint
+    # check in apply_idle_compaction discards it anyway), so drop the
+    # monitor here and forget it. The task itself is harmless: async_nolink
+    # and supervised, its messages simply no longer match a clause.
+    state =
+      case state.idle_compaction_ref do
+        ref when is_reference(ref) ->
+          Process.demonitor(ref, [:flush])
+          %{state | idle_compaction_ref: nil, idle_compaction_fp: nil}
+
+        _ ->
+          state
+      end
 
     # the loop guard is PER TURN: the counter previously only reset in
     # the debug path, so it accumulated across a session's lifetime —
@@ -1295,6 +1349,11 @@ defmodule CodingAgent.Core.Session do
         pending_agent: :none,
         pending_model: :none,
         subscribers: [],
+        # an idle-compaction task is process-local too; a worker snapshot
+        # must never carry its ref (the result is adopted by the SESSION,
+        # not the worker)
+        idle_compaction_ref: nil,
+        idle_compaction_fp: nil,
         # the runner is captured in the worker closure, not the snapshot:
         # a closure must never be persisted
         turn_runner: nil
@@ -1329,8 +1388,17 @@ defmodule CodingAgent.Core.Session do
     if switched?, do: persist(new_state)
 
     if session.worker_from, do: GenServer.reply(session.worker_from, reply)
-    drain_queue(new_state)
+    drain_queue(start_idle_compaction_then_drain(new_state))
   end
+
+  # The idle soft pass must be spawned by the SESSION process (the task
+  # ref is booked on the session state), not by the turn worker. A queued
+  # run takes priority: drain first, and only start the background pass
+  # when nothing is waiting.
+  defp start_idle_compaction_then_drain(%{queued_calls: []} = state),
+    do: start_idle_compaction(state)
+
+  defp start_idle_compaction_then_drain(state), do: state
 
   # A mid-turn set_agent/set_model applied at the turn boundary. Agent
   # switches recompute from the base values (no compounding) and replace
@@ -2531,6 +2599,74 @@ defmodule CodingAgent.Core.Session do
     end
   end
 
+  # -- Idle (soft-limit) compaction (ADR 037) ---------------------------------
+
+  # Start the background soft pass when a turn ends IDLE and the session
+  # is over the soft limit. The summarize call is slow, so it runs off the
+  # session process; the context FINGERPRINT captured here is what
+  # `handle_info({ref, ...})` compares against, so a result produced for a
+  # context that has since changed (a new turn started) is discarded. The
+  # hard, pre-call pass in `continue_loop/1` covers the busy case.
+  defp start_idle_compaction(%State{status: :idle} = state) do
+    if state.test_mode or Compactor.projected_tokens(state) < Compactor.soft_limit(state) do
+      state
+    else
+      fp = context_fingerprint(state)
+      ref = spawn_idle_compaction(state)
+
+      %{state | idle_compaction_ref: ref, idle_compaction_fp: fp}
+    end
+  end
+
+  defp start_idle_compaction(state), do: state
+
+  defp spawn_idle_compaction(state) do
+    snapshot = worker_snapshot(state)
+    runner = state.idle_compaction_runner
+
+    body =
+      case runner do
+        nil -> fn -> Compactor.maybe_compact_idle(snapshot) end
+        fun -> fn -> fun.(snapshot) end
+      end
+
+    Task.Supervisor.async_nolink(task_supervisor(), body).ref
+  end
+
+  # A cheap, exact identity of the context the idle task was started for.
+  # `:erlang.phash2/1` over the message list is stable for equal content
+  # and changes on any append/rewrite, which is all the guard needs.
+  defp context_fingerprint(state), do: :erlang.phash2(state.context.messages)
+
+  # Apply a background soft-pass result only if the context still matches
+  # the fingerprint captured at start; otherwise discard it (a new turn
+  # began while the summary ran). Only the context and the backoff are
+  # adopted from the task's state — it is a worker_snapshot, so its
+  # subscribers/worker handles are stale.
+  defp apply_idle_compaction(state, new_state) do
+    fp = state.idle_compaction_fp
+    state = %{state | idle_compaction_ref: nil, idle_compaction_fp: nil}
+
+    cond do
+      fp == nil ->
+        state
+
+      context_fingerprint(state) != fp ->
+        # stale: the context changed under the summary; drop it
+        state
+
+      true ->
+        state = %{
+          state
+          | context: new_state.context,
+            compaction_backoff: new_state.compaction_backoff
+        }
+
+        persist(state)
+        state
+    end
+  end
+
   # Compaction is delegated to `CodingAgent.Core.Session.Compactor`
   # (trigger decision, summarize task, backoff); nothing of it lives
   # here — the loop only asks "should the context shrink?" and gets
@@ -2577,7 +2713,8 @@ defmodule CodingAgent.Core.Session do
     state
   end
 
-  defp strip_runner(state), do: %{state | turn_runner: nil, subagent_runner: nil}
+  defp strip_runner(state),
+    do: %{state | turn_runner: nil, subagent_runner: nil, idle_compaction_runner: nil}
 
   # -- Infrastructure ---------------------------------------------------------
 

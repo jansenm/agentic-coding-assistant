@@ -13,15 +13,30 @@ quickly, because tool outputs (file contents, test results) are large.
 It is managed by **compaction**: old turns get summarized, recent turns
 stay verbatim.
 
-Compaction triggers at an **absolute** token threshold
-(`compaction_trigger_tokens`, default 180k), not a percentage of the
-model's window — the opencode lesson: a big window with a
-percentage trigger compacts far too late, and per-turn cost scales
-with context size, so late compaction burns quota at unheard speeds.
-The threshold is visible in the sidebar ("compacts at 180.0k tok"),
-and the session warns once at 80% of the trigger
-("· context at 144k tokens — compaction at 180k will summarize
-older messages") so it is never a silent surprise.
+Compaction triggers at **two limits derived from the model window**
+(ADR 037): a **soft** limit at ``compaction_soft_ratio`` (default 50%)
+of the window, applied while the session is **idle** (a background
+summary after a turn ends, so the next prompt does not pay the
+latency), and a **hard** limit at ``window - compaction_hard_reserve_tokens``
+(default 64k reserve — one maximum tool result plus response headroom),
+applied **pre-call, busy or not**, so a single big tool result cannot
+overflow the window mid-turn. If the window is so small that hard would
+fall at or below soft, soft collapses onto hard.
+
+The window is resolved once at session init: the layered
+``context_window`` in ``config.toml``, then the catalog (llm_db) window
+for the model, then a 500k fallback. A cloud model absent from the
+catalog needs the ``config.toml`` value. Resolving the window again on a
+model switch is deliberately out of scope for now (ADR 037, open
+question 1).
+
+The decision uses the **projected** size — the larger of the provider's
+last-turn ``input_tokens`` (ground truth, but it lags by the tool
+results produced after that call) and a chars/4 estimate of the current
+context. The limits are visible in the sidebar ("soft at 250.0k tok" /
+"hard at 436.0k tok"), and the session warns once at 80% of the soft
+limit ("· context at 144k tokens — compaction at … will summarize older
+messages") so it is never a silent surprise.
 
 2. Session state (mid-term)
 ---------------------------
@@ -220,25 +235,37 @@ Compaction (short-term tier)
   provider call: the trigger decision, the wall-clock budget, the
   failure backoff, the UI broadcast.
 
-Before every LLM call the session asks the Compactor. The trigger is
-the provider's own ``last_input_tokens`` against the **absolute**
-threshold (``compaction_trigger_tokens``, default 180k) — chars
-estimates drift, the provider's count is ground truth. Chars are only
-the FIRST-TURN fallback (no usage data yet); known-but-below usage
-never compacts (the chars-only trigger fired at ~20k tokens on fat
-contexts and stalled every turn behind a minutes-long summarize call —
-found live). The session warns once at 80% of the trigger
-("· context at 144k tokens — compaction at 180k will summarize
-older messages") so it is never a silent surprise.
+Before every LLM call the session asks the Compactor for the **hard**
+limit; when a turn ends idle it runs the **soft** pass in a background
+task (fingerprint-guarded: a summary produced for a context that has
+since changed is discarded). The decision uses the projected size (see
+above) — chars estimates drift, the provider's count is ground truth,
+and the chars estimate covers the tool results the count has not seen
+yet. Genuinely unknown usage (first turn) falls back to a chars-based
+plan; known-but-below usage never compacts (the chars-only trigger fired
+at ~20k tokens on fat contexts and stalled every turn behind a
+minutes-long summarize call — found live). The session warns once at 80%
+of the soft limit ("· context at 144k tokens — compaction at … will
+summarize older messages") so it is never a silent surprise.
 
-**One reader of the trigger policy.** ``Compactor.trigger/0`` and
-``Compactor.warn_threshold/0`` are the only code that read
-``compaction_trigger_tokens`` or the 80% fraction; the sidebar renders
-exactly what the decision uses. A resumed session must carry the
-persisted ``usage`` (and ``compaction_warned`` / ``compaction_backoff``)
-into its live state — otherwise ``last_input_tokens`` restarts at 0 and
-a just-resumed context takes the chars fallback and compacts on the
-first command (found live).
+**The summarize path preserves facts.** The span is rendered with tool
+**names and call arguments** (`Compaction.render/1`), not just text
+parts: an assistant call is text-empty, so the old render dropped
+*which* file was read and *which* command ran, and the resumed agent
+re-derived work it had already done (found live: a review session
+rewrote one document 29 times). The **system message is never
+summarized** (it is the framework/agent prompt; losing it blinded the
+agent after the first compaction — found live), and the kept tail is
+snapped to a **complete exchange** boundary so a tool result is never
+separated from the assistant call that produced it.
+
+**One reader of the limit policy.** ``Compactor.soft_limit/1`` and
+``Compactor.hard_limit/1`` read the window/limits the session resolved
+once at init; the sidebar renders exactly what the decision uses. A
+resumed session must carry the persisted ``usage`` (and
+``compaction_warned`` / ``compaction_backoff``) into its live state —
+otherwise ``last_input_tokens`` restarts at 0 and a just-resumed context
+takes the chars fallback and compacts on the first command (found live).
 
 The summarize call is a non-streaming round trip on the same model,
 executed in a task under

@@ -130,6 +130,14 @@ class, out of this ADR's scope by intent (they are tuning knobs with
 measured defaults and no user-visible display), and belongs to the
 configuration-boundary work rather than here.
 
+.. note::
+   Resolved by ADR 037 (2026-09-29): ``compaction_trigger_tokens`` is
+   replaced by the window-derived soft/hard limits
+   (``context_window``, ``compaction_soft_ratio``,
+   ``compaction_hard_reserve_tokens``, all layered ``config.toml``
+   keys). The wall-clock/inactivity budgets remain app-env knobs (open
+   question 3 below).
+
 Consequences
 ------------
 

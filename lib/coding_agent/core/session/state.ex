@@ -103,6 +103,15 @@ defmodule CodingAgent.Core.Session.State do
     # env; like `max_tool_rounds`, a resume re-resolves it from config
     # rather than trusting the snapshot.
     reasoning_effort: nil,
+    # The model context window and the two compaction limits (ADR 037),
+    # resolved once at init from config (a layered `context_window`, the
+    # catalog, the app-env fallback). Carried on the state so the
+    # sidebar, the warning and the decision read the SAME numbers (ADR
+    # 029: the display must not re-derive what the decision uses). nil
+    # on a hand-built state — the Compactor falls back to Config.
+    context_window: nil,
+    compaction_soft_limit: nil,
+    compaction_hard_limit: nil,
     test_mode: false,
     # cumulative usage across the session (sidebar + token-based
     # compaction trigger); cost only when the provider prices it. The
@@ -152,7 +161,19 @@ defmodule CodingAgent.Core.Session.State do
     # test-only seam: replaces a CHILD session's blocking body (the
     # subagent path), so a test can exercise delegation without a provider.
     # nil in production. Runtime-only.
-    subagent_runner: nil
+    subagent_runner: nil,
+    # test-only seam: replaces the idle (soft-limit) compaction body
+    # (ADR 037), so a test can exercise the background pass and its
+    # fingerprint guard without a provider. nil in production.
+    # Runtime-only.
+    idle_compaction_runner: nil,
+    # The in-flight IDLE (soft-limit) compaction task (ADR 037) and the
+    # context fingerprint captured when it started. The soft pass runs in
+    # a background task after a turn ends; if the context changed while it
+    # ran (a new turn started), the result is discarded rather than
+    # applied to a context it no longer matches. Runtime-only.
+    idle_compaction_ref: nil,
+    idle_compaction_fp: nil
   ]
 
   @type status :: :idle | :running | :interrupted | :error
@@ -187,6 +208,9 @@ defmodule CodingAgent.Core.Session.State do
           tool_rounds: non_neg_integer(),
           max_tool_rounds: pos_integer() | nil,
           reasoning_effort: atom() | nil,
+          context_window: pos_integer() | nil,
+          compaction_soft_limit: pos_integer() | nil,
+          compaction_hard_limit: pos_integer() | nil,
           test_mode: boolean(),
           turn_agents: [String.t() | nil],
           usage: CodingAgent.Core.Session.Usage.t(),
@@ -198,7 +222,10 @@ defmodule CodingAgent.Core.Session.State do
           pending_agent: term(),
           pending_model: term(),
           turn_runner: (State.t() -> {State.t(), term()}) | nil,
-          subagent_runner: (State.t() -> {State.t(), term()}) | nil
+          subagent_runner: (State.t() -> {State.t(), term()}) | nil,
+          idle_compaction_runner: (State.t() -> {State.t(), boolean()}) | nil,
+          idle_compaction_ref: reference() | nil,
+          idle_compaction_fp: term()
         }
 
   @doc "Builds a new session state."
@@ -271,6 +298,11 @@ defmodule CodingAgent.Core.Session.State do
       pending_model: :none,
       turn_runner: nil,
       subagent_runner: nil,
+      # the idle-compaction task is process-local (ADR 037): its ref and
+      # fingerprint must not resurrect, and the test seam is a closure
+      idle_compaction_runner: nil,
+      idle_compaction_ref: nil,
+      idle_compaction_fp: nil,
       status: idle_or_interrupted(state),
       # runtime guard counter: a snapshot saved with tool_rounds 25 (the
       # old never-reset bug) resurrected as 25, so resuming and
@@ -300,6 +332,13 @@ defmodule CodingAgent.Core.Session.State do
       todos: Map.get(state, :todos, []),
       # file checkpoints (ADR 036); old snapshots lack them
       checkpoints: Map.get(state, :checkpoints, []),
+      # the compaction window/limits (ADR 037) are re-resolved at init
+      # (like max_tool_rounds/reasoning_effort), never trusted from the
+      # snapshot: clear them so a directly-loaded state falls back to
+      # Config and a resumed one gets the freshly resolved numbers.
+      context_window: nil,
+      compaction_soft_limit: nil,
+      compaction_hard_limit: nil,
       # nested structs: heal the Elixir 1.20 missing-default trap one
       # level down (see above)
       policy: heal(state.policy, CodingAgent.Core.Permissions),

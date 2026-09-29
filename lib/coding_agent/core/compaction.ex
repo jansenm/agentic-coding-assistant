@@ -17,40 +17,63 @@ defmodule CodingAgent.Core.Compaction do
 
   Design (docs/source/explanation/memory.rst):
 
-  - **Trigger**: the provider's own last-turn input_tokens (ground
-    truth — chars estimates drift) crossing an ABSOLUTE token
-    threshold; chars are only the first-turn fallback when no usage
-    data exists. The trigger decision itself is the Compactor's.
-  - **Boundary**: the summary covers everything except the last
-    `@keep_recent` messages (never compact the freshest exchanges —
-    that is what the model is about to reason over).
-  - **The summary is produced by the model itself** via a dedicated
-    compaction call on the rendered old span; a summary message
-    replaces the compacted span.
+  - **Trigger**: the two limits (soft/hard) live in the Compactor; this
+    module only turns a decided token threshold into a span plan.
+  - **The system message is never summarized.** It is the framework
+    prompt (ADR 024) and the agent body (ADR 017); losing it blinded the
+    agent after the first compaction (found live: a compacted session
+    had zero system messages, so `Prompt.with_environment/3` and
+    `with_todos/2` silently no-op'd — the model ran on a summary and a
+    bare tail). `split/1` keeps message 0 when it is a system message.
+  - **Boundary-safe tail**: the keep span starts at a complete exchange.
+    Cutting at a message count could put a `:tool` result in the tail
+    whose declaring assistant call was summarized away, or vice versa
+    (found live: the kept tail began with a `:tool` message).
+  - **Fact-carrying summary**: `render/1` keeps tool NAMES and call
+    arguments, not just text parts. The old render dropped `tool_calls`
+    (assistant calls are text-empty) and `msg.name`, so the summary could
+    not say *which* file was read or *which* command ran — the resumed
+    agent re-derived work it had already done (found live: 29 rewrites
+    of one document).
   - **Dual view note (v1)**: the CLI transcript is ephemeral, so v1
     compaction rewrites the agent view only. When the dual-view
     transcript lands (phase 5), the display view is the immutable
     record this operation must never touch.
   """
 
+  alias CodingAgent.Core.ToolCall
   alias ReqLLM.Context
 
-  @keep_recent 6
+  # A complete exchange is a user message, or an assistant message plus
+  # the tool results that answer it. The old fixed "last 6 messages"
+  # boundary could split such a pair; the tail is now chosen by complete
+  # exchanges, and @min_keep bounds how little survives.
+  @min_keep 6
 
-  @default_trigger_tokens 180_000
+  # A result longer than this is truncated in the rendered span (the
+  # marker is explicit, never a silent drop); the summarizer does not
+  # need a full 200 KB tool dump to record "ran the suite, 922 passed".
+  @render_result_chars 2_000
 
-  def keep_recent, do: @keep_recent
-  def default_trigger_tokens, do: @default_trigger_tokens
+  # The summarizer input is bounded: one giant old span (measured at
+  # 193 messages / ~42k tokens) became a minutes-long non-streaming
+  # call. A hard cap keeps the summarize call predictable; the marker
+  # makes the truncation honest.
+  @max_summary_input_chars 300_000
+
+  @doc "Minimum number of recent messages a compaction keeps verbatim."
+  @spec min_keep() :: pos_integer()
+  def min_keep, do: @min_keep
 
   @doc """
-  First-turn fallback plan (no usage data yet): chars-based, `:none`
+  The first-turn fallback plan (no usage data yet): chars-based, `:none`
   when below `trigger_chars`, otherwise `{:ok, summary_span,
   keep_span}`. The session-level decision (`Session.Compactor.decide/2`)
   only reaches this when usage is genuinely unknown.
   """
   @spec plan(Context.t()) :: :none | {:ok, summary_span :: list(), keep_span :: list()}
   def plan(%Context{messages: msgs}) do
-    if total_chars(msgs) < trigger_chars() do
+    if span_chars(msgs) < trigger_chars() do
       :none
     else
       split(msgs)
@@ -59,17 +82,13 @@ defmodule CodingAgent.Core.Compaction do
 
   @doc """
   Token-based trigger: compact when the last observed input_tokens
-  cross the absolute threshold (`trigger_tokens`). `last_input_tokens:
+  cross the decided threshold (`trigger_tokens`). `last_input_tokens:
   0` (no usage data yet) never triggers — the caller falls back to
   the chars-based plan.
   """
   @spec plan_tokens(Context.t(), non_neg_integer(), pos_integer()) ::
           :none | {:ok, summary_span :: list(), keep_span :: list()}
-  def plan_tokens(
-        %Context{messages: msgs},
-        last_input_tokens,
-        trigger_tokens \\ @default_trigger_tokens
-      ) do
+  def plan_tokens(%Context{messages: msgs}, last_input_tokens, trigger_tokens) do
     if last_input_tokens >= trigger_tokens do
       split(msgs)
     else
@@ -77,72 +96,269 @@ defmodule CodingAgent.Core.Compaction do
     end
   end
 
-  # The boundary: everything except the last @keep_recent messages.
-  defp split(msgs) do
-    case msgs do
-      msgs when length(msgs) > @keep_recent ->
-        {old, keep} = Enum.split(msgs, length(msgs) - @keep_recent)
-        {:ok, old, keep}
+  @doc """
+  Splits a message list into the span to summarize and the tail to keep.
 
-      # too small to compact anything (old span would be empty)
-      _ ->
+  Three rules, each a live-found bug:
+
+    * the **system message** (index 0, when present) is never summarized
+      — it is the framework/agent prompt, not conversation; it is also
+      excluded from `summary_span` so the summarizer is not fed the
+      prompt it would only re-state;
+    * the tail starts at a **complete exchange** boundary: never between
+      an assistant call and its tool results, and never on a bare tool
+      result whose declaring assistant message would be summarized;
+    * at least `min_keep/0` messages survive when the context is large
+      enough to compact at all.
+
+  Returns `:none` when there is nothing worth compacting.
+  """
+  @spec split(list()) :: :none | {:ok, summary_span :: list(), keep_span :: list()}
+  def split(msgs) do
+    {_system, convo} = take_system(msgs)
+    boundary = keep_start(convo)
+
+    cond do
+      convo == [] ->
         :none
+
+      boundary <= 0 ->
+        # everything is the tail (nothing old enough to summarize)
+        :none
+
+      true ->
+        {old, keep} = Enum.split(convo, boundary)
+        {:ok, old, keep}
     end
   end
 
+  # The system message stays pinned to the front; it is summarized by
+  # nobody. A context without one (a bare test context) has no prefix.
+  defp take_system([%ReqLLM.Message{role: :system} = sys | rest]), do: {[sys], rest}
+  defp take_system(msgs), do: {[], msgs}
+
+  # The index into `convo` where the kept tail begins, chosen so the
+  # tail is a whole number of exchanges and holds at least @min_keep
+  # messages when possible.
+  #
+  # The default cut keeps the last @min_keep messages; it is then
+  # snapped BACKWARD to the nearest exchange head (a :user message, or
+  # an :assistant message whose tool results follow). Backward — not
+  # forward — so the tail can never become empty and the kept exchange
+  # is always whole: a bare :tool result at the cut belongs to an
+  # assistant call that must stay with it.
+  defp keep_start(convo) do
+    n = length(convo)
+
+    if n <= @min_keep do
+      0
+    else
+      snap_back(convo, n - @min_keep)
+    end
+  end
+
+  defp snap_back(_convo, 0), do: 0
+
+  defp snap_back(convo, idx) do
+    case exchange_head(Enum.at(convo, idx)) do
+      {:user, _} -> idx
+      {:assistant, _} -> idx
+      :other -> snap_back(convo, idx - 1)
+    end
+  end
+
+  defp exchange_head(%ReqLLM.Message{role: :user} = m), do: {:user, m}
+  defp exchange_head(%ReqLLM.Message{role: :assistant} = m), do: {:assistant, m}
+  defp exchange_head(_), do: :other
+
   @doc """
   Applies a summary: replaces the summarized span with one synthetic
-  user message carrying the summary. Returns the new context (or the
-  original when there is nothing to compact).
+  user message carrying the summary, keeping the pinned system message
+  and the tail. Returns the new context (or the original when there is
+  nothing to compact).
   """
   @spec apply(Context.t(), summary_text :: String.t()) :: Context.t()
   def apply(%Context{messages: msgs} = ctx, summary_text) do
-    case split(msgs) do
-      {:ok, _old, keep} ->
-        summary_msg = %ReqLLM.Message{
-          role: :user,
-          content: [ReqLLM.Message.ContentPart.text(compact_summary_text(summary_text))]
-        }
+    {system, convo} = take_system(msgs)
+    boundary = keep_start(convo)
 
-        %Context{ctx | messages: [summary_msg | keep]}
+    if convo == [] or boundary <= 0 do
+      ctx
+    else
+      {_old, keep} = Enum.split(convo, boundary)
 
-      :none ->
-        ctx
+      summary_msg = %ReqLLM.Message{
+        role: :user,
+        content: [ReqLLM.Message.ContentPart.text(compact_summary_text(summary_text))]
+      }
+
+      %Context{ctx | messages: system ++ [summary_msg | keep]}
     end
   end
 
   @doc """
   Renders the summary span as one text block for the summarizer model —
-  the only place message text is flattened for an LLM call. (The UI
-  renders its own transcript; that view is display-only and never
-  touches compaction.)
+  the only place message text is flattened for an LLM call. Tool calls
+  and their arguments, and tool-result names, are included so the
+  summary can preserve *what was done*, not just prose. The result is
+  bounded by `@max_summary_input_chars`, with an explicit marker.
   """
   @spec render(list()) :: String.t()
   def render(msgs) do
-    Enum.map_join(msgs, "\n\n", fn
-      %ReqLLM.Message{role: role, content: parts} when is_list(parts) ->
-        text =
-          Enum.map_join(parts, "", fn
-            %ReqLLM.Message.ContentPart{text: t} when is_binary(t) -> t
-            _ -> ""
-          end)
+    rendered = Enum.map_join(msgs, "\n\n", &render_message/1)
+    bound_input(rendered)
+  end
 
-        "[#{role}] #{text}"
+  defp render_message(%ReqLLM.Message{role: :assistant} = msg) do
+    calls = msg.tool_calls || []
+    text = text_of(msg)
 
-      %ReqLLM.Message{role: role, content: c} when is_binary(c) ->
-        "[#{role}] #{c}"
+    cond do
+      calls == [] ->
+        "[assistant] #{text}"
 
-      _ ->
-        ""
+      text == "" ->
+        "[assistant] → " <> Enum.map_join(calls, "; ", &render_call/1)
+
+      true ->
+        "[assistant] #{text}\n→ " <> Enum.map_join(calls, "; ", &render_call/1)
+    end
+  end
+
+  defp render_message(%ReqLLM.Message{role: :tool} = msg) do
+    name = msg.name || "tool"
+    "[tool:#{name}] #{truncate(text_of(msg), @render_result_chars)}"
+  end
+
+  defp render_message(%ReqLLM.Message{role: role} = msg) do
+    "[#{role}] #{text_of(msg)}"
+  end
+
+  defp render_message(_), do: ""
+
+  defp render_call(call) do
+    {_id, name, args} = ToolCall.normalize(call)
+
+    case args do
+      m when map_size(m) == 0 -> name
+      m -> "#{name}(#{Jason.encode!(m)})"
+    end
+  end
+
+  # Concatenated text of a message's content parts/binary, trimmed.
+  defp text_of(%ReqLLM.Message{content: parts}) when is_list(parts) do
+    Enum.map_join(parts, "", fn
+      %ReqLLM.Message.ContentPart{text: t} when is_binary(t) -> t
+      _ -> ""
     end)
   end
 
+  defp text_of(%ReqLLM.Message{content: c}) when is_binary(c), do: c
+  defp text_of(_), do: ""
+
+  defp truncate(text, max) when byte_size(text) <= max, do: text
+
+  defp truncate(text, max) do
+    head = String.slice(text, 0, max)
+
+    head <>
+      "\n\n[... truncated for the summary: #{byte_size(text)} chars total, showing first #{max} ...]"
+  end
+
+  defp bound_input(text) when byte_size(text) <= @max_summary_input_chars, do: text
+
+  defp bound_input(text) do
+    # Keep the head (the older, already-summarized context is often
+    # repetitive) and the tail (the most recent, most relevant facts)
+    # roughly evenly; the marker makes the loss honest.
+    half = div(@max_summary_input_chars, 2)
+    head = binary_part(text, 0, half)
+    tail = binary_part(text, byte_size(text) - half, half)
+
+    head <>
+      "\n\n[... summarize input truncated: #{byte_size(text)} chars total; " <>
+      "showing first and last #{half} ...]\n\n" <> tail
+  end
+
+  @doc """
+  Deterministic last-resort trim (ADR 037, the hard-limit fallback):
+  drops the oldest complete exchanges — the system message is pinned —
+  until the estimated tokens are under `target_tokens`, always keeping
+  `min_keep/0` recent messages. Returns `{:ok, context, dropped_count}`
+  or `:none` when nothing can be dropped.
+
+  This is lossy by design: it is the alternative to sending a request
+  the provider would reject. `render`/`apply` remain the normal path.
+  """
+  @spec trim(Context.t(), pos_integer()) :: {:ok, Context.t(), non_neg_integer()} | :none
+  def trim(%Context{messages: msgs} = ctx, target_tokens) do
+    {system, convo} = take_system(msgs)
+
+    cond do
+      convo == [] ->
+        :none
+
+      estimated_tokens(system ++ convo) <= target_tokens ->
+        :none
+
+      true ->
+        keep = trim_keep(convo, target_tokens, system)
+        dropped = length(convo) - length(keep)
+
+        if dropped <= 0 do
+          :none
+        else
+          {:ok, %Context{ctx | messages: system ++ keep}, dropped}
+        end
+    end
+  end
+
+  # Drop from the front in whole exchanges; stop when under target or
+  # when only min_keep messages would remain.
+  defp trim_keep(convo, target_tokens, system) do
+    if length(convo) <= @min_keep or estimated_tokens(system ++ convo) <= target_tokens do
+      convo
+    else
+      # advance past the first complete exchange (user, or assistant+tool
+      # results) and recurse
+      trimmed = drop_first_exchange(convo)
+
+      if length(trimmed) >= length(convo) do
+        convo
+      else
+        trim_keep(trimmed, target_tokens, system)
+      end
+    end
+  end
+
+  # Drop one leading exchange: a :user message, or an :assistant message
+  # and the :tool results that answer it.
+  defp drop_first_exchange([%ReqLLM.Message{role: :user} | rest]), do: rest
+
+  defp drop_first_exchange([%ReqLLM.Message{role: :assistant} | rest]) do
+    drop_leading_tools(rest)
+  end
+
+  # a context that does not begin with a user/assistant message: drop the
+  # single leading message so the recursion always advances
+  defp drop_first_exchange([_ | rest]), do: rest
+
+  defp drop_leading_tools([%ReqLLM.Message{role: :tool} | rest]), do: drop_leading_tools(rest)
+  defp drop_leading_tools(rest), do: rest
+
+  @doc "Estimated tokens of a message list (chars/4)."
+  @spec estimated_tokens(list()) :: non_neg_integer()
+  def estimated_tokens(msgs), do: div(total_chars(msgs), 4)
+
   @doc "Total chars over all message text parts — the cheap size proxy."
   @spec total_chars(list()) :: non_neg_integer()
-  def total_chars(msgs) do
-    Enum.reduce(msgs, 0, fn msg, acc ->
-      acc + message_chars(msg)
-    end)
+  def total_chars(msgs), do: Enum.reduce(msgs, 0, fn m, acc -> acc + message_chars(m) end)
+
+  @doc "Chars over the span that would actually be summarized (excludes system)."
+  @spec span_chars(list()) :: non_neg_integer()
+  def span_chars(msgs) do
+    {system, convo} = take_system(msgs)
+    total_chars(system) + total_chars(convo)
   end
 
   defp message_chars(%ReqLLM.Message{content: parts}) when is_list(parts) do

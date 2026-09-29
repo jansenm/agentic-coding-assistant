@@ -106,6 +106,22 @@ naming the file (ADR 014).
      - ``1``
      - How many file checkpoints a session keeps for ``/undo`` (ADR 036).
        ``0`` disables checkpoints.
+   * - ``context_window``
+     - integer
+     - *catalog*
+     - The model's context window in tokens (ADR 037), for the two
+       compaction limits. Resolution: this key, then the catalog window,
+       then the 500000 fallback. Set it for a cloud model absent from the
+       catalog.
+   * - ``compaction_soft_ratio``
+     - number
+     - ``0.5``
+     - Fraction of the window at which an IDLE session compacts (ADR 037).
+   * - ``compaction_hard_reserve_tokens``
+     - integer
+     - ``64000``
+     - Tokens held back under the window for the hard (pre-call)
+       compaction limit (ADR 037): ``hard = window - reserve``.
    * - ``store``
      - string
      - *unset*
@@ -137,9 +153,12 @@ built-in default. They are listed here so the surface is complete.
    * - App-env key
      - Default
      - Meaning
-   * - ``:compaction_trigger_tokens``
-     - ``180000``
-     - Absolute token count that triggers compaction.
+   * - ``:compaction_soft_ratio``
+     - ``0.5``
+     - Default soft compaction ratio (ADR 037) when not set in ``config.toml``.
+   * - ``:compaction_hard_reserve_tokens``
+     - ``64000``
+     - Default hard-limit reserve (ADR 037) when not set in ``config.toml``.
    * - ``:compaction_wall_clock_ms``
      - ``300000``
      - Hard wall-clock bound on the summarize call.
@@ -148,7 +167,8 @@ built-in default. They are listed here so the surface is complete.
      - Inactivity bound inside the summarize call.
    * - ``:context_window_tokens``
      - ``500000``
-     - Context window of the configured model, for the sidebar percentage.
+     - Fallback context window (ADR 037) when neither ``config.toml`` nor
+       the catalog provides one.
    * - ``:store_path``
      - *unset*
      - Hard store-path override (the test seam and what ``--store`` sets).

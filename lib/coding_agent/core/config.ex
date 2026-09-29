@@ -24,7 +24,6 @@ defmodule CodingAgent.Core.Config do
   """
 
   alias CodingAgent.Core.Agent
-  alias CodingAgent.Core.Compaction
   alias CodingAgent.Core.Sandbox.Mounts
   alias CodingAgent.Core.UserConfig
 
@@ -34,6 +33,8 @@ defmodule CodingAgent.Core.Config do
   @default_max_tool_rounds 100
   @default_subagent_concurrency 3
   @default_context_window_tokens 500_000
+  @default_compaction_soft_ratio 0.5
+  @default_compaction_hard_reserve_tokens 64_000
   @default_compaction_wall_clock_ms 300_000
   @default_compaction_inactivity_ms 120_000
   @default_provider_retries 3
@@ -176,14 +177,51 @@ defmodule CodingAgent.Core.Config do
   end
 
   @doc """
-  Absolute compaction trigger in tokens. The default lives in
-  `Compaction.default_trigger_tokens/0` (one source).
+  Soft compaction ratio of the model window (ADR 037): the fraction at
+  which an IDLE session summarizes down. Resolution mirrors the other
+  runtime knobs: the layered ``compaction_soft_ratio`` in ``config.toml``
+  (project over global), the app-env override, then the built-in default
+  (0.5).
   """
-  @spec compaction_trigger_tokens() :: pos_integer()
-  def compaction_trigger_tokens,
-    do: app(:compaction_trigger_tokens, Compaction.default_trigger_tokens())
+  @spec compaction_soft_ratio(String.t() | nil | t()) :: float()
+  def compaction_soft_ratio, do: compaction_soft_ratio(nil)
 
-  @doc "Hard wall-clock bound on the summarize call, in milliseconds."
+  def compaction_soft_ratio(%__MODULE__{} = snapshot),
+    do:
+      configured_ratio(snapshot, "compaction_soft_ratio") ||
+        app(:compaction_soft_ratio, @default_compaction_soft_ratio)
+
+  def compaction_soft_ratio(scope_root), do: compaction_soft_ratio(snapshot(scope_root))
+
+  @doc """
+  Absolute reserve held back under the model window for the HARD limit
+  (ADR 037), in tokens: the hard limit is ``window - reserve``, so one
+  maximum tool result cannot overflow the window mid-turn. Resolution
+  mirrors the other runtime knobs; default 64_000 (≈ one 256 KiB tool
+  result plus response headroom).
+  """
+  @spec compaction_hard_reserve_tokens(String.t() | nil | t()) :: pos_integer()
+  def compaction_hard_reserve_tokens, do: compaction_hard_reserve_tokens(nil)
+
+  def compaction_hard_reserve_tokens(%__MODULE__{} = snapshot),
+    do:
+      configured_count(snapshot, "compaction_hard_reserve_tokens") ||
+        app(:compaction_hard_reserve_tokens, @default_compaction_hard_reserve_tokens)
+
+  def compaction_hard_reserve_tokens(scope_root),
+    do: compaction_hard_reserve_tokens(snapshot(scope_root))
+
+  # A positive float (or integer) ratio in the layered config, else nil.
+  defp configured_ratio(%__MODULE__{config: config}, key) do
+    case config[key] do
+      n when is_number(n) and n > 0 -> n * 1.0
+      _ -> nil
+    end
+  end
+
+  @doc """
+  Hard wall-clock bound on the summarize call, in milliseconds.
+  """
   @spec compaction_wall_clock_ms() :: pos_integer()
   def compaction_wall_clock_ms,
     do: app(:compaction_wall_clock_ms, @default_compaction_wall_clock_ms)
@@ -193,10 +231,56 @@ defmodule CodingAgent.Core.Config do
   def compaction_inactivity_ms,
     do: app(:compaction_inactivity_ms, @default_compaction_inactivity_ms)
 
-  @doc "Context window of the configured model, in tokens (sidebar %)."
-  @spec context_window_tokens() :: pos_integer()
-  def context_window_tokens,
-    do: app(:context_window_tokens, @default_context_window_tokens)
+  @doc """
+  The model's context window in tokens, resolved once at session init
+  (ADR 037). Resolution, strongest first:
+
+    1. the layered ``context_window`` in ``config.toml`` (project over
+       global) — needed for cloud models absent from the catalog;
+    2. the catalog window (``Providers.window_tokens/1``, llm_db);
+    3. the app-env ``:context_window_tokens`` fallback (default 500k).
+
+  Accepts a scope root or an already-read snapshot, plus the model spec.
+  """
+  @spec context_window(String.t() | nil | t(), String.t() | nil) :: pos_integer()
+  def context_window(scope_or_snapshot \\ nil, model \\ nil)
+
+  def context_window(%__MODULE__{} = snapshot, model) do
+    configured_window(snapshot) ||
+      CodingAgent.Core.Providers.window_tokens(model) ||
+      app(:context_window_tokens, @default_context_window_tokens)
+  end
+
+  def context_window(scope_root, model), do: context_window(snapshot(scope_root), model)
+
+  defp configured_window(%__MODULE__{config: config}) do
+    case config["context_window"] do
+      n when is_integer(n) and n > 0 -> n
+      _ -> nil
+    end
+  end
+
+  @doc """
+  The resolved compaction window and limits (ADR 037): `{window, soft,
+  hard}`. One reader of the ratio/reserve policy, so the session
+  resolves it ONCE at init and the sidebar/decision never re-read the
+  layered config per frame (the CPU-storm lesson). ``soft`` is clamped
+  to ``hard`` so the order never inverts on a small window.
+  """
+  @spec compaction_limits(String.t() | nil | t(), String.t() | nil) ::
+          {pos_integer(), pos_integer(), pos_integer()}
+  def compaction_limits(scope_or_snapshot \\ nil, model \\ nil)
+
+  def compaction_limits(%__MODULE__{} = snapshot, model) do
+    window = context_window(snapshot, model)
+    reserve = compaction_hard_reserve_tokens(snapshot)
+    hard = max(window - reserve, 1)
+    ratio = compaction_soft_ratio(snapshot)
+    soft = min(round(window * ratio), hard)
+    {window, max(soft, 1), hard}
+  end
+
+  def compaction_limits(scope_root, model), do: compaction_limits(snapshot(scope_root), model)
 
   @doc """
   How many times a provider TIMEOUT is retried before the turn fails.

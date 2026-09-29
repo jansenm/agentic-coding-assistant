@@ -287,6 +287,10 @@ same problem viewed from different ends.
      (+ % of window) and the compacts-at line; the session warns
      once at 80% of the trigger ("compaction at 180k will summarize
      older messages") so compaction is never a silent surprise.
+     **Superseded by ADR 037 (2026-09-29)**: the absolute 180k is
+     replaced by a window-relative soft limit (idle, default 50%) and
+     a hard limit (`window - reserve`), and the summarize path now
+     preserves tool/command/file facts instead of prose.
    - **5g. Live-session polish pass** ✅ — from the first real
      working session (resume of tui-1730): reasoning deltas carry
      doubled newlines sent as SEPARATE delta events ('\n' + '\n') —

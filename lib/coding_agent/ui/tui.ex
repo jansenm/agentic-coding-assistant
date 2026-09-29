@@ -442,6 +442,18 @@ defmodule CodingAgent.UI.Tui do
           _ -> nil
         end
 
+      # the two compaction limits (ADR 037), mirrored for the sidebar:
+      # the session resolved them once at init; the render path must not
+      # re-read the layered config per frame.
+      {compaction_window, compaction_soft, compaction_hard} =
+        case Session.state(effective_id) do
+          {:ok, st} ->
+            {Compactor.window(st), Compactor.soft_limit(st), Compactor.hard_limit(st)}
+
+          _ ->
+            {0, 0, 0}
+        end
+
       initial = %{
         session_id: effective_id,
         model: session_model,
@@ -541,6 +553,10 @@ defmodule CodingAgent.UI.Tui do
         # the sidebar's effort line renders what the SESSION resolved
         # (ADR 029), not a per-frame config re-read
         session_effort: session_effort,
+        # the two compaction limits the session resolved (ADR 037)
+        compaction_window: compaction_window,
+        compaction_soft: compaction_soft,
+        compaction_hard: compaction_hard,
         # picker mode fields (nil = not in picker mode; set by
         # mount_picker only)
         picker: nil,
@@ -4511,13 +4527,15 @@ defmodule CodingAgent.UI.Tui do
 
   defp sidebar_widget(state) do
     usage = CodingAgent.Core.Session.Usage.from_map(Map.get(state, :session_usage))
-    window = CodingAgent.Core.Config.context_window_tokens()
+    window = Map.get(state, :compaction_window, 0)
 
-    # ONE reader of the compaction policy: the sidebar renders the same
-    # trigger/warn numbers the Compactor decides on (the old copies
-    # re-read the config key and re-hardcoded the 0.8 fraction).
-    trigger = Compactor.trigger()
-    warn_at = Compactor.warn_threshold()
+    # The two limits the SESSION resolved once at init (ADR 037), mirrored
+    # like the model/effort: the render path must not re-read the layered
+    # config per frame. Soft is the idle threshold the warning tracks
+    # (80% of it); hard is `window - reserve`, the pre-call safety net.
+    soft = Map.get(state, :compaction_soft, 0)
+    hard = Map.get(state, :compaction_hard, 0)
+    warn_at = trunc(soft * 0.8)
 
     # per-frame UserConfig.load removed (the CPU storm): the sidebar
     # renders the value the LIVE SESSION resolved (state.session_effort,
@@ -4556,8 +4574,8 @@ defmodule CodingAgent.UI.Tui do
     #
     # Labels are per-block for a reason: `definition_list/2` pads to the
     # widest label of ITS list, so the identity block pads to "provider"
-    # (8) and the stats block to "compacts at" (11) — one list would pad
-    # every identity row by three cells to accommodate a stats label.
+    # (8) and the stats block to "tokens out" (10) — one list would pad
+    # every identity row to accommodate a stats label.
     identity =
       agent_rows(running, next_agent, busy?) ++
         model_rows(Map.get(state, :model)) ++
@@ -4569,7 +4587,8 @@ defmodule CodingAgent.UI.Tui do
         {"tokens in", {:decimal, fmt_k(Usage.input_tokens(usage)), nil}},
         {"tokens out", {:decimal, fmt_k(Usage.output_tokens(usage)), nil}},
         {"context", {:decimal, fmt_k(last_in), " (#{pct}% win)"}, pct_role},
-        {"compacts at", {:decimal, fmt_k(trigger), " tok"}, pct_role}
+        {"soft at", {:decimal, fmt_k(soft), " tok"}, pct_role},
+        {"hard at", {:decimal, fmt_k(hard), " tok"}, pct_role}
       ]
 
     cost_line =
