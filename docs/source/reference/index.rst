@@ -10,3 +10,4 @@ mechanism is shaped this way, follow the decision-record links.
    :maxdepth: 1
 
    configuration
+   commands

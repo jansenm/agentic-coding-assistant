@@ -3,6 +3,11 @@ defmodule CodingAgent.UI.Menu do
   Command menus as DATA (extends ADR 011's keymap-as-data discipline to
   menus).
 
+  The command table is ``CodingAgent.UI.Commands`` (ADR 034) — the ONE
+  registry. This module only PROJECTS it into menu items, so the
+  ``ctrl-x`` menu and the ``/`` palette can never disagree about what a
+  command is.
+
   One prefix chord (`ctrl-x` in v1) starts a menu interaction. Two
   outcomes, distinguished by timing:
 
@@ -11,11 +16,10 @@ defmodule CodingAgent.UI.Menu do
   - the timeout shows the POPUP instead (navigate with arrows, enter
     picks) — the ctrl-p-style menu.
 
-  Menus are views over one command table: each item declares which
-  menu it belongs to, so the table can grow without cramming
-  everything into one popup (the owner's objection to opencode's
-  single menu).
+  Items come from the registry records that declare a fast-path ``key``.
   """
+
+  alias CodingAgent.UI.Commands
 
   @typedoc "One menu item: action + presentation + behavior."
   @type item :: %{
@@ -31,73 +35,23 @@ defmodule CodingAgent.UI.Menu do
   @typedoc "A menu definition: id + items."
   @type t :: %{id: atom(), items: [item()], title: String.t()}
 
-  # -- Command table ----------------------------------------------------------
-  # v1: switch session (the working item), keys/help. The fast-path
-  # letter is unique per menu — one table, one prefix for now.
+  # Actions whose target list is a TUI-owned popup (the session list, the
+  # model list, the subagent tabs). The menu opens that popup instead of
+  # running the action inline.
+  @popup_actions [:switch_session, :switch_model, :subagents]
+
+  @doc "The command table, projected to menu items (ADR 034)."
   @spec commands() :: [item()]
   def commands do
-    [
+    Enum.map(Commands.menu_commands(), fn c ->
       %{
-        action: :switch_session,
-        key: "s",
-        label: "switch session",
+        action: c.action,
+        key: c.key,
+        label: c.summary,
         menu: :main,
-        needs_popup: true
-      },
-      %{
-        action: :toggle_tool_output,
-        key: "t",
-        label: "toggle tool output",
-        menu: :main,
-        needs_popup: false
-      },
-      %{
-        action: :subagents,
-        key: "a",
-        label: "subagents",
-        menu: :main,
-        needs_popup: true
-      },
-      %{
-        action: :toggle_sidebar,
-        key: "p",
-        label: "toggle sidebar",
-        menu: :main,
-        needs_popup: false
-      },
-      %{
-        action: :show_keymaps,
-        key: "k",
-        label: "show keymaps",
-        menu: :main,
-        needs_popup: false
-      },
-      %{
-        # scroll diagnostics are developer output; off by default
-        action: :toggle_debug,
-        key: "d",
-        label: "toggle debug line",
-        menu: :main,
-        needs_popup: false
-      },
-      %{
-        # model switch: the popup lists catalog + discovered models
-        # (Core.Providers.Discovery). TUI-owned popup like switch_session
-        # (needs a live fetch, so Menu's placeholder popup is unused).
-        action: :switch_model,
-        key: "m",
-        label: "switch model",
-        menu: :main,
-        needs_popup: true
-      },
-      %{
-        action: :quit,
-        key: "q",
-        label: "quit",
-        menu: :main,
-        needs_popup: false
+        needs_popup: c.action in @popup_actions
       }
-    ]
+    end)
   end
 
   @doc "The menu definition the prefix chord opens."

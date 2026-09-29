@@ -34,6 +34,7 @@ defmodule CodingAgent.UI.Tui do
 
   alias CodingAgent.UI.{
     Bridge,
+    Commands,
     Composer,
     Editor,
     Keymap,
@@ -265,6 +266,10 @@ defmodule CodingAgent.UI.Tui do
       # [...], index: i} while open. `files` is the confined fd list
       # fetched once; `matches` is the filtered view. nil = closed.
       file_popup: nil,
+      # the `/` command palette (ADR 034): %{query: "...", matches: [...],
+      # index: i} while open. Unlike the file picker the candidate list is
+      # the static registry filtered in memory. nil = closed.
+      command_popup: nil,
       # subagent tabs (ADR 018): child_id => child state (identity,
       # transcript, stream, finished?). The live band names the leaf of
       # the active delegation. Empty until a `task` call starts a child.
@@ -517,6 +522,8 @@ defmodule CodingAgent.UI.Tui do
         todos: session_todos(effective_id),
         # the `@`-file picker (ADR 032); nil = closed
         file_popup: nil,
+        # the `/` command palette (ADR 034); nil = closed
+        command_popup: nil,
         last_error: nil,
         # 0 = follow the tail (auto-scroll); >0 = pinned N lines up
         scroll_offset: 0,
@@ -1438,11 +1445,16 @@ defmodule CodingAgent.UI.Tui do
           question? ->
             {:noreply, question_text(state, code)}
 
-          # `@` at a word boundary opens the file picker (ADR 032). The
-          # trigger is TEXT, not a keymap action: `@` is an ordinary char
-          # and must stay typable mid-word.
+          # `@` at a word boundary opens the file picker (ADR 032) and
+          # `/` at a word boundary opens the command palette (ADR 034).
+          # Both triggers are TEXT, not keymap actions: `@` and `/` are
+          # ordinary chars that must stay typable mid-word (an email, a
+          # path like `and/or`).
           code == "@" and at_word_boundary?(state) ->
             open_file_popup(state)
+
+          code == "/" and at_word_boundary?(state) ->
+            open_command_popup(state)
 
           true ->
             {:noreply, edit(state, {:text, code})}
@@ -2027,6 +2039,10 @@ defmodule CodingAgent.UI.Tui do
     handle_file_popup_key(ev, state)
   end
 
+  defp handle_menu_or_normal_key(ev, %{command_popup: popup} = state) when popup != nil do
+    handle_command_popup_key(ev, state)
+  end
+
   defp handle_menu_or_normal_key(ev, state) do
     # any key clears the transient menu note
     state = %{state | menu_note: nil}
@@ -2204,6 +2220,153 @@ defmodule CodingAgent.UI.Tui do
     (mods || []) |> Enum.any?(&(&1 in ["ctrl", "alt"]))
   end
 
+  # -- `/` command palette (ADR 034) -------------------------------------------
+
+  # The registry is static, so the palette only filters in memory; no
+  # process call, no scope. The typed `/` is consumed by the trigger.
+  defp open_command_popup(state) do
+    popup = %{query: "", matches: Commands.all(), index: 0}
+    {:noreply, %{state | command_popup: popup}}
+  end
+
+  defp handle_command_popup_key(%Event.Key{code: "enter"}, state) do
+    case Enum.at(state.command_popup.matches, state.command_popup.index) do
+      nil ->
+        {:noreply, %{state | command_popup: nil}}
+
+      command ->
+        run_command(command, [], state)
+    end
+  end
+
+  defp handle_command_popup_key(%Event.Key{code: code}, state)
+       when code in ["esc", "escape"] do
+    {:noreply, %{state | command_popup: nil}}
+  end
+
+  defp handle_command_popup_key(%Event.Key{code: "up"}, state) do
+    idx = max(state.command_popup.index - 1, 0)
+    {:noreply, %{state | command_popup: %{state.command_popup | index: idx}}}
+  end
+
+  defp handle_command_popup_key(%Event.Key{code: "down"}, state) do
+    last = length(state.command_popup.matches) - 1
+    idx = min(state.command_popup.index + 1, max(last, 0))
+    {:noreply, %{state | command_popup: %{state.command_popup | index: idx}}}
+  end
+
+  defp handle_command_popup_key(%Event.Key{code: "backspace"}, state) do
+    query = String.slice(state.command_popup.query, 0..-2//1)
+    {:noreply, %{state | command_popup: refilter_command_popup(state.command_popup, query)}}
+  end
+
+  defp handle_command_popup_key(%Event.Key{code: code, modifiers: mods}, state)
+       when is_binary(code) do
+    if ctrl_or_alt?(mods) or String.length(code) != 1 do
+      {:noreply, state}
+    else
+      query = state.command_popup.query <> code
+      {:noreply, %{state | command_popup: refilter_command_popup(state.command_popup, query)}}
+    end
+  end
+
+  defp handle_command_popup_key(_ev, state), do: {:noreply, state}
+
+  defp refilter_command_popup(popup, query) do
+    %{popup | query: query, matches: Commands.filter(query), index: 0}
+  end
+
+  # Runs a registry command. The record names an action the TUI already
+  # resolves through `run_command_action/3`; `args` is the trailing token
+  # list from `/name arg` (empty when chosen from the palette). Commands
+  # with an argument open their popup when the argument is absent.
+  defp run_command(%{action: action}, args, state), do: run_command_action(action, args, state)
+
+  defp run_command_action(:help, _args, state) do
+    rows =
+      Commands.help_lines()
+      |> Enum.map(fn line -> %{action: {:__info__, line}, key: "", label: ""} end)
+
+    {:noreply,
+     %{
+       state
+       | command_popup: nil,
+         menu_popup: %{id: :help, title: " help  (esc=close)", items: rows},
+         menu_popup_id: :help,
+         menu_index: 0
+     }}
+  end
+
+  defp run_command_action(:new_session, _args, state) do
+    # a fresh session for this directory (the picker's `n`), only from a
+    # live session (not the picker itself, which already offers it)
+    case picker_select(%{state | picker_opts: state.mount_opts || []}, :new) do
+      {:ok, st} -> {:noreply, st}
+      {:error, reason} -> {:noreply, status_note(state, "new session failed: #{inspect(reason)}")}
+    end
+  end
+
+  defp run_command_action(:switch_agent, [], state), do: switch_agent_command(state)
+
+  defp run_command_action(:switch_agent, [name | _], state) do
+    {:noreply, apply_agent_switch(state, name)}
+  end
+
+  defp run_command_action(:export, [format | _], state) do
+    export_current(state, format)
+  end
+
+  defp run_command_action(:export, [], state), do: export_current(state, "md")
+
+  # commands whose action is a plain menu action: reuse the one resolver
+  defp run_command_action(action, _args, state)
+       when action in [
+              :switch_session,
+              :switch_model,
+              :subagents,
+              :toggle_tool_output,
+              :toggle_sidebar,
+              :toggle_debug,
+              :show_keymaps,
+              :quit
+            ] do
+    state = %{state | command_popup: nil}
+    run_menu_action(action, state)
+  end
+
+  defp run_command_action(_action, _args, state), do: {:noreply, %{state | command_popup: nil}}
+
+  # `/agent` without an argument: like Tab, but named in a note. Falls
+  # back to the note when there is nothing to switch to.
+  defp switch_agent_command(state) do
+    case state.primary_agents do
+      [] -> {:noreply, status_note(state, "no primary agents to switch")}
+      _ -> {:noreply, switch_agent(state)}
+    end
+  end
+
+  # `/export`: export the CURRENT session (unlike the picker's `e`,
+  # which exports the SELECTED one). Writes into the scope root and
+  # reports the path, matching `export_selected/2`'s output.
+  defp export_current(state, format) do
+    fmt = if format in ["json", "md"], do: String.to_atom(format), else: :markdown
+    id = state.session_id
+
+    case CodingAgent.Core.Session.Export.data(id) do
+      {:ok, data} ->
+        {ext, body} = render_export(data, fmt)
+        path = Path.join(export_dir(%{scope_root: session_scope(id)}), "#{id}.#{ext}")
+
+        case File.write(path, body) do
+          :ok -> {:noreply, status_note(state, "exported #{id} → #{path}")}
+          {:error, reason} -> {:noreply, status_note(state, "export failed: #{inspect(reason)}")}
+        end
+
+      {:error, reason} ->
+        {:noreply, status_note(state, "export failed: #{inspect(reason)}")}
+    end
+  end
+
   defp run_menu_action(:switch_session, state), do: switch_session_popup(state)
 
   # Subagent tabs (ADR 018): open the tab of a child in this session, or
@@ -2330,7 +2493,7 @@ defmodule CodingAgent.UI.Tui do
         {:noreply, scroll_active(state, -5)}
 
       :send_input ->
-        {:noreply, send_input(state)}
+        send_input(state)
 
       :history_prev ->
         {:noreply, history_step(state, +1)}
@@ -2428,35 +2591,44 @@ defmodule CodingAgent.UI.Tui do
   defp send_input(state) do
     value = String.trim(ExRatatui.textarea_get_value(state.textarea))
 
-    if value == "" do
-      state
-    else
-      # attribute THIS turn to the agent the input was prepared for: the
-      # `next` slot. It stays in sync with what Session.run resolves
-      # (the next_agent at send time), so the composer's identity footer
-      # is correct even while a prior turn streams.
-      next_agent = Map.get(state, :next_agent)
+    cond do
+      value == "" ->
+        {:noreply, state}
 
-      run_prompt(state, value)
+      # a typed `/command` (a paste, or a completed word without the
+      # palette) runs the command instead of going to the model (ADR 034)
+      match?({:command, _, _}, Commands.parse(value)) ->
+        {:command, command, args} = Commands.parse(value)
+        run_command(command, args, %{state | textarea: ExRatatui.textarea_new()})
 
-      %{
-        state
-        | textarea: ExRatatui.textarea_new(),
-          history: [value | state.history],
-          history_index: nil,
-          transcript: state.transcript ++ [{:user, value}],
-          status: :running,
-          # a fresh turn: no stale esc arm or stream from the previous one
-          stop_confirm?: false,
-          stream: [],
-          stream_dirty?: false,
-          # start the silence clock now (see handle_info {:__run__, ...})
-          last_activity_at: now_ms(),
-          active_tool: nil,
-          tool_started_at: nil,
-          scroll_offset: 0,
-          turn_agents: Map.get(state, :turn_agents, []) ++ [next_agent]
-      }
+      true ->
+        # attribute THIS turn to the agent the input was prepared for: the
+        # `next` slot. It stays in sync with what Session.run resolves
+        # (the next_agent at send time), so the composer's identity footer
+        # is correct even while a prior turn streams.
+        next_agent = Map.get(state, :next_agent)
+
+        run_prompt(state, value)
+
+        {:noreply,
+         %{
+           state
+           | textarea: ExRatatui.textarea_new(),
+             history: [value | state.history],
+             history_index: nil,
+             transcript: state.transcript ++ [{:user, value}],
+             status: :running,
+             # a fresh turn: no stale esc arm or stream from the previous one
+             stop_confirm?: false,
+             stream: [],
+             stream_dirty?: false,
+             # start the silence clock now (see handle_info {:__run__, ...})
+             last_activity_at: now_ms(),
+             active_tool: nil,
+             tool_started_at: nil,
+             scroll_offset: 0,
+             turn_agents: Map.get(state, :turn_agents, []) ++ [next_agent]
+         }}
     end
   end
 
@@ -3351,9 +3523,57 @@ defmodule CodingAgent.UI.Tui do
     widgets ++
       menu_widgets(state, area) ++
       file_widgets(state, area) ++
+      command_widgets(state, area) ++
       budget_widgets(state, area) ++
       doom_widgets(state, area) ++
       question_widgets(state, area) ++ dialog_widgets(state, area)
+  end
+
+  # The `/` command palette (ADR 034): the same bottom-anchored, windowed
+  # popup as the file picker, but the candidate list is the static
+  # registry. Each row shows the usage and the summary.
+  defp command_widgets(%{command_popup: nil}, _area), do: []
+
+  defp command_widgets(state, area) do
+    popup = state.command_popup
+    items = popup.matches
+
+    room = overlay_room(state, area)
+    visible = max(room - 3, 1)
+    offset = window_offset(popup.index, length(items), visible)
+    window = Enum.slice(items, offset, visible)
+
+    rows =
+      window
+      |> Enum.with_index(offset)
+      |> Enum.map(fn {c, i} ->
+        marker = if i == popup.index, do: "❯ ", else: "  "
+        "#{marker}#{c.usage}  —  #{c.summary}"
+      end)
+
+    rows =
+      case rows do
+        [] -> ["  (no matching command)"]
+        _ -> rows
+      end
+
+    body = ([" / #{popup.query}"] ++ rows) |> Enum.join("\n")
+
+    w = min(70, area.width - 4)
+    rect = overlay_rect(state, area, length(rows) + 3, w)
+
+    widget = %Paragraph{
+      text: body,
+      style: Styles.surface(:chrome),
+      block:
+        Styles.panel(
+          title: " commands ",
+          surface: :chrome,
+          border_style: Styles.role(:accent, :chrome)
+        )
+    }
+
+    [{%Clear{}, rect}, {widget, rect}]
   end
 
   # The `@`-file picker popup (ADR 032): a bottom-anchored, windowed list
@@ -4580,33 +4800,36 @@ defmodule CodingAgent.UI.Tui do
         status_note(state, "no primary agents to switch")
 
       names ->
-        current = state.next_agent
-        next = next_agent_name(names, current)
-        scope = session_scope(state.session_id)
-        next_model = agent_model(scope, next)
+        apply_agent_switch(state, next_agent_name(names, state.next_agent))
+    end
+  end
 
-        case Session.set_agent(state.session_id, next) do
-          {:ok, _} ->
-            # while a turn streams the running slot stays the turn's own
-            # agent; idle, it follows the switch
-            state =
-              if state.status in [:running, :interrupting] do
-                %{state | next_agent: next, next_agent_model: next_model}
-              else
-                %{
-                  state
-                  | next_agent: next,
-                    running_agent: next,
-                    next_agent_model: next_model,
-                    running_agent_model: next_model
-                }
-              end
+  # Shared by Tab (`switch_agent/1`) and `/agent <name>`: set the next
+  # turn's agent and refresh the composer identity, keeping the running
+  # slot's attribution while a turn streams (ADR 018).
+  defp apply_agent_switch(state, name) do
+    scope = session_scope(state.session_id)
+    next_model = agent_model(scope, name)
 
-            status_note(state, "agent → #{next || "(none)"}")
+    case Session.set_agent(state.session_id, name) do
+      {:ok, _} ->
+        state =
+          if state.status in [:running, :interrupting] do
+            %{state | next_agent: name, next_agent_model: next_model}
+          else
+            %{
+              state
+              | next_agent: name,
+                running_agent: name,
+                next_agent_model: next_model,
+                running_agent_model: next_model
+            }
+          end
 
-          {:error, reason} ->
-            status_note(state, "agent switch failed: #{inspect(reason)}")
-        end
+        status_note(state, "agent → #{name || "(none)"}")
+
+      {:error, reason} ->
+        status_note(state, "agent switch failed: #{inspect(reason)}")
     end
   end
 

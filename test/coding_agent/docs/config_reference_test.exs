@@ -83,6 +83,31 @@ defmodule CodingAgent.Docs.ConfigReferenceTest do
     end
   end
 
+  test "every command in the registry is documented" do
+    page = File.read!(Path.expand("docs/source/reference/commands.rst", File.cwd!()))
+
+    for command <- CodingAgent.UI.Commands.all() do
+      assert String.contains?(page, "``#{command.usage}``"),
+             "command #{inspect(command.name)} (#{command.usage}) is missing from commands.rst"
+    end
+  end
+
+  test "every documented usage line is a real registry command" do
+    page = File.read!(Path.expand("docs/source/reference/commands.rst", File.cwd!()))
+
+    documented =
+      Regex.scan(~r/``(\/[a-z]+(?: \[[a-z|]+\])?)``/, page, capture: :all_but_first)
+      |> List.flatten()
+      |> Enum.uniq()
+
+    known = Enum.map(CodingAgent.UI.Commands.all(), & &1.usage)
+
+    for usage <- documented do
+      assert usage in known,
+             "commands.rst documents #{usage}, which is not in the registry"
+    end
+  end
+
   # -- helpers ----------------------------------------------------------------
 
   defp lib_sources do

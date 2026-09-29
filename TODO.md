@@ -82,17 +82,13 @@ ohne confinement. Alle sieben Slices sind gelandet:
 
 0. **Doku: Reference-Quadrant füllen.** Aufgesetzt (2026-09-29):
    `reference/index.rst` + `reference/configuration.rst` (alle Keys,
-   Defaults, Layer) + Drift-Test
+   Defaults, Layer) + `reference/commands.rst` (Slash-Commands aus der
+   Registry) + Drift-Tests
    (`test/coding_agent/docs/config_reference_test.exs`). Offen, sobald es
    sie gibt: `reference/cli.rst` (`mix tui`-Flags), `reference/tools.rst`
-   (Tool-Schemas), `reference/commands.rst` (Slash-Commands aus T7).
-   Anwender-Doku = Reference (Fakten); Tutorials/How-tos später.
-1. **Slash-Commands / Command-Palette (T7).** `/new`, `/sessions`,
-   `/models`, `/compact`, `/export`, `/undo`, `/help` machen die
-   bestehenden Aktionen auffindbar statt Tastenkürzel-Archäologie.
-2. **Undo/Redo via Git-Checkpoint + `/undo` (T8).** „Git ist das Undo“
-   ist ADR-015-Prinzip, aber ohne Nutzer-Verb; ein Checkpoint pro Turn
-   plus `/undo` paart mit der Permission-Story.
+   (Tool-Schemas). Anwender-Doku = Reference (Fakten); Tutorials/How-tos
+   später.
+1. **Undo/Redo via Git-Checkpoint + `/undo` (T8).**
 
 ## Kern-Features gegen opencode (T-Liste)
 
@@ -100,8 +96,8 @@ ohne confinement. Alle sieben Slices sind gelandet:
 | --- | --- | --- |
 | T4 | `todowrite`/Plan-Tool | **erledigt** (2026-09-28, ADR 031) |
 | T5 | `task`/Subagent inkl. Tab (ADR 017/018) | **erledigt** (2026-09-25): Seam + Tabs (Amendment (ii)) — Wire-Tagging, in-memory Tabs, Tab-Leiste/ctrl-x, Parallel-Cap |
-| T7 | Slash-Commands/Command-Palette | offen — nächste Schritte 1 |
-| T8 | Undo/Redo via Git-Checkpoint + `/undo` | offen — nächste Schritte 2 |
+| T7 | Slash-Commands/Command-Palette | **erledigt** (2026-09-29, ADR 034): `/`-Palette, `/help`, `ctrl-x`-Menü aus einer Registry |
+| T8 | Undo/Redo via Git-Checkpoint + `/undo` | offen — nächste Schritte 1 |
 | T9 | `websearch` neben `webfetch` | offen (Such-API-Abhängigkeit; `webfetch` ist da) |
 | T10 | `apply_patch`, LSP, Skills, MCP — inkl. fuzzy-match-Kette für `edit` | offen; `edit` ist exakt-match-only (opencode hat 9 Fuzzy-Strategien + LSP-Diagnostik nach jedem Edit) |
 | T13 | Verschachtelte `AGENTS.md` (Monorepo) | offen; wir lesen nur den Scope-Root einmal (`ProjectMemory.load/1`) |
