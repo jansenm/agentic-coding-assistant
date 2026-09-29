@@ -128,10 +128,12 @@ Consequences
   turn. On a large repo this is real time; it is the price of "always
   available" and is bounded by the same timeout as the git tool.
 - The repo gains a ``refs/coding-agent/`` namespace. It is invisible to
-  normal git usage and removable (`git update-ref -d`), but it is
-  state in the user's ``.git``; the harness prunes it to
-  ``checkpoint_depth`` and the session lifecycle verbs should clean it
-  when a session is deleted (to be wired with the store verbs).
+  normal git usage and removable (`git update-ref -d`), but it is state
+  in the user's ``.git``. It is kept bounded two ways: the live session
+  drops the ref of every checkpoint trimmed off the depth, and
+  ``Store.delete/1`` drops the refs of every checkpoint a departing
+  session still holds (the state is read before its row goes, because the
+  refs live in the scope repo, not the store).
 - **The restore deletes files**: any untracked, non-ignored file under
   the scope root that is absent from the checkpoint is removed. That is
   the intent (take back what the agent created), but it is the sharpest
@@ -162,6 +164,3 @@ Open questions
    nothing.
 4. **Large/binary worktrees.** ``git add -A`` hashes every file. A size
    or count guard (skip + warn) may be needed; measured before adding.
-5. **Ref cleanup on session delete.** ``Store.delete/1`` /
-   ``Store.prune`` should drop the session's checkpoint refs. Wire when
-   the feature lands.

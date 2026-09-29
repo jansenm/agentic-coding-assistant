@@ -115,6 +115,41 @@ defmodule CodingAgent.Core.CheckpointTest do
     assert Checkpoint.snapshot(%{root: plain, session_id: "s2"}, "s2") == :skip
   end
 
+  # Regression: two checkpoints in the SAME repo must not share one index
+  # backup (they used to overwrite each other's, losing the older staged
+  # state). The staged tree is now stored per checkpoint.
+  test "each checkpoint preserves ITS OWN staged state", %{scope: scope} do
+    write("a.txt", "v1\n")
+    git!(["add", "-A"])
+    git!(["commit", "-qm", "init"])
+
+    write("a.txt", "staged-A\n")
+    git!(["add", "a.txt"])
+    {:ok, cp_a} = Checkpoint.snapshot(scope, "s1")
+
+    write("a.txt", "staged-B\n")
+    git!(["add", "a.txt"])
+    {:ok, cp_b} = Checkpoint.snapshot(scope, "s1", cp_a.commit)
+
+    # restore the OLDER checkpoint: its staged state must win
+    :ok = Checkpoint.restore(scope, cp_a)
+    assert git!(["show", ":a.txt"]) == "staged-A\n"
+    assert read("a.txt") == "staged-A\n"
+
+    # and the newer one still has its own
+    :ok = Checkpoint.restore(scope, cp_b)
+    assert git!(["show", ":a.txt"]) == "staged-B\n"
+  end
+
+  test "the ref is keyed by commit, not session (no collision)", %{scope: scope} do
+    write("a.txt", "v1\n")
+    git!(["add", "-A"])
+    git!(["commit", "-qm", "init"])
+
+    {:ok, cp} = Checkpoint.snapshot(scope, "s1")
+    assert cp.ref == Checkpoint.ref_prefix() <> cp.commit
+  end
+
   test "snapshot chains checkpoints and restore drops the ref", %{scope: scope} do
     write("a.txt", "v1\n")
     git!(["add", "-A"])

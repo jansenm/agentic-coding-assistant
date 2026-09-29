@@ -93,4 +93,20 @@ defmodule CodingAgent.Core.Session.CheckpointUndoTest do
     {:ok, st} = Session.state(id)
     assert [%{commit: _}] = st.checkpoints
   end
+
+  test "deleting a session drops its checkpoint refs (ADR 036 cleanup)" do
+    id = "undo-cleanup-#{System.unique_integer([:positive])}"
+    start(id, writing_runner([{"new.txt", "agent made\n"}]))
+    {:ok, _} = Session.run(id, "go")
+
+    {:ok, st} = Session.state(id)
+    [%{ref: ref}] = st.checkpoints
+    assert git!(["for-each-ref", ref]) =~ ref
+
+    :ok = CodingAgent.Core.Session.Store.delete(id)
+
+    # the ref is gone; the user's own work is untouched
+    assert git!(["for-each-ref", ref]) == ""
+    assert File.exists?(Path.join(@root, "new.txt"))
+  end
 end

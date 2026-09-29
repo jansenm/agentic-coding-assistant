@@ -672,10 +672,17 @@ defmodule CodingAgent.Core.Session.Store do
 
   @doc """
   Deletes a persisted session (best effort): its row, its message rows
-  and display rows (no orphans), and its scratch directory (ADR 022).
+  and display rows (no orphans), its scratch directory (ADR 022), and its
+  git checkpoint refs (ADR 036).
   """
   @spec delete(String.t()) :: :ok
   def delete(id) do
+    # Read the state BEFORE the row goes, so the checkpoint refs (which
+    # live in the scope repo, not the store) can be dropped with the
+    # right scope root. Best effort: an unreadable/missing session has no
+    # refs to clean.
+    checkpoints = checkpoints_for_cleanup(id)
+
     with_db(fn db ->
       _ = exec(db, "DELETE FROM messages WHERE session_id = ?", [id])
       _ = exec(db, "DELETE FROM display WHERE session_id = ?", [id])
@@ -684,6 +691,28 @@ defmodule CodingAgent.Core.Session.Store do
     end)
 
     Scratch.remove(Scratch.path(id))
+    drop_checkpoints(checkpoints)
+    :ok
+  end
+
+  # The (scope, checkpoint) pairs a session's refs need to be dropped.
+  defp checkpoints_for_cleanup(id) do
+    case load(id) do
+      {:ok, %State{scope_root: root, checkpoints: cps}} when is_binary(root) and cps != [] ->
+        %{root: root, checkpoints: cps}
+
+      _ ->
+        nil
+    end
+  end
+
+  # Best effort: a repo that is gone (or a host without git) must not make
+  # deleting a session fail.
+  defp drop_checkpoints(nil), do: :ok
+
+  defp drop_checkpoints(%{root: root, checkpoints: cps}) do
+    scope = %{root: root}
+    Enum.each(cps, &CodingAgent.Core.Checkpoint.drop(scope, &1))
     :ok
   end
 
