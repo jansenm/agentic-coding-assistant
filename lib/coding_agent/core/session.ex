@@ -2283,11 +2283,20 @@ defmodule CodingAgent.Core.Session do
   #   * `:retry_timeout` — a transient timeout with nothing streamed (a
   #     timeout after partial output must NOT re-ask the model and
   #     duplicate text the human already saw);
-  #   * `:retry_empty`   — a clean finish that carried no content;
+  #   * `:retry_empty`   — a clean finish that carried NO ANSWER **and
+  #     streamed nothing**. "No answer" is `text: ""` and `tool_calls:
+  #     []`; reasoning blocks are ignored, because the first cut keyed on
+  #     `blocks: []` and so a reasoning-only finish (text `""`, no calls,
+  #     only `{:reasoning, …}` blocks) was accepted as a successful turn
+  #     — the session went idle showing just its last thought, the very
+  #     symptom this ADR set out to kill.
   #   * `:give_up`       — return the attempt's result unchanged (a
   #     non-timeout failure, or a successful/partial attempt);
-  #   * `{:give_up, reason}` — retries exhausted with an empty response:
-  #     a FAILED turn named for what happened, never a silent empty answer.
+  #   * `{:give_up, reason}` — a named failure. Empty with nothing
+  #     streamed and retries exhausted, or empty AFTER output streamed:
+  #     like a timeout after partial output, re-asking would duplicate
+  #     what the human already saw (here, the displayed reasoning), so it
+  #     fails the turn loudly instead.
   @doc false
   @spec llm_retry(term(), non_neg_integer(), boolean(), non_neg_integer()) ::
           :retry_timeout | :retry_empty | :give_up | {:give_up, term()}
@@ -2299,12 +2308,14 @@ defmodule CodingAgent.Core.Session do
     end
   end
 
-  def llm_retry({:ok, %{text: "", tool_calls: [], blocks: []}}, left, _streamed?, _total)
-      when left > 0,
-      do: :retry_empty
-
-  def llm_retry({:ok, %{text: "", tool_calls: [], blocks: []}}, 0, _streamed?, total),
-    do: {:give_up, {:empty_provider_response, total}}
+  def llm_retry({:ok, %{text: "", tool_calls: []}}, left, streamed?, total) do
+    cond do
+      # reasoning already reached the human: never re-ask on top of it
+      streamed? -> {:give_up, {:empty_provider_response, total}}
+      left > 0 -> :retry_empty
+      true -> {:give_up, {:empty_provider_response, total}}
+    end
+  end
 
   def llm_retry(_result, _left, _streamed?, _total), do: :give_up
 

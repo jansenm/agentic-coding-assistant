@@ -263,6 +263,9 @@ defmodule CodingAgent.Core.SessionTest do
     @timeout ReqLLM.Error.API.Timeout.exception(kind: :receive, timeout: 30_000)
     @empty {:ok, %{text: "", tool_calls: [], blocks: []}}
     @answer {:ok, %{text: "hi", tool_calls: [], blocks: [{:assistant, "hi"}]}}
+    @reasoning_only {:ok,
+                     %{text: "", tool_calls: [], blocks: [{:reasoning, "… wouldn't match. OK."}]}}
+    @tool_call {:ok, %{text: "", tool_calls: [%{id: "c1", name: "read_file"}]}}
 
     test "a timeout with nothing streamed retries while attempts remain" do
       assert S.llm_retry({:error, @timeout}, 3, false, 3) == :retry_timeout
@@ -282,6 +285,30 @@ defmodule CodingAgent.Core.SessionTest do
 
     test "an empty finish with retries exhausted is a named failure" do
       assert S.llm_retry(@empty, 0, false, 3) == {:give_up, {:empty_provider_response, 3}}
+    end
+
+    test "a reasoning-ONLY finish is empty, not an answer (regression)" do
+      # The model can stop after a final reasoning line with no answer
+      # text and no tool call; keying the empty check on `blocks: []`
+      # accepted that as a successful turn and left the session idle
+      # with no reply. Reasoning blocks are display context, not an
+      # answer, so the turn must NOT succeed.
+      #
+      # In production the reasoning deltas set `streamed?` true, and the
+      # retry rule never re-asks after output the human saw (that would
+      # duplicate the displayed reasoning) — so it fails loudly. The
+      # `streamed?` false branch is the pure-function contract.
+      assert S.llm_retry(@reasoning_only, 3, true, 3) ==
+               {:give_up, {:empty_provider_response, 3}}
+
+      assert S.llm_retry(@reasoning_only, 3, false, 3) == :retry_empty
+
+      assert S.llm_retry(@reasoning_only, 0, false, 3) ==
+               {:give_up, {:empty_provider_response, 3}}
+    end
+
+    test "a tool call with no text is NOT empty" do
+      assert S.llm_retry(@tool_call, 3, true, 3) == :give_up
     end
 
     test "a real answer is returned unchanged" do

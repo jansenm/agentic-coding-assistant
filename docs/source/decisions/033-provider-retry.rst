@@ -80,12 +80,28 @@ already saw. The worker tracks whether the last attempt emitted a
 visible delta to make that call.
 
 **3. An empty "successful" finish is a failure, not an idle turn.** A
-``{:ok, %{text: "", tool_calls: [], blocks: []}}`` result is retried like
-a timeout; once retries are exhausted it becomes
-``{:error, {:empty_provider_response, n}}``, which flows through the
-existing ``fail_turn/2`` path — a named error line in the transcript, not
-a silent empty answer. ``Failure.classify/1`` places it with the provider
-and invites a retry.
+result with no answer is retried like a timeout; once retries are
+exhausted it becomes ``{:error, {:empty_provider_response, n}}``, which
+flows through the existing ``fail_turn/2`` path — a named error line in
+the transcript, not a silent empty answer. ``Failure.classify/1`` places
+it with the provider and invites a retry.
+
+**3a. "Empty" means no ANSWER, not an empty block list (fix 2026-09-29).**
+The first cut keyed "empty" on ``blocks: []``. But a reasoning model can
+end a stream after a final reasoning line with no answer text and no tool
+call — ``text: ""``, ``tool_calls: []``, ``blocks: [{:reasoning, …}]``.
+That shape slipped past the check, ``classify([])`` called it a
+``:final_answer``, and the session settled to ``:idle`` showing only the
+last reasoning line: the very "idle mid-task" symptom this ADR set out to
+kill, just one layer down. Found live (dogfooding: a turn ended with
+``"… wouldn't match. OK."`` in the reasoning view, then silent idle).
+The gate is now the **absence of an answer** — ``text: ""`` and
+``tool_calls: []``, reasoning blocks ignored — because reasoning is
+display context, not a turn-ending output. A turn ends on assistant text
+or a tool call, and nothing else. When nothing streamed the finish is
+retried as before; when reasoning already reached the human it is **not**
+retried (re-asking would duplicate the displayed reasoning, the same
+principle as a timeout after partial output) and fails the turn loudly.
 
 **4. The retry decision is pure and testable.** ``Session.llm_retry/4``
 returns ``:retry_timeout | :retry_empty | :give_up | {:give_up, reason}``
@@ -104,8 +120,9 @@ Consequences
 ------------
 
 - A transient provider timeout costs a few seconds, not a turn.
-- The "idle mid-task, no clean finish" symptom is gone: an empty stream
-  is either retried or reported as a failed turn.
+- The "idle mid-task, no clean finish" symptom is gone: an empty stream —
+  including a reasoning-only finish (3a), retried when nothing streamed
+  and failed loudly when it did — never settles to idle with no answer.
 - The retry is conservative by construction: no duplication after
   partial output, no retry of permanent failures.
 - Two new knobs (``provider_retries``, ``provider_retry_delay_ms``) join
