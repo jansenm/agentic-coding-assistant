@@ -177,6 +177,25 @@ ist gefixt.
 
 **Offen:**
 
+* **`scope_root` ungleich Git-Wurzel ist weder unterstützt noch
+  verweigert (halbe Funktionsfähigkeit).** `mix tui` pinnt
+  `scope_root: File.cwd!()` (`lib/mix/tasks/tui.ex:65`) ohne
+  Toplevel-Normalisierung; `Bwrap.git_dirs/1` sucht `.git` nur direkt
+  unter `<scope_root>` (`bwrap.ex:317`), und `Checkpoint.ensure_repo/1`
+  nutzt `rev-parse --is-inside-work-tree` (`checkpoint.ex:137`), was im
+  Unterverzeichnis **true** liefert. Startet man aus einem Unterordner
+  eines Repos, findet kein Git-Schreibvorgang ein beschreibbares `.git`
+  (der `/`-Bind ist read-only): `git add`/`commit` und der
+  Checkpoint-Temp-Index scheitern mit EROFS, `take_checkpoint` schluckt
+  das als `Logger.warning` — kein Session-Start-Fehler, keine Notiz.
+  Kein Datenverlust (der Checkpoint scheitert geschlossen; der
+  „repo-weite Restore"-Effekt tritt nur unter `Sandbox.None` auf, also
+  mit bereits entfernter Grenze). Entweder `scope_root` beim Start auf
+  `git rev-parse --show-toplevel` normalisieren, oder mit klarer Meldung
+  verweigern, oder als „nicht unterstützt" dokumentieren. Reproduzierbar
+  unter echtem bwrap; Test fehlt (ADR 030 grenzt den Prozess, nicht den
+  Startpunkt).
+
 * **`active_tab`-Lebensdauer.** Der Zeiger wird bei Session-Wechsel neu
   gebaut und fällt überall über `active_child/1` sauber auf den Parent
   zurück (Test da), aber es gibt **keinen** Aufräumpfad beim Entfernen
