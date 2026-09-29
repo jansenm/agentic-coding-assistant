@@ -1,0 +1,158 @@
+:orphan:
+
+Truncation spills to the session scratch; read_file reads in windows
+====================================================================
+
+.. adr::
+   :id: 038
+   :status: Accepted
+   :date: 2026-09-29
+   :tags: tools, context, sessions, sandbox
+
+.. note::
+   Accepted 2026-09-29; implemented the same day. Fixes the T14 loss: the
+   truncation that protects
+   the context model (``Exec.truncate/1``, ``grep``'s cap, ``webfetch``'s
+   cap) currently **discards** the overflow for good. The scratch
+   directory of ADR 022 already exists and is bound at ``/tmp`` inside
+   the sandbox, so the overflow has a natural, confined, session-lifetime
+   home. ``read_file`` gains a line window so a spilled file larger than
+   its 256 KiB whole-file cap is actually retrievable.
+
+Context
+-------
+
+Three places bound what a tool puts in the model's context, and all three
+throw the rest away:
+
+- ``Exec.truncate/1`` keeps head + tail past 256 KiB (``shell``, ``git``);
+- ``grep`` caps at 200 matches and clips each line to 500 chars;
+- ``webfetch`` keeps the first 128 KiB of the de-tagged body.
+
+The bound itself is right — an unbounded tool result would blow the
+window and burn quota (the same lesson as ADR 037). What is wrong is the
+**loss**: a shell command that prints 2 MB of test output, a ripgrep hit
+list of 900 matches, a long page — the model sees the head and tail and
+can never look closer. It then re-runs the command (the very rework loop
+ADR 037 attacked) or gives up. T14 records this and notes the store for
+the lost text already exists: ``Core.Session.Scratch`` (ADR 022), bound
+over ``/tmp`` inside the sandbox for the session's lifetime.
+
+A second fact shapes the design: the overflow is, **by definition**,
+larger than the cap that triggered the spill — so it is larger than
+``read_file``'s 256 KiB whole-file cap. A spill path the model cannot
+open is not "retrievable". So this ADR also gives ``read_file`` a line
+window (``offset``/``limit``), which is opencode's ``read`` shape and the
+missing half of the same feature.
+
+The question this ADR settles
+-----------------------------
+
+- **Where does the overflow go?** The session scratch is the one place
+  that is (a) writable by us, (b) reachable by the confined file tools
+  (``/tmp`` bind), (c) scoped to the session and cleaned with it, and
+  (d) already implemented. A host path outside the sandbox would be
+  unreadable; a BEAM-side temp file would violate "no scope-relevant
+  filesystem access in the BEAM" (it would not — scratch is ours — but it
+  would sit outside the one boundary for no gain).
+- **How does the model find it?** The truncation note names the exact
+  path, in the same vocabulary the model already uses: ``/tmp/…``.
+- **How does the model read a file bigger than ``read_file``'s cap?**
+  A line window, read as a confined ``sed`` range — not a BEAM read of
+  the whole file (which would defeat the cap in memory).
+
+Decision
+--------
+
+**1. Truncation spills the overflow into the session scratch and names
+the path.** A new ``Core.Spill`` module owns the write and the one naming
+rule:
+
+- host file: ``<scratch>/spill/<label>-<unique>`` (``<scratch>`` is
+  ``Core.Session.Scratch.path/1``);
+- path reported to the model: ``/tmp/spill/<label>-<unique>`` — the
+  same file as the sandbox sees it (ADR 022 binds scratch at ``/tmp``);
+- ``<label>`` is the tool (``shell``, ``grep``, ``webfetch``), so a
+  directory listing is legible.
+
+When a scope carries no session id (a bare test scope, ``Sandbox.None``),
+there is no scratch: ``Spill.spill/3`` returns ``:no_scratch`` and the
+tool keeps today's behaviour (head+tail marker, no path). The feature
+degrades to "not available", never to "an unreadable path".
+
+**2. ``Exec``, ``grep`` and ``webfetch`` spill.** ``Exec.run/5`` already
+receives the profile (which carries ``:scratch``); a new ``:label``
+option names the spill, and ``finish/3`` writes the FULL buffer to
+scratch when it would truncate, replacing the head/tail marker with a
+note that names the path and gives the head. ``grep`` spills the full
+match list (it has it in BEAM); ``webfetch`` spills the full de-tagged
+text. All three share ``Core.Spill`` — one writer, one naming rule.
+
+**3. ``read_file`` gains ``offset`` and ``limit`` (1-based lines).** Read
+as a confined ``sed -n 'start[,end]p'`` through ``Tools.FileExec``, so the
+read is bounded in the child, not in BEAM memory. Behaviour:
+
+- no ``offset``/``limit``: unchanged — whole file, rejected past 256 KiB;
+- with a window: the requested lines only, of **any** size file, with a
+  trailing note giving the total line count (one confined ``wc -l``) so
+  the model can page. The 256 KiB whole-file cap does not apply to a
+  window: the window itself is bounded by ``limit``.
+
+**4. A spill is bounded too.** The scratch has no quota (ADR 022 open
+question), so a single spill is capped (default 16 MiB): past that the
+note says the overflow was truncated as well. This keeps one pathological
+command from filling ``/tmp`` — the same head+tail discipline, applied to
+the spill file, and recorded honestly.
+
+Mechanism
+---------
+
+- ``Core.Spill`` (new): ``spill(content, scope, label) :: {:ok, path} |
+  :no_scratch | {:error, reason}``; ``dir/1`` (the host spill dir),
+  ``sandbox_path/1`` (host → the ``/tmp/…`` the model sees), the size cap
+  and the naming rule. ``Scratch.from_scope/1`` is reused — no second
+  scope rule.
+- ``Exec``: ``run/5`` learns ``:label`` (default ``"exec"``); ``finish``
+  spills via ``Core.Spill`` before formatting the marker. ``Exec.format``
+  is unchanged (it renders whatever ``run`` returned).
+- ``grep``: ``format_results/1`` takes the scope; on the cap path it
+  spills the full set and appends the path note.
+- ``webfetch``: ``tool/1`` passes the scope; ``cap/2`` spills the full
+  text before de-tagging loss.
+- ``read_file``/``FileExec``: an optional window; ``FileExec.read_window/6``
+  runs ``sed`` and (for the total) ``wc``. ``read_file`` validates
+  ``offset``/``limit`` as positive integers.
+
+Consequences
+------------
+
+- The model can retrieve what was truncated: re-run pressure drops, which
+  is the point (ADR 037's rework loop, one layer down).
+- The scratch's purpose grows from "workspace between shell calls" to
+  "workspace + tool-output store"; it is already session-scoped and
+  cleaned by the lifecycle verbs, so the store inherits that lifetime and
+  is gone after a reboot — correct ``/tmp`` semantics, and a spilled path
+  in an old session's context is expected to be gone.
+- ``read_file`` reaches parity with opencode's ``read`` for large files
+  (offset/limit), independent of spilling.
+- Cost: three call sites learn about ``Core.Spill``; the spill writes are
+  disk I/O in the tool process (bounded by the 16 MiB cap). Tests need a
+  scratch-bearing scope to exercise the spill path, and the mapping
+  host-path → ``/tmp``-path must be asserted once.
+
+Open questions
+--------------
+
+1. **Quota / cleanup cadence.** ADR 022 defers a directory quota. The
+   16 MiB per-spill cap bounds one file, not the directory; many spills
+   in one long session can still grow scratch. A session-level sweep (on
+   session end, or "keep the newest N spills") is deferred; the lifetime
+   already ends with the session.
+2. **Spill of ``read_file``'s own cap.** ``read_file`` rejects a >256 KiB
+   file rather than spilling it (the model can ask for a window instead).
+   Should a rejected whole read offer to spill a preview? Deferred — the
+   window is the answer.
+3. **Compaction's ``@render_result_chars`` cap.** ``Compaction.render/1``
+   truncates a tool result for the summarizer (not for the model); that
+   is a lossy-summary concern (ADR 037), not a retrieve-the-full-text
+   concern. Out of scope.

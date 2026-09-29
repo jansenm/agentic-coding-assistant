@@ -115,7 +115,10 @@ defmodule CodingAgent.Core.Tools.Git do
     profile = profile(scope)
     command = Enum.join(["git" | git_args], " ")
 
-    case Exec.run({:exec, "git", git_args}, cwd, secs, profile, env: Exec.agent_env()) do
+    case Exec.run({:exec, "git", git_args}, cwd, secs, profile,
+           env: Exec.agent_env(),
+           label: "git"
+         ) do
       {:ok, output, status} ->
         elapsed = System.monotonic_time(:millisecond) - started
         {:ok, Exec.format(command, output, {:exit, status}, elapsed, secs)}

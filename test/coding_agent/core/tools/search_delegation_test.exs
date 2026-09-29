@@ -449,6 +449,30 @@ defmodule CodingAgent.Core.Tools.SearchDelegationTest do
     end
   end
 
+  describe "grep caps spill the full list (ADR 038)" do
+    test "more matches than the cap spill the full list and name the path", %{scope: s} do
+      # 250 matching lines > the 200 cap; a scratch-bearing scope enables
+      # the spill (nil otherwise -> plain cap note, covered elsewhere).
+      File.write!(Path.join(@root, "many.txt"), Enum.map_join(1..250, "\n", &"needle line #{&1}"))
+
+      scratch = CodingAgent.Core.Session.Scratch.path("grep-spill-#{System.unique_integer()}")
+      File.mkdir_p!(scratch)
+      on_exit(fn -> File.rm_rf!(scratch) end)
+
+      scope = Map.put(s, :session_id, Path.basename(scratch))
+
+      {:ok, out} =
+        ReqLLM.Tool.execute(grep(scope), %{"pattern" => "needle", "glob" => "many.txt"})
+
+      assert out =~ "capped at 200"
+      assert out =~ "full list at /tmp/spill/grep-"
+
+      host = Path.wildcard(Path.join(scratch, "spill/grep-*")) |> List.first()
+      assert host != nil
+      assert File.read!(host) =~ "needle line 250"
+    end
+  end
+
   describe "External probe" do
     test "put/2 forces a result and reset/0 clears it" do
       External.put(:rg, :error)

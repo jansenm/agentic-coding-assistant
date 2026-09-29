@@ -126,6 +126,23 @@ defmodule CodingAgent.Core.ExecTest do
       # > the 256 KiB cap, so the raw path really was not cut
       assert byte_size(out) > 256 * 1024
     end
+
+    test "with a session scratch the overflow spills and the marker names it (ADR 038)" do
+      scratch = Path.join(@tmp_root, "scratch")
+      File.mkdir_p!(scratch)
+      profile = %{root: @tmp_root, scratch: scratch}
+
+      cmd = "yes xx | head -c 300000"
+      assert {:ok, out, 0} = Exec.run({:shell, cmd}, @tmp_root, 10, profile, label: "shell")
+
+      assert out =~ "output truncated"
+      assert out =~ "full output at /tmp/spill/shell-"
+
+      # the host file really holds the FULL output
+      host = Path.wildcard(Path.join(scratch, "spill/shell-*")) |> List.first()
+      assert host != nil
+      assert byte_size(File.read!(host)) > 256 * 1024
+    end
   end
 
   describe "stdin_command/2 (shared EOF spelling)" do

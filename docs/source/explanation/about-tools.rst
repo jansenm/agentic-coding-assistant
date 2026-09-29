@@ -66,6 +66,15 @@ keeping in mind:
   asks the user whether to continue with another budget or wrap the turn
   up (ADR 025).
 
+Since **ADR 038 the caps no longer lose the overflow**: a truncated
+``shell``/``git`` result, a capped ``grep`` list and a capped ``webfetch``
+body are written to the session scratch (ADR 022, visible as ``/tmp``
+inside the sandbox) and the truncation note names the path. ``read_file``
+gained ``offset``/``limit`` so a spilled file — larger than its 256 KiB
+whole-file cap by definition — is read a window at a time; the window is
+bounded in the confined child (``sed``), so a huge file costs only the
+lines asked for.
+
 The gate (slice 2b)
 -------------------
 

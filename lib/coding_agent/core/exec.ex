@@ -62,12 +62,19 @@ defmodule CodingAgent.Core.Exec do
       and tail (default `true`). A MACHINE consumer (the `fd` filename
       enumerator) passes `false`: the truncation banner is prose, not a
       path, and parsing it produced a phantom match (review F2/F5).
+    * `:label` — the spill label (ADR 038) used when truncation happens:
+      the overflow is written to the session scratch (the profile's
+      `:scratch`, ADR 022) and the head+tail marker names the path so the
+      model can read the rest. Defaults to `"exec"`. With no scratch the
+      plain head+tail truncation stands.
   """
   @spec run(Sandbox.spec(), String.t(), pos_integer(), Sandbox.profile(), keyword()) :: outcome()
   def run(spec, cwd, secs, profile, opts \\ []) do
     stdin = Keyword.get(opts, :stdin)
     env = Keyword.get(opts, :env, [])
     truncate? = Keyword.get(opts, :truncate, true)
+    label = Keyword.get(opts, :label, "exec")
+    scratch = Map.get(profile, :scratch)
 
     spec =
       case stdin do
@@ -82,7 +89,7 @@ defmodule CodingAgent.Core.Exec do
         deliver_stdin(port, stdin)
 
         deadline = System.monotonic_time(:millisecond) + secs * 1000
-        collect(port, deadline, "", truncate?)
+        collect(port, deadline, "", {truncate?, label, scratch})
 
       {:error, reason} ->
         {:sandbox_error, reason}
@@ -122,38 +129,38 @@ defmodule CodingAgent.Core.Exec do
   # Ports deliver :exit_status then :closed. We never Port.close/1 by
   # hand on a live port: once the os process ends, the port closes
   # itself, and closing an already-closed port raises :badarg.
-  defp collect(port, deadline, buf, truncate?) do
+  defp collect(port, deadline, buf, cut) do
     receive do
       {^port, {:data, data}} ->
-        collect(port, deadline, [buf | data], truncate?)
+        collect(port, deadline, [buf | data], cut)
 
       {^port, {:exit_status, code}} ->
         wait_closed(port)
-        {:ok, finish(buf, truncate?), code}
+        {:ok, finish(buf, cut), code}
 
       {^port, :closed} ->
         # os process died without a status delivery (e.g. killed by us
         # earlier or exec failure) — treat as failure signal
-        {:ok, finish(buf, truncate?), 1}
+        {:ok, finish(buf, cut), 1}
     after
       remaining(deadline) ->
-        on_deadline(port, deadline, buf, truncate?)
+        on_deadline(port, deadline, buf, cut)
     end
   end
 
-  defp finish(buf, true), do: truncate(buf)
-  defp finish(buf, false), do: IO.iodata_to_binary(buf)
+  defp finish(buf, {false, _label, _scratch}), do: IO.iodata_to_binary(buf)
+  defp finish(buf, {true, label, scratch}), do: truncate(buf, label, scratch)
 
   # The receive `after` clause takes a literal timeout expression in
   # modern Elixir; assigning inside it trips cover's instrumenter, so the
   # decision lives here. `remaining(deadline)` above already blocked for
   # the time left; recompute — it is cheap and always <= 0 on this path.
-  defp on_deadline(port, deadline, buf, truncate?) do
+  defp on_deadline(port, deadline, buf, cut) do
     if remaining(deadline) <= 0 do
       kill(port)
-      {:timeout, finish(buf, truncate?)}
+      {:timeout, finish(buf, cut)}
     else
-      collect(port, deadline, buf, truncate?)
+      collect(port, deadline, buf, cut)
     end
   end
 
@@ -202,7 +209,13 @@ defmodule CodingAgent.Core.Exec do
 
   @doc "Truncates output, keeping head and tail (tail matters for test summaries)."
   @spec truncate(iodata()) :: String.t()
-  def truncate(chunks) do
+  def truncate(chunks), do: truncate(chunks, nil, nil)
+
+  # The truncation with an optional spill (ADR 038): the FULL buffer goes
+  # to the session scratch, and the marker names the path so the model can
+  # read the rest. No scratch -> the plain head+tail marker (today's
+  # behaviour).
+  defp truncate(chunks, label, scratch) do
     data = IO.iodata_to_binary(chunks)
     size = byte_size(data)
 
@@ -214,7 +227,19 @@ defmodule CodingAgent.Core.Exec do
 
       head <>
         "\n\n[... output truncated: #{size} bytes total; showing first " <>
-        "#{byte_size(head)} and last #{@tail_bytes} ...]\n\n" <> tail
+        "#{byte_size(head)} and last #{@tail_bytes}" <>
+        spill_note(data, label, scratch) <> " ...]\n\n" <> tail
+    end
+  end
+
+  defp spill_note(_data, nil, _scratch), do: ""
+  defp spill_note(_data, _label, nil), do: ""
+  defp spill_note(_data, _label, ""), do: ""
+
+  defp spill_note(data, label, scratch) do
+    case CodingAgent.Core.Spill.spill(data, scratch, label) do
+      {:ok, path} -> "; full output at #{path}"
+      _ -> ""
     end
   end
 

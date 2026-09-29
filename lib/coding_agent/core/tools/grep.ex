@@ -147,7 +147,7 @@ defmodule CodingAgent.Core.Tools.Grep do
       # exit 1 is "no match" for rg (unlike fd, where 1 is an error —
       # measured)
       {:ok, out, code} when code in [0, 1] ->
-        format_rg_matches(out, root, glob, path)
+        format_rg_matches(out, root, glob, path, scope)
 
       {:ok, out, _code} ->
         Tools.error("rg failed: #{String.trim(out)}")
@@ -187,16 +187,17 @@ defmodule CodingAgent.Core.Tools.Grep do
   # deterministic order for both (`path`, then `line`: also the natural
   # reading order), so the two engines are comparable and a diff of two
   # runs is empty.
-  defp format_rg_matches(out, root, glob, path) do
+  defp format_rg_matches(out, root, glob, path, scope) do
     names = [glob, path]
 
-    out
-    |> String.split("\n", trim: true)
-    |> Enum.flat_map(&rg_match_line(&1, root))
-    |> Enum.filter(&keep_match?(&1, names))
-    |> Enum.sort()
-    |> Enum.take(@max_results)
-    |> format_results()
+    results =
+      out
+      |> String.split("\n", trim: true)
+      |> Enum.flat_map(&rg_match_line(&1, root))
+      |> Enum.filter(&keep_match?(&1, names))
+      |> Enum.sort()
+
+    format_results(results, scope)
   end
 
   # One match survives when the caller's glob accepts its path (the same
@@ -227,20 +228,49 @@ defmodule CodingAgent.Core.Tools.Grep do
 
   # -- result formatting -------------------------------------------------------
 
-  defp format_results(results) do
+  defp format_results(results, scope) do
     total = length(results)
 
+    # The cap keeps the CONTEXT bounded; the full list goes to the session
+    # scratch so the model can read the rest (ADR 038) instead of
+    # re-running a narrower search.
     truncated =
-      if total == @max_results,
-        do: "\n[... capped at #{total} matches; narrow the pattern or path ...]\n",
-        else: ""
+      if total > @max_results do
+        note =
+          case spill_matches(results, scope) do
+            {:ok, path} -> "; full list at #{path}"
+            _ -> ""
+          end
+
+        "\n[... capped at #{@max_results} of #{total} matches#{note}; " <>
+          "narrow the pattern or path ...]\n"
+      else
+        ""
+      end
+
+    body =
+      results
+      |> Enum.take(@max_results)
+      |> Enum.map(fn {file, line, text} -> "#{file}:#{line}:#{text}" end)
+      |> Enum.join("\n")
+
+    {:ok, body <> truncated}
+  end
+
+  # The full MATCH LIST (every hit, not just the first @max_results) for
+  # the spill file, so the model retrieves the matches the capped view
+  # dropped. Per-line text stays clipped to @max_line_length (as in the
+  # capped view) — the spill recovers dropped matches, not a megabytes-
+  # long single line.
+  defp spill_matches(results, scope) do
+    scratch = CodingAgent.Core.Session.Scratch.from_scope(scope)
 
     body =
       results
       |> Enum.map(fn {file, line, text} -> "#{file}:#{line}:#{text}" end)
       |> Enum.join("\n")
 
-    {:ok, body <> truncated}
+    CodingAgent.Core.Spill.spill(body, scratch, "grep")
   end
 
   defp clip(line) do

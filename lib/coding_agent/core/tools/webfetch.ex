@@ -30,7 +30,7 @@ defmodule CodingAgent.Core.Tools.WebFetch do
   alias CodingAgent.Core.Tools
 
   @spec tool(Tools.scope()) :: ReqLLM.Tool.t()
-  def tool(_scope) do
+  def tool(scope) do
     ReqLLM.Tool.new!(
       name: "webfetch",
       description:
@@ -41,16 +41,16 @@ defmodule CodingAgent.Core.Tools.WebFetch do
       parameter_schema: [
         url: [type: :string, required: true, doc: "The http(s) URL to fetch"]
       ],
-      callback: fn args -> execute(args) end
+      callback: fn args -> execute(args, scope) end
     )
   end
 
-  defp execute(args) do
+  defp execute(args, scope) do
     url = Map.get(args, :url) || Map.get(args, "url")
 
     with {:ok, parsed} <- parse_url(url) do
       # every hop (the first included) passes check_host inside fetch/1
-      fetch(parsed)
+      fetch(parsed, scope)
     end
   end
 
@@ -157,18 +157,18 @@ defmodule CodingAgent.Core.Tools.WebFetch do
 
   # -- Fetch ------------------------------------------------------------------
 
-  defp fetch(uri), do: fetch(uri, @max_redirects)
+  defp fetch(uri, scope), do: fetch(uri, @max_redirects, scope)
 
-  defp fetch(uri, hops_left) do
+  defp fetch(uri, hops_left, scope) do
     # Re-check EVERY hop, not just the first: the Location is attacker
     # controlled, so a public URL redirecting to a private one must be
     # refused here.
     with :ok <- check_host(uri) do
-      request(uri, hops_left)
+      request(uri, hops_left, scope)
     end
   end
 
-  defp request(uri, hops_left) do
+  defp request(uri, hops_left, scope) do
     case Req.get(URI.to_string(uri),
            redirect: false,
            receive_timeout: @timeout_ms,
@@ -177,7 +177,7 @@ defmodule CodingAgent.Core.Tools.WebFetch do
          ) do
       {:ok, %Req.Response{status: status, headers: headers}}
       when status in @redirect_statuses ->
-        follow(headers, uri, hops_left)
+        follow(headers, uri, hops_left, scope)
 
       {:ok, %Req.Response{status: status, headers: headers, body: body}}
       when status in 200..299 ->
@@ -185,7 +185,7 @@ defmodule CodingAgent.Core.Tools.WebFetch do
 
         cond do
           text?(content_type) ->
-            {:ok, body |> to_text(content_type) |> cap()}
+            {:ok, body |> to_text(content_type) |> cap(scope)}
 
           true ->
             Tools.error("refusing content type #{inspect(content_type)} — text only")
@@ -205,16 +205,16 @@ defmodule CodingAgent.Core.Tools.WebFetch do
   # Public for tests (@doc false): the hop seam returns BEFORE any
   # request, so the SSRF re-check is asserted offline.
   @doc false
-  def follow(_headers, _uri, 0), do: Tools.error("too many redirects")
+  def follow(_headers, _uri, 0, _scope), do: Tools.error("too many redirects")
 
-  def follow(headers, uri, hops_left) do
+  def follow(headers, uri, hops_left, scope) do
     case location(headers) do
       nil ->
         Tools.error("redirect without a Location header")
 
       location ->
         with {:ok, resolved} <- resolve_location(uri, location) do
-          fetch(resolved, hops_left - 1)
+          fetch(resolved, hops_left - 1, scope)
         end
     end
   end
@@ -281,10 +281,20 @@ defmodule CodingAgent.Core.Tools.WebFetch do
     |> String.trim()
   end
 
-  defp cap(text) when byte_size(text) <= @max_bytes, do: text
+  defp cap(text, _scope) when byte_size(text) <= @max_bytes, do: text
 
-  defp cap(text) do
+  defp cap(text, scope) do
+    spilled =
+      case CodingAgent.Core.Spill.spill(
+             text,
+             CodingAgent.Core.Session.Scratch.from_scope(scope),
+             "webfetch"
+           ) do
+        {:ok, path} -> " (full text at #{path})"
+        _ -> ""
+      end
+
     <<head::binary-size(@max_bytes), _::binary>> = text
-    head <> "\n\n… (truncated at #{div(@max_bytes, 1024)} KiB)"
+    head <> "\n\n… (truncated at #{div(@max_bytes, 1024)} KiB#{spilled})"
   end
 end

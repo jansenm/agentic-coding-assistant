@@ -88,11 +88,10 @@ ohne confinement. Alle sieben Slices sind gelandet:
    sie gibt: `reference/cli.rst` (`mix tui`-Flags), `reference/tools.rst`
    (Tool-Schemas). Anwender-Doku = Reference (Fakten); Tutorials/How-tos
    später.
-1. **Nächster offener Feature-Punkt.** T8 ist erledigt (ADR 036); die
+1. **Nächster offener Feature-Punkt.** T14 ist erledigt (ADR 038); die
    verbleibenden T-Punkte sind T9 (`websearch`), T10 (`apply_patch`/LSP/
-   Skills/MCP/Fuzzy-Edit), T13 (verschachtelte `AGENTS.md`), T14
-   (Truncation in eine abrufbare Datei). T14 ist der kleinste,
-   T10 der größte Brocken.
+   Skills/MCP/Fuzzy-Edit) und T13 (verschachtelte `AGENTS.md`). T13 ist
+   der kleinste, T10 der größte Brocken.
 
 2. **Compaction: zwei Limits + verlustfreie Summaries (ADR 037).**
    **erledigt (2026-09-29):** Der Trigger ist jetzt prozentual vom
@@ -117,7 +116,7 @@ ohne confinement. Alle sieben Slices sind gelandet:
 | T9 | `websearch` neben `webfetch` | offen (Such-API-Abhängigkeit; `webfetch` ist da) |
 | T10 | `apply_patch`, LSP, Skills, MCP — inkl. fuzzy-match-Kette für `edit` | offen; `edit` ist exakt-match-only (opencode hat 9 Fuzzy-Strategien + LSP-Diagnostik nach jedem Edit) |
 | T13 | Verschachtelte `AGENTS.md` (Monorepo) | offen; wir lesen nur den Scope-Root einmal (`ProjectMemory.load/1`) |
-| T14 | Truncation spült Volltext in eine abrufbare Datei | offen; `Exec.truncate/1` (head+tail), `grep`-Cap, `webfetch`-Cap verwerfen den Rest unwiederbringlich. Ablage existiert (`Scratch`, ADR 022) |
+| T14 | Truncation spült Volltext in eine abrufbare Datei | **erledigt** (2026-09-29, ADR 038): Overflow aus `Exec`/`grep`/`webfetch` landet im Scratch (als `/tmp/...` sichtbar), der Hinweis nennt den Pfad; `read_file` liest per `offset`/`limit` fensterweise auch Dateien >256 KiB |
 | T1/T2/T3/T6/T11/T12 | Framework-Prompt (ADR 024), Doom-Guard (ADR 026), Agentenfelder (ADR 024/025/029), `question` (ADR 027), Store-Flake, Provider-Prompts (ADR 024) | **erledigt** |
 
 ## Dogfooding-Blocker (B)

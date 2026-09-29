@@ -80,6 +80,45 @@ defmodule CodingAgent.Core.Tools.FileToolsTest do
       assert {:error, msg} = ReqLLM.Tool.execute(tool, %{"path" => ""})
       assert msg =~ "non-empty"
     end
+
+    test "reads a line window with offset and limit (ADR 038)", %{scope: scope} do
+      File.write!(Path.join(scope.root, "lines.txt"), Enum.map_join(1..10, "\n", &"L#{&1}"))
+      tool = find_tool("read_file", scope)
+
+      {:ok, win} =
+        ReqLLM.Tool.execute(tool, %{"path" => "lines.txt", "offset" => 3, "limit" => 2})
+
+      assert win =~ "L3\nL4"
+      assert win =~ "lines 3-4 of 10"
+      assert win =~ "read on with offset 5"
+    end
+
+    test "a window reads a file larger than the whole-file cap", %{scope: scope} do
+      # 5000 lines well over 256 KiB; the window must still work
+      File.write!(Path.join(scope.root, "huge.log"), Enum.map_join(1..5000, "\n", &"row #{&1}"))
+
+      tool = find_tool("read_file", scope)
+      {:ok, win} = ReqLLM.Tool.execute(tool, %{"path" => "huge.log", "offset" => 4999})
+
+      assert win =~ "row 4999"
+      assert win =~ "row 5000"
+      assert win =~ "lines 4999-5000 of 5000"
+    end
+
+    test "offset without a limit uses the default page size", %{scope: scope} do
+      File.write!(Path.join(scope.root, "lines.txt"), Enum.map_join(1..300, "\n", &"L#{&1}"))
+      tool = find_tool("read_file", scope)
+
+      {:ok, win} = ReqLLM.Tool.execute(tool, %{"path" => "lines.txt", "offset" => 1})
+      # default limit is 200
+      assert win =~ "lines 1-200 of 300"
+    end
+
+    test "rejects a non-positive offset", %{scope: scope} do
+      tool = find_tool("read_file", scope)
+      assert {:error, msg} = ReqLLM.Tool.execute(tool, %{"path" => "top.txt", "offset" => 0})
+      assert msg =~ "positive integer"
+    end
   end
 
   describe "write_file (confined tee)" do

@@ -34,6 +34,7 @@ defmodule CodingAgent.Core.Tools.FileExec do
   @cat "cat"
   @tee "tee"
   @ls "ls"
+  @sed "sed"
 
   @doc """
   Reads a file through a confined `cat`. Returns `{:ok, contents}` or
@@ -148,6 +149,85 @@ defmodule CodingAgent.Core.Tools.FileExec do
     case Exec.run({:exec, @ls, ["-d", "--", path <> "/."]}, cwd(scope), secs, profile) do
       {:ok, _output, 0} -> :dir
       _ -> :file
+    end
+  end
+
+  @doc """
+  Reads a LINE WINDOW of a file through a confined `sed` (ADR 038): lines
+  `offset..offset+limit-1` (1-based), so a file larger than any whole-file
+  cap is retrievable page by page. Also returns the total line count (a
+  confined `wc -l`) so the caller can say how much remains.
+
+  The window is bounded in the CHILD process, not in BEAM memory — a
+  2 GiB file read as 200 lines costs 200 lines here.
+  """
+  @spec read_window(Tools.scope(), String.t(), pos_integer(), pos_integer(), pos_integer()) ::
+          {:ok, String.t(), non_neg_integer()} | {:error, String.t()}
+  def read_window(scope, path, offset, limit, secs) do
+    profile = Tools.profile(scope)
+    last = offset + limit - 1
+
+    # `sed -n 'start[,end]p'` — the range is built from two integers we
+    # validated, never from a string, so no expression can be injected.
+    expr = if limit == 1, do: "#{offset}p", else: "#{offset},#{last}p"
+
+    with {:ok, window} <-
+           run_probe(profile, cwd(scope), ["-n", expr, "--", path], secs, path, "read"),
+         {:ok, count} <- line_count(profile, cwd(scope), path, secs) do
+      {:ok, window, count}
+    end
+  end
+
+  # Total lines through a confined `sed -n '$='`. Chosen over `wc -l`
+  # because it counts a final line WITHOUT a trailing newline correctly
+  # (`wc -l` would report one less); an empty file prints nothing -> 0.
+  @spec line_count(Tools.profile(), String.t(), String.t(), pos_integer()) ::
+          {:ok, non_neg_integer()} | {:error, String.t()}
+  defp line_count(profile, cwd, path, secs) do
+    case Exec.run({:exec, @sed, ["-n", "$=", "--", path]}, cwd, secs, profile) do
+      {:ok, output, 0} ->
+        case String.trim(output) do
+          "" -> {:ok, 0}
+          trimmed -> count_or_error(trimmed, path)
+        end
+
+      {:ok, output, _code} ->
+        {:error, failure(output, path)}
+
+      {:timeout, _} ->
+        {:error, "timed out counting #{path}"}
+
+      {:sandbox_error, reason} ->
+        {:error, "cannot count #{path} under the sandbox: #{inspect(reason)}"}
+
+      {:error, reason} ->
+        {:error, "cannot count #{path}: #{inspect(reason)}"}
+    end
+  end
+
+  defp count_or_error(trimmed, path) do
+    case Integer.parse(trimmed) do
+      {n, ""} -> {:ok, n}
+      _ -> {:error, "could not count lines in #{path}"}
+    end
+  end
+
+  defp run_probe(profile, cwd, args, secs, path, verb) do
+    case Exec.run({:exec, @sed, args}, cwd, secs, profile) do
+      {:ok, output, 0} ->
+        {:ok, output}
+
+      {:ok, output, _code} ->
+        {:error, failure(output, path)}
+
+      {:timeout, _partial} ->
+        {:error, "timed out #{verb}ing #{path}"}
+
+      {:sandbox_error, reason} ->
+        {:error, "cannot #{verb} #{path} under the sandbox: #{inspect(reason)}"}
+
+      {:error, reason} ->
+        {:error, "cannot #{verb} #{path}: #{inspect(reason)}"}
     end
   end
 

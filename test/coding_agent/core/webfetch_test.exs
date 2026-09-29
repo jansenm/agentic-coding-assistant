@@ -124,7 +124,8 @@ defmodule CodingAgent.Core.Tools.WebFetchTest do
                apply_private(:follow, [
                  [{"location", ["http://example.com/x"]}],
                  URI.parse("http://example.com/"),
-                 0
+                 0,
+                 %{}
                ])
     end
 
@@ -179,11 +180,11 @@ defmodule CodingAgent.Core.Tools.WebFetchTest do
   defp apply_private(fun, args), do: :erlang.apply(CodingAgent.Core.Tools.WebFetch, fun, args)
 
   # The redirect loop follows Location MANUALLY and re-runs the host
-  # check on each hop. follow/3 is the hop seam and returns BEFORE any
+  # check on each hop. follow/4 is the hop seam and returns BEFORE any
   # request, so the verdicts below are reached offline — exactly the
   # property that closes the SSRF hole.
   defp follow(location, from \\ "http://example.com/start") do
     headers = if location == nil, do: [], else: [{"location", [location]}]
-    apply_private(:follow, [headers, URI.parse(from), 5])
+    apply_private(:follow, [headers, URI.parse(from), 5, %{}])
   end
 end
