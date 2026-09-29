@@ -114,9 +114,14 @@ Consequences
 Open questions
 --------------
 
-1. **``/undo``.** Shipped as a command (ADR 036, 2026-09-29) once the
-   checkpoint machinery existed — the registry gained a record, not a
-   new mechanism.
+1. **``/undo`` and ``/compact``.** ``/undo`` shipped as a command (ADR
+   036, 2026-09-29) once the checkpoint machinery existed, and
+   ``/compact`` (ADR 037, 2026-09-29) once compaction had a manual entry
+   point — each was a registry record plus one TUI resolver clause, not a
+   new mechanism. ``/compact`` was on the original T7 wish list
+   (``/new``, ``/sessions``, ``/models``, ``/compact``, ``/export``,
+   ``/undo``, ``/help``) and was overlooked when the first registry
+   shipped; it is now reconciled.
 2. **User-defined commands.** opencode lets commands come from Markdown
    files. Deferred: it needs a prompt-template mechanism and a trust
    story. The registry shape (``name``/``summary``/``usage``/``run``)

@@ -111,7 +111,7 @@ ohne confinement. Alle sieben Slices sind gelandet:
 | --- | --- | --- |
 | T4 | `todowrite`/Plan-Tool | **erledigt** (2026-09-28, ADR 031) |
 | T5 | `task`/Subagent inkl. Tab (ADR 017/018) | **erledigt** (2026-09-25): Seam + Tabs (Amendment (ii)) — Wire-Tagging, in-memory Tabs, Tab-Leiste/ctrl-x, Parallel-Cap |
-| T7 | Slash-Commands/Command-Palette | **erledigt** (2026-09-29, ADR 034): `/`-Palette, `/help`, `ctrl-x`-Menü aus einer Registry |
+| T7 | Slash-Commands/Command-Palette | **erledigt** (2026-09-29, ADR 034): `/`-Palette, `/help`, `ctrl-x`-Menü aus einer Registry. `/compact` (ADR 037) nachgezogen |
 | T8 | Undo/Redo via Git-Checkpoint + `/undo` | **erledigt** (2026-09-29, ADR 036): Checkpoint pro Turn, `/undo` stellt Dateien wieder her |
 | T9 | `websearch` neben `webfetch` | offen (Such-API-Abhängigkeit; `webfetch` ist da) |
 | T10 | `apply_patch`, LSP, Skills, MCP — inkl. fuzzy-match-Kette für `edit` | offen; `edit` ist exakt-match-only (opencode hat 9 Fuzzy-Strategien + LSP-Diagnostik nach jedem Edit) |

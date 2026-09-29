@@ -38,6 +38,14 @@ context. The limits are visible in the sidebar ("soft at 250.0k tok" /
 limit ("· context at 144k tokens — compaction at … will summarize older
 messages") so it is never a silent surprise.
 
+The human can also compact **on demand** with ``/compact`` (``ctrl-x
+c``): the older span is summarized now, regardless of the limits, for
+when the context is large but the thresholds have not been crossed (or
+the owner simply wants a smaller context before a long task). It is
+refused while a turn is in flight, runs in the background like the idle
+pass, and reports "nothing to compact" when the conversation is still
+too short to split.
+
 2. Session state (mid-term)
 ---------------------------
 

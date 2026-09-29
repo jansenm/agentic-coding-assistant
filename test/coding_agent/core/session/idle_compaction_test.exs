@@ -150,6 +150,44 @@ defmodule CodingAgent.Core.Session.IdleCompactionTest do
     refute_receive :idle_ran, 300
   end
 
+  test "Session.compact/1 runs the manual pass on demand (below the limits)" do
+    id = "manual-#{System.unique_integer()}"
+    parent = self()
+
+    runner = fn state ->
+      send(parent, {:manual_ran, length(state.context.messages)})
+      summary = %ReqLLM.Message{role: :user, content: [ReqLLM.Message.ContentPart.text("S")]}
+      {%{state | context: %{state.context | messages: [summary]}}, true}
+    end
+
+    # last_input_tokens 1k: no automatic limit would fire
+    start(id,
+      idle_compaction_runner: runner,
+      usage: %{input_tokens: 0, output_tokens: 0, last_input_tokens: 1_000, cost: nil}
+    )
+
+    assert Session.compact(id) == :started
+    assert_receive {:manual_ran, n}, 1_000
+    assert n > 0
+
+    assert eventually(fn ->
+             {:ok, st} = Session.state(id)
+             length(ReqLLM.Context.to_list(st.context)) == 1
+           end)
+  end
+
+  test "Session.compact/1 reports :nothing when there is nothing to compact" do
+    id = "manual-none-#{System.unique_integer()}"
+    small = %ReqLLM.Context{messages: [ReqLLM.Context.system("s"), ReqLLM.Context.user("hi")]}
+
+    start(id,
+      idle_compaction_runner: fn _ -> flunk("must not run") end,
+      context: small
+    )
+
+    assert Session.compact(id) == :nothing
+  end
+
   test "Compactor projected size picks the larger of count and chars/4" do
     state = %State{
       id: "x",

@@ -307,6 +307,20 @@ defmodule CodingAgent.Core.Session do
   def undo(id), do: GenServer.call(via(id), :undo, @call_timeout)
 
   @doc """
+  Manually compacts the context now (`/compact`, ctrl-x c): summarize the
+  older span regardless of the soft/hard limits (ADR 037's automatic
+  passes stay the default; this is the human's on-demand verb).
+
+  The summary is a slow provider call, so it runs in a background task
+  like the idle soft pass; the reply reports what was STARTED, not the
+  finished summary. Returns `:not_running` when a turn is in flight (a
+  boundary verb, like `/undo`), `:nothing` when there is no whole old
+  exchange to summarize.
+  """
+  @spec compact(String.t()) :: :started | :not_running | :nothing
+  def compact(id), do: GenServer.call(via(id), :compact, @call_timeout)
+
+  @doc """
   Supplies decisions for pending tool calls (ADR 010: approve / edit /
   reject, one decision per call) and resumes the interrupted turn.
   """
@@ -650,6 +664,32 @@ defmodule CodingAgent.Core.Session do
 
       {:error, reason} ->
         {:reply, {:error, reason}, state}
+    end
+  end
+
+  # Manual `/compact` / ctrl-x c (ADR 037): summarize now regardless of
+  # the limits. A boundary verb like /undo — only from an IDLE session,
+  # so it cannot rewrite the context a parked gate/budget/doom round is
+  # about to append to. The summary is slow, so it runs in the same
+  # background slot as the idle soft pass (same fingerprint guard: a
+  # context that changes under the summary is discarded, not clobbered).
+  # `Compactor.can_compact?/1` reports false in test_mode, so that path
+  # is :nothing, never a booked task with no provider.
+  def handle_call(:compact, _from, %{status: status} = state) when status != :idle,
+    do: {:reply, :not_running, state}
+
+  def handle_call(:compact, _from, %{idle_compaction_ref: ref} = state)
+      when is_reference(ref),
+      do: {:reply, :not_running, state}
+
+  def handle_call(:compact, _from, state) do
+    if Compactor.can_compact?(state) do
+      fp = context_fingerprint(state)
+      ref = spawn_compaction(state, :manual)
+
+      {:reply, :started, %{state | idle_compaction_ref: ref, idle_compaction_fp: fp}}
+    else
+      {:reply, :nothing, state}
     end
   end
 
@@ -1148,20 +1188,21 @@ defmodule CodingAgent.Core.Session do
     {:noreply, finish_worker(state, state, {:error, {:turn_worker_exit, reason}})}
   end
 
-  # The IDLE (soft-limit) compaction task returned. Apply only when the
-  # context is UNCHANGED since the task started (fingerprint match) —
-  # otherwise a new turn began while the summary ran and the result is
-  # stale. Never reply/broadcast idle: the session was already idle.
+  # A BACKGROUND compaction task returned: the IDLE (soft-limit) pass or a
+  # manual `/compact`. Apply only when the context is UNCHANGED since the
+  # task started (fingerprint match) — otherwise a new turn/compaction
+  # began while the summary ran and the result is stale. Never reply or
+  # broadcast idle: the session was already idle.
   def handle_info({ref, {new_state, _changed?}}, %{idle_compaction_ref: ref} = state)
       when is_reference(ref) do
     Process.demonitor(ref, [:flush])
-    {:noreply, apply_idle_compaction(state, new_state)}
+    {:noreply, apply_compaction_result(state, new_state)}
   end
 
   def handle_info({:DOWN, ref, :process, _pid, _reason}, %{idle_compaction_ref: ref} = state)
       when is_reference(ref) do
-    # the idle task crashed/shut down: drop the handles, keep the context
-    # (the hard, pre-call pass still guards the window)
+    # the compaction task crashed/shut down: drop the handles, keep the
+    # context (the hard, pre-call pass still guards the window)
     {:noreply, %{state | idle_compaction_ref: nil, idle_compaction_fp: nil}}
   end
 
@@ -1236,9 +1277,10 @@ defmodule CodingAgent.Core.Session do
     # own edits. A read-only or non-git scope is a no-op.
     state = take_checkpoint(state)
 
-    # A new turn invalidates any in-flight idle compaction: its result
-    # would be for a context that no longer matches (the fingerprint
-    # check in apply_idle_compaction discards it anyway), so drop the
+    # A new turn invalidates any in-flight background compaction (idle
+    # soft pass or manual /compact): its result would be for a context
+    # that no longer matches (the fingerprint check in
+    # apply_compaction_result discards it anyway), so drop the
     # monitor here and forget it. The task itself is harmless: async_nolink
     # and supervised, its messages simply no longer match a clause.
     state =
@@ -2614,7 +2656,7 @@ defmodule CodingAgent.Core.Session do
     end
   end
 
-  # -- Idle (soft-limit) compaction (ADR 037) ---------------------------------
+  # -- Background compaction (ADR 037): the idle soft pass and /compact -------
 
   # Start the background soft pass when a turn ends IDLE and the session
   # is over the soft limit. The summarize call is slow, so it runs off the
@@ -2627,7 +2669,7 @@ defmodule CodingAgent.Core.Session do
       state
     else
       fp = context_fingerprint(state)
-      ref = spawn_idle_compaction(state)
+      ref = spawn_compaction(state, :soft)
 
       %{state | idle_compaction_ref: ref, idle_compaction_fp: fp}
     end
@@ -2635,30 +2677,36 @@ defmodule CodingAgent.Core.Session do
 
   defp start_idle_compaction(state), do: state
 
-  defp spawn_idle_compaction(state) do
+  # One background slot for both passes: the idle soft limit (`:soft`) and
+  # the manual `/compact` (`:manual`). The runner seam replaces the body
+  # either way, so a test drives a compaction without a provider.
+  defp spawn_compaction(state, mode) do
     snapshot = worker_snapshot(state)
     runner = state.idle_compaction_runner
 
     body =
       case runner do
-        nil -> fn -> Compactor.maybe_compact_idle(snapshot) end
+        nil -> fn -> default_compact(snapshot, mode) end
         fun -> fn -> fun.(snapshot) end
       end
 
     Task.Supervisor.async_nolink(task_supervisor(), body).ref
   end
 
-  # A cheap, exact identity of the context the idle task was started for.
+  defp default_compact(state, :soft), do: Compactor.maybe_compact_idle(state)
+  defp default_compact(state, :manual), do: Compactor.compact_now(state)
+
+  # A cheap, exact identity of the context the task was started for.
   # `:erlang.phash2/1` over the message list is stable for equal content
   # and changes on any append/rewrite, which is all the guard needs.
   defp context_fingerprint(state), do: :erlang.phash2(state.context.messages)
 
-  # Apply a background soft-pass result only if the context still matches
+  # Apply a background compaction result only if the context still matches
   # the fingerprint captured at start; otherwise discard it (a new turn
   # began while the summary ran). Only the context and the backoff are
   # adopted from the task's state — it is a worker_snapshot, so its
   # subscribers/worker handles are stale.
-  defp apply_idle_compaction(state, new_state) do
+  defp apply_compaction_result(state, new_state) do
     fp = state.idle_compaction_fp
     state = %{state | idle_compaction_ref: nil, idle_compaction_fp: nil}
 

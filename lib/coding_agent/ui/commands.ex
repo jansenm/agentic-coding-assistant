@@ -50,6 +50,7 @@ defmodule CodingAgent.UI.Commands do
       cmd("agent", "switch agent", "/agent [name]", :switch_agent, arg: :optional),
       cmd("export", "export this session", "/export [md|json]", :export, arg: :optional),
       cmd("undo", "restore files to the last checkpoint", "/undo", :undo),
+      cmd("compact", "summarize older context now", "/compact", :compact, key: "c"),
       cmd("subagents", "subagents", "/subagents", :subagents, key: "a"),
       cmd("tools", "toggle tool output", "/tools", :toggle_tool_output, key: "t"),
       cmd("sidebar", "toggle sidebar", "/sidebar", :toggle_sidebar, key: "p"),

@@ -80,6 +80,18 @@ defmodule CodingAgent.UI.TuiMenuTest do
     assert st.open_tool_id != nil
   end
 
+  test "ctrl-x c triggers /compact (fast path, no popup)", %{root: tmp_root} do
+    pid = start_tui(tmp_root)
+
+    key(pid, "x", ["ctrl"])
+    key(pid, "c")
+
+    st = sync(pid)
+    assert st.menu_popup == nil
+    # a test-mode session has no provider: the manual pass reports :nothing
+    assert st.menu_note == "nothing to compact"
+  end
+
   test "ctrl-x s opens the switch popup with the cwd's other sessions", %{root: tmp_root} do
     a = seed_session("pick-a", tmp_root)
     b = seed_session("pick-b", tmp_root)

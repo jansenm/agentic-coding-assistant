@@ -40,6 +40,12 @@ by ``test/coding_agent/ui/commands_test.exs`` and
        turn (files only; the conversation is kept). Repeated ``/undo``
        goes further back, up to ``checkpoint_depth``.
      -
+   * - ``/compact``
+     - Summarize the older context now, on demand, instead of waiting for
+       an automatic limit. The summary runs in the background; a turn
+       must not be in flight. "Nothing to compact" when the conversation
+       is still too short.
+     - ``ctrl-x c``
    * - ``/subagents``
      - Open a subagent tab.
      - ``ctrl-x a``

@@ -128,6 +128,41 @@ defmodule CodingAgent.Core.Session.Compactor do
   end
 
   @doc """
+  Whether there is a span worth compacting at all (a manual `/compact`
+  and the trigger decision share this). `false` when the context is too
+  short for `Compaction.split/1` to find a whole old exchange, or in
+  test_mode (the summary IS a provider call). Public: tests are LLM-free.
+  """
+  @spec can_compact?(State.t()) :: boolean()
+  def can_compact?(%State{test_mode: true}), do: false
+
+  def can_compact?(%State{} = state) do
+    match?({:ok, _old, _keep}, Compaction.split(state.context.messages))
+  end
+
+  @doc """
+  A MANUAL compaction (`/compact`, ctrl-x c): summarize the older span
+  NOW, ignoring the soft/hard limits — the human asked for it, so "is it
+  over a threshold?" is the wrong question. Returns `{state, changed?}`
+  like the other passes; `:none` (nothing worth compacting) leaves the
+  state untouched. The caller runs this in a background task (the summary
+  is a slow provider call), so it must not block the session.
+  """
+  @spec compact_now(State.t(), summarize_fn() | nil) :: {State.t(), boolean()}
+  def compact_now(state, summarize_fn \\ nil)
+
+  def compact_now(%State{test_mode: true} = state, _summarize_fn), do: {state, false}
+
+  def compact_now(%State{} = state, nil), do: compact_now(state, &summarize/2)
+
+  def compact_now(%State{} = state, summarize_fn) do
+    case Compaction.split(state.context.messages) do
+      {:ok, old, _keep} -> compact(state, old, summarize_fn, :manual)
+      :none -> {state, false}
+    end
+  end
+
+  @doc """
   Pure trigger decision: `:none`, or `{:ok, {summary_span, keep_span}}`.
   Uses the PROJECTED size (see the moduledoc); genuinely unknown usage
   (first turn, `last_input_tokens: 0`) falls back to the chars-based

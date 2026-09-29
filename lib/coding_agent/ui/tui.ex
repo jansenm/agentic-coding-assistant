@@ -2370,6 +2370,20 @@ defmodule CodingAgent.UI.Tui do
     end
   end
 
+  # /compact (ADR 037): summarize the older context now, on demand. The
+  # reply means the background task STARTED, not that the summary is done —
+  # the session broadcasts "context compacted" when it lands, like the
+  # automatic passes. Test mode has no provider, so it reports "nothing".
+  defp run_command_action(:compact, _args, state) do
+    state = %{state | command_popup: nil}
+
+    case Session.compact(state.session_id) do
+      :started -> {:noreply, status_note(state, "compacting context…")}
+      :nothing -> {:noreply, status_note(state, "nothing to compact")}
+      :not_running -> {:noreply, status_note(state, "already compacting, or a turn is running")}
+    end
+  end
+
   # commands whose action is a plain menu action: reuse the one resolver
   defp run_command_action(action, _args, state)
        when action in [
@@ -2434,6 +2448,10 @@ defmodule CodingAgent.UI.Tui do
   defp run_menu_action(:toggle_tool_output, state) do
     {:noreply, toggle_last_tool(state)}
   end
+
+  # ctrl-x c: the fast path reaches the /compact action through the same
+  # resolver as the palette (one implementation, ADR 034).
+  defp run_menu_action(:compact, state), do: run_command_action(:compact, [], state)
 
   defp run_menu_action(:toggle_sidebar, state), do: {:noreply, toggle_sidebar(state)}
 

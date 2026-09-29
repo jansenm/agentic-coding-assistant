@@ -196,6 +196,44 @@ defmodule CodingAgent.Core.CompactionTest do
     assert Compactor.decide(state(context: ctx(3)), 100_000) == :none
   end
 
+  # -- manual /compact (Compactor.compact_now/2) -------------------------------
+
+  test "can_compact? is false for a context too short to split" do
+    refute Compactor.can_compact?(state(context: ctx(3)))
+    assert Compactor.can_compact?(state())
+  end
+
+  test "can_compact? is false in test_mode (the summary is a provider call)" do
+    refute Compactor.can_compact?(state(test_mode: true))
+  end
+
+  test "compact_now summarizes BELOW both limits (the human asked)" do
+    # last_input_tokens 1k: neither the soft nor the hard limit would fire,
+    # but a manual compaction must still run.
+    s = state(usage: %{last_input_tokens: 1_000})
+    assert Compactor.decide(s, Compactor.soft_limit(s)) == :none
+
+    {s2, true} =
+      Compactor.compact_now(s, fn _state, span -> {:ok, "sum of #{byte_size(span)}"} end)
+
+    msgs = ReqLLM.Context.to_list(s2.context)
+    assert hd(msgs).role == :system
+    assert Enum.at(msgs, 1).role == :user
+    assert s2.compaction_backoff == 0
+  end
+
+  test "compact_now is a no-op when there is nothing to summarize" do
+    s = state(context: ctx(3))
+    {s2, false} = Compactor.compact_now(s, fn _state, _span -> flunk("must not summarize") end)
+    assert s2 == s
+  end
+
+  test "compact_now is structurally inert in test_mode" do
+    s = state(test_mode: true)
+    {s2, false} = Compactor.compact_now(s, fn _state, _span -> flunk("must not summarize") end)
+    assert s2 == s
+  end
+
   # -- warn-once ----------------------------------------------------------------
 
   test "warn_approaching: warns once at 80% of the soft limit" do

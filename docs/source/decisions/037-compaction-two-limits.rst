@@ -170,12 +170,20 @@ Mechanism
 - ``Session.State`` carries the resolved ``context_window`` and the
   derived limits, so a resume does not re-read config the way
   ``max_tool_rounds``/``reasoning_effort`` already do not.
-- ``Session.Compactor`` gains two entry points: ``maybe_compact/2``
-  (hard, pre-call) and ``maybe_compact_idle/2`` (soft, background). Both
-  reuse the existing plan/apply/summarize/backoff machinery; the idle
-  one adds the fingerprint guard and a ``:compaction_idle`` broadcast.
-- The soft task runs under the existing ``Compactor.TaskSupervisor``
-  (never linked to the session), like the current summarize call.
+- ``Session.Compactor`` gains three entry points: ``maybe_compact/2``
+  (hard, pre-call), ``maybe_compact_idle/2`` (soft, background) and
+  ``compact_now/2`` (manual, below the limits). All reuse the existing
+  plan/apply/summarize/backoff machinery; the background ones share the
+  fingerprint guard and one broadcast.
+- Manual compaction ships as ``/compact`` / ``ctrl-x c`` (ADR 034) and
+  ``Session.compact/1``: the human's on-demand verb, refused mid-turn
+  (a boundary verb like ``/undo``). It ignores the limits — "is it over
+  a threshold?" is the wrong question once the human asked — and runs in
+  the same background slot as the idle pass, so the reply means
+  "started", not "summarized".
+- Both background tasks run under the existing
+  ``Compactor.TaskSupervisor`` (never linked to the session), like the
+  current summarize call.
 
 Consequences
 ------------
