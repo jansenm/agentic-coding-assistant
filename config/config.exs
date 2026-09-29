@@ -33,6 +33,23 @@ import Config
 # unverified-model warning.
 config :req_llm, warn_unverified_models: false
 
+# ex_ratatui's precompiled v0.13.1 NIF crashes (SIGSEGV through a null
+# pointer inside the render NIF; four coredumps, ADR 035). Build the NIF
+# from source instead. This needs `:rustler` declared as an explicit dep
+# (see mix.exs) and a Rust toolchain (cargo/rustc). Delete this line to
+# fall back to the precompiled artifact once a fixed release lands.
+config :rustler_precompiled, :force_build, ex_ratatui: true
+
+# Override the crate's `[profile.release]` (fat LTO + codegen-units=1,
+# new in 0.13.1 and the prime suspect for the corruption) with a
+# conservative profile. `rustler` forwards these as cargo environment
+# variables; the crate's own Cargo.toml still sets `strip`.
+config :ex_ratatui, ExRatatui.Native,
+  env: [
+    {"CARGO_PROFILE_RELEASE_LTO", "false"},
+    {"CARGO_PROFILE_RELEASE_CODEGEN_UNITS", "16"}
+  ]
+
 # Import environment specific config. This must remain at the bottom
 # of this file so it overrides the configuration defined above.
 import_config "#{config_env()}.exs"

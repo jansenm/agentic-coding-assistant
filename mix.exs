@@ -40,6 +40,13 @@ defmodule CodingAgent.MixProject do
       {:req_llm, "~> 1.21"},
       {:dotenvy, "~> 1.1"},
       {:ex_ratatui, "~> 0.13"},
+      # ex_ratatui's NIF is built from source, not the precompiled
+      # artifact: the shipped v0.13.1 binary crashes (SIGSEGV through a
+      # null pointer in the render NIF, 4x — see ADR 035). Forcing a
+      # source build needs `:rustler` declared here explicitly; it is an
+      # optional dep of ex_ratatui and optional deps are not fetched
+      # transitively.
+      {:rustler, "~> 0.38"},
       # YAML frontmatter for agent definitions (ADR 017/019). Pure Erlang,
       # no NIF; used directly (not via yaml_elixir, which only wraps it).
       {:yamerl, "~> 0.10"},
