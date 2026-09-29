@@ -45,6 +45,44 @@ defmodule CodingAgent.Core.FailureTest do
     assert {:other, _} = Failure.classify(nil)
   end
 
+  test "a structured provider timeout is named and invites a retry" do
+    timeout = ReqLLM.Error.API.Timeout.exception(kind: :receive, timeout: 30_000)
+    assert {:provider, hint} = Failure.classify(timeout)
+    assert hint =~ "timed out"
+  end
+
+  test "an empty provider response is named and invites a retry" do
+    assert {:provider, hint} = Failure.classify({:empty_provider_response, 3})
+    assert hint =~ "no content"
+  end
+
+  describe "retryable_timeout?/1 (the retry class)" do
+    test "a structured timeout is retryable" do
+      assert Failure.retryable_timeout?(
+               ReqLLM.Error.API.Timeout.exception(kind: :total, timeout: 120_000)
+             )
+    end
+
+    test "a wrapped stream timeout is retryable" do
+      timeout = ReqLLM.Error.API.Timeout.exception(kind: :stream_idle, timeout: 5_000)
+      assert Failure.retryable_timeout?({:stream_error, timeout})
+    end
+
+    test "a textual timeout and a timeout-wrapped task exit are retryable" do
+      assert Failure.retryable_timeout?(%{reason: "request timed out"})
+      assert Failure.retryable_timeout?({:http_task_failed, :timeout})
+      assert Failure.retryable_timeout?({:http_task_failed, {:timeout, 1_000}})
+    end
+
+    test "auth, status codes and local failures are NOT retried" do
+      refute Failure.retryable_timeout?(%{status: 429})
+      refute Failure.retryable_timeout?(%{reason: "401 Unauthorized"})
+      refute Failure.retryable_timeout?(%{reason: "invalid byte 0x83"})
+      refute Failure.retryable_timeout?(:weird)
+      refute Failure.retryable_timeout?(nil)
+    end
+  end
+
   describe "provider_reason/1 (probe classification)" do
     test "names auth and quota statuses" do
       assert Failure.provider_reason(%{status: 401}) =~ "credentials (401)"

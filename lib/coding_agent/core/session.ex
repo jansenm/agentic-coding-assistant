@@ -91,8 +91,21 @@ defmodule CodingAgent.Core.Session do
   end
 
   @doc "Returns the session's current state (messages, status)."
-  @spec state(String.t()) :: State.t() | {:error, :not_found}
-  def state(id), do: GenServer.call(via(id), :state)
+  @spec state(String.t()) :: {:ok, State.t()} | {:error, :not_found | :timeout}
+  def state(id) do
+    GenServer.call(via(id), :state)
+  catch
+    # A state READ must never kill its caller. The TUI reads the session
+    # from many render/key paths; an uncaught `:exit` on a gone session
+    # (`:noproc`) or a momentarily busy one (the 5s default timeout)
+    # terminated the whole TUI server live (log 2026-09-29: ExRatatui.Server
+    # "terminating ... GenServer.call(... :state, 5000) EXIT time out").
+    # Callers already branch on `{:error, _}`, so degrade instead.
+    :exit, {:noproc, _} -> {:error, :not_found}
+    :exit, {:normal, _} -> {:error, :not_found}
+    :exit, {:timeout, _} -> {:error, :timeout}
+    :exit, _ -> {:error, :not_found}
+  end
 
   @doc """
   Updates the LIVE session's in-memory id after a Store rename so its
@@ -2069,7 +2082,111 @@ defmodule CodingAgent.Core.Session do
     end
   end
 
+  # One provider call, bounded by the configured retry policy. A transient
+  # transport TIMEOUT (req_llm's structured `%ReqLLM.Error.API.Timeout{}`)
+  # is retried up to `provider_retries` times with `provider_retry_delay_ms`
+  # between attempts; every other failure ends the turn immediately, as
+  # before.
   defp call_llm(state, overrides \\ []) do
+    retries = Config.provider_retries(state.scope_root)
+    delay = Config.provider_retry_delay_ms(state.scope_root)
+    retry_llm(state, retries, delay, fn -> stream_attempt(state, overrides) end)
+  end
+
+  # The retry loop, separable from the provider call so the DECISION is
+  # unit-testable without a provider. `attempt_fun` produces each attempt
+  # and `wait_fun.(id, ms)` blocks (returning true when the human stopped).
+  @doc false
+  @spec retry_llm(State.t(), non_neg_integer(), non_neg_integer(), (-> term()), (String.t(),
+                                                                                 non_neg_integer() ->
+                                                                                   boolean())) ::
+          term()
+  def retry_llm(state, retries, delay, attempt_fun, wait_fun \\ &wait_or_interrupt/2) do
+    try_llm(state, retries, retries, delay, attempt_fun, wait_fun)
+  end
+
+  defp try_llm(state, total, left, delay, attempt_fun, wait_fun) do
+    result = attempt_fun.()
+
+    case llm_retry(result, left, streamed_output?(state.id), total) do
+      :retry_timeout ->
+        retry_attempt(state, total, left, delay, attempt_fun, wait_fun, "provider timeout")
+
+      :retry_empty ->
+        retry_attempt(
+          state,
+          total,
+          left,
+          delay,
+          attempt_fun,
+          wait_fun,
+          "provider returned nothing"
+        )
+
+      :give_up ->
+        result
+
+      {:give_up, reason} ->
+        {:error, reason}
+    end
+  end
+
+  # The PURE retry decision (no side effects), so it is directly testable:
+  #
+  #   * `:retry_timeout` — a transient timeout with nothing streamed (a
+  #     timeout after partial output must NOT re-ask the model and
+  #     duplicate text the human already saw);
+  #   * `:retry_empty`   — a clean finish that carried no content;
+  #   * `:give_up`       — return the attempt's result unchanged (a
+  #     non-timeout failure, or a successful/partial attempt);
+  #   * `{:give_up, reason}` — retries exhausted with an empty response:
+  #     a FAILED turn named for what happened, never a silent empty answer.
+  @doc false
+  @spec llm_retry(term(), non_neg_integer(), boolean(), non_neg_integer()) ::
+          :retry_timeout | :retry_empty | :give_up | {:give_up, term()}
+  def llm_retry({:error, reason}, left, streamed?, _total) when left > 0 do
+    if CodingAgent.Core.Failure.retryable_timeout?(reason) and not streamed? do
+      :retry_timeout
+    else
+      :give_up
+    end
+  end
+
+  def llm_retry({:ok, %{text: "", tool_calls: [], blocks: []}}, left, _streamed?, _total)
+      when left > 0,
+      do: :retry_empty
+
+  def llm_retry({:ok, %{text: "", tool_calls: [], blocks: []}}, 0, _streamed?, total),
+    do: {:give_up, {:empty_provider_response, total}}
+
+  def llm_retry(_result, _left, _streamed?, _total), do: :give_up
+
+  # One retry: announce it, wait (honoring esc), then try again — or end
+  # the turn as an interrupt when the human stopped during the back-off.
+  defp retry_attempt(state, total, left, delay, attempt_fun, wait_fun, label) do
+    n = total - left + 1
+    Logger.warning("#{label}; retry #{n}/#{total} in #{delay}ms")
+    broadcast(state, {:info, "· #{label} — retry #{n}/#{total} in #{div(delay, 1000)}s"})
+
+    if wait_fun.(state.id, delay) do
+      {:interrupted, ""}
+    else
+      try_llm(state, total, left - 1, delay, attempt_fun, wait_fun)
+    end
+  end
+
+  # A single streamed provider attempt. `consume_stream` throws
+  # `{:stream_error, ...}` on stream failures and returns
+  # `{:interrupted, text}` when the user stops the turn. Catch the throw
+  # HERE: a transport error is a failed turn, an interrupt is a finished
+  # (partial) turn — neither may crash the session (the GenServer used to
+  # terminate on this path — found in the 4a live smoke test).
+  defp stream_attempt(state, overrides) do
+    # Reset the "did anything stream" flag for THIS attempt: a failure
+    # before `consume_stream` (a connect timeout in `stream_text`) must
+    # not read a stale `true` from an earlier round and refuse to retry.
+    Process.put(output_key(state.id), false)
+
     with {:ok, model_input, opts, context} <- wire_request(state, overrides) do
       with {:ok, stream_response} <-
              ReqLLM.stream_text(model_input, sanitize_context(context), opts) do
@@ -2082,12 +2199,6 @@ defmodule CodingAgent.Core.Session do
         # stop a reasoning-only stream that never emits another delta.
         Interrupt.register(state.id, fn -> ReqLLM.StreamResponse.close(stream_response) end)
 
-        # consume_stream throws {:stream_error, ...} on stream failures
-        # and returns {:interrupted, text} when the user stops the turn.
-        # Catch the throw HERE: a transport error is a failed turn, an
-        # interrupt is a finished (partial) turn — neither may crash the
-        # session (the GenServer used to terminate on this path — found
-        # in the 4a live smoke test).
         try do
           case consume_stream(events, state.id) do
             {:interrupted, partial} ->
@@ -2116,10 +2227,30 @@ defmodule CodingAgent.Core.Session do
     end
   end
 
+  # Waits `ms` in small chunks so a user stop (esc) is honored promptly
+  # instead of after the whole back-off. Returns true when interrupted.
+  defp wait_or_interrupt(_id, ms) when ms <= 0, do: false
+
+  defp wait_or_interrupt(id, ms) do
+    chunk = min(ms, 100)
+    Process.sleep(chunk)
+
+    if Interrupt.requested?(id) do
+      true
+    else
+      wait_or_interrupt(id, ms - chunk)
+    end
+  end
+
   @doc false
   def consume_stream(events, session_id) do
     partial_key = {__MODULE__, :partial, session_id}
     Process.put(partial_key, "")
+    # Whether this attempt produced anything the human could have seen.
+    # Kept OUTSIDE the try (not cleared in `after`) so `call_llm` can read
+    # it after a thrown stream error and refuse to retry a timeout that
+    # would duplicate already-rendered output.
+    Process.put(output_key(session_id), false)
 
     try do
       events
@@ -2147,6 +2278,12 @@ defmodule CodingAgent.Core.Session do
       Process.delete(partial_key)
     end
   end
+
+  defp output_key(session_id), do: {__MODULE__, :output, session_id}
+
+  # True when the LAST `consume_stream/2` emitted a visible delta (text,
+  # reasoning or a tool call). Read by the retry policy in `call_llm/2`.
+  defp streamed_output?(session_id), do: Process.get(output_key(session_id), false)
 
   defp interrupt_result({:interrupted, text, _calls, _blocks}, _session_id),
     do: {:interrupted, text}
@@ -2185,6 +2322,7 @@ defmodule CodingAgent.Core.Session do
     broadcast_text(session_id, delta)
     partial = acc <> delta
     Process.put(key, partial)
+    Process.put(output_key(session_id), true)
     {:streaming, partial, calls, append_block(blocks, :assistant, delta)}
   end
 
@@ -2196,15 +2334,17 @@ defmodule CodingAgent.Core.Session do
        ) do
     broadcast_reasoning(session_id, delta)
     Process.put(key, acc)
+    Process.put(output_key(session_id), true)
     {:streaming, acc, calls, append_block(blocks, :reasoning, delta)}
   end
 
   defp handle_event(
          %{type: :tool_call, data: call},
          {:streaming, acc, calls, blocks},
-         _session_id,
+         session_id,
          _key
        ) do
+    Process.put(output_key(session_id), true)
     {:streaming, acc, [call | calls], blocks}
   end
 

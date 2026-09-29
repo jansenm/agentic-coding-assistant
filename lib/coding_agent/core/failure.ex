@@ -28,6 +28,9 @@ defmodule CodingAgent.Core.Failure do
     "Jason.EncodeError"
   ]
 
+  @timeout_hint "the provider timed out; it was retried, retry the turn"
+  @empty_hint "the provider returned no content; retry the turn"
+
   @provider_markers [
     "econnrefused",
     "connection refused",
@@ -59,6 +62,11 @@ defmodule CodingAgent.Core.Failure do
   def classify({:stream_error, err}), do: classify(err)
   def classify({:provider_build_failed, err}), do: classify(err)
   def classify({:http_streaming_failed, inner}), do: classify(inner)
+
+  # A structured provider timeout, and a provider stream that carried no
+  # content at all: both name the provider and invite a retry.
+  def classify(%ReqLLM.Error.API.Timeout{}), do: {:provider, @timeout_hint}
+  def classify({:empty_provider_response, _n}), do: {:provider, @empty_hint}
 
   def classify(%{reason: reason}) when is_binary(reason), do: classify_reason(reason)
   def classify(reason) when is_binary(reason), do: classify_reason(reason)
@@ -127,4 +135,29 @@ defmodule CodingAgent.Core.Failure do
   end
 
   defp contains_any?(haystack, needles), do: Enum.any?(needles, &String.contains?(haystack, &1))
+
+  @doc """
+  Whether a failed provider call is a transient TIMEOUT worth retrying.
+
+  The narrow class the session retries: req_llm's structured
+  `%ReqLLM.Error.API.Timeout{}`, a timeout-wrapped HTTP task exit, or a
+  transport reason that names a timeout in words (some providers surface
+  a `ReqLLM.Error.API.Request` with a textual "timed out" instead of the
+  structured struct). Everything else — auth, 4xx/5xx, a local build
+  failure — is permanent for the turn. Domain knowledge, so it lives in
+  `Failure`, not in the session or the view.
+  """
+  @spec retryable_timeout?(term()) :: boolean()
+  def retryable_timeout?(%ReqLLM.Error.API.Timeout{}), do: true
+  def retryable_timeout?({:stream_error, inner}), do: retryable_timeout?(inner)
+  def retryable_timeout?({:http_task_failed, :timeout}), do: true
+  def retryable_timeout?({:http_task_failed, {:timeout, _}}), do: true
+  def retryable_timeout?(%{reason: reason}) when is_binary(reason), do: timeout_text?(reason)
+  def retryable_timeout?(reason) when is_binary(reason), do: timeout_text?(reason)
+  def retryable_timeout?(_), do: false
+
+  defp timeout_text?(reason) do
+    down = String.downcase(reason)
+    String.contains?(down, "timeout") or String.contains?(down, "timed out")
+  end
 end

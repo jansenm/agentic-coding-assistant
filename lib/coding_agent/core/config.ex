@@ -36,6 +36,8 @@ defmodule CodingAgent.Core.Config do
   @default_context_window_tokens 500_000
   @default_compaction_wall_clock_ms 300_000
   @default_compaction_inactivity_ms 120_000
+  @default_provider_retries 3
+  @default_provider_retry_delay_ms 5_000
 
   # req_llm's canonical reasoning efforts (ADR 029); the accepted
   # config.toml strings, one to one.
@@ -194,6 +196,52 @@ defmodule CodingAgent.Core.Config do
   @spec context_window_tokens() :: pos_integer()
   def context_window_tokens,
     do: app(:context_window_tokens, @default_context_window_tokens)
+
+  @doc """
+  How many times a provider TIMEOUT is retried before the turn fails.
+
+  A transient transport timeout (req_llm's ``%ReqLLM.Error.API.Timeout{}``)
+  is not a permanent failure, so the session waits and tries again instead
+  of ending the turn. This is the maximum number of RETRIES (``0`` disables
+  the retry). Resolution, strongest first: the layered
+  ``provider_retries`` in ``config.toml`` (project over global), the
+  app-env override, then the built-in default (3).
+  """
+  @spec provider_retries(String.t() | nil | t()) :: non_neg_integer()
+  def provider_retries, do: provider_retries(nil)
+
+  def provider_retries(%__MODULE__{} = snapshot),
+    do:
+      configured_count(snapshot, "provider_retries") ||
+        app(:provider_retries, @default_provider_retries)
+
+  def provider_retries(scope_root), do: provider_retries(snapshot(scope_root))
+
+  @doc """
+  How long to wait between provider-timeout retries, in milliseconds.
+
+  Resolution mirrors ``provider_retries/1``: the layered
+  ``provider_retry_delay_ms`` in ``config.toml`` (project over global), the
+  app-env override, then the built-in default (5000).
+  """
+  @spec provider_retry_delay_ms(String.t() | nil | t()) :: non_neg_integer()
+  def provider_retry_delay_ms, do: provider_retry_delay_ms(nil)
+
+  def provider_retry_delay_ms(%__MODULE__{} = snapshot),
+    do:
+      configured_count(snapshot, "provider_retry_delay_ms") ||
+        app(:provider_retry_delay_ms, @default_provider_retry_delay_ms)
+
+  def provider_retry_delay_ms(scope_root), do: provider_retry_delay_ms(snapshot(scope_root))
+
+  # A non-negative integer in the layered config, else nil (absent/invalid
+  # falls through to the next source, matching max_tool_rounds/1's shape).
+  defp configured_count(%__MODULE__{config: config}, key) do
+    case config[key] do
+      n when is_integer(n) and n >= 0 -> n
+      _ -> nil
+    end
+  end
 
   @doc """
   Reasoning-effort override (ADR 029), or nil when unset.

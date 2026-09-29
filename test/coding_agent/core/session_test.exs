@@ -251,4 +251,48 @@ defmodule CodingAgent.Core.SessionTest do
       assert CodingAgent.Core.Session.Compactor.decide(state, trigger) == :none
     end
   end
+
+  describe "llm_retry/4 (the provider retry decision)" do
+    alias CodingAgent.Core.Session, as: S
+
+    @timeout ReqLLM.Error.API.Timeout.exception(kind: :receive, timeout: 30_000)
+    @empty {:ok, %{text: "", tool_calls: [], blocks: []}}
+    @answer {:ok, %{text: "hi", tool_calls: [], blocks: [{:assistant, "hi"}]}}
+
+    test "a timeout with nothing streamed retries while attempts remain" do
+      assert S.llm_retry({:error, @timeout}, 3, false, 3) == :retry_timeout
+    end
+
+    test "a timeout after partial output is NOT retried (no duplicated text)" do
+      assert S.llm_retry({:error, @timeout}, 3, true, 3) == :give_up
+    end
+
+    test "a non-timeout failure is never retried" do
+      assert S.llm_retry({:error, {:stream_error, %{status: 429}}}, 3, false, 3) == :give_up
+    end
+
+    test "a clean empty finish retries while attempts remain" do
+      assert S.llm_retry(@empty, 3, false, 3) == :retry_empty
+    end
+
+    test "an empty finish with retries exhausted is a named failure" do
+      assert S.llm_retry(@empty, 0, false, 3) == {:give_up, {:empty_provider_response, 3}}
+    end
+
+    test "a real answer is returned unchanged" do
+      assert S.llm_retry(@answer, 3, false, 3) == :give_up
+    end
+
+    test "the timeout class comes from Failure (auth/status not retried)" do
+      refute S.llm_retry({:error, %ReqLLM.Error.API.Request{status: 429}}, 3, false, 3) ==
+               :retry_timeout
+    end
+  end
+
+  describe "state/1 crash-safety" do
+    test "a missing session is {:error, :not_found}, never an exit" do
+      assert CodingAgent.Core.Session.state("does-not-exist-#{System.unique_integer()}") ==
+               {:error, :not_found}
+    end
+  end
 end

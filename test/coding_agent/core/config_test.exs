@@ -218,6 +218,22 @@ defmodule CodingAgent.Core.ConfigTest do
       assert Config.subagent_concurrency(snapshot) == 3
     end
 
+    test "provider retries default to 3 and 5000ms" do
+      assert Config.provider_retries(%Config{config: %{}}) == 3
+      assert Config.provider_retry_delay_ms(%Config{config: %{}}) == 5_000
+    end
+
+    test "provider retries honour config.toml over the default" do
+      snapshot = %Config{config: %{"provider_retries" => 0, "provider_retry_delay_ms" => 250}}
+      assert Config.provider_retries(snapshot) == 0
+      assert Config.provider_retry_delay_ms(snapshot) == 250
+    end
+
+    test "provider retries ignore a negative config.toml value" do
+      snapshot = %Config{config: %{"provider_retries" => -1}}
+      assert Config.provider_retries(snapshot) == 3
+    end
+
     test "the no-model message names the user config path" do
       assert Config.no_model_message() =~ UserConfig.global_dir()
       assert Config.no_model_message() =~ "AGENT_MODEL"

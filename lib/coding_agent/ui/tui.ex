@@ -768,6 +768,8 @@ defmodule CodingAgent.UI.Tui do
   defp error_text({:stream_error, %ReqLLM.Error.API.Stream{} = err}), do: shorten(err.reason)
 
   defp error_text(%ReqLLM.Error.API.Stream{} = err), do: shorten(err.reason)
+  defp error_text(%ReqLLM.Error.API.Timeout{} = err), do: Exception.message(err)
+  defp error_text({:empty_provider_response, _n}), do: "provider returned no content"
 
   defp error_text(%{reason: reason}) when is_binary(reason), do: shorten(reason)
   defp error_text(reason) when is_binary(reason), do: shorten(reason)

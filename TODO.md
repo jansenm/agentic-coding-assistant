@@ -116,6 +116,13 @@ ohne confinement. Alle sieben Slices sind gelandet:
   eigenen Render-Layer inkl. Cursor-Mapping und Höhen-Mathematik,
   (b) NIF patchen/vendorn (nicht landbar), (c) „mehr Text rechts“-
   Indikator (löst es nicht allein).
+* ~~**B6** Provider-Timeout ohne Retry / stiller leerer Abschluss~~ —
+  **erledigt (ADR 033, 2026-09-29):** `call_llm/2` wiederholt einen
+  Transport-Timeout (max `provider_retries`, Default 3, Delay
+  `provider_retry_delay_ms`, Default 5000 ms) und verbucht einen leeren
+  „sauberen“ Stream-Abschluss als benannten Fehler statt als idle-Turn.
+  Zusätzlich: `Session.state/1` fängt `:exit` ab (kein TUI-Absturz mehr
+  bei einem `:state`-Timeout).
 
 ## Session-Storage (ADR 020)
 
