@@ -157,6 +157,96 @@ Damit ist aus dem alten P3-Befund nur noch offen:
   Safe-Decoding (ADR 020, Export). Nur anfassen, wenn Import gewollt ist.
 * Offene Fragen R-Nummern siehe ADR 020 selbst.
 
+## Review-Befunde (offen; aus `review.md` / `review-2026-09-28.md`)
+
+Die beiden Review-Records sind aus dem `-mjansen`-Worktree entfernt (die
+offenen Punkte zogen hierher) — der Record selbst bleibt in der Historie
+(`review.md` via `ca6f734`). Anker sind **Symbol + Commit**, keine
+Zeilennummern (die Lehre aus den Rebases). Verifiziert gegen
+`devel @ c534d35`.
+
+**Korrektheit/Verhalten (aus `review-2026-09-28.md`, offen):**
+
+* **F1 — `glob`-Wide-Branch verliert still Treffer.** `Glob.fd_args/2`
+  schickt Patterns, die fd anders läse, in die weite Enumeration
+  (`--glob '*' --max-results @enumeration_cap` = 2000, `glob.ex`), und
+  der Schnitt passiert **vor** `Glob.file_match?` und **ohne**
+  Sortierung — der Filter sieht nur einen willkürlichen Ausschnitt.
+  Reproduzierbar: 6001 flache Dateien, `[a]needle.ex` als 3001. Eintrag;
+  `glob "*needle*"` findet sie, `glob "[a]*needle*"` nicht. Wurzel:
+  Enumeration-Deckel wird wie Vollständigkeit behandelt.
+* **F2/F5 — `Exec.truncate/1`-Banner wird als Pfad gemeldet/eingefügt.**
+  Der Marker (`[... output truncated: … ]`) steht als eigene Zeile im
+  Output; `FdSearch.parse_paths/2` parst ihn als Pfad, er passiert
+  `file_match?` und `in_scope?`. Trifft den Wide-Branch jeder
+  Enumeration, die den 256-KiB-Fensterrand berührt; im `@`-Picker wird
+  er als Datei angeboten und per Enter als `@[…] ` eingefügt.
+* **F4 — Picker verliert still Dateien.** `ListFiles.list/1` fragt
+  `--max-results @max_files` (2000) an **und** läuft durch
+  `Exec.truncate/1` (256 KiB); beide Grenzen greifen still, keine
+  Meldung im Popup. Auf diesem Repo (3282 erreichbare Dateien) fehlen
+  2072 **echte** Dateien im Fenster.
+* **F6 — der `@`-Picker besitzt die Tastatur nicht.**
+  `handle_menu_or_normal_key/2` behandelt die `ctrl-x`-Klausel **vor**
+  der `file_popup != nil`-Klausel. Bei offenem Picker: `ctrl-x` öffnet
+  das Menü darüber, `ctrl-x q` (Fast Path) **beendet die TUI**,
+  `ctrl-x p` schaltet die Sidebar hinter dem Picker um. Der
+  Command-Popup hat die schluckende Klausel; dem Picker fehlt sie.
+* **F7 — getipptes `@` geht beim Fehler verloren.** Der Trigger
+  konsumiert das Zeichen (`open_file_popup/1`) und materialisiert es nur
+  bei Auswahl; bei `{:error, …}` (z.B. `fd` fehlt) endet `@media` als
+  `media`. Sollte das `@` zurückgeben.
+* **F8 — `@` blockiert die UI 0,3–1 s.** `open_file_popup/1` ruft
+  `ListFiles.list/1` **synchron im TUI-GenServer** (davor synchron
+  `Session.state/1`); `FdSearch.parse_paths/2` dominiert
+  (`Tools.in_scope?/2` löst pro Pfad jedes Segment physisch auf).
+  Asynchron oder `in_scope?/2` einmal pro Root.
+* **`todowrite` ohne Größen-/Anzahldeckel.** `TodoWrite.parse/1` nimmt
+  unbegrenzt an (5000 Einträge = 213 KiB; 1 MB `content` akzeptiert) —
+  und der Block hängt in **jedem** Request am System-Prompt und wird
+  persistiert. `read_file` 256 KiB, `grep` 200, `glob` 500 — das einzige
+  Tool ohne Schranke. (ADR 031 offen.)
+* **F9/F10 (Nit):** `FdSearch.parse_paths/2` nutzt
+  `String.trim_leading(&1, "./")` für ein Pfad-Präfix (funktioniert,
+  weil die Funktion alle Vorkommen strippt — irreführend);
+  `ListFiles`-Kommentar nennt `@max_files` 2000 „glob's result cap“,
+  aber `Glob.max_results/0` ist 500, die 2000 sind der
+  **Enumeration**sdeckel.
+
+**Code-Hygiene (aus `review.md` §6, offen):**
+
+* **Approval-Reply als letzter Nicht-No-Op.**
+  `handle_info({:__decided__, {:ok, status}}, …)` schreibt `status`/
+  `pending` aus der Antwort; die drei Geschwister
+  (`__budget_decided__`, `__doom_decided__`, `__question_answered__`)
+  sind No-Ops. Nach der eigenen Regel („die Broadcasts sind die
+  Autorität“) gehört er gleich behandelt oder mit Begründung markiert.
+* **`open_pause/3` dreimal dieselbe Form** (`:question`/`:budget`/
+  `:doom`, je ein anderes Prompt-Feld) — nach der Duplikat-Regel eine
+  Funktion mit Feldnamen-Mapping.
+* **F4 (review.md) — `active_tab`-Lebensdauer.** Der Zeiger wird bei
+  Session-Wechsel neu gebaut und fällt überall über `active_child/1`
+  sauber auf den Parent zurück (Test da), aber es gibt **keinen**
+  Aufräumpfad beim Entfernen eines Tabs. Erst scharf, wenn gehaltene
+  Tabs ersetzt/gedeckelt werden (ADR 018 offene Frage 4).
+
+**Doku-Staleness (aus `review-2026-09-28.md` F3, bestätigt am HEAD):**
+
+* `lib/coding_agent/core/external.ex`-Moduledoc: „when absent the
+  pure-Elixir implementation runs unchanged“ / „we fall back“ —
+  beschreibt den Fallback, den ADR 030 (rg/fd Pflicht) abgeschafft hat.
+* `docs/source/decisions/016-native-search-delegation.rst`: „the retired
+  walk lives on only as a discovery helper in ``Containment``“ —
+  `Containment.walk/3` ist gelöscht.
+* `docs/source/decisions/015-shell-confinement.rst`: „ADR 030
+  (2026-09-25)“ — falsches Datum (030 ist 2026-09-27).
+* `README.md`: „Eleven tools“ — `Tools.all/1` liefert **zwölf**
+  (`todowrite` fehlt auch in der Read-only-Aufzählung).
+* `docs/source/explanation/about-tools.rst`: Read-only-Liste kennt
+  `todowrite` nicht (im Repo read-only).
+* `TODO.md`: die `Stand`-Zeile (hier oben) und „ADR 030 … Commit folgt“
+  sind stale.
+
 ## Struktur & Kosmetik (P4)
 
 * `tui.ex` aufteilen (`4865` Zeilen auf `devel@ca6f734`; der interne
