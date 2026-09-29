@@ -80,6 +80,13 @@ ohne confinement. Alle sieben Slices sind gelandet:
 
 ## Nächste Schritte (priorisiert)
 
+0. **Doku: Reference-Quadrant füllen.** Aufgesetzt (2026-09-29):
+   `reference/index.rst` + `reference/configuration.rst` (alle Keys,
+   Defaults, Layer) + Drift-Test
+   (`test/coding_agent/docs/config_reference_test.exs`). Offen, sobald es
+   sie gibt: `reference/cli.rst` (`mix tui`-Flags), `reference/tools.rst`
+   (Tool-Schemas), `reference/commands.rst` (Slash-Commands aus T7).
+   Anwender-Doku = Reference (Fakten); Tutorials/How-tos später.
 1. **Slash-Commands / Command-Palette (T7).** `/new`, `/sessions`,
    `/models`, `/compact`, `/export`, `/undo`, `/help` machen die
    bestehenden Aktionen auffindbar statt Tastenkürzel-Archäologie.

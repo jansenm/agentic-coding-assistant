@@ -4,10 +4,12 @@ Documentation
 This documentation follows the `Diátaxis <https://diataxis.fr/>`_ framework:
 four quadrants, each answering a different question.
 
-While the assistant is young, only two quadrants are populated:
+While the assistant is young, three quadrants are populated:
 
 - **Explanation** — why the system is designed the way it is (architecture,
   memory model, technology constraints).
+- **Reference** — the facts: configuration files and keys, environment
+  variables, and (as they land) commands and tools.
 - **Decision records** — the project's decision log. Orthogonal to the
   Diátaxis quadrants: ADRs document *why a decision was made*, not how to
   use or learn the product.
@@ -32,6 +34,12 @@ placeholders document the intent of each section.
    :caption: Explanation:
 
    explanation/index
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Reference:
+
+   reference/index
 
 .. toctree::
    :maxdepth: 1
