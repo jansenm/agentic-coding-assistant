@@ -114,8 +114,9 @@ Consequences
   when they do not (``grep``/``glob`` need ``rg``/``fd``).
 - One code path per tool. The reference dialect survives as pure
   functions (`GlobMatch`, the hidden rule) that FILTER the engine's
-  output; the retired walk lives on only as a discovery helper in
-  ``Containment``.
+  output; the retired BEAM walk is gone entirely (ADR 030 removed the
+  last `Containment.walk/3`, so `rg`/`fd` are the only engine and there
+  is no unconfined fallback).
 - Amendment 2's shell-grep redirect stays as UX steering but should not
   claim the native tool is *better* — only that a tool call is cleaner
   than shell.

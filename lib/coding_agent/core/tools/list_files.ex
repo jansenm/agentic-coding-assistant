@@ -22,22 +22,24 @@ defmodule CodingAgent.Core.Tools.ListFiles do
   alias CodingAgent.Core.Tools
   alias CodingAgent.Core.Tools.FdSearch
 
-  # The same order as glob's result cap: enough for a picker list, small
-  # enough to stay inside the Exec truncation window.
-  @max_files 2000
+  # The picker wants every file and filters in memory, so it must not ask
+  # `fd` for a bounded result: a cap applied here (before the query
+  # filter) silently dropped matching files from the popup (review F4).
+  # The 60s `Exec` timeout bounds the enumeration instead. Output is
+  # parsed untruncated (`FdSearch.run`), so no banner can become a file.
+  @doc """
+  Lists every file in `scope` (relative paths, sorted), hidden included.
 
-  @doc "Lists every file in `scope` (relative paths, sorted), hidden included."
+  Returns `{:ok, files}`; no silent cap is applied. `fd` errors are
+  explicit (`{:error, reason}`), never an empty list.
+  """
   @spec list(Tools.scope()) :: {:ok, [String.t()]} | {:error, term()}
   def list(scope) do
     root = Path.expand(scope.root)
 
     case FdSearch.run(scope, fd_args()) do
-      {:ok, out} ->
-        files = out |> FdSearch.parse_paths(root) |> Enum.take(@max_files)
-        {:ok, files}
-
-      {:error, reason} ->
-        {:error, reason}
+      {:ok, out} -> {:ok, FdSearch.parse_paths(out, root)}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -63,13 +65,13 @@ defmodule CodingAgent.Core.Tools.ListFiles do
 
   def error_message(reason), do: FdSearch.error_message(reason)
 
-  # Wide enumeration, bounded: the picker wants every file, then filters
-  # in memory. `--hidden` so a named hidden entry can appear (the hidden
-  # rule then decides); `--no-ignore` because OUR skip list decides, not
-  # the repo's ignore files (the same choice glob makes).
+  # Wide enumeration, unbounded: the picker wants every file, then
+  # filters in memory. `--hidden` so a named hidden entry can appear (the
+  # hidden rule then decides); `--no-ignore` because OUR skip list
+  # decides, not the repo's ignore files (the same choice glob makes).
+  # No `--max-results` — see `list/1`.
   defp fd_args do
     ["--color=never", "--no-ignore", "--hidden", "--type", "f"] ++
-      ["--max-results", to_string(@max_files)] ++
       CodingAgent.Core.External.exclude_args() ++
       ["."]
   end

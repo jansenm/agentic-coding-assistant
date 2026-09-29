@@ -1,19 +1,22 @@
 defmodule CodingAgent.Core.External do
   @moduledoc """
-  Optional external search binaries (ADR 016): `rg` (ripgrep) for the
-  `grep` tool and `fd` for the `glob` tool.
+  External search binaries (ADR 016): `rg` (ripgrep) for the `grep` tool
+  and `fd` for the `glob` tool.
 
-  These are **runtime** binaries, not Elixir dependencies: when present
-  the read tools delegate to them (better engine: PCRE2, `.gitignore`
-  awareness, speed); when absent the pure-Elixir implementation runs
-  unchanged. This keeps ADR 002's "no NIF, no Node, no build-time
-  dependency" intact — nothing is required to compile or ship.
+  These are **runtime** binaries, not Elixir dependencies. Since ADR 030
+  they are **REQUIRED**: the read tools delegate to them, and when a
+  binary is absent the tool refuses with a clear error naming the
+  dependency. There is no pure-Elixir fallback — the BEAM walk that used
+  to run was a second, unconfined boundary (it ignored `hide`/`ro`/
+  `root_ro`). This keeps ADR 002's "no NIF, no Node, no build-time
+  dependency" intact: nothing is required to compile or ship, only to
+  search.
 
   Probes are memoised per OS process. The `rg` probe also requires the
   `pcre2` feature: the tool's patterns come from Elixir's `Regex`
   (PCRE), so a ripgrep built with only the Rust regex engine could
-  reject or reinterpret a valid pattern — in that case we fall back
-  rather than risk a different match.
+  reject or reinterpret a valid pattern — that is why the probe checks
+  the feature, not just the binary.
 
   The probe result can be forced for tests with `put/2` / cleared with
   `reset/0`.

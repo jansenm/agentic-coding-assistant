@@ -58,11 +58,16 @@ defmodule CodingAgent.Core.Exec do
     * `:env` — environment overrides (`{name, value}` string pairs),
       merged over the inherited environment. Used to neutralize
       interactive tools (`GIT_EDITOR=true`; ADR 030 / review F7).
+    * `:truncate` — whether to cut output past `@max_bytes`, keeping head
+      and tail (default `true`). A MACHINE consumer (the `fd` filename
+      enumerator) passes `false`: the truncation banner is prose, not a
+      path, and parsing it produced a phantom match (review F2/F5).
   """
   @spec run(Sandbox.spec(), String.t(), pos_integer(), Sandbox.profile(), keyword()) :: outcome()
   def run(spec, cwd, secs, profile, opts \\ []) do
     stdin = Keyword.get(opts, :stdin)
     env = Keyword.get(opts, :env, [])
+    truncate? = Keyword.get(opts, :truncate, true)
 
     spec =
       case stdin do
@@ -77,7 +82,7 @@ defmodule CodingAgent.Core.Exec do
         deliver_stdin(port, stdin)
 
         deadline = System.monotonic_time(:millisecond) + secs * 1000
-        collect(port, deadline, "")
+        collect(port, deadline, "", truncate?)
 
       {:error, reason} ->
         {:sandbox_error, reason}
@@ -117,35 +122,38 @@ defmodule CodingAgent.Core.Exec do
   # Ports deliver :exit_status then :closed. We never Port.close/1 by
   # hand on a live port: once the os process ends, the port closes
   # itself, and closing an already-closed port raises :badarg.
-  defp collect(port, deadline, buf) do
+  defp collect(port, deadline, buf, truncate?) do
     receive do
       {^port, {:data, data}} ->
-        collect(port, deadline, [buf | data])
+        collect(port, deadline, [buf | data], truncate?)
 
       {^port, {:exit_status, code}} ->
         wait_closed(port)
-        {:ok, truncate(buf), code}
+        {:ok, finish(buf, truncate?), code}
 
       {^port, :closed} ->
         # os process died without a status delivery (e.g. killed by us
         # earlier or exec failure) — treat as failure signal
-        {:ok, truncate(buf), 1}
+        {:ok, finish(buf, truncate?), 1}
     after
       remaining(deadline) ->
-        on_deadline(port, deadline, buf)
+        on_deadline(port, deadline, buf, truncate?)
     end
   end
+
+  defp finish(buf, true), do: truncate(buf)
+  defp finish(buf, false), do: IO.iodata_to_binary(buf)
 
   # The receive `after` clause takes a literal timeout expression in
   # modern Elixir; assigning inside it trips cover's instrumenter, so the
   # decision lives here. `remaining(deadline)` above already blocked for
   # the time left; recompute — it is cheap and always <= 0 on this path.
-  defp on_deadline(port, deadline, buf) do
+  defp on_deadline(port, deadline, buf, truncate?) do
     if remaining(deadline) <= 0 do
       kill(port)
-      {:timeout, truncate(buf)}
+      {:timeout, finish(buf, truncate?)}
     else
-      collect(port, deadline, buf)
+      collect(port, deadline, buf, truncate?)
     end
   end
 

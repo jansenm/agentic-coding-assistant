@@ -402,7 +402,7 @@ existed. Then ``Sandbox.Bwrap`` with the functional probe, then the
 ``rw``/``ro``/``hide`` mount schema, then the dedicated ``git`` tool and
 the ``git_write`` escalation.
 
-**ADR 030 (2026-09-25) finished the model**: ``Sandbox.None`` is now the
+**ADR 030 (2026-09-27) finished the model**: ``Sandbox.None`` is now the
 test seam rather than a runtime path, the native file tools run as
 confined processes under the same profile, and session start requires
 confinement. See ``030-one-boundary.rst``.

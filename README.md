@@ -27,14 +27,14 @@ header).
 
 ## What can it do
 
-Eleven tools, all confined by the session's sandbox profile (ADR 030:
+Twelve tools, all confined by the session's sandbox profile (ADR 030:
 the profile is the one boundary; a session refuses to start when no
 confining sandbox is available):
 
-- Read-only: `list_dir`, `read_file`, `grep`, `glob`, `question` —
-  plus `edit` and `write_file` (allow-by-policy; every change reviewable
-  as a git diff). A repo/user policy file can still turn them back to
-  ask/deny per path.
+- Read-only: `list_dir`, `read_file`, `grep`, `glob`, `question`,
+  `todowrite` — plus `edit` and `write_file` (allow-by-policy; every
+  change reviewable as a git diff). A repo/user policy file can still
+  turn them back to ask/deny per path.
 - State-changing: `shell`, `git`, `webfetch`, `task` (delegation).
 
 `shell`/`git` are allow-by-default inside the profile — a stated

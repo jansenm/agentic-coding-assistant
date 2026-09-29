@@ -111,6 +111,23 @@ defmodule CodingAgent.Core.ExecTest do
     end
   end
 
+  describe "run/5 truncate option (review F2/F5)" do
+    test "default keeps head+tail with a marker", %{profile: profile} do
+      # 300 KiB > 256 KiB: the default truncates
+      cmd = "yes xx | head -c 300000"
+      assert {:ok, out, 0} = Exec.run({:shell, cmd}, @tmp_root, 10, profile)
+      assert out =~ "output truncated"
+    end
+
+    test "truncate: false returns the raw bytes, no marker", %{profile: profile} do
+      cmd = "yes xx | head -c 300000"
+      assert {:ok, out, 0} = Exec.run({:shell, cmd}, @tmp_root, 10, profile, truncate: false)
+      refute out =~ "output truncated"
+      # > the 256 KiB cap, so the raw path really was not cut
+      assert byte_size(out) > 256 * 1024
+    end
+  end
+
   describe "stdin_command/2 (shared EOF spelling)" do
     test "wraps a shell spec in a head -c pipeline" do
       assert {:ok, "/bin/sh", ["-c", command]} =

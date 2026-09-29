@@ -39,10 +39,16 @@ defmodule CodingAgent.Core.Tools.FdSearch do
         root = Path.expand(scope.root)
         profile = scope |> Tools.profile() |> Map.put(:root, root)
 
-        case Exec.run({:exec, fd, args}, root, @exec_timeout, profile) do
+        # truncate: false — fd's output is parsed as PATHS, and the
+        # truncation banner is prose that `parse_paths/2` would otherwise
+        # keep as a phantom match (review F2/F5). A machine consumer must
+        # see the raw list.
+        case Exec.run({:exec, fd, args}, root, @exec_timeout, profile, truncate: false) do
           {:ok, out, 0} -> {:ok, out}
           {:ok, out, _} -> {:error, {:fd_failed, out}}
+          {:timeout, out} -> {:error, {:fd_timeout, out}}
           {:error, reason} -> {:error, reason}
+          {:sandbox_error, reason} -> {:error, reason}
         end
 
       :error ->
@@ -60,6 +66,9 @@ defmodule CodingAgent.Core.Tools.FdSearch do
   def error_message({:fd_failed, _out}),
     do: "fd failed to complete the search; check the pattern"
 
+  def error_message({:fd_timeout, _out}),
+    do: "fd did not finish within the search timeout; narrow the search"
+
   def error_message(reason), do: "fd failed: #{inspect(reason)}"
 
   # The `fd` result filter: parse the printed paths, keep the ones
@@ -69,15 +78,31 @@ defmodule CodingAgent.Core.Tools.FdSearch do
   @doc """
   Parses `fd` output into scope-relative, in-scope paths, sorted. `fd`
   may print absolute or `./`-prefixed paths; both are normalized.
+
+  A line that is not a path at all is dropped, not reported: the
+  truncation banner (should it ever reach here — a non-picker consumer
+  that forgot `truncate: false`) and `[fd error]` diagnostics are prose,
+  and returning them would put a phantom "file" into the result (review
+  F2/F5). A blank line is skipped by `trim: true`.
   """
   @spec parse_paths(String.t(), String.t()) :: [String.t()]
   def parse_paths(out, root) do
     out
     |> String.split("\n", trim: true)
-    |> Enum.map(&String.trim_leading(&1, "./"))
+    |> Enum.reject(&not_a_path?/1)
     |> Enum.map(&Path.expand(&1, root))
     |> Enum.filter(&Tools.in_scope?(%{root: root}, &1))
     |> Enum.map(&Path.relative_to(&1, root))
     |> Enum.sort()
+  end
+
+  # The one shape a line must NOT have to be treated as a path: the
+  # truncation marker (`[... output truncated...`) or an fd diagnostic
+  # (`[fd error] ...`). A real path may start with `[` and contain `]` —
+  # `[a]needle.ex` is a legal filename — so the match is on the exact
+  # banner prefixes, not "looks bracketed".
+  defp not_a_path?(line) do
+    line = String.trim_leading(line)
+    String.starts_with?(line, ["[...", "[fd "])
   end
 end

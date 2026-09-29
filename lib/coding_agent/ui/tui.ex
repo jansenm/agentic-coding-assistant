@@ -2008,6 +2008,19 @@ defmodule CodingAgent.UI.Tui do
   # ctrl-x: enter pending mode; the timer turns it into the popup.
   # NOT while the menu popup is open (the popup owns the keys) and not
   # in pending already (re-press = cancel, like a toggle).
+  #
+  # The file/command popups come FIRST: an open popup is modal and owns
+  # every key. The ctrl-x clause below is guarded only on menu_pending/
+  # menu_popup, so with it first a `ctrl-x q` at an open picker fell into
+  # the menu fast path and QUIT the TUI (review F6).
+  defp handle_menu_or_normal_key(ev, %{file_popup: popup} = state) when popup != nil do
+    handle_file_popup_key(ev, state)
+  end
+
+  defp handle_menu_or_normal_key(ev, %{command_popup: popup} = state) when popup != nil do
+    handle_command_popup_key(ev, state)
+  end
+
   defp handle_menu_or_normal_key(
          %Event.Key{code: "x", modifiers: ["ctrl"]} = _ev,
          %{
@@ -2049,14 +2062,6 @@ defmodule CodingAgent.UI.Tui do
         # run_menu_action; Menu's placeholder popup is unused for them
         run_menu_action(item.action, state)
     end
-  end
-
-  defp handle_menu_or_normal_key(ev, %{file_popup: popup} = state) when popup != nil do
-    handle_file_popup_key(ev, state)
-  end
-
-  defp handle_menu_or_normal_key(ev, %{command_popup: popup} = state) when popup != nil do
-    handle_command_popup_key(ev, state)
   end
 
   defp handle_menu_or_normal_key(ev, state) do
@@ -2145,44 +2150,65 @@ defmodule CodingAgent.UI.Tui do
       end
   end
 
-  # Opens the picker: fetch the confined file list ONCE (ADR 030 — the
-  # list is what the profile exposes, never a BEAM walk), then filter in
-  # memory per keystroke. The typed `@` is consumed by the trigger and
-  # only materializes on selection (or not at all on cancel).
+  # Opens the picker: the confined file list is fetched ASYNCHRONOUSLY
+  # (review F8): `ListFiles.list/1` (and the `Session.state/1` behind
+  # `file_scope/1`) ran synchronously in the TUI GenServer and froze the
+  # keyboard for 0.3–1 s on a large tree. A "loading" popup is shown at
+  # once; the result arrives as `{:__file_list__, ref, result}` (handled
+  # with the other `handle_info` clauses) and is matched by ref, so a
+  # fetch whose popup was closed meanwhile is ignored. The typed `@` is
+  # consumed by the trigger and materializes on selection. On ERROR the
+  # `@` is re-inserted (review F7): the user typed it, and swallowing it
+  # silently turned "@media" into "media". On cancel (esc) it is
+  # intentionally dropped.
   defp open_file_popup(state) do
-    case ListFiles.list(file_scope(state)) do
-      {:ok, files} ->
-        popup = %{
-          files: files,
-          query: "",
-          matches: ListFiles.filter(files, ""),
-          index: 0
-        }
+    ref = make_ref()
+    parent = self()
+    sid = state.session_id
 
-        {:noreply, %{state | file_popup: popup}}
+    Task.start(fn ->
+      send(parent, {:__file_list__, ref, ListFiles.list(file_scope_for(sid))})
+    end)
 
-      {:error, reason} ->
-        {:noreply, status_note(state, ListFiles.error_message(reason))}
-    end
+    popup = %{loading: true, files: [], query: "", matches: [], index: 0, ref: ref}
+    {:noreply, %{state | file_popup: popup}}
   end
 
   # The scope the picker enumerates: the live session's (mounts/
   # shell_mode/session_id), so hide/ro hold. Without a session (the
-  # picker view before attach) it falls back to the cwd root.
-  defp file_scope(state) do
-    case Session.state(state.session_id) do
+  # picker view before attach) it falls back to the cwd root. Takes the
+  # session ID (not the TUI state) because it runs in the fetch Task
+  # (review F8).
+  defp file_scope_for(sid) do
+    case Session.state(sid) do
       {:ok, st} ->
         ToolRunner.scope(st.scope_root, st.mounts, st.id, st.policy.shell_mode)
 
       _ ->
-        %{root: session_scope(state.session_id)}
+        %{root: session_scope(sid)}
     end
   rescue
-    _ -> %{root: session_scope(state.session_id)}
+    _ -> %{root: session_scope(sid)}
   end
+
+  # The async fetch result. Only a popup that is STILL loading the SAME
+  # ref accepts it; anything else (closed by esc, re-opened) is dropped.
+  # (Placed with the other `handle_info` clauses, further down.)
 
   # Text narrows the query; the hidden rule rides the query as its naming
   # input (a hidden segment in the query opts in).
+  # While the list is still loading, only esc is meaningful (it closes
+  # the popup; the in-flight result is then dropped by ref). Every other
+  # key is swallowed so the user cannot type a query into a list that is
+  # not there yet.
+  defp handle_file_popup_key(%Event.Key{code: code}, state)
+       when code in ["esc", "escape"] do
+    {:noreply, %{state | file_popup: nil}}
+  end
+
+  defp handle_file_popup_key(_ev, %{file_popup: %{loading: true}} = state),
+    do: {:noreply, state}
+
   defp handle_file_popup_key(%Event.Key{code: "enter"}, state) do
     case Enum.at(state.file_popup.matches, state.file_popup.index) do
       nil ->
@@ -2192,10 +2218,6 @@ defmodule CodingAgent.UI.Tui do
         state = %{state | file_popup: nil}
         {:noreply, edit(state, {:text, "@#{path} "})}
     end
-  end
-
-  defp handle_file_popup_key(%Event.Key{code: code}, state) when code in ["esc", "escape"] do
-    {:noreply, %{state | file_popup: nil}}
   end
 
   defp handle_file_popup_key(%Event.Key{code: "up"}, state) do
@@ -2768,13 +2790,37 @@ defmodule CodingAgent.UI.Tui do
   # -- Session events --------------------------------------------------------
 
   @impl true
-  def handle_info({:__decided__, {:ok, status}}, state) do
-    # The decisions landed. The parked calls are gone UNLESS the turn
-    # paused again (status :interrupted) — in that case a fresh
-    # status_changed broadcast carries the new pending list, so keep it
-    # and just clear the deciding guard.
-    pending = if status == :interrupted, do: state.pending, else: []
-    {:noreply, %{state | status: status, pending: pending, deciding?: false}}
+  # The async file-list fetch (review F8): only a popup that is STILL
+  # loading the SAME ref accepts the result; anything else (closed by esc,
+  # re-opened) is dropped.
+  def handle_info({:__file_list__, ref, result}, %{file_popup: %{ref: ref}} = state) do
+    case result do
+      {:ok, files} ->
+        popup = %{
+          state.file_popup
+          | loading: false,
+            files: files,
+            matches: ListFiles.filter(files, state.file_popup.query)
+        }
+
+        {:noreply, %{state | file_popup: popup}}
+
+      {:error, reason} ->
+        state = %{state | file_popup: nil}
+        state = edit(state, {:text, "@"})
+        {:noreply, status_note(state, ListFiles.error_message(reason))}
+    end
+  end
+
+  def handle_info({:__file_list__, _ref, _result}, state), do: {:noreply, state}
+
+  # The approval decisions landed. Like the budget/doom/question replies,
+  # this is a NO-OP: the session's broadcasts are authoritative and have
+  # already moved the UI. The old code wrote `status`/`pending` from the
+  # reply, which could overwrite fresher state when the reply arrived late
+  # (the same class of race as the question-wizard one, review §1.1).
+  def handle_info({:__decided__, {:ok, _status}}, state) do
+    {:noreply, state}
   end
 
   # The budget reply landed (ADR 025). The session's broadcasts are
@@ -3333,25 +3379,18 @@ defmodule CodingAgent.UI.Tui do
     end
   end
 
-  defp open_pause(state, :question, session_state) do
-    case question_prompt_of(session_state) do
-      nil -> state
-      prompt -> %{state | question_prompt: prompt}
-    end
-  end
+  # Re-open the prompt for the paused kind from the session's own state.
+  # ONE clause: the three pauses differ only in which prompt field they
+  # carry (review: three copies of the same shape; P3: one home).
+  defp open_pause(state, kind, session_state) do
+    {field, prompt} =
+      case kind do
+        :question -> {:question_prompt, question_prompt_of(session_state)}
+        :budget -> {:budget_prompt, budget_prompt_of(session_state)}
+        :doom -> {:doom_prompt, doom_prompt_of(session_state)}
+      end
 
-  defp open_pause(state, :budget, session_state) do
-    case budget_prompt_of(session_state) do
-      nil -> state
-      prompt -> %{state | budget_prompt: prompt}
-    end
-  end
-
-  defp open_pause(state, :doom, session_state) do
-    case doom_prompt_of(session_state) do
-      nil -> state
-      prompt -> %{state | doom_prompt: prompt}
-    end
+    if prompt == nil, do: state, else: Map.put(state, field, prompt)
   end
 
   defp note_failure(state, what, reason) do
@@ -3629,9 +3668,10 @@ defmodule CodingAgent.UI.Tui do
       end)
 
     rows =
-      case rows do
-        [] -> ["  (no files match)"]
-        _ -> rows
+      cond do
+        Map.get(popup, :loading) -> ["  (loading files…)"]
+        rows == [] -> ["  (no files match)"]
+        true -> rows
       end
 
     body =

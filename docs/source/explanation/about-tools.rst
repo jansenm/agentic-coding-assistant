@@ -21,9 +21,10 @@ loop limit.
 Read-only allow-by-policy (slice 2a)
 ------------------------------------
 
-The read-only tools — ``list_dir``, ``read_file``, ``grep`` and ``glob``,
-plus ``question`` (answered by the session, not executed) — are read-only
-by construction, so they run without a permission check:
+The read-only tools — ``list_dir``, ``read_file``, ``grep``, ``glob``
+and ``todowrite``, plus ``question`` (answered by the session, not
+executed) — are read-only by construction, so they run without a
+permission check:
 **allow-by-policy**. The guarantee lives in exactly one place — the
 registry's ``read_only/1`` — which is therefore the single audit point: a
 tool that writes must never appear there, and must not bypass the

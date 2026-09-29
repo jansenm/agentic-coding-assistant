@@ -58,10 +58,14 @@ defmodule CodingAgent.Core.Tools.Glob do
 
   @max_results 500
 
-  # The wide-enumeration budget for patterns fd would reinterpret: the
-  # same order the retired walk used (2000 entries), so the bound is
-  # familiar and the output stays inside Exec's truncation window.
-  @enumeration_cap 2000
+  # The wide enumeration is NOT capped. A cap on `fd`'s output is applied
+  # BEFORE the reference filter, so the filter would see only an
+  # arbitrary slice and silently drop real matches (review F1: with 6001
+  # files and `--max-results 2000`, `glob "[a]*needle*"` found nothing
+  # while `glob "*needle*"` found the file). The engine enumerates, the
+  # ONE reference rule filters, and the 500-result cap is applied AFTER
+  # the filter (`format_matches/1`) — where its "capped" note is true.
+  # The 60s `Exec` timeout is the bound on the enumeration.
 
   @spec tool(Tools.scope()) :: ReqLLM.Tool.t()
   def tool(scope) do
@@ -140,10 +144,10 @@ defmodule CodingAgent.Core.Tools.Glob do
         exclude_args() ++
         [target, "."]
     else
-      # Wide enumeration, bounded; the reference rule decides what is a
-      # match. `--glob '*'` is the whole filter fd gets.
+      # Wide enumeration; the reference rule decides what is a match.
+      # `--glob '*'` is the whole filter fd gets. NO `--max-results`:
+      # capping here would hand the filter only a slice (review F1).
       ["--glob", "--color=never", "--no-ignore", "--hidden", "--case-sensitive", "--type", "f"] ++
-        ["--max-results", to_string(@enumeration_cap)] ++
         exclude_args() ++
         ["*", "."]
     end

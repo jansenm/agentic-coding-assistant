@@ -965,6 +965,10 @@ defmodule CodingAgent.Core.Session do
   defp run_decide_sync(state, decisions) do
     state = state |> resolve_decisions_for(decisions) |> then(&%{&1 | status: :idle})
     state = persist(state)
+    # broadcast the landed status: the same authority the async path has
+    # (the TUI's reply handler is a no-op now; the broadcasts are what
+    # move it — see the approval-reply note in the TUI).
+    broadcast(state, {:status_changed, :idle})
     {state, {:ok, state}}
   end
 

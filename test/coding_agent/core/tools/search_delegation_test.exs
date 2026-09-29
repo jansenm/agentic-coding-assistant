@@ -3,6 +3,7 @@ defmodule CodingAgent.Core.Tools.SearchDelegationTest do
 
   alias CodingAgent.Core.External
   alias CodingAgent.Core.Tools
+  alias CodingAgent.Core.Tools.FdSearch
 
   @root System.tmp_dir!() |> Path.join("agent-search-#{System.unique_integer([:positive])}")
 
@@ -420,6 +421,31 @@ defmodule CodingAgent.Core.Tools.SearchDelegationTest do
       else
         :ok
       end
+    end
+  end
+
+  describe "FdSearch.parse_paths (review F2/F5): prose is never a path" do
+    test "the Exec truncation banner is dropped, not parsed as a file" do
+      out =
+        "./lib/a.ex\n\n[... output truncated: 300000 bytes total; showing first 131072 and last 131072 ...]\n\n./top.txt\n"
+
+      assert FdSearch.parse_paths(out, @root) == ["lib/a.ex", "top.txt"]
+    end
+
+    test "fd diagnostics are dropped" do
+      out = "[fd error]: Search path 'nope' is not a directory.\n./top.txt\n"
+      assert FdSearch.parse_paths(out, @root) == ["top.txt"]
+    end
+
+    test "a bracketed FILENAME is kept (the banner rule is exact, not 'bracketed')" do
+      File.write!(Path.join(@root, "[a]needle.ex"), "x\n")
+      on_exit(fn -> File.rm(Path.join(@root, "[a]needle.ex")) end)
+      assert FdSearch.parse_paths("./[a]needle.ex\n", @root) == ["[a]needle.ex"]
+    end
+
+    test "`./`-prefixed output is normalized (the trim is intentional)" do
+      assert FdSearch.parse_paths("./src/a.ex\n./.hidden.ex\n", @root) ==
+               [".hidden.ex", "src/a.ex"]
     end
   end
 

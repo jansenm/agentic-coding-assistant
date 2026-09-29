@@ -19,6 +19,12 @@ defmodule CodingAgent.Core.Tools.TodoWrite do
 
   @statuses ~w(pending in_progress completed)
 
+  # Bounds (review: todowrite was the only tool with no ceiling, yet its
+  # block rides EVERY request and is persisted). A plan is a handful of
+  # steps; these caps keep a runaway list from bloating the system prompt.
+  @max_items 64
+  @max_content_chars 500
+
   @doc "Whether `name` is the todo-write tool."
   @spec name() :: String.t()
   def name, do: @tool_name
@@ -50,7 +56,8 @@ defmodule CodingAgent.Core.Tools.TodoWrite do
       list.
 
       The list is rendered in the sidebar and re-sent to you on every
-      turn; it is not something you need to restate.
+      turn; it is not something you need to restate. Keep it to at most
+      #{@max_items} items with a short imperative line each.
       """,
       parameter_schema: %{
         "type" => "object",
@@ -96,8 +103,15 @@ defmodule CodingAgent.Core.Tools.TodoWrite do
   @spec parse(map()) :: {:ok, [map()]} | {:error, String.t()}
   def parse(args) do
     case Map.get(args, "todos") || Map.get(args, :todos) do
-      list when is_list(list) -> parse_items(list)
-      other -> {:error, "`todos` must be an array, got: #{inspect(other)}"}
+      list when is_list(list) ->
+        if length(list) > @max_items do
+          {:error, "too many todos (#{length(list)}); the limit is #{@max_items}"}
+        else
+          parse_items(list)
+        end
+
+      other ->
+        {:error, "`todos` must be an array, got: #{inspect(other)}"}
     end
   end
 
@@ -122,6 +136,9 @@ defmodule CodingAgent.Core.Tools.TodoWrite do
     cond do
       not is_binary(content) or String.trim(content) == "" ->
         {:error, "each todo needs a non-empty `content`"}
+
+      String.length(content) > @max_content_chars ->
+        {:error, "a todo `content` is too long (limit #{@max_content_chars} chars)"}
 
       status not in @statuses ->
         {:error,

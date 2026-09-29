@@ -46,6 +46,17 @@ defmodule CodingAgent.UI.TuiFilePickerTest do
     Enum.each(String.graphemes(text), fn ch -> key(pid, ch) end)
   end
 
+  # The fetch is async (review F8): wait until the popup left its loading
+  # state before asserting on the (possibly empty) matches.
+  defp wait_loaded(pid) do
+    wait_until(fn ->
+      case sync(pid).file_popup do
+        %{loading: false} -> true
+        _ -> false
+      end
+    end)
+  end
+
   test "@ at a word boundary opens the picker and filters" do
     if External.available?(:fd) do
       root = setup_repo()
@@ -56,6 +67,8 @@ defmodule CodingAgent.UI.TuiFilePickerTest do
       assert sync(pid).file_popup == nil
 
       type(pid, "@")
+      # the loading popup appears at once, then fills in
+      wait_loaded(pid)
       assert %{files: files} = sync(pid).file_popup
       refute files == []
       assert Enum.any?(files, &(&1 == "lib/alpha.ex"))
@@ -77,7 +90,9 @@ defmodule CodingAgent.UI.TuiFilePickerTest do
       pid = start_tui(root, sid)
       fire(pid, :__resize_poll__)
 
-      type(pid, "@read")
+      type(pid, "@")
+      wait_loaded(pid)
+      type(pid, "read")
       assert sync(pid).file_popup.matches == ["README.md"]
 
       key(pid, "enter")
@@ -116,5 +131,49 @@ defmodule CodingAgent.UI.TuiFilePickerTest do
     type(pid, "@")
     assert sync(pid).file_popup == nil
     assert ExRatatui.textarea_get_value(sync(pid).textarea) == "foo@"
+  end
+
+  test "the picker owns the keyboard: ctrl-x does not reach the menu (review F6)" do
+    if External.available?(:fd) do
+      root = setup_repo()
+      sid = start_session(root)
+      pid = start_tui(root, sid)
+      fire(pid, :__resize_poll__)
+
+      type(pid, "@")
+      wait_loaded(pid)
+
+      # ctrl-x used to arm the menu prefix and ctrl-x q QUIT the TUI.
+      key(pid, "x", ["ctrl"])
+      assert Process.alive?(pid)
+      assert sync(pid).menu_pending == false
+      assert sync(pid).file_popup != nil
+
+      key(pid, "q")
+      assert Process.alive?(pid)
+      # q is a picker query char, not a quit
+      assert sync(pid).file_popup.query == "q"
+    else
+      :ok
+    end
+  end
+
+  test "a fetch error re-inserts the typed @ (review F7)" do
+    root = setup_repo()
+    sid = start_session(root)
+    pid = start_tui(root, sid)
+    fire(pid, :__resize_poll__)
+
+    saved = External.probe(:fd)
+    External.put(:fd, :error)
+    on_exit(fn -> External.put(:fd, saved) end)
+
+    type(pid, "@")
+
+    wait_until(fn ->
+      sync(pid).file_popup == nil and ExRatatui.textarea_get_value(sync(pid).textarea) == "@"
+    end)
+
+    assert ExRatatui.textarea_get_value(sync(pid).textarea) == "@"
   end
 end

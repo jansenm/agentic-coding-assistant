@@ -171,5 +171,22 @@ defmodule CodingAgent.Core.Session.TodoWriteTest do
       assert {:error, _} =
                TodoWrite.parse(%{"todos" => [%{"content" => "A", "status" => "nope"}]})
     end
+
+    test "caps the list length and per-item content (review: no ceiling)" do
+      too_many =
+        Enum.map(1..65, fn i -> %{"content" => "t#{i}", "status" => "pending"} end)
+
+      assert {:error, reason} = TodoWrite.parse(%{"todos" => too_many})
+      assert reason =~ "too many todos"
+
+      long = [%{"content" => String.duplicate("x", 501), "status" => "pending"}]
+      assert {:error, reason} = TodoWrite.parse(%{"todos" => long})
+      assert reason =~ "too long"
+
+      # a large-but-legal list is accepted
+      ok = Enum.map(1..64, fn i -> %{"content" => "t#{i}", "status" => "pending"} end)
+      assert {:ok, todos} = TodoWrite.parse(%{"todos" => ok})
+      assert length(todos) == 64
+    end
   end
 end
