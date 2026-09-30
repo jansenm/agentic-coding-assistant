@@ -2435,6 +2435,9 @@ defmodule CodingAgent.UI.Tui do
       :started -> {:noreply, status_note(state, "compacting context…")}
       :nothing -> {:noreply, status_note(state, "nothing to compact")}
       :not_running -> {:noreply, status_note(state, "already compacting, or a turn is running")}
+      {:error, :not_found} -> {:noreply, status_note(state, "session is gone")}
+      {:error, :timeout} -> {:noreply, status_note(state, "session did not respond")}
+      {:error, reason} -> {:noreply, status_note(state, "compact failed: #{inspect(reason)}")}
     end
   end
 

@@ -102,28 +102,7 @@ defmodule CodingAgent.Core.Session do
   not entirely silent. All callers branch on `{:error, _}`.
   """
   @spec state(String.t()) :: {:ok, State.t()} | {:error, :not_found | :timeout}
-  def state(id) do
-    GenServer.call(via(id), :state)
-  catch
-    # A state READ must never kill its caller. The TUI reads the session
-    # from many render/key paths; an uncaught `:exit` on a gone session
-    # (`:noproc`) or a momentarily busy one (the 5s default timeout)
-    # terminated the whole TUI server live (log 2026-09-29: ExRatatui.Server
-    # "terminating ... GenServer.call(... :state, 5000) EXIT time out").
-    # Callers already branch on `{:error, _}`, so degrade instead.
-    :exit, {:noproc, _} ->
-      {:error, :not_found}
-
-    :exit, {:normal, _} ->
-      {:error, :not_found}
-
-    :exit, {:timeout, _} ->
-      {:error, :timeout}
-
-    :exit, reason ->
-      Logger.error("session #{id} state read exited: #{inspect(reason)}")
-      {:error, :not_found}
-  end
+  def state(id), do: safe_call(id, :state, "state read", 5_000)
 
   @doc """
   Updates the LIVE session's in-memory id after a Store rename so its
@@ -133,12 +112,12 @@ defmodule CodingAgent.Core.Session do
   through the renamed file.
   """
   def set_id(id, new_id) do
-    GenServer.call(via(id), {:set_id, new_id})
+    safe_call(id, {:set_id, new_id}, "set_id", @call_timeout)
   end
 
   @doc "Model-menu switch: swap the wire model for the NEXT turn."
   def set_model(id, model) do
-    GenServer.call(via(id), {:set_model, model})
+    safe_call(id, {:set_model, model}, "set_model", @call_timeout)
   end
 
   @doc """
@@ -152,7 +131,7 @@ defmodule CodingAgent.Core.Session do
   """
   @spec set_agent(String.t(), String.t() | nil) :: {:ok, State.t()} | {:error, term()}
   def set_agent(id, name) do
-    GenServer.call(via(id), {:set_agent, name}, @call_timeout)
+    safe_call(id, {:set_agent, name}, "set_agent", @call_timeout)
   end
 
   @doc """
@@ -321,7 +300,7 @@ defmodule CodingAgent.Core.Session do
   turn is in flight (`{:error, :busy}`) — undo is a boundary verb.
   """
   @spec undo(String.t()) :: {:ok, non_neg_integer()} | {:error, term()}
-  def undo(id), do: GenServer.call(via(id), :undo, @call_timeout)
+  def undo(id), do: safe_call(id, :undo, "undo", @call_timeout)
 
   @doc """
   Manually compacts the context now (`/compact`, ctrl-x c): summarize the
@@ -334,8 +313,8 @@ defmodule CodingAgent.Core.Session do
   boundary verb, like `/undo`), `:nothing` when there is no whole old
   exchange to summarize.
   """
-  @spec compact(String.t()) :: :started | :not_running | :nothing
-  def compact(id), do: GenServer.call(via(id), :compact, @call_timeout)
+  @spec compact(String.t()) :: :started | :not_running | :nothing | {:error, term()}
+  def compact(id), do: safe_call(id, :compact, "compact", @call_timeout)
 
   @doc """
   Supplies decisions for pending tool calls (ADR 010: approve / edit /
@@ -343,7 +322,7 @@ defmodule CodingAgent.Core.Session do
   """
   @spec decide(String.t(), [%{id: String.t(), decision: :approve | :reject | {:edit, map()}}]) ::
           {:ok, State.t()} | {:error, term()}
-  def decide(id, decisions), do: GenServer.call(via(id), {:decide, decisions}, @call_timeout)
+  def decide(id, decisions), do: safe_call(id, {:decide, decisions}, "decide", @call_timeout)
 
   @doc """
   Answers the tool-round budget prompt (ADR 025).
@@ -358,7 +337,7 @@ defmodule CodingAgent.Core.Session do
   """
   @spec budget_decision(String.t(), :continue | :stop) :: {:ok, State.t()} | {:error, term()}
   def budget_decision(id, decision) when decision in [:continue, :stop] do
-    GenServer.call(via(id), {:budget_decision, decision}, @call_timeout)
+    safe_call(id, {:budget_decision, decision}, "budget_decision", @call_timeout)
   end
 
   @doc """
@@ -374,7 +353,7 @@ defmodule CodingAgent.Core.Session do
   """
   @spec doom_decision(String.t(), :continue | :reject) :: {:ok, State.t()} | {:error, term()}
   def doom_decision(id, decision) when decision in [:continue, :reject] do
-    GenServer.call(via(id), {:doom_decision, decision}, @call_timeout)
+    safe_call(id, {:doom_decision, decision}, "doom_decision", @call_timeout)
   end
 
   @doc """
@@ -390,7 +369,7 @@ defmodule CodingAgent.Core.Session do
   """
   @spec answer_question(String.t(), [[String.t()]]) :: {:ok, State.t()} | {:error, term()}
   def answer_question(id, answers) when is_list(answers) do
-    GenServer.call(via(id), {:answer_question, answers}, @call_timeout)
+    safe_call(id, {:answer_question, answers}, "answer_question", @call_timeout)
   end
 
   @doc """
@@ -411,6 +390,33 @@ defmodule CodingAgent.Core.Session do
   end
 
   defp via(id), do: {:via, Registry, {CodingAgent.Registry, {:session, id}}}
+
+  # A session call that must never kill its caller (review N7). The TUI
+  # invokes the action verbs — `/compact`, `/undo`, the model/agent switch,
+  # the question/budget/doom replies — bare from key paths; an uncaught
+  # `:exit` on a gone session (`:noproc`, e.g. after an orderly
+  # `Session.stop/1` elsewhere) or a momentarily busy one terminates the
+  # whole TUI server. Every public call degrades to `{:error, :not_found |
+  # :timeout}` instead, so the caller's `{:error, _}` branch (or a
+  # catch-all) reports it. `state/1` already did this; this is the same
+  # policy for the action side.
+  defp safe_call(id, request, label, timeout) do
+    GenServer.call(via(id), request, timeout)
+  catch
+    :exit, {:noproc, _} ->
+      {:error, :not_found}
+
+    :exit, {:normal, _} ->
+      {:error, :not_found}
+
+    :exit, {:timeout, _} ->
+      Logger.warning("session #{id} #{label} timed out")
+      {:error, :timeout}
+
+    :exit, reason ->
+      Logger.error("session #{id} #{label} exited: #{inspect(reason)}")
+      {:error, :not_found}
+  end
 
   # Test-only handle on the turn-completion path, so a test can drive a
   # streamed turn (ordered reasoning/answer blocks) without a provider.

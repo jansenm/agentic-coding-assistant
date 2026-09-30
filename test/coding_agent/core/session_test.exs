@@ -182,6 +182,20 @@ defmodule CodingAgent.Core.SessionTest do
       assert {:error, :not_found} = Session.state("does-not-exist-#{System.unique_integer()}")
     end
 
+    test "action verbs degrade a gone session too (review N7)" do
+      # the TUI calls these bare from key paths; an uncaught exit took the
+      # whole TUI server down when a session was stopped out from under it.
+      id = "gone-#{System.unique_integer()}"
+
+      assert {:error, :not_found} = Session.undo(id)
+      assert {:error, :not_found} = Session.compact(id)
+      assert {:error, :not_found} = Session.set_model(id, "anthropic:claude-haiku-4-5")
+      assert {:error, :not_found} = Session.set_agent(id, "plan")
+      assert {:error, :not_found} = Session.answer_question(id, [])
+      assert {:error, :not_found} = Session.budget_decision(id, :stop)
+      assert {:error, :not_found} = Session.doom_decision(id, :reject)
+    end
+
     test "subscribed process receives status events (self-included)" do
       # subscribing from the test process must not register the test in
       # the event registry more than once, and DOWN cleanup must not crash
