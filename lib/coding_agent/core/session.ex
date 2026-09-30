@@ -2350,8 +2350,22 @@ defmodule CodingAgent.Core.Session do
 
       context = Prompt.with_environment(context, model, state.scope_root)
       context = Prompt.with_todos(context, state.todos)
+      context = Prompt.with_budget(context, budget_info(state))
       {:ok, model_input, opts, context}
     end
+  end
+
+  # The numbers the budget block shows the model: the projected context
+  # size and the two auto-summary lines, read from the SAME state the
+  # sidebar mirrors and the compaction decision uses (ADR 029). A session
+  # with no resolved window (a hand-built test state) sends no block.
+  defp budget_info(%State{} = state) do
+    %{
+      used: Compactor.projected_tokens(state),
+      window: Compactor.window(state),
+      soft: Compactor.soft_limit(state),
+      hard: Compactor.hard_limit(state)
+    }
   end
 
   # One provider call, bounded by the configured retry policy. A transient

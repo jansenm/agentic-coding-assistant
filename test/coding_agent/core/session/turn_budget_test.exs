@@ -198,6 +198,19 @@ defmodule CodingAgent.Core.Session.TurnBudgetTest do
       {:ok, _input, opts, _ctx} = Session.wire_request(s)
       refute opts[:tools] == []
     end
+
+    test "wire_request/1 injects the context-budget block into the system message" do
+      id = "budget-wire3-#{System.unique_integer()}"
+      start(id)
+      {:ok, s} = Session.state(id)
+
+      {:ok, _input, _opts, ctx} = Session.wire_request(s)
+
+      [%ReqLLM.Message{role: :system} = sys | _] = ReqLLM.Context.to_list(ctx)
+      text = Enum.map_join(sys.content, "", &(&1.text || ""))
+      assert text =~ "Context budget:"
+      assert text =~ "tokens"
+    end
   end
 
   defp message_text(%ReqLLM.Message{content: parts}) when is_list(parts) do

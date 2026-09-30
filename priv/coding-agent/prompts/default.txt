@@ -53,3 +53,15 @@ request), ask a short question instead of guessing.
   implements and verifies).
 - A permission rejection is feedback, not an error to retry. Adjust
   your approach or ask.
+
+# Context budget
+- Every request includes a "Context budget" line: how full the window
+  is and where older messages get summarized. Summarizing is lossy.
+- Keep durable facts — exact paths, test counts, decisions and why,
+  measured numbers — in a todo item's `notes`. Notes are re-sent to you
+  on every request and survive summarization; your own older messages
+  do not.
+- When you pass the auto-summary line, finish the step you are on and
+  end your turn so older messages are summarized with headroom, rather
+  than being cut mid-task. Do not start a large new step when the
+  budget line says you are near the limit.

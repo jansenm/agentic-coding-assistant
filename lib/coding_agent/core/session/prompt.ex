@@ -19,6 +19,10 @@ defmodule CodingAgent.Core.Session.Prompt do
     * the **todo block** (`with_todos/2`, ADR 031) — the model's current
       list, rebuilt from session state per call so compaction cannot eat
       it;
+    * the **budget block** (`with_budget/2`) — how full the context window
+      is and where the two auto-summary lines sit, rebuilt per call for
+      the same reason. Visibility only: it does not change when
+      summarization happens;
     * the model selection that chose layer 1. A model switch recomposes
       the prefix (see `Session`), so the framework prompt follows the
       model the next turn will actually use.
@@ -173,6 +177,70 @@ defmodule CodingAgent.Core.Session.Prompt do
       block -> append_system_block(context, block)
     end
   end
+
+  @doc """
+  Appends the context-budget block to the system message of `context`,
+  returning a context for ONE call. The same per-call channel as the
+  environment and todo blocks: rebuilt from live session state every
+  request, so it is always current and compaction cannot eat it.
+
+  The model gets the SAME numbers the human sees in the sidebar (ADR 029
+  — the display must not show a different value than the decision uses):
+  the projected context size, the window, and the two auto-summary lines.
+
+  This is visibility, not control: the soft/hard passes are unchanged.
+  The block tells the model when summarization happens so it can choose to
+  finish a step and end its turn (which triggers the soft pass), rather
+  than having it happen mid-think. When nothing is near a limit the block
+  is still sent — one constant-size line per request — so the model
+  learns the metric instead of meeting it only at the wall.
+  """
+  @spec with_budget(ReqLLM.Context.t(), map()) :: ReqLLM.Context.t()
+  def with_budget(context, %{window: window} = budget) when is_integer(window) and window > 0 do
+    append_system_block(context, budget_block(budget))
+  end
+
+  def with_budget(context, _), do: context
+
+  # The budget block text. `used` is the projected tokens (provider count or
+  # chars/4, whichever is larger — the same value the compaction decision
+  # uses); soft is the turn-end trigger, hard the pre-call one.
+  defp budget_block(%{used: used, window: window, soft: soft, hard: hard}) do
+    pct = trunc(used * 100 / max(window, 1))
+
+    base =
+      "Context budget: ~#{k(used)} / #{k(window)} tokens (#{pct}%). " <>
+        "Older messages are summarized automatically at #{k(soft)} when your turn ends, " <>
+        "and forced at #{k(hard)} before a call."
+
+    case guidance(used, soft, hard) do
+      nil -> base
+      guidance -> base <> "\n" <> guidance
+    end
+  end
+
+  # The action hint, only once the model is actually near a line. Keeping it
+  # out of the calm case avoids nagging a session that has room.
+  defp guidance(used, soft, hard) do
+    cond do
+      used >= hard ->
+        "You are at the hard limit: older messages will be summarized before your next " <>
+          "call. Record any fact you must keep in a todo's `notes` now."
+
+      used >= soft ->
+        "You are past the auto-summary line. When the current step is done, end your turn " <>
+          "(or ask the human to continue) so older messages are summarized with headroom — " <>
+          "and put durable facts (paths, numbers, decisions) in a todo's `notes` first; " <>
+          "notes survive summarization."
+
+      true ->
+        nil
+    end
+  end
+
+  defp k(n) when n >= 1_000_000, do: "#{Float.round(n / 1_000_000, 1)}M"
+  defp k(n) when n >= 1_000, do: "#{div(n, 1_000)}k"
+  defp k(n), do: to_string(n)
 
   # The todo block for the system prompt, or nil when there is no list.
   # Plain `[status] content` lines: the sidebar owns glyphs and color.

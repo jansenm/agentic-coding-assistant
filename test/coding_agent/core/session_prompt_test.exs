@@ -186,4 +186,56 @@ defmodule CodingAgent.Core.Session.PromptTest do
       refute block =~ "\n    "
     end
   end
+
+  describe "with_budget/2" do
+    defp system_text(context) do
+      [%ReqLLM.Message{role: :system} = sys | _] = ReqLLM.Context.to_list(context)
+      Enum.map_join(sys.content, "", &(&1.text || ""))
+    end
+
+    defp base, do: ReqLLM.Context.new() |> ReqLLM.Context.append(ReqLLM.Context.system("BASE"))
+
+    test "states the usage, the window, and both limits" do
+      text =
+        Prompt.with_budget(base(), %{used: 350_000, window: 500_000, soft: 250_000, hard: 436_000})
+        |> system_text()
+
+      assert text =~ "350k / 500k"
+      assert text =~ "70%"
+      assert text =~ "250k"
+      assert text =~ "436k"
+    end
+
+    test "hints past the soft line, and says notes survive summarization" do
+      text =
+        Prompt.with_budget(base(), %{used: 300_000, window: 500_000, soft: 250_000, hard: 436_000})
+        |> system_text()
+
+      assert text =~ "past the auto-summary line"
+      assert text =~ "notes"
+    end
+
+    test "is calm (no hint) when there is room" do
+      text =
+        Prompt.with_budget(base(), %{used: 100_000, window: 500_000, soft: 250_000, hard: 436_000})
+        |> system_text()
+
+      assert text =~ "100k / 500k"
+      refute text =~ "past the auto-summary line"
+      refute text =~ "hard limit"
+    end
+
+    test "at the hard limit it says summarization is imminent" do
+      text =
+        Prompt.with_budget(base(), %{used: 440_000, window: 500_000, soft: 250_000, hard: 436_000})
+        |> system_text()
+
+      assert text =~ "hard limit"
+    end
+
+    test "no window means no block" do
+      assert Prompt.with_budget(base(), %{used: 1, window: nil}) == base()
+      assert Prompt.with_budget(base(), %{}) == base()
+    end
+  end
 end
