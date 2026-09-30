@@ -236,6 +236,12 @@ archaeology). Revisit any of these only with a new ADR.
 Compaction (short-term tier)
 ----------------------------
 
+.. seealso::
+   :doc:`compaction-strategies` compares what other agents tell the
+   summarizer and what they erase without a model (opencode's summary
+   template, rolling summaries, and a deterministic "prune" pass), and
+   what of it this harness might adopt. It is research, not a decision.
+
 **Implemented in slice 4b** — the operation is split by concern:
 
 - :mod:`CodingAgent.Core.Compaction` — pure message plumbing: the plan

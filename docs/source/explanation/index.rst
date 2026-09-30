@@ -11,6 +11,7 @@ constraints that follow from the project's trust goals.
    overview
    agent-loop
    memory
+   compaction-strategies
    stack
    about-tools
    about-req-llm
