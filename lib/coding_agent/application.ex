@@ -24,6 +24,10 @@ defmodule CodingAgent.Application do
       {Registry,
        keys: :duplicate, name: CodingAgent.EventRegistry, partitions: System.schedulers_online()},
       CodingAgent.Core.Interrupt,
+      # owns the model catalog (llm_db): warms it in the background so the
+      # session mount never blocks on the ~3.7s cold load, and is the one
+      # access point for our code (ADR 039).
+      CodingAgent.Core.Providers.Catalog,
       # owns the session store's single SQLite connection (see Store):
       # one connection per store path, serialising this VM's access.
       CodingAgent.Core.Session.Store,

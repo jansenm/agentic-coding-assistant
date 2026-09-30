@@ -214,6 +214,11 @@ defmodule CodingAgent.Core.ConfigTest do
       assert Config.context_window(snapshot, "ollama:whatever") == 123_456
     end
 
+    test "context_window is configured? only when config.toml pins it" do
+      assert Config.context_window_configured?(%Config{config: %{"context_window" => 123_456}})
+      refute Config.context_window_configured?(%Config{config: %{}})
+    end
+
     test "max_tool_rounds honours a config.toml value over the default (ADR 025)" do
       snapshot = %Config{config: %{"max_tool_rounds" => 42}}
       assert Config.max_tool_rounds(snapshot) == 42

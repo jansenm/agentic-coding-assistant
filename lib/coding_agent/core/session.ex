@@ -486,12 +486,19 @@ defmodule CodingAgent.Core.Session do
         {:error, reason} -> raise ArgumentError, format_agent_error(reason)
       end
 
-    # The compaction window and its two limits (ADR 037), resolved ONCE
-    # here from the layered config / catalog / fallback and stored on the
-    # state, so the sidebar, the warning and the decision read the same
-    # numbers (ADR 029 — the display must not re-derive what the decision
-    # uses). Resolved against the EFFECTIVE model: an agent definition may
-    # pin its own model (ADR 017), and the switch re-resolves later.
+    # The compaction window and its two limits (ADR 037), resolved from the
+    # layered config / catalog / fallback and stored on the state, so the
+    # sidebar, the warning and the decision read the same numbers (ADR 029
+    # — the display must not re-derive what the decision uses). Resolved
+    # against the EFFECTIVE model: an agent definition may pin its own
+    # model (ADR 017), and the switch re-resolves later.
+    #
+    # ADR 039: the catalog lookup is non-blocking. It is loaded in the
+    # background at app boot, so a mount that races the warm gets the
+    # configured/fallback window NOW (never the ~3.7s cold load) and
+    # re-resolves when the catalog signals readiness — hence the
+    # subscription below. A configured `context_window` always wins, so it
+    # need not listen.
     effective_model =
       case agent do
         %{model: pinned} when is_binary(pinned) and pinned != "" -> pinned
@@ -499,6 +506,10 @@ defmodule CodingAgent.Core.Session do
       end
 
     {window, soft_limit, hard_limit} = Config.compaction_limits(snapshot, effective_model)
+
+    unless Config.context_window_configured?(snapshot) do
+      CodingAgent.Core.Providers.Catalog.subscribe()
+    end
 
     # Resume support (4a): a caller may pass a persisted :context (and
     # then model/policy come from the snapshot too); otherwise a fresh
@@ -1211,7 +1222,39 @@ defmodule CodingAgent.Core.Session do
     {:noreply, %{state | subscribers: List.delete(state.subscribers, monitor)}}
   end
 
+  # The model catalog finished loading (ADR 039). Re-resolve the window if
+  # it was provisional (no configured `context_window`): before the warm,
+  # a cataloged model resolved to the fallback, so its limits were wrong.
+  # Recompute and broadcast so the sidebar (which mirrors the values) and
+  # the next compaction decision use the real numbers. Idempotent.
+  def handle_info({:catalog, :updated}, state) do
+    {:noreply, refresh_catalog_window(state)}
+  end
+
   def handle_info(_msg, state), do: {:noreply, state}
+
+  # Re-resolve the window/limits against the now-loaded catalog. A
+  # configured window never listens (it always wins), but re-resolving is
+  # harmless; we skip the broadcast when nothing changed.
+  defp refresh_catalog_window(%{scope_root: scope_root, model: model} = state) do
+    snapshot = Config.snapshot(scope_root)
+
+    effective_model =
+      case state.agent do
+        %{model: pinned} when is_binary(pinned) and pinned != "" -> pinned
+        _ -> model
+      end
+
+    {window, soft, hard} = Config.compaction_limits(snapshot, effective_model)
+
+    if {window, soft, hard} ==
+         {state.context_window, state.compaction_soft_limit, state.compaction_hard_limit} do
+      state
+    else
+      Events.publish(state.id, {:context_window, window, soft, hard})
+      %{state | context_window: window, compaction_soft_limit: soft, compaction_hard_limit: hard}
+    end
+  end
 
   # -- The loop ---------------------------------------------------------------
 

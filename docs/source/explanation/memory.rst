@@ -26,9 +26,12 @@ fall at or below soft, soft collapses onto hard.
 The window is resolved once at session init: the layered
 ``context_window`` in ``config.toml``, then the catalog (llm_db) window
 for the model, then a 500k fallback. A cloud model absent from the
-catalog needs the ``config.toml`` value. Resolving the window again on a
-model switch is deliberately out of scope for now (ADR 037, open
-question 1).
+catalog needs the ``config.toml`` value. The catalog lives in the
+background (``Providers.Catalog``, ADR 039): it is warmed at app start
+and read without blocking, so a session that mounts while it is still
+loading takes the fallback and re-resolves to the real window once the
+catalog signals readiness. Resolving the window again on a model switch
+is deliberately out of scope for now (ADR 037, open question 1).
 
 The decision uses the **projected** size — the larger of the provider's
 last-turn ``input_tokens`` (ground truth, but it lags by the tool

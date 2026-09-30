@@ -55,6 +55,10 @@ defmodule CodingAgent.Core.Events do
       span with a summary; the payload is how many recent messages were
       kept verbatim
     * `{:provider_status, :up}` / `{:provider_status, :down, reason}`
+    * `{:context_window, window, soft, hard}` — the model catalog finished
+      loading (ADR 039) and the session re-resolved its compaction window
+      against it (the mount may have raced the background load and used
+      the fallback). Subscribers that mirror the window re-read it.
   """
   @type event :: term()
 

@@ -114,41 +114,6 @@ defmodule CodingAgent.Core.Providers do
   @spec publishable(%{String.t() => term()}) :: [String.t()]
   def publishable(config), do: list(config)
 
-  @doc """
-  The model's context window in tokens from the catalog (llm_db), or
-  ``nil`` when the model is unknown. ADR 037: the window drives the two
-  compaction limits; a cloud model absent from the catalog returns
-  ``nil`` and the caller falls back to a configured/ default window.
-
-  The spec is ``provider:model-id``; llm_db resolves it (and its
-  provider aliases). A lookup failure is not an error here — an unknown
-  window is a normal case, not a fault.
-  """
-  @spec window_tokens(String.t() | nil) :: pos_integer() | nil
-  def window_tokens(nil), do: nil
-
-  def window_tokens(spec) when is_binary(spec) do
-    with {:ok, model} <- llm_db_model(spec),
-         %{context: context} when is_integer(context) <- window_of(model) do
-      context
-    else
-      _ -> nil
-    end
-  end
-
-  defp llm_db_model(spec) do
-    case LLMDB.model(spec) do
-      {:ok, model} -> {:ok, model}
-      _ -> :error
-    end
-  end
-
-  # llm_db's limits shape has moved across versions; read both the
-  # struct field and a plain map defensively, and accept :context or
-  # :context_length. A window we cannot read is simply unavailable.
-  defp window_of(%{limits: limits}), do: limits
-  defp window_of(_), do: nil
-
   defp indirection(name, entry) do
     case entry["provider"] do
       nil ->

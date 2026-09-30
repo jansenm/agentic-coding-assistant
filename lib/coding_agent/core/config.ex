@@ -232,13 +232,19 @@ defmodule CodingAgent.Core.Config do
     do: app(:compaction_inactivity_ms, @default_compaction_inactivity_ms)
 
   @doc """
-  The model's context window in tokens, resolved once at session init
-  (ADR 037). Resolution, strongest first:
+  The model's context window in tokens, resolved (ADR 037). Resolution,
+  strongest first:
 
     1. the layered ``context_window`` in ``config.toml`` (project over
        global) — needed for cloud models absent from the catalog;
-    2. the catalog window (``Providers.window_tokens/1``, llm_db);
+    2. the catalog window (``Providers.Catalog``, llm_db);
     3. the app-env ``:context_window_tokens`` fallback (default 500k).
+
+  The catalog lookup is NON-BLOCKING: it reads llm_db's already-loaded
+  snapshot and returns ``:loading`` while the catalog's background warm
+  is still running, so this never queues behind the ~3.7s cold load (the
+  startup hang). A ``:loading``/unknown model takes the fallback; the
+  session re-resolves when the catalog signals it is ready.
 
   Accepts a scope root or an already-read snapshot, plus the model spec.
   """
@@ -247,11 +253,31 @@ defmodule CodingAgent.Core.Config do
 
   def context_window(%__MODULE__{} = snapshot, model) do
     configured_window(snapshot) ||
-      CodingAgent.Core.Providers.window_tokens(model) ||
+      catalog_window(model) ||
       app(:context_window_tokens, @default_context_window_tokens)
   end
 
   def context_window(scope_root, model), do: context_window(snapshot(scope_root), model)
+
+  @doc """
+  Whether the window is pinned by ``config.toml``. When it is, the
+  session need not listen for catalog readiness — the configured value
+  always wins.
+  """
+  @spec context_window_configured?(t()) :: boolean()
+  def context_window_configured?(%__MODULE__{} = snapshot),
+    do: not is_nil(configured_window(snapshot))
+
+  # The catalog as a window source: {:ok, n} when loaded and known,
+  # nil while loading or unknown (the caller falls back). Never blocks.
+  defp catalog_window(nil), do: nil
+
+  defp catalog_window(model) do
+    case CodingAgent.Core.Providers.Catalog.context_window(model) do
+      {:ok, tokens} -> tokens
+      _ -> nil
+    end
+  end
 
   defp configured_window(%__MODULE__{config: config}) do
     case config["context_window"] do

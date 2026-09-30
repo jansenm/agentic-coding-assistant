@@ -3130,6 +3130,13 @@ defmodule CodingAgent.UI.Tui do
     {:noreply, %{state | session_usage: usage}}
   end
 
+  # The session re-resolved its compaction window against the now-loaded
+  # model catalog (ADR 039). The sidebar mirrors these numbers, so refresh
+  # them; there is no transcript line for it (a background detail).
+  def handle_info({:agent, {:context_window, window, soft, hard}}, state) do
+    {:noreply, %{state | compaction_window: window, compaction_soft: soft, compaction_hard: hard}}
+  end
+
   def handle_info({:agent, {:provider_status, :up}}, state) do
     if state.status == :error and Map.get(state, :provider_down?, false) do
       {:noreply, %{state | status: :idle, provider_down?: false}}
