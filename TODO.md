@@ -77,7 +77,20 @@ Tail-Fenster rollen und **während des Laufs** in die Session-Scratch
 misst den Peak-RSS eines 40-MB-Produzenten (<30 MB). `read_file` bricht
 über seinem eigenen Cap ab (`:max_output`), `grep`/`fd` bekommen bei
 einem Runaway ein ehrliches `:raw_too_large` statt OOM. ADR 038
-Amendment. Commit(s) folgen.
+Amendment.
+
+**Erledigt (stiller Turn-Ende, 2026-09-30):** Ein Turn endete `:idle`
+**ohne** Abschluss-Message und ohne Fehler. Ursache: der
+`{:interrupted, partial}`-Pfad im Loop rief immer `complete_turn(partial,
+[])` — kam der Stop **während des Reasonings** (oder vor dem ersten
+Delta), war `partial == ""`, und es wurde eine **leere**
+Assistant-Message angehängt plus ein leeres `llm_message` gesendet:
+sichtbar passierte nichts, als hätte der Agent „einfach aufgehört".
+`interrupted_turn/2` trennt jetzt: nicht-leerer Text bleibt die Antwort
+(esc-Parität), leerer Text geht auf denselben Pfad wie der Stop
+zwischen Rounds (`stop_at_boundary`: idle + „· turn stopped (esc)" +
+Flag gelöscht). Beide Aufrufer (Haupt-Loop und Wrap-up) laufen dadurch.
+Test über die `@doc false`-Naht. Commits `e8281f0`, `36611d2`.
 
 ## ADR 030 — One boundary (umgesetzt 2026-09-27)
 
