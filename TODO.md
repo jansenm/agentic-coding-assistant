@@ -92,6 +92,32 @@ zwischen Rounds (`stop_at_boundary`: idle + „· turn stopped (esc)" +
 Flag gelöscht). Beide Aufrufer (Haupt-Loop und Wrap-up) laufen dadurch.
 Test über die `@doc false`-Naht. Commits `e8281f0`, `36611d2`.
 
+**Erledigt (Review-Abarbeitung 2026-09-30, `review-devel-2026-09-30b.md`):**
+der Record bestätigte die zwei Fixes und brachte 8 neue Befunde — alle
+abgearbeitet. **Korrektheit:** `N33` (der Stop-/Deadline-Check lag nur im
+`after`-Tick, der bei einem **redseligen** Befehl nie feuert; gemessen:
+20-ms-Takt mit 60-s-Deadline stoppte erst bei 60068 ms. `check_stop/5`
+läuft jetzt **auch nach jedem Chunk** — Stop in <500 ms, Deadlines exakt;
+ADR 043 Entscheidung 4 korrigiert), `N33b` (Saturations-Deadline greift),
+`N34` (`Process.info(:memory)` sieht refc-Binaries nicht → der OOM-Test
+war auf der fehlerhaften Fassung grün; jetzt `Process.info(:binary)` +
+langsamer Produzent, Peak flach ~3–16 MB statt O(output)), `N36`
+(Whitespace-`partial` → `String.trim`), `N37` (`read_file` nahm cap+1),
+`N38` (`:raw_too_large` materialisierte den 64-MiB-Puffer). **Spill:**
+`N35` (der streamende Writer verlor den Schwanz; hält jetzt Kopf **und**
+Schwanz wie `spill/3`, Tail amortisiert gerollt). **Doku/Typen:** `N39`
+(`@type outcome`, ADR 038s `Exec.truncate/1`→Accumulator, `collect/4`→`/5`).
+`N40` (fremder Report im Exec-Commit) bewusst gelassen: der Report bleibt
+(Owner-Wunsch), landet aber nicht rückwirkend in einen eigenen Commit
+(landed commits werden nicht amended). Commits `82f3000`, `ef7af3a`.
+
+**Erledigt (live `:empty_summary`, 2026-09-30):** Ein erfolgreicher Turn,
+dann `compaction failed (:empty_summary)`. Der Turn-Pfad retried einen
+leeren Provider-Response (ADR 033), der Summarizer nicht — ein
+sporadisch leerer Response übersprang die Compaction bei übervollem
+Kontext für 3 Turns. `do_compact` retried `:empty_summary` jetzt einmal
+an der `summarize_fn`-Naht. Commit `2664034`.
+
 ## ADR 030 — One boundary (umgesetzt 2026-09-27)
 
 Der Umbau aus `docs/source/decisions/030-one-boundary.rst`: **eine**
