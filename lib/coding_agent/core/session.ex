@@ -778,11 +778,17 @@ defmodule CodingAgent.Core.Session do
 
   def handle_call({:set_agent, name}, _from, state) do
     # Recompute from the base values so switching does not compound; the
-    # system message is replaced in place (index 0) when present.
+    # system message is replaced in place (index 0) when present. A
+    # definition may pin its own `model` (ADR 017), which changes
+    # `State.effective_model/1` and therefore the window/limits (ADR 037
+    # OQ1, review N26) — recompute them like the model-switch paths do.
     case resolve_agent(name, state.base_policy, state.base_prompt, agents_of(state)) do
       {:ok, agent, policy, prompt} ->
         context = Prompt.replace_in_context(state.context, prompt)
-        new_state = %{state | agent: agent, policy: policy, context: context}
+
+        new_state =
+          %{state | agent: agent, policy: policy, context: context} |> recompute_window()
+
         persist(new_state)
         {:reply, {:ok, new_state}, new_state}
 

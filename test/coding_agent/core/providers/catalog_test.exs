@@ -107,4 +107,44 @@ defmodule CodingAgent.Core.Providers.CatalogTest do
 
     :ok = Session.stop(id)
   end
+
+  test "an idle agent switch to a model-pinned agent re-resolves the window (N26)" do
+    alias CodingAgent.Core.Session
+
+    wait_ready()
+
+    root = Path.join(System.tmp_dir!(), "agent-window-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(Path.join(root, ".coding-agent/agents"))
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    # a primary agent whose definition pins a much smaller model (ADR 017)
+    File.write!(
+      Path.join(root, ".coding-agent/agents/pinned.md"),
+      "---\nname: pinned\ndescription: small model\nmode: primary\nmodel: openai:gpt-3.5-turbo\n---\nbody\n"
+    )
+
+    id = "agent-window-#{System.unique_integer([:positive])}"
+
+    {:ok, _pid} =
+      CodingAgent.Core.Session.Supervisor.start_session(
+        id: id,
+        model: "openai:gpt-4o",
+        scope_root: root,
+        agent: "build"
+      )
+
+    # starts on build (no pinned model) -> inherits gpt-4o's 128k
+    assert {:ok, %{context_window: 128_000}} = Session.state(id)
+
+    # switch to the pinned agent: the effective model shrinks to 16k and
+    # the window must follow
+    assert {:ok, _} = Session.set_agent(id, "pinned")
+    assert {:ok, %{context_window: 16_385}} = Session.state(id)
+
+    # and back to build: the window widens again
+    assert {:ok, _} = Session.set_agent(id, "build")
+    assert {:ok, %{context_window: 128_000}} = Session.state(id)
+
+    :ok = Session.stop(id)
+  end
 end
