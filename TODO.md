@@ -200,6 +200,29 @@ drin), `N18` (`max_tokens` im Summarize-Aufruf + Cap in `apply/2`), `N19`
 (Doku), `N21` (Marker-Randfälle), `N22` (Prior-Einrahmung getestet).
 Commits `bbcbd88`…`4e49557`.
 
+**Erledigt (Review-Abarbeitung 2026-09-30, `review-devel-2026-09-30.md`):**
+der Record bestätigte alle 22 vorigen Befunde als behoben und brachte 10
+neue — alle abgearbeitet. **Korrektheit:** `N26` (der idle
+Agenten-Wechsel löste Fenster/Limits nicht neu auf; `recompute_window/1`
+in der idle-`set_agent`-Klausel — beide Richtungen getestet), `N29`
+(`req_llm` wiederholt den Idle-Transport-Timeout doch, über
+`Streaming.Retry`'s Finch-Loop; der verworfene Stream lief hinter dem
+Fehler weiter — gemessen **11 Sockets mit Bug, 4 mit Fix**;
+`stream_attempt/2` schließt ihn jetzt im Fehlerpfad, Regressionstest
+zählt Sockets), `N23` (`provider_receive_timeout_ms` las die
+Projekt-Schicht nicht; `Request.build/3` mit `scope_root`), `N24` (ein
+Menü im ~2 s-Kaltfenster pinnte die leere Katalog-Hälfte für den
+Prozess; nicht cachen, solange `!Catalog.ready?`). **Kappen:** `N30`
+(der Summary-Cap warf Kopf-first `Next Move`/`Relevant Files` weg; jetzt
+Kopf **und** Schwanz wie `bound_input/1`), `N31` (Cap in Bytes gedeckelt,
+in Graphemen geschnitten → bis 4×; `binary_part` + UTF-8-Rand). **Doku:**
+`N25` (Standardinstallation hat keinen Katalog-Provider — Erwartung
+ehrlich gemacht), `N27` (der 0.75-Floor regiert für **41,2 %** des
+Katalogs, 3198/7758; der Hard-Trim kann trotzdem über `W` bleiben),
+`N28` (ADR 041: 495 s statt 375 s — `retries + 1` Versuche; Prämisse als
+Idle-Test festgehalten), `N32` (doppelter Kommentar, Marker-Form). Commits
+`684f682`…`795a59d`.
+
 **Erledigt (Code-Review-Abarbeitung 2026-09-29):** die Korrektheits-
 Befunde aus `review-2026-09-28.md` sind abgearbeitet —
 `Exec.run/5 :truncate` (F2/F5: die Maschinensicht auf `fd` wird nicht
