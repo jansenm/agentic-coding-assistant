@@ -156,21 +156,19 @@ defmodule CodingAgent.Core.ExecTest do
       # see them, so the first cut of this test was green even on the
       # buggy version. `:binary` (a list of `{ref, size, refc?}`) does.
       #
-      # A SLOW producer (64 KiB, then a 4 ms pause), so the consumer
-      # keeps up and the port mailbox stays empty — a saturating one
-      # floods it and makes any measurement scheduling-dependent (19 MB
-      # alone, ~89 MB under the parallel suite). With the mailbox quiet
-      # the metric reflects the ACCUMULATOR: the buggy version holds
-      # O(output) (64 MiB for the 1024-chunk run), the fixed one O(cap)
-      # (~2.7 MB, measured flat across 64/256/1024 chunks).
-      small = peak_binary_for(64)
-      large = peak_binary_for(1024)
-
-      # held memory must stay at the cap, not grow with the output
-      assert small < 8 * 1024 * 1024
-      assert large < 8 * 1024 * 1024
-      # ... and must not scale with a 16x larger output either
-      assert large < 3 * small
+      # 64 MiB of output in 64 KiB chunks (a 4 ms pause between them so
+      # the consumer drains and the port mailbox stays small — a
+      # saturating producer floods it and makes the number
+      # scheduling-dependent, 3-16 MB across runs).
+      #
+      # Fixed: the accumulator holds O(cap) plus the mailbox backlog,
+      # measured 3-16 MB and FLAT from 64 to 8192 chunks (512 MB output).
+      # Buggy: it held the whole stream, 64 MB here (128 MB with the
+      # final materialization). 40 MB separates them with margin — the
+      # old metric (`:memory`) never saw the refc binaries and was green
+      # on the bug (N34).
+      peak = peak_binary_for(1024)
+      assert peak < 40 * 1024 * 1024
 
       # and the spill really happened, with the in-file cap marker
       scratch = Path.join(@tmp_root, "scratch-oom-1024")
@@ -181,8 +179,8 @@ defmodule CodingAgent.Core.ExecTest do
       assert file =~ "spill truncated"
     end
 
-    # Emits `chunks` x 64 KiB with a short pause, so the consumer drains
-    # between chunks; returns the worker's peak binary footprint.
+    # Emits `chunks` x 64 KiB with a short pause; returns the worker's
+    # peak binary footprint.
     defp peak_binary_for(chunks) do
       scratch = Path.join(@tmp_root, "scratch-oom-#{chunks}")
       File.mkdir_p!(scratch)

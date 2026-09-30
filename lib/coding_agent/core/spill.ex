@@ -60,9 +60,15 @@ defmodule CodingAgent.Core.Spill do
   ARRIVES (``write/2``) instead of assembling the whole buffer in BEAM
   memory first. This is what bounds ``Exec``'s memory for an unbounded
   command (found live: a runaway ``shell`` grew the BEAM to 11 GB and
-  four OOM kills froze the desktop). The file is the same path
-  ``spill/3`` produces, bounded by the same ``@max_bytes``; past that the
-  writer records an in-file marker and stops taking bytes.
+  four OOM kills froze the desktop).
+
+  The file is the SAME shape ``spill/3`` produces: head up to
+  ``@max_bytes - @tail_bytes``, then an in-file marker, then the last
+  ``@tail_bytes`` (the tail is the most useful part of a crashed build's
+  log, so it is kept). The tail is held in memory, bounded by
+  ``@tail_bytes`` (1 MiB), and flushed by ``finish/1``; everything else
+  is written as it arrives. Review N35: the first writer dropped the
+  tail, so the two spill paths disagreed on the file's shape.
 
   ``scratch`` ``nil``/``""`` (no session) returns ``:no_scratch``: the
   caller keeps its plain in-memory truncation.
@@ -82,7 +88,18 @@ defmodule CodingAgent.Core.Spill do
 
       case File.open(host, [:write, :binary, :raw]) do
         {:ok, io} ->
-          {:ok, %{io: io, host: host, scratch: scratch, written: 0, capped?: false, path: nil}}
+          {:ok,
+           %{
+             io: io,
+             host: host,
+             scratch: scratch,
+             written: 0,
+             head_cap: @max_bytes - @tail_bytes,
+             tail: [],
+             tail_size: 0,
+             capped?: false,
+             path: nil
+           }}
 
         {:error, reason} ->
           {:error, reason}
@@ -96,33 +113,56 @@ defmodule CodingAgent.Core.Spill do
           host: String.t(),
           scratch: String.t(),
           written: non_neg_integer(),
+          head_cap: non_neg_integer(),
+          tail: iodata(),
+          tail_size: non_neg_integer(),
           capped?: boolean(),
           path: String.t() | nil
         }
 
   @doc """
-  Writes `data` to the spill file, respecting ``@max_bytes``. Returns
-  ``{:ok, writer}`` while under the cap and ``{:capped, writer}`` once the
-  cap is hit (the file carries a marker; further writes are ignored).
+  Writes `data` to the spill file. Head bytes go to the file as they
+  arrive; once the head is full a marker is written and further bytes
+  roll through a bounded in-memory tail. Returns ``{:ok, writer}`` while
+  under the cap and ``{:capped, writer}`` at/after the cap.
   """
   @spec write(writer(), iodata()) :: {:ok, writer()} | {:capped, writer()}
-  def write(%{capped?: true} = writer, _data), do: {:capped, writer}
+  def write(%{capped?: true} = writer, data), do: {:capped, add_tail(writer, data)}
 
-  def write(%{io: io, written: n} = writer, data) do
+  def write(%{io: io, written: n, head_cap: cap} = writer, data) do
     size = IO.iodata_length(data)
 
-    if n + size <= @max_bytes do
+    if n + size <= cap do
       IO.binwrite(io, data)
       {:ok, %{writer | written: n + size}}
     else
-      remaining = max(@max_bytes - n, 0)
+      space = max(cap - n, 0)
+      bin = IO.iodata_to_binary(data)
 
-      if remaining > 0 do
-        IO.binwrite(io, binary_part(IO.iodata_to_binary(data), 0, remaining))
+      if space > 0 do
+        IO.binwrite(io, binary_part(bin, 0, space))
       end
 
       IO.binwrite(io, "\n\n[... spill truncated at #{@max_bytes} bytes ...]\n")
-      {:capped, %{writer | written: @max_bytes, capped?: true}}
+      tail = binary_part(bin, space, byte_size(bin) - space)
+
+      {:capped, %{writer | written: cap, capped?: true} |> add_tail(tail)}
+    end
+  end
+
+  # The tail is kept as iodata and only COLLAPSED (to its last
+  # `@tail_bytes`) once it exceeds twice that, so the per-chunk cost is
+  # amortized (review N35's writer otherwise concatenated a 1 MiB tail on
+  # every 64 KiB chunk — 16x write amplification in transient binaries).
+  defp add_tail(%{tail: tail, tail_size: n} = writer, data) do
+    n = n + IO.iodata_length(data)
+
+    if n > 2 * @tail_bytes do
+      bin = IO.iodata_to_binary([tail | data])
+      keep = min(byte_size(bin), @tail_bytes)
+      %{writer | tail: [binary_part(bin, byte_size(bin) - keep, keep)], tail_size: keep}
+    else
+      %{writer | tail: [tail | data], tail_size: n}
     end
   end
 
@@ -134,9 +174,12 @@ defmodule CodingAgent.Core.Spill do
   @spec finish(writer()) :: {:ok, writer()}
   def finish(%{path: path} = writer) when is_binary(path), do: {:ok, writer}
 
-  def finish(%{io: io, host: host, scratch: scratch} = writer) do
+  def finish(%{io: io, host: host, scratch: scratch, tail: tail, tail_size: n} = writer) do
+    # the rolling tail is flushed last, after the marker, so the file
+    # keeps the same head + tail shape as `spill/3`
+    if n > 0, do: IO.binwrite(io, tail)
     File.close(io)
-    {:ok, %{writer | path: sandbox_path(host, scratch)}}
+    {:ok, %{writer | path: sandbox_path(host, scratch), tail: [], tail_size: 0}}
   end
 
   @doc "The host path of a spill writer (for reading the full output back)."

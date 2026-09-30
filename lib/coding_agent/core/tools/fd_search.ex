@@ -48,7 +48,7 @@ defmodule CodingAgent.Core.Tools.FdSearch do
           {:ok, out, _} -> {:error, {:fd_failed, out}}
           {:timeout, out} -> {:error, {:fd_timeout, out}}
           {:stopped, out} -> {:error, {:fd_stopped, out}}
-          {:raw_too_large, out} -> {:error, {:fd_too_large, out}}
+          {:raw_too_large, size} -> {:error, {:fd_too_large, size}}
           {:error, reason} -> {:error, reason}
           {:sandbox_error, reason} -> {:error, reason}
         end

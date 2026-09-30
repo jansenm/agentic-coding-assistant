@@ -14,7 +14,7 @@ defmodule CodingAgent.Core.Exec do
   A running command is killed when the owning session asks it to stop
   (`Interrupt.requested?/1`), not only at its own deadline. The profile
   carries the session id (ADR 022's `:scratch` is derived from it, so the
-  tools already place it there); while `collect/4` waits it wakes every
+  tools already place it there); while `collect/5` waits it wakes every
   `@poll_ms` to check the flag. This is what lets a double-esc end a
   command that would otherwise run to a `shell` timeout of up to 1800s —
   the cooperative flag was only read *between* tool calls before. A
@@ -38,7 +38,7 @@ defmodule CodingAgent.Core.Exec do
   # far above any real search — and only reachable by a runaway producer.
   @max_raw_bytes 64 * 1024 * 1024
 
-  # While a command runs, `collect/4` wakes at most this often to look for
+  # While a command runs, `collect/5` wakes at most this often to look for
   # a user stop (see the moduledoc's "cancellation" note). A quiet hang
   # (`sleep 3000`) sends no message, so without this tick the receive would
   # stay parked to the deadline and esc could not reach it.
@@ -67,11 +67,18 @@ defmodule CodingAgent.Core.Exec do
     ]
   end
 
-  @typedoc "Execution outcome before formatting."
+  @typedoc """
+  Execution outcome before formatting.
+
+  `{:raw_too_large, size}` is the `truncate: false` safety stop (the
+  collected bytes exceeded `@max_raw_bytes`); it carries the byte count
+  only, never the buffer.
+  """
   @type outcome ::
           {:ok, String.t(), non_neg_integer()}
           | {:timeout, String.t()}
           | {:stopped, String.t()}
+          | {:raw_too_large, non_neg_integer()}
           | {:error, term()}
           | {:sandbox_error, term()}
 
@@ -200,8 +207,10 @@ defmodule CodingAgent.Core.Exec do
             # a machine consumer (`grep`/`fd`, `truncate: false`) keeps the
             # whole output by contract; past the hard safety cap we refuse
             # rather than reproduce the OOM — a bounded, honest failure.
+            # Return only the SIZE, not the buffer: materializing it would
+            # cost the very O(cap) the cap exists to avoid (review N38).
             kill(port)
-            {:raw_too_large, finish(acc, cut)}
+            {:raw_too_large, acc.size}
         end
 
       {^port, {:exit_status, code}} ->

@@ -42,4 +42,42 @@ defmodule CodingAgent.Core.SpillTest do
     # head + marker + tail, so the file does not keep the whole input
     assert byte_size(data) <= Spill.max_bytes() + 200
   end
+
+  describe "streaming writer (review N35)" do
+    test "keeps head AND tail, the same shape as spill/3" do
+      # 40 x 1 MiB, each with a recognizable boundary, so head and tail
+      # can be told apart.
+      {:ok, w} = Spill.open_writer(@scratch, "shell")
+
+      w =
+        Enum.reduce(1..40, w, fn i, w ->
+          {_, w} =
+            Spill.write(
+              w,
+              "CHUNK#{i}-START" <> String.duplicate("x", 1_048_576) <> "CHUNK#{i}-END"
+            )
+
+          w
+        end)
+
+      {:ok, w} = Spill.finish(w)
+      data = File.read!(Spill.host_path(w))
+
+      assert data =~ "spill truncated"
+      # head: the first chunk; tail: the last chunk (the useful part of a
+      # crashed run's log). The first version dropped the tail.
+      assert data =~ "CHUNK1-START"
+      assert data =~ "CHUNK40-END"
+      assert byte_size(data) <= Spill.max_bytes() + 1024
+    end
+
+    test "under the cap the file is the whole output, no marker" do
+      {:ok, w} = Spill.open_writer(@scratch, "grep")
+      {:ok, w} = Spill.write(w, "alpha ")
+      {:ok, w} = Spill.write(w, "beta")
+      {:ok, w} = Spill.finish(w)
+
+      assert File.read!(Spill.host_path(w)) == "alpha beta"
+    end
+  end
 end

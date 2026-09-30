@@ -1680,13 +1680,20 @@ defmodule CodingAgent.Core.Session do
   # broadcast an empty `llm_message`, so the turn ended with no visible
   # word and looked like the agent had "just stopped working" (found live).
   # Fall through to the same boundary end the between-rounds stop uses.
+  #
+  # The guard is `String.trim/1`-based (review N36): whitespace-only
+  # deltas (`"\n  "`) are not an answer either, and `complete_turn` would
+  # append a message whose display row `append_display/4` drops
+  # (trim-empty), reproducing the silent end one level down.
   @doc false
   @spec interrupted_turn(State.t(), String.t()) :: State.t()
-  def interrupted_turn(state, partial) when partial in [nil, ""],
-    do: state |> drop_interrupt() |> stop_at_boundary()
-
-  def interrupted_turn(state, partial),
-    do: state |> drop_interrupt() |> complete_turn(partial, [])
+  def interrupted_turn(state, partial) do
+    if String.trim(partial || "") == "" do
+      state |> drop_interrupt() |> stop_at_boundary()
+    else
+      state |> drop_interrupt() |> complete_turn(partial, [])
+    end
+  end
 
   # The permission checkpoint (ADR 010): read-only tools pass by policy
   # (allow class defaults); state-changing tools get the effective

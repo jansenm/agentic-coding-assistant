@@ -134,11 +134,14 @@ Mechanism
   ``sandbox_path/1`` (host → the ``/tmp/…`` the model sees), the size cap
   and the naming rule. ``Scratch.from_scope/1`` is reused — no second
   scope rule.
-- ``Exec``: ``run/5`` learns ``:label`` (default ``"exec"``). The output
-  accumulator STREAMS into the spill once it passes the cap (amendment
-  below), so the spill is written while the command runs, not assembled
-  as one big binary first. ``Exec.format`` is unchanged (it renders
-  whatever ``run`` returned).
+- ``Exec``: ``run/5`` learns ``:label`` (default ``"exec"``). The head
+  + tail cut named in the Context above as ``Exec.truncate/1`` now lives
+  in the output accumulator (``Exec`` local ``finish/2``, fed by
+  ``ingest/2``) after the amendment below made it streaming; the public
+  ``Exec.truncate/1`` no longer exists. The accumulator STREAMS into the
+  spill once it passes the cap, so the spill is written while the command
+  runs, not assembled as one big binary first. ``Exec.format`` is
+  unchanged (it renders whatever ``run`` returned).
 - ``grep``: ``format_results/1`` takes the scope; on the cap path it
   spills the full set and appends the path note.
 - ``webfetch``: ``tool/1`` passes the scope; ``cap/2`` spills the full
@@ -202,7 +205,12 @@ window (``@tail_bytes``), and appends every further chunk to the spill
 file via ``Spill.open_writer/2``/``write/2``/``finish/1``. Memory is
 O(``@max_bytes``) regardless of output size, and the spill — the same
 ``/tmp/spill/<label>-<n>`` file the model is told to read — is written
-incrementally, bounded by the existing 16 MiB per-spill cap.
+incrementally, bounded by the existing 16 MiB per-spill cap. The writer
+keeps the SAME head+tail shape as ``spill/3`` (review N35: the first
+writer dropped the tail, so the two paths disagreed): the head streams
+to the file, the marker is written at the cap, and the last
+``@tail_bytes`` is held and flushed by ``finish/1`` — the tail is the
+useful part of a crashed build's log.
 
 Two consequences:
 
@@ -210,12 +218,18 @@ Two consequences:
   it keeps the whole stream but now under a hard ``@max_raw_bytes``
   (64 MiB) safety cap: past it the command is killed and the caller gets
   a bounded ``:raw_too_large`` failure (``rg``/``fd`` surface it as their
-  own error), not an OOM.
+  own error), not an OOM. It carries only the SIZE, never the buffer
+  (review N38: materializing the 64 MiB buffer in the failure path was
+  the O(cap) the cap exists to avoid).
 - ``read_file``'s over-cap rejection is unchanged in message, but the
   BEAM no longer holds the whole oversized file first: the buffer is
   capped at 256 KiB and the "larger than N KiB" check reads the cap-bounded
-  result.
+  result (``max_output: max_bytes``, so exactly cap+1 bytes is refused —
+  review N37).
 
-The regression test runs a 40 MB producer and samples the worker's peak
-RSS: it stays under 30 MB (was: tracks the full output), and the spill
-file holds the output up to the 16 MiB cap with its in-file marker.
+The regression test runs a slow 64 MiB producer and samples the worker's
+peak binary memory (``Process.info(:binary)``, reviewed N34 — the first
+cut used ``:memory``, which does not see the refc binaries the output is
+made of, so it was green on the bug): it stays flat (~3-16 MB, mailbox
+backlog included) instead of tracking the full output, and the spill file
+holds the output up to the 16 MiB cap with its in-file marker.

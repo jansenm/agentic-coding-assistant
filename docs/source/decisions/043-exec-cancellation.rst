@@ -28,7 +28,7 @@ A tool that is already running is invisible to the stop.
 That is worst for `shell`: a single command may run up to the 1800s hard
 cap, and a hang (`sleep`, a stuck build, a network command that never
 returns) means esc appears to do nothing until the deadline. The worker
-is parked in ``Exec.collect/4``'s ``receive``; no message arrives for a
+is parked in ``Exec.collect/5``'s ``receive``; no message arrives for a
 silent process, so the ``after`` clause only ever fires at the deadline.
 The same holds, more briefly, for `grep`/`glob` (60s) and the file tools.
 
@@ -62,10 +62,19 @@ existing behavior.
 the model should read ``STOPPED by the user``, and each tool's error text
 says so. The partial output is kept, like a timeout.
 
-**4. The poll is a floor on responsiveness, not a busy-wait.** Data
-messages wake the receive immediately; the 250ms tick only bounds how
-long a *silent* command can outlive the stop. For a chatty command the
-stop is seen within one message; the worst case is one tick.
+**4. The stop/deadline is checked after every chunk AND on the tick.**
+Data messages wake the receive immediately; for a *silent* command the
+250ms tick is what bounds how long it can outlive the stop. **Corrected
+2026-09-30 (review N33):** the first version checked the flag *only* on
+the tick, which is exactly backwards — a tick fires only when the
+mailbox is quiet for 250ms, so a *chatty* command (a build printing
+progress every 20-200ms, `yes`) kept the mailbox full and the flag was
+never read: esc was ignored until the deadline (measured: a 20ms-cadence
+command with a 60s deadline returned `{:stopped, _}` at **60068ms**), and
+a saturating producer could outlive its deadline. `check_stop/5` is now
+called from both the data clause and the tick. Measured after the fix:
+the same 20ms-cadence stop lands in **<500ms**, and 3s/4s deadlines fire
+at 3055/4053ms. The tick remains the floor for a silent command only.
 
 Consequences
 ------------
