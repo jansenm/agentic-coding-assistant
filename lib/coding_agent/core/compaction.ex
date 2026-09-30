@@ -77,9 +77,12 @@ defmodule CodingAgent.Core.Compaction do
   @spec summary_message?(ReqLLM.Message.t()) :: boolean()
   def summary_message?(%ReqLLM.Message{role: :user} = msg) do
     # A summary is always our synthetic user message with the marker
-    # prefix; nothing the model or user writes starts with it in practice,
-    # and a false positive at worst skips one message from a render.
-    String.starts_with?(text_of(msg), @summary_prefix)
+    # prefix; nothing the model or user writes starts with it in practice.
+    # `trim_leading` because a hand-edited or re-serialized store could
+    # prepend whitespace — an unrecognized summary would then be
+    # re-summarized as new material, the exact thing the marker prevents
+    # (review N21).
+    msg |> text_of() |> String.trim_leading() |> String.starts_with?(@summary_prefix)
   end
 
   def summary_message?(_), do: false
@@ -597,10 +600,20 @@ defmodule CodingAgent.Core.Compaction do
   # The inverse of `compact_summary_text/1` for the rolling-summary path:
   # the prior summary text without our wrapper, so it can be fed back as
   # `<prior-summary>` and combined rather than nested.
+  # The inverse of `compact_summary_text/1` for the rolling-summary path:
+  # the prior summary text without our wrapper, or `nil` when there is no
+  # body (a header-only message — review N21: returning the header itself
+  # made `summary_prompt/2` take the roll branch with the summary-as-prior).
   defp strip_summary_prefix(text) do
     case String.split(text, "\n\n", parts: 2) do
-      [_header, rest] -> String.trim(rest)
-      _ -> text
+      [_header, rest] ->
+        case String.trim(rest) do
+          "" -> nil
+          body -> body
+        end
+
+      _ ->
+        nil
     end
   end
 end

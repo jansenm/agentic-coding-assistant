@@ -248,6 +248,41 @@ defmodule CodingAgent.Core.CompactionTest do
     assert prompt =~ "anything you do not carry into the new summary is lost"
   end
 
+  test "prior summary is framed as prior-summary, never as conversation (review N22)" do
+    prompt = Compaction.summary_prompt("USER: more", "## Objective\n- old goal")
+    # the prior must not appear inside the <conversation> block
+    [conv_block | _] = String.split(prompt, "<prior-summary>", parts: 2)
+    refute conv_block =~ "old goal"
+  end
+
+  test "summary_message?/1 tolerates leading whitespace (review N21)" do
+    msg = %ReqLLM.Message{
+      role: :user,
+      content: [
+        ReqLLM.Message.ContentPart.text(
+          "  \n[Conversation summary — earlier messages were compacted]\n\nbody"
+        )
+      ]
+    }
+
+    assert Compaction.summary_message?(msg)
+    assert Compaction.prior_summary([msg]) == "body"
+  end
+
+  test "a header-only summary has no prior body, not the header (review N21)" do
+    msg = %ReqLLM.Message{
+      role: :user,
+      content: [
+        ReqLLM.Message.ContentPart.text(
+          "[Conversation summary — earlier messages were compacted to save context. The recent exchanges below are verbatim.]"
+        )
+      ]
+    }
+
+    assert Compaction.summary_message?(msg)
+    assert Compaction.prior_summary([msg]) == nil
+  end
+
   test "total_chars counts text parts" do
     msgs = [msg("hello"), msg("world", :assistant)]
     assert Compaction.total_chars(msgs) == 10
