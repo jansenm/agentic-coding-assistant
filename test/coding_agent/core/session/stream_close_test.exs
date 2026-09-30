@@ -102,4 +102,78 @@ defmodule CodingAgent.Core.Session.StreamCloseTest do
 
     Session.stop(id)
   end
+
+  # A stub that sends SSE headers and one data chunk, then goes silent:
+  # the timeout must fire on the IDLE gap, not only at connect (ADR 041
+  # finding 2, review N28). Fast (the timeout is 400ms), unlike a 30s
+  # premise test.
+  defp start_stalling_stub do
+    {:ok, listen} =
+      :gen_tcp.listen(0, [
+        :binary,
+        packet: :raw,
+        active: false,
+        reuseaddr: true,
+        ip: {127, 0, 0, 1}
+      ])
+
+    {:ok, port} = :inet.port(listen)
+
+    spawn_link(fn ->
+      {:ok, sock} = :gen_tcp.accept(listen)
+      # headers + an open SSE event, then silence (no terminating blank line)
+      :gen_tcp.send(sock, "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\n")
+      :gen_tcp.send(sock, "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")
+
+      receive do
+        :release -> :gen_tcp.close(sock)
+      after
+        30_000 -> :gen_tcp.close(sock)
+      end
+    end)
+
+    %{port: port, listen: listen}
+  end
+
+  test "the timeout bounds a post-header idle gap, not just connect (N28)" do
+    root = Path.join(System.tmp_dir!(), "n28-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(Path.join(root, ".coding-agent"))
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    stub = start_stalling_stub()
+
+    File.write!(
+      Path.join(root, ".coding-agent/config.toml"),
+      "[providers.local]\nprovider = \"openai\"\nbase_url = \"http://127.0.0.1:#{stub.port}/v1\"\n"
+    )
+
+    Application.put_env(:coding_agent, :provider_receive_timeout_ms, 400)
+    Application.put_env(:coding_agent, :provider_retries, 0)
+
+    on_exit(fn ->
+      Enum.each(
+        [:provider_receive_timeout_ms, :provider_retries],
+        &Application.delete_env(:coding_agent, &1)
+      )
+    end)
+
+    id = "n28-#{System.unique_integer([:positive])}"
+
+    {:ok, _pid} =
+      CodingAgent.Core.Session.Supervisor.start_session(
+        id: id,
+        scope_root: root,
+        model: "local:test-model"
+      )
+
+    started = System.monotonic_time(:millisecond)
+    # the stream stalls after the first chunk: the turn fails on the idle
+    # budget, well before the stub's own 30s close
+    assert {:error, _} = Session.run(id, "hi")
+    elapsed = System.monotonic_time(:millisecond) - started
+    assert elapsed < 5_000
+
+    Session.stop(id)
+    :gen_tcp.close(stub.listen)
+  end
 end

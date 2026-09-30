@@ -78,17 +78,21 @@ Four findings:
    when chunks pause longer than the budget.
 3. **An explicit ``receive_timeout`` overrides cleanly** (C, E): the
    knob exists and works.
-4. **``req_llm``'s own ``max_retries: 3`` do NOT retry an idle timeout.**
-   A 35s stall produced exactly one 30s timeout with no retry log. The
-   idle timeout arrives as a bare ``:timeout``, which
-   ``ReqLLM.Streaming.Failure.classify/1`` rates ``:unknown`` →
-   ``:no_retry``. But the **session's** retry layer *does* retry it:
-   ``Failure.retryable_timeout?/1`` classifies the stream error
-   (``{:stream_error, %ReqLLM.Error.API.Stream{reason: "Stream failed:
-   :timeout"}}``) as retryable. With ``provider_retries: 3`` and
-   ``provider_retry_delay_ms: 5000`` that is **3 × (timeout + 5s)** of
-   near-silent waiting before the turn ends — the failure the review
-   flagged (``review.md`` §6).
+4. **``req_llm``'s own ``max_retries: 3`` DO retry an idle transport
+   timeout — on the Finch path, corrected by review N29.** The original
+   claim here read the post-start stream classification
+   (``ReqLLM.Streaming.Failure.classify/1`` rates a bare ``:timeout``
+   ``:unknown`` → ``:no_retry``). But a timeout BEFORE any response body
+   goes through ``ReqLLM.Streaming.Retry.stream/6``'s Finch loop, which
+   classifies it ``{:transport, :timeout, true}`` → ``{:retry, 0}`` and
+   reconnects (measured: ``max_retries: 0/1/3`` → 1/2/4 connections on a
+   silent stub). The **session's** retry layer *does* retry it too
+   (``Failure.retryable_timeout?/1``), and with ``provider_retries: 3``
+   and ``provider_retry_delay_ms: 5000`` that is ``(3 + 1) × timeout +
+   3 × 5s`` of near-silent waiting before the turn ends (the review
+   ``review.md`` §6 concern). The two layers compound: the abandoned
+   stream's own retries ran on after the error surfaced (see the
+   Consequences note and ``session/stream_close_test.exs``).
 
 Decision
 --------
@@ -100,19 +104,21 @@ global), the app-env override, then the default. The default is
 the raw 30s so a thinking model has room, but well under the 300s the
 Responses/thinking path allows.
 
-**2. One place sets it: ``Request.build/2``.** Both the turn and the
-compactor build through ``Request.build/2``; putting ``receive_timeout``
+**2. One place sets it: ``Request.build/3``.** Both the turn and the
+compactor build through ``Request.build/3``; putting ``receive_timeout``
 there means they share one source and cannot drift (the same reason
-credentials and base URLs already live there). ``Request.build/2`` reads
-``Config.provider_receive_timeout_ms/0`` (an app-env/layered read, no
-snapshot needed — the turn already carries the provider snapshot in its
-opts, and this is a runtime knob like the compaction budgets).
+credentials and base URLs already live there). ``build/3`` reads
+``Config.provider_receive_timeout_ms(scope_root)`` so a PROJECT
+``config.toml`` applies like every other layered knob (review N23: the
+first version called the no-scope form, silently ignoring the project
+layer the docs promised). The scope root is threaded from the session's
+state; ``build/2`` is the global/app-env form for tests.
 
 **3. The knob is per-request, and does not disable the retry chain.**
-Raising the timeout raises the worst-case turn time proportionally (3
-retries × timeout). That is the deliberate trade: wait longer for a slow
-model rather than fail a good turn. A deployment that wants a tighter
-bound lowers ``provider_retries`` rather than the timeout.
+Raising the timeout raises the worst-case turn time proportionally
+(``retries + 1`` attempts × timeout). That is the deliberate trade: wait
+longer for a slow model rather than fail a good turn. A deployment that
+wants a tighter bound lowers ``provider_retries`` rather than the timeout.
 
 Consequences
 ------------
@@ -122,21 +128,32 @@ Consequences
 - The compactor already used an explicit inactivity budget
   (``compaction_inactivity_ms``); this does not change it (the compactor
   passes its own ``receive_timeout``, which wins).
-- The worst-case turn time is now ``provider_retries × (timeout +
-  delay)`` ≈ 375s by default, up from ~105s. That is visible and
+- The worst-case turn time is now ``(provider_retries + 1) × timeout +
+  provider_retries × delay`` ≈ **495s** (8.3 min) by default, up from
+  ~105s. (``provider_retries`` is the number of RETRIES, so there are
+  ``retries + 1`` attempts and ``retries`` delays; the earlier 375s here
+  forgot the first attempt — review N28.) That is visible and
   configurable; the status line still names the retry.
-- ``req_llm``'s ``max_retries`` stays at 3 but is inert for idle
-  timeouts (finding 4); it only matters for transport errors like
-  ``econnrefused``, where it *and* the session retry — a known, separate
-  double-retry.
+- ``req_llm``'s own ``max_retries`` DOES affect an idle transport timeout,
+  contrary to finding 4 as originally written (corrected by review N29):
+  the pre-body timeout is classified ``:retry`` by
+  ``ReqLLM.Streaming.Retry``'s Finch loop (not by the post-start
+  ``:unknown → :no_retry`` stream classification). An abandoned stream
+  therefore kept retrying behind the surfaced error, compounding with the
+  session's own retries (measured 11 provider connections for one failed
+  turn). ``stream_attempt/2`` now closes the response on the error path,
+  which ends that loop (measured 4). See ADR 043-adjacent work; the fix
+  and its regression test live in ``session/stream_close_test.exs``.
 
 Open questions
 --------------
 
 1. **The double-retry on transport errors.** ``econnrefused`` is retried
    by ``req_llm`` (3×, its ``Retry.stream``) *and* by the session (3×).
-   Measuring and, if needed, disabling one layer is a separate small
-   session; this ADR only fixes the timeout value.
+   One half is now closed: the abandoned stream is closed on the error
+   path (N29), so its own retries stop instead of running on behind the
+   session's. Fully disabling one layer is still a separate decision;
+   this ADR fixes the value and the close.
 2. **Streaming semantic-progress timeout.** ``req_llm`` exposes
    ``stream_idle_timeout`` (fail on no *semantic* progress) distinct from
    the socket ``receive_timeout``. We set neither; if slow-but-alive
