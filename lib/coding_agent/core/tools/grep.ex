@@ -138,8 +138,22 @@ defmodule CodingAgent.Core.Tools.Grep do
     # made a repo-wide broad search into a hundreds-of-MB decode bomb.
     # The plain+`--null` form carries the identical information at a
     # fraction of the size, with a cheap split instead of per-line JSON.
+    #
+    # `--with-filename` is REQUIRED (review N2): rg omits the path when
+    # the target is a SINGLE named file, so `path\0line:text` degrades to
+    # `line:text` and the parser (which needs the NUL) drops every match —
+    # a silent empty answer for `grep path: "single.txt"`. `-H` forces
+    # the path in every case, keeping the parse uniform.
     args =
-      ["--null", "--line-number", "--no-heading", "--no-config", "--no-ignore", "--color=never"] ++
+      [
+        "--null",
+        "--with-filename",
+        "--line-number",
+        "--no-heading",
+        "--no-config",
+        "--no-ignore",
+        "--color=never"
+      ] ++
         ["--max-filesize", "1M", "--hidden"] ++
         exclude_args(target) ++
         ["-e", pattern, "--", target]

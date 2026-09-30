@@ -93,6 +93,25 @@ defmodule CodingAgent.Core.Tools.GrepGlobTest do
       assert out =~ "we:ird.txt:1:needle colon"
     end
 
+    test "finds matches when path names a single file (review N2)", %{scope: scope} do
+      # rg omits the filename for a single named target unless -H; then the
+      # path\0line boundary is gone and the parser dropped every match.
+      {:ok, out} =
+        ReqLLM.Tool.execute(grep_tool(scope), %{"pattern" => "needle", "path" => "top.txt"})
+
+      assert out =~ "top.txt:1:needle here"
+    end
+
+    test "finds matches in a single file reached through a subdirectory", %{scope: scope} do
+      File.mkdir_p!(Path.join(@root, "sub"))
+      File.write!(Path.join(@root, "sub/b.txt"), "needle there\n")
+
+      {:ok, out} =
+        ReqLLM.Tool.execute(grep_tool(scope), %{"pattern" => "needle", "path" => "sub/b.txt"})
+
+      assert out =~ "sub/b.txt:1:needle there"
+    end
+
     test "does not truncate a match whose line text contains a colon", %{scope: scope} do
       File.write!(Path.join(@root, "cfg.txt"), "key: value: needle:x\n")
 
