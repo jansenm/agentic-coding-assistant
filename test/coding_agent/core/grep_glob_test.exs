@@ -112,6 +112,25 @@ defmodule CodingAgent.Core.Tools.GrepGlobTest do
       assert out =~ "sub/b.txt:1:needle there"
     end
 
+    test "skips files over 1 MiB in a directory walk, but a named file is searched (review N3)",
+         %{scope: scope} do
+      # >1MiB so rg's --max-filesize skips it during traversal
+      big = Path.join(@root, "big.log")
+      File.write!(big, String.duplicate("filler line here\n", 80_000) <> "needle big\n")
+
+      # directory walk: hidden by the size cap
+      {:ok, dir_out} = ReqLLM.Tool.execute(grep_tool(scope), %{"pattern" => "needle"})
+      refute dir_out =~ "big.log"
+
+      # explicitly named: rg applies --max-filesize only to traversal
+      {:ok, named} =
+        ReqLLM.Tool.execute(grep_tool(scope), %{"pattern" => "needle", "path" => "big.log"})
+
+      assert named =~ "big.log:"
+      assert named =~ "needle big"
+      File.rm!(big)
+    end
+
     test "does not truncate a match whose line text contains a colon", %{scope: scope} do
       File.write!(Path.join(@root, "cfg.txt"), "key: value: needle:x\n")
 

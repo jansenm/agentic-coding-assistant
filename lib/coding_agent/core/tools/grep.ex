@@ -33,6 +33,16 @@ defmodule CodingAgent.Core.Tools.Grep do
   the reference rule (`Glob.file_match?/3` + `Containment.hidden_allowed?/2`).
   `rg` runs `--hidden` so that a search which NAMED a hidden entry
   (`glob: ".env.example"`, `path: ".github"`) can find it.
+
+  ## The size cap
+
+  `rg` is passed `--max-filesize 1M`: a directory walk SKIPS any file
+  larger than 1 MiB, so a big generated file or log is not searched by
+  default (review N3). `rg` applies this cap only during traversal, not to
+  an explicitly named target — so `path: "big.txt"` on a single file
+  searches it regardless of size; only the directory-walk case hides it.
+  The tool description states this so the model can name the file when it
+  expects large content.
   """
 
   alias CodingAgent.Core.Containment
@@ -56,7 +66,9 @@ defmodule CodingAgent.Core.Tools.Grep do
         "Search file contents inside the session scope with a regular " <>
           "expression. Returns at most #{@max_results} matches " <>
           "as \"path:line: line text\". Skip binary files; ignores standard " <>
-          "build/vendor directories. Use glob first to narrow files if needed.",
+          "build/vendor directories. Use glob first to narrow files if needed. " <>
+          "A directory search skips files larger than 1 MiB; name the file " <>
+          "with `path` to search it regardless of size.",
       parameter_schema: [
         pattern: [
           type: :string,
