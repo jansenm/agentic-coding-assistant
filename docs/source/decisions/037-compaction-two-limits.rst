@@ -91,6 +91,18 @@ window ``W``:
   256 KiB ≈ 65k tokens at ~4 bytes/token) plus response headroom. The
   reserve is what stops "I look away and one tool call kills the
   session": after the hard limit, even a worst-case result still fits.
+- **hard is floored at ``W * 0.75`` (amendment, 2026-09-30).** The
+  reserve is absolute, so any window below 64k collapsed ``hard`` to 1 —
+  a pre-call summarize at ~4% utilisation, degrading to a lossy trim on
+  failure (review N1; the catalog has ~305 chat models under 65536).
+  ``hard = max(W - reserve, W * 0.75)`` keeps the reserve absolute while
+  it is at most a quarter of the window: for ``W >= 4 * reserve`` (256k
+  with the default) the reserve branch governs and nothing changes;
+  below that the floor governs. The trade is explicit: on a small window
+  the reserve no longer covers a full 256 KiB tool result, so one
+  worst-case result *could* push past ``hard`` — but ``hard`` stays well
+  below ``W`` and above ``soft``, which is strictly better than a
+  summarize (or a trim) firing at every call on a barely-used window.
 - If ``hard <= soft`` (very small windows), ``soft := hard`` so the
   order is never inverted.
 
