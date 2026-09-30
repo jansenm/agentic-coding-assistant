@@ -86,6 +86,13 @@ naming the file (ADR 014).
      - integer
      - ``3``
      - Maximum ``task`` subagents running at once in one round (ADR 018).
+   * - ``subagent_model``
+     - string
+     - *unset*
+     - Model a ``task`` subagent runs on (ADR 042), e.g.
+       ``"ollama:qwen2.5:3b"``. Unset means the subagent inherits the
+       primary's model. A definition's pinned ``model`` still wins over
+       this (ADR 017 decision 5: definition > this key > parent).
    * - ``reasoning_effort``
      - string
      - *unset*
@@ -262,7 +269,9 @@ user (``~/.config/coding-agent/agents/``) and project
        decides whether the human may select it (ADR 029).
    * - ``model``
      - string
-     - Pinned model for this agent's turns (ADR 017).
+     - Pinned model for this agent's turns (ADR 017). For a ``subagent``,
+       precedence is: this field, then ``subagent_model`` (ADR 042), then
+       the parent's model.
    * - ``tools``
      - array
      - Allow-list of tools; intersects the policy's enabled set.

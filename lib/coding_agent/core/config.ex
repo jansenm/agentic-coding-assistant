@@ -181,6 +181,38 @@ defmodule CodingAgent.Core.Config do
   end
 
   @doc """
+  The model a `task` subagent runs on (ADR 042), or `nil` to inherit the
+  parent's effective model.
+
+  A subagent that explores the code, hunts references or summarises a
+  large area does mechanical work with a thin judgement, so it is often
+  worth running it on a cheaper or faster model than the primary. That
+  is a statement about *this machine's* providers, so it belongs in
+  configuration, not in a shipped agent file — an agent definition cannot
+  know which models a user has. Default: `nil` (the primary's model).
+
+  Resolution, strongest first: the layered ``subagent_model`` in
+  ``config.toml`` (project over global), then the ``:subagent_model``
+  app-env override. An agent definition's pinned ``model`` still wins
+  over this (ADR 017 decision 5: definition > config > parent). Accepts a
+  scope root or an already-read snapshot.
+  """
+  @spec subagent_model(String.t() | nil | t()) :: String.t() | nil
+  def subagent_model, do: subagent_model(nil)
+
+  def subagent_model(%__MODULE__{} = snapshot),
+    do: configured_string(snapshot, "subagent_model") || app(:subagent_model, nil)
+
+  def subagent_model(scope_root), do: subagent_model(snapshot(scope_root))
+
+  defp configured_string(%__MODULE__{config: config}, key) do
+    case config[key] do
+      s when is_binary(s) -> if String.trim(s) == "", do: nil, else: s
+      _ -> nil
+    end
+  end
+
+  @doc """
   Soft compaction ratio of the model window (ADR 037): the fraction at
   which an IDLE session summarizes down. Resolution mirrors the other
   runtime knobs: the layered ``compaction_soft_ratio`` in ``config.toml``

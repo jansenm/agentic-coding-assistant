@@ -434,6 +434,71 @@ defmodule CodingAgent.Core.Session.SubagentTest do
     end
   end
 
+  describe "the child model (ADR 017 decision 5 + ADR 042)" do
+    test "inherits the parent's model by default", %{root: root} do
+      write_agent(root, "explorer", "x", "mode: subagent\n")
+      id = "sub-model-default-#{System.unique_integer([:positive])}"
+
+      start_parent(id, root,
+        interactive: true,
+        model: "openai:gpt-4o",
+        subagent_runner: child_runner("done")
+      )
+
+      :ok = Session.subscribe(id)
+      :ok = Session.debug_gate(id, [task_call("t1", "explorer", "go")])
+
+      assert Enum.any?(drain_events(), &match?({:subagent_started, _, _, "openai:gpt-4o"}, &1))
+    end
+
+    test "config.subagent_model overrides the parent", %{root: root} do
+      write_agent(root, "explorer", "x", "mode: subagent\n")
+
+      File.write!(
+        Path.join(root, ".coding-agent/config.toml"),
+        ~s(subagent_model = "ollama:cheap")
+      )
+
+      id = "sub-model-config-#{System.unique_integer([:positive])}"
+
+      start_parent(id, root,
+        interactive: true,
+        model: "openai:gpt-4o",
+        subagent_runner: child_runner("done")
+      )
+
+      :ok = Session.subscribe(id)
+      :ok = Session.debug_gate(id, [task_call("t1", "explorer", "go")])
+
+      assert Enum.any?(drain_events(), &match?({:subagent_started, _, _, "ollama:cheap"}, &1))
+    end
+
+    test "a definition's pinned model beats config.subagent_model", %{root: root} do
+      write_agent(root, "explorer", "x", "mode: subagent\nmodel: anthropic:claude-haiku-4-5\n")
+
+      File.write!(
+        Path.join(root, ".coding-agent/config.toml"),
+        ~s(subagent_model = "ollama:cheap")
+      )
+
+      id = "sub-model-pin-#{System.unique_integer([:positive])}"
+
+      start_parent(id, root,
+        interactive: true,
+        model: "openai:gpt-4o",
+        subagent_runner: child_runner("done")
+      )
+
+      :ok = Session.subscribe(id)
+      :ok = Session.debug_gate(id, [task_call("t1", "explorer", "go")])
+
+      assert Enum.any?(
+               drain_events(),
+               &match?({:subagent_started, _, _, "anthropic:claude-haiku-4-5"}, &1)
+             )
+    end
+  end
+
   # Collect every {:agent, id, event} the test process received (a short
   # settle window; the events are sent synchronously during debug_gate).
   defp drain_events(acc \\ []) do

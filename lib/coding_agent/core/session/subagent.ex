@@ -82,7 +82,7 @@ defmodule CodingAgent.Core.Session.Subagent do
     child_id = child_id(parent)
     model = child_model(parent, definition)
 
-    case start_child(parent, child_id, definition) do
+    case start_child(parent, child_id, definition, model) do
       {:ok, _pid} ->
         # The child's event lifecycle is started -> finished, ALWAYS: a
         # subscriber (the TUI tab) keeps the tab "running" until the
@@ -127,16 +127,16 @@ defmodule CodingAgent.Core.Session.Subagent do
     :exit, reason -> {:error, {:subagent_exit, reason}}
   end
 
-  defp start_child(parent, child_id, definition) do
+  defp start_child(parent, child_id, definition, model) do
     Session.Supervisor.start_session(
       id: child_id,
       scope_root: parent.scope_root,
       # the parent's (already agent-narrowed) policy: the child can only
       # narrow further, never widen — a plan parent cannot grant build
       policy: parent.policy,
-      # the running model; the definition's own `model` wins in
-      # State.effective_model/1 (ADR 017 precedence: definition > session)
-      model: State.effective_model(parent),
+      # the model resolved once by `child_model/2` (see it for the
+      # precedence: definition > config.subagent_model > parent)
+      model: model,
       agent: definition.name,
       interactive: false,
       # test_mode propagates: a child of a test session must never reach a
@@ -149,10 +149,17 @@ defmodule CodingAgent.Core.Session.Subagent do
     )
   end
 
-  # The model the child will actually run (for the UI event): the
-  # definition's pinned model when set, else the parent's effective model.
+  # The ONE model resolver for a child (ADR 017 decision 5 + ADR 042),
+  # feeding both the child session and the UI event so the tab never names
+  # a different model than the child runs. Strongest first:
+  #   1. the definition's pinned `model` (a per-agent assertion);
+  #   2. `config.toml subagent_model` (this machine's cheap-worker knob);
+  #   3. the parent's effective model (the default: same as the primary).
   defp child_model(_parent, %Agent{model: model}) when is_binary(model) and model != "", do: model
-  defp child_model(parent, _definition), do: State.effective_model(parent)
+
+  defp child_model(parent, _definition) do
+    Config.subagent_model(parent.scope_root) || State.effective_model(parent)
+  end
 
   # -- The result -------------------------------------------------------------
 

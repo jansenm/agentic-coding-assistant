@@ -249,6 +249,20 @@ defmodule CodingAgent.Core.ConfigTest do
       assert Config.subagent_concurrency(snapshot) == 3
     end
 
+    test "subagent_model defaults to nil: a subagent inherits the parent (ADR 042)" do
+      assert Config.subagent_model(%Config{config: %{}}) == nil
+    end
+
+    test "subagent_model honours a config.toml value" do
+      snapshot = %Config{config: %{"subagent_model" => "ollama:qwen2.5:3b"}}
+      assert Config.subagent_model(snapshot) == "ollama:qwen2.5:3b"
+    end
+
+    test "subagent_model treats a blank config.toml value as unset" do
+      snapshot = %Config{config: %{"subagent_model" => "   "}}
+      assert Config.subagent_model(snapshot) == nil
+    end
+
     test "provider retries default to 3 and 5000ms" do
       assert Config.provider_retries(%Config{config: %{}}) == 3
       assert Config.provider_retry_delay_ms(%Config{config: %{}}) == 5_000
