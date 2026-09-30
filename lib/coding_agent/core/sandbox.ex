@@ -46,6 +46,7 @@ defmodule CodingAgent.Core.Sandbox do
           optional(:network) => boolean(),
           optional(:git_write) => boolean(),
           optional(:root_ro) => boolean(),
+          optional(:session_id) => String.t() | nil,
           optional(:scratch) => String.t() | nil,
           optional(:rw) => [String.t()],
           optional(:ro) => [String.t()],

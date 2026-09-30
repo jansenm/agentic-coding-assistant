@@ -127,6 +127,10 @@ defmodule CodingAgent.Core.Tools.Git do
         elapsed = System.monotonic_time(:millisecond) - started
         {:ok, Exec.format(command, partial, :timeout, elapsed, secs)}
 
+      {:stopped, partial} ->
+        elapsed = System.monotonic_time(:millisecond) - started
+        {:ok, Exec.format(command, partial, :stopped, elapsed, secs)}
+
       {:sandbox_error, reason} ->
         Tools.error("cannot confine git: #{inspect(reason)}")
 
@@ -147,6 +151,7 @@ defmodule CodingAgent.Core.Tools.Git do
       root: scope.root,
       network: false,
       git_write: true,
+      session_id: Map.get(scope, :session_id),
       scratch: CodingAgent.Core.Session.Scratch.from_scope(scope),
       rw: Map.get(mounts, :rw, []),
       ro: Map.get(mounts, :ro, []),

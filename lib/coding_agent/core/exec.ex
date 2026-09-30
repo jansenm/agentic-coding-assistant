@@ -8,12 +8,31 @@ defmodule CodingAgent.Core.Exec do
   (`CodingAgent.Core.Sandbox.wrap/2`) happens here, at the single
   `Port.open/2` site — per ADR 015 the *process* is bounded, not the
   command text.
+
+  ## Cancellation (esc)
+
+  A running command is killed when the owning session asks it to stop
+  (`Interrupt.requested?/1`), not only at its own deadline. The profile
+  carries the session id (ADR 022's `:scratch` is derived from it, so the
+  tools already place it there); while `collect/4` waits it wakes every
+  `@poll_ms` to check the flag. This is what lets a double-esc end a
+  command that would otherwise run to a `shell` timeout of up to 1800s —
+  the cooperative flag was only read *between* tool calls before. A
+  command with no session id (a bare test, `checkpoint`'s internal
+  bookkeeping) simply keeps its deadline.
   """
 
+  alias CodingAgent.Core.Interrupt
   alias CodingAgent.Core.Sandbox
 
   @max_bytes 256 * 1024
   @tail_bytes 128 * 1024
+
+  # While a command runs, `collect/4` wakes at most this often to look for
+  # a user stop (see the moduledoc's "cancellation" note). A quiet hang
+  # (`sleep 3000`) sends no message, so without this tick the receive would
+  # stay parked to the deadline and esc could not reach it.
+  @poll_ms 250
 
   @doc """
   Environment overrides every agent-initiated command runs with (review
@@ -42,6 +61,7 @@ defmodule CodingAgent.Core.Exec do
   @type outcome ::
           {:ok, String.t(), non_neg_integer()}
           | {:timeout, String.t()}
+          | {:stopped, String.t()}
           | {:error, term()}
           | {:sandbox_error, term()}
 
@@ -75,6 +95,7 @@ defmodule CodingAgent.Core.Exec do
     truncate? = Keyword.get(opts, :truncate, true)
     label = Keyword.get(opts, :label, "exec")
     scratch = Map.get(profile, :scratch)
+    session_id = Map.get(profile, :session_id)
 
     spec =
       case stdin do
@@ -89,7 +110,7 @@ defmodule CodingAgent.Core.Exec do
         deliver_stdin(port, stdin)
 
         deadline = System.monotonic_time(:millisecond) + secs * 1000
-        collect(port, deadline, "", {truncate?, label, scratch})
+        collect(port, deadline, "", {truncate?, label, scratch}, session_id)
 
       {:error, reason} ->
         {:sandbox_error, reason}
@@ -129,10 +150,14 @@ defmodule CodingAgent.Core.Exec do
   # Ports deliver :exit_status then :closed. We never Port.close/1 by
   # hand on a live port: once the os process ends, the port closes
   # itself, and closing an already-closed port raises :badarg.
-  defp collect(port, deadline, buf, cut) do
+  #
+  # The `after` is the MINIMUM of the time left to the deadline and
+  # `@poll_ms`: a running command's data messages wake the receive first,
+  # but a silent one is re-checked for a user stop on this tick.
+  defp collect(port, deadline, buf, cut, session_id) do
     receive do
       {^port, {:data, data}} ->
-        collect(port, deadline, [buf | data], cut)
+        collect(port, deadline, [buf | data], cut, session_id)
 
       {^port, {:exit_status, code}} ->
         wait_closed(port)
@@ -143,24 +168,34 @@ defmodule CodingAgent.Core.Exec do
         # earlier or exec failure) — treat as failure signal
         {:ok, finish(buf, cut), 1}
     after
-      remaining(deadline) ->
-        on_deadline(port, deadline, buf, cut)
+      wake_timeout(deadline, session_id) ->
+        on_wake(port, deadline, buf, cut, session_id)
     end
   end
 
   defp finish(buf, {false, _label, _scratch}), do: IO.iodata_to_binary(buf)
   defp finish(buf, {true, label, scratch}), do: truncate(buf, label, scratch)
 
-  # The receive `after` clause takes a literal timeout expression in
-  # modern Elixir; assigning inside it trips cover's instrumenter, so the
-  # decision lives here. `remaining(deadline)` above already blocked for
-  # the time left; recompute — it is cheap and always <= 0 on this path.
-  defp on_deadline(port, deadline, buf, cut) do
-    if remaining(deadline) <= 0 do
-      kill(port)
-      {:timeout, finish(buf, cut)}
-    else
-      collect(port, deadline, buf, cut)
+  # Wake at the poll interval, or at the deadline if that is sooner. With
+  # no session to watch there is nothing to check, so wait the whole
+  # deadline (a bare test, Checkpoint's own git calls).
+  defp wake_timeout(deadline, nil), do: remaining(deadline)
+  defp wake_timeout(deadline, _session_id), do: min(remaining(deadline), @poll_ms)
+
+  # A user stop wins over the deadline; otherwise the deadline kills the
+  # command (its own timeout), and a false wake just re-arms the receive.
+  defp on_wake(port, deadline, buf, cut, session_id) do
+    cond do
+      session_id && Interrupt.requested?(session_id) ->
+        kill(port)
+        {:stopped, finish(buf, cut)}
+
+      remaining(deadline) <= 0 ->
+        kill(port)
+        {:timeout, finish(buf, cut)}
+
+      true ->
+        collect(port, deadline, buf, cut, session_id)
     end
   end
 
@@ -250,7 +285,7 @@ defmodule CodingAgent.Core.Exec do
   @spec format(
           String.t(),
           String.t(),
-          {:exit, integer()} | :timeout,
+          {:exit, integer()} | :timeout | :stopped,
           non_neg_integer(),
           pos_integer()
         ) ::
@@ -261,6 +296,7 @@ defmodule CodingAgent.Core.Exec do
         {:exit, 0} -> "exit 0"
         {:exit, code} -> "exit #{code} (non-zero — the command failed)"
         :timeout -> "TIMED OUT after #{secs_requested}s (output below is partial)"
+        :stopped -> "STOPPED by the user (output below is partial)"
       end
 
     """

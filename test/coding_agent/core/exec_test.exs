@@ -145,6 +145,38 @@ defmodule CodingAgent.Core.ExecTest do
     end
   end
 
+  describe "cancellation (esc kills a running command)" do
+    test "a stop request kills a silent command well before its deadline", %{profile: profile} do
+      id = "exec-stop-#{System.unique_integer([:positive])}"
+      profile = Map.put(profile, :session_id, id)
+      started = System.monotonic_time(:millisecond)
+
+      task =
+        Task.async(fn ->
+          # 60s deadline; the process prints nothing, so only the stop
+          # tick can end it.
+          Exec.run({:shell, "echo started; sleep 60"}, @tmp_root, 60, profile)
+        end)
+
+      # let the port open, then request the stop
+      Process.sleep(100)
+      CodingAgent.Core.Interrupt.request(id)
+
+      assert {:stopped, out} = Task.await(task, 5_000)
+      assert out =~ "started"
+      assert System.monotonic_time(:millisecond) - started < 5_000
+
+      CodingAgent.Core.Interrupt.clear(id)
+    end
+
+    test "without a session id the command keeps its own deadline", %{profile: profile} do
+      # the bare-scope profile has no :session_id; even a set flag keyed
+      # by nothing must not stop it (there is no id to look up)
+      assert {:timeout, _} =
+               Exec.run({:shell, "sleep 60"}, @tmp_root, 1, profile)
+    end
+  end
+
   describe "stdin_command/2 (shared EOF spelling)" do
     test "wraps a shell spec in a head -c pipeline" do
       assert {:ok, "/bin/sh", ["-c", command]} =

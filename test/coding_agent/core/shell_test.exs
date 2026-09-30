@@ -136,6 +136,11 @@ defmodule CodingAgent.Core.Tools.ShellTest do
       assert profile.hide == ["/hide"]
     end
 
+    test "profile/2 carries the session id so esc can kill a running shell (ADR 017/018)" do
+      profile = Shell.profile(%{root: @tmp_root, session_id: "sess-1"}, %{})
+      assert profile.session_id == "sess-1"
+    end
+
     test "profile/2 tolerates a bare root and no mounts" do
       profile = Shell.profile(%{root: @tmp_root}, %{})
 

@@ -59,6 +59,9 @@ defmodule CodingAgent.Core.Tools.FileExec do
       {:timeout, _partial} ->
         {:error, "timed out reading #{path}"}
 
+      {:stopped, _partial} ->
+        {:error, "stopped by the user while reading #{path}"}
+
       {:sandbox_error, reason} ->
         {:error, "cannot read #{path} under the sandbox: #{inspect(reason)}"}
 
@@ -89,6 +92,9 @@ defmodule CodingAgent.Core.Tools.FileExec do
       {:timeout, _partial} ->
         {:error, "timed out writing #{path}"}
 
+      {:stopped, _partial} ->
+        {:error, "stopped by the user while writing #{path}"}
+
       {:sandbox_error, reason} ->
         {:error, "cannot write #{path} under the sandbox: #{inspect(reason)}"}
 
@@ -115,6 +121,9 @@ defmodule CodingAgent.Core.Tools.FileExec do
 
       {:timeout, _partial} ->
         {:error, "timed out listing #{path}"}
+
+      {:stopped, _partial} ->
+        {:error, "stopped by the user while listing #{path}"}
 
       {:sandbox_error, reason} ->
         {:error, "cannot list #{path} under the sandbox: #{inspect(reason)}"}
@@ -197,6 +206,9 @@ defmodule CodingAgent.Core.Tools.FileExec do
       {:timeout, _} ->
         {:error, "timed out counting #{path}"}
 
+      {:stopped, _} ->
+        {:error, "stopped by the user while counting #{path}"}
+
       {:sandbox_error, reason} ->
         {:error, "cannot count #{path} under the sandbox: #{inspect(reason)}"}
 
@@ -222,6 +234,9 @@ defmodule CodingAgent.Core.Tools.FileExec do
 
       {:timeout, _partial} ->
         {:error, "timed out #{verb}ing #{path}"}
+
+      {:stopped, _partial} ->
+        {:error, "stopped by the user while #{verb}ing #{path}"}
 
       {:sandbox_error, reason} ->
         {:error, "cannot #{verb} #{path} under the sandbox: #{inspect(reason)}"}

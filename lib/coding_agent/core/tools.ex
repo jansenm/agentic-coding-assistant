@@ -144,6 +144,10 @@ defmodule CodingAgent.Core.Tools do
       network: false,
       git_write: false,
       root_ro: Map.get(scope, :shell_mode) == :ro,
+      # The owning session, so `Exec` can abort a running command when the
+      # user presses esc (Core.Exec's cancellation note). A scope without
+      # one (a bare test) simply keeps the deadline.
+      session_id: Map.get(scope, :session_id),
       scratch: CodingAgent.Core.Session.Scratch.from_scope(scope),
       rw: Map.get(mounts, :rw, []),
       ro: Map.get(mounts, :ro, []),

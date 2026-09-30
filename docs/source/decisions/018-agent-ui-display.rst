@@ -278,6 +278,13 @@ exists (``Interrupt.request/1`` on ``child_id``); forwarding the parent's
 stop to the active child is the natural follow-up, alongside the existing
 "mid-tool hard cancel" note in ``ROADMAP.md``.
 
+*Resolved in part (2026-09-30):* the parent's stop IS forwarded to every
+active child (``esc_stop/1``), and the "mid-tool hard cancel" land below
+the child is now built — ``Core.Exec`` observes the stop flag and kills a
+running command (ADR 043). A child blocked in a `shell` therefore ends
+within one poll tick, though the parent worker still blocks on the
+``task`` call until the child returns.
+
 Acceptance: ``test/coding_agent/core/session/subagent_test.exs`` (the
 round returns the summary, ephemerality, unknown/primary types, a failed
 child, depth 1 and the fail-closed gate, the parent events),

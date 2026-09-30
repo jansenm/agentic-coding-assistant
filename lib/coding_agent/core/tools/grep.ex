@@ -203,6 +203,9 @@ defmodule CodingAgent.Core.Tools.Grep do
       {:timeout, _partial} ->
         Tools.error("rg search timed out after #{@exec_timeout}s")
 
+      {:stopped, _partial} ->
+        Tools.error("rg search stopped by the user")
+
       {:sandbox_error, reason} ->
         Tools.error("cannot confine the search: #{inspect(reason)}")
 

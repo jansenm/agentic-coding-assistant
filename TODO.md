@@ -44,12 +44,18 @@ im jeweiligen ADR vermerkt.
   parallel), die Tab-Leiste/ctrl-x a zeigen sie, das Band nennt den Leaf,
   der Parent-Kontext sieht nur die Zusammenfassung, und `subagent_model`
   greift (bzw. `explore` erbt das Main-Modell ohne den Knopf).
-* **esc stoppt ein laufendes Kind.** Jetzt weitergeleitet: die TUI ruft
+* **esc stoppt ein laufendes Kind.** Weitergeleitet: die TUI ruft
   `Session.interrupt/1` für jedes aktive Kind (ADR 018 Amendment (ii)).
-  Live bestätigen, dass ein esc-Doppeldruck einen langen `task`-Lauf
-  wirklich abbricht; der Parent-Worker blockiert weiter im Task-Call, das
-  Kind wird aber über seine eigene Interrupt-Id gestoppt. Ein „mid-tool
-  hard cancel“ bleibt als `ROADMAP.md`-Notiz offen.
+  Live bleibt zu bestätigen, dass ein esc-Doppeldruck einen langen
+  `task`-Lauf wirklich abbricht; der Parent-Worker blockiert weiter im
+  Task-Call, das Kind wird über seine eigene Interrupt-Id gestoppt.
+  **Mid-tool hard cancel ist erledigt (ADR 043, 2026-09-30):** `Core.Exec`
+  liest das Stop-Flag während des Wartens und killt den laufenden Prozess
+  binnen eines 250-ms-Ticks — ein hängender `shell` (bis 1800 s),
+  `grep`/`glob` oder eine Datei-Operation endet also jetzt auf esc. Live
+  noch zu bestätigen: der Doppeldruck beendet einen hängenden `shell`
+  wirklich, und der Parent bekommt `STOPPED by the user` statt eines
+  Timeouts.
 * **ADR 030 live.** Der Umbau ist test-verifiziert (910 grün), aber der
   bwrap-Datei-Pfad lief nur in den Integrationstests: live prüfen, dass
   `read_file`/`write_file`/`edit`/`list_dir` unter echtem bwrap sauber

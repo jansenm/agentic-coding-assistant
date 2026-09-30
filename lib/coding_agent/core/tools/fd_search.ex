@@ -47,6 +47,7 @@ defmodule CodingAgent.Core.Tools.FdSearch do
           {:ok, out, 0} -> {:ok, out}
           {:ok, out, _} -> {:error, {:fd_failed, out}}
           {:timeout, out} -> {:error, {:fd_timeout, out}}
+          {:stopped, out} -> {:error, {:fd_stopped, out}}
           {:error, reason} -> {:error, reason}
           {:sandbox_error, reason} -> {:error, reason}
         end
@@ -68,6 +69,9 @@ defmodule CodingAgent.Core.Tools.FdSearch do
 
   def error_message({:fd_timeout, _out}),
     do: "fd did not finish within the search timeout; narrow the search"
+
+  def error_message({:fd_stopped, _out}),
+    do: "fd search stopped by the user"
 
   def error_message(reason), do: "fd failed: #{inspect(reason)}"
 

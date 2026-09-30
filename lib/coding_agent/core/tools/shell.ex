@@ -197,12 +197,16 @@ defmodule CodingAgent.Core.Tools.Shell do
       # a read-only agent's shell cannot write the source either; an
       # unconfined sandbox refuses this rather than running read-write
       root_ro: shell_mode == :ro,
+      session_id: session_id(scope),
       scratch: scratch(scope),
       rw: Map.get(mounts, :rw, []),
       ro: Map.get(mounts, :ro, []),
       hide: Map.get(mounts, :hide, [])
     }
   end
+
+  defp session_id(%{} = scope), do: Map.get(scope, :session_id)
+  defp session_id(_root), do: nil
 
   # The session scratch (ADR 022): nil for a bare root scope, so the
   # sandbox keeps its ephemeral tmpfs `/tmp`.
@@ -301,6 +305,10 @@ defmodule CodingAgent.Core.Tools.Shell do
       {:timeout, partial} ->
         elapsed = System.monotonic_time(:millisecond) - started
         {:ok, Exec.format(command, partial, :timeout, elapsed, secs)}
+
+      {:stopped, partial} ->
+        elapsed = System.monotonic_time(:millisecond) - started
+        {:ok, Exec.format(command, partial, :stopped, elapsed, secs)}
 
       {:error, reason} ->
         Tools.error("cannot run #{inspect(command)}: #{:file.format_error(reason)}")

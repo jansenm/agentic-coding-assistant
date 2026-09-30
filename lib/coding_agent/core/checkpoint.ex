@@ -238,6 +238,7 @@ defmodule CodingAgent.Core.Checkpoint do
          ) do
       {:ok, out, status} -> {:ok, out, status}
       {:timeout, _} -> {:error, :timeout}
+      {:stopped, _} -> {:error, :stopped}
       {:sandbox_error, reason} -> {:error, {:sandbox, reason}}
       {:error, reason} -> {:error, reason}
     end
