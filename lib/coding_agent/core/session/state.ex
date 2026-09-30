@@ -121,6 +121,12 @@ defmodule CodingAgent.Core.Session.State do
     # set once the 80%-of-trigger warning has been broadcast (once,
     # not every turn)
     compaction_warned: false,
+    # set once a checkpoint failure has been surfaced as a transcript note
+    # (ADR 036; review F3): a snapshot that keeps failing (e.g. a linked
+    # worktree whose git dir is not writable through the sandbox) must not
+    # stay silent, or `/undo` reads as working. Warned once per session,
+    # not per turn.
+    checkpoint_warned: false,
     # ONE agent name (or nil) per USER turn, in execution order — the
     # agent that answered that turn. Persisted with the session so a
     # resumed/old session can attribute every user message and its
@@ -215,6 +221,7 @@ defmodule CodingAgent.Core.Session.State do
           turn_agents: [String.t() | nil],
           usage: CodingAgent.Core.Session.Usage.t(),
           compaction_warned: boolean(),
+          checkpoint_warned: boolean(),
           compaction_backoff: non_neg_integer(),
           worker_ref: reference() | nil,
           worker_from: GenServer.from() | nil,
@@ -311,6 +318,7 @@ defmodule CodingAgent.Core.Session.State do
       # usage heals a legacy map into the struct (wire-compatible)
       usage: CodingAgent.Core.Session.Usage.from_map(Map.get(state, :usage)),
       compaction_warned: Map.get(state, :compaction_warned, false),
+      checkpoint_warned: Map.get(state, :checkpoint_warned, false),
       compaction_backoff: Map.get(state, :compaction_backoff, 0),
       pending_round_calls: Map.get(state, :pending_round_calls, []),
       pending_round_results: Map.get(state, :pending_round_results, []),

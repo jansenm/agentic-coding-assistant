@@ -164,3 +164,12 @@ Open questions
    nothing.
 4. **Large/binary worktrees.** ``git add -A`` hashes every file. A size
    or count guard (skip + warn) may be needed; measured before adding.
+5. **All-or-nothing snapshot.** ``write_tree/3`` runs ``git add -A`` and
+   ``git write-tree`` — a single unwritable object (a permission problem,
+   or a linked worktree whose git dir is not writable through the
+   sandbox) aborts the whole capture, so no checkpoint is kept even for
+   the files that would have gone through. Partial capture would need a
+   different mechanism (e.g. ``git stash create`` semantics or a
+   per-path fallback), and a wrong partial snapshot is worse than none.
+   Deferred; the failure is now surfaced once as a transcript note
+   (review F3) instead of only a log line.

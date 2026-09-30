@@ -1406,10 +1406,33 @@ defmodule CodingAgent.Core.Session do
 
           {:error, reason} ->
             Logger.warning("checkpoint failed for #{state.id}: #{inspect(reason)}")
-            state
+            warn_checkpoint_failure(state, reason)
         end
     end
   end
+
+  # A checkpoint that failed must not stay invisible (review F3): otherwise
+  # the human assumes `/undo` works. Surface it ONCE per session as a
+  # transcript note (the transcript line is the durable, visible signal;
+  # the Logger line above is the diagnostic).
+  defp warn_checkpoint_failure(%{checkpoint_warned: true} = state, _reason), do: state
+
+  defp warn_checkpoint_failure(state, reason) do
+    broadcast(
+      state,
+      {:info,
+       "· checkpoint failed — /undo will not restore this turn: #{checkpoint_reason(reason)}"}
+    )
+
+    %{state | checkpoint_warned: true}
+  end
+
+  # A short, human-readable cause; the full error is in the log. The git
+  # steps fail as `{tag, code, output}`, so surface the first output line.
+  defp checkpoint_reason({_tag, _code, out}) when is_binary(out) and out != "",
+    do: out |> String.split("\n", trim: true) |> List.first() |> String.trim()
+
+  defp checkpoint_reason(other), do: inspect(other)
 
   # Starts the worker under the turn supervisor and returns the monitor
   # ref. The worker gets a snapshot with the session's runtime

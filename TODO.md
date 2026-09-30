@@ -180,16 +180,16 @@ ist gefixt.
 
 * **`scope_root` ungleich Git-Wurzel ist weder unterstützt noch
   verweigert (halbe Funktionsfähigkeit).** `mix tui` pinnt
-  `scope_root: File.cwd!()` (`lib/mix/tasks/tui.ex:65`) ohne
+  `scope_root: File.cwd!()` (Mix-Task `Tui`) ohne
   Toplevel-Normalisierung; `Bwrap.git_dirs/1` sucht `.git` nur direkt
-  unter `<scope_root>` (`bwrap.ex:317`), und `Checkpoint.ensure_repo/1`
-  nutzt `rev-parse --is-inside-work-tree` (`checkpoint.ex:137`), was im
+  unter `<scope_root>`, und `Checkpoint.ensure_repo/3`
+  nutzt `rev-parse --is-inside-work-tree`, was im
   Unterverzeichnis **true** liefert. Startet man aus einem Unterordner
   eines Repos, findet kein Git-Schreibvorgang ein beschreibbares `.git`
   (der `/`-Bind ist read-only): `git add`/`commit` und der
   Checkpoint-Temp-Index scheitern mit EROFS, `take_checkpoint` schluckt
-  das als `Logger.warning` — kein Session-Start-Fehler, keine Notiz.
-  Kein Datenverlust (der Checkpoint scheitert geschlossen; der
+  das als `Logger.warning` — seit dem F3-Fix zusätzlich als einmalige
+  Notiz. Kein Datenverlust (der Checkpoint scheitert geschlossen; der
   „repo-weite Restore"-Effekt tritt nur unter `Sandbox.None` auf, also
   mit bereits entfernter Grenze). Entweder `scope_root` beim Start auf
   `git rev-parse --show-toplevel` normalisieren, oder mit klarer Meldung

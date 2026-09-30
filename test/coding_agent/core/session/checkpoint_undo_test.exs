@@ -84,6 +84,32 @@ defmodule CodingAgent.Core.Session.CheckpointUndoTest do
     assert {:error, :nothing_to_undo} = Session.undo(id)
   end
 
+  test "a failing checkpoint is surfaced once as a note (review F3)" do
+    id = "undo-warn-#{System.unique_integer([:positive])}"
+
+    # make the object store unwritable so `git add -A` fails the snapshot
+    # deterministically (the same EROFS shape the review measured in a
+    # linked worktree). Restore perms so on_exit can clean up.
+    objects = Path.join([@root, ".git", "objects"])
+    File.chmod!(objects, 0o555)
+    on_exit(fn -> File.chmod(objects, 0o755) end)
+
+    start(id, fn state -> {state, {:ok, state}} end)
+    :ok = Session.subscribe(id)
+    {:ok, _} = Session.run(id, "do the thing")
+
+    assert_receive {:agent, ^id, {:info, note}}, 1000
+    assert note =~ "checkpoint failed"
+    assert note =~ "/undo"
+
+    {:ok, st} = Session.state(id)
+    assert st.checkpoint_warned == true
+
+    # a second turn does not repeat the note
+    {:ok, _} = Session.run(id, "again")
+    refute_received {:agent, ^id, {:info, _}}
+  end
+
   test "checkpoints survive a resume" do
     id = "undo-resume-#{System.unique_integer([:positive])}"
     start(id, writing_runner([{"new.txt", "agent made\n"}]))
