@@ -91,12 +91,24 @@ match list; ``webfetch`` spills the full de-tagged text. All three share
 .. note::
    A review caught that "full match list" was originally untrue: ``grep``
    ran ``rg`` through ``Exec`` with the default truncation, so it received
-   only a 256 KiB fragment of the ``--json`` stream, and both the reported
-   match count and the spill were drawn from that fragment (measured:
-   "1133 of 1133" for 120 000 hits). ``grep`` now reads the stream whole
+   only a 256 KiB fragment of the stream, and both the reported match count
+   and the spill were drawn from that fragment (measured: "1133 of 1133"
+   for 120 000 hits). ``grep`` now reads the stream whole
    (``Exec.run(…, truncate: false)``), so the count and the spill are
    both complete; the timeout bounds the search and ``Core.Spill`` caps
    the file.
+
+   Reading the stream whole exposed two costs, both fixed. First, the
+   stream was ``rg --json`` — ~6x larger than the plain output for a
+   normal search and ~25x for a broad one (measured: pattern ``.`` over
+   500 files produced 16 MB of JSON), all of it decoded line by line;
+   ``grep`` now uses ``rg --null`` (``path\0line:text``), which carries
+   the same matches at a fraction of the size with a cheap split. Second,
+   the per-match physical scope re-check is a full realpath walk; run per
+   match it was quadratic in hits (20k matches → 4.4 s). It now resolves
+   once per DISTINCT file (20k matches over 500 files → 69 ms), so the
+   symlink-escape guard (an explicitly named link can read out of scope)
+   still holds.
 
 **3. ``read_file`` gains ``offset`` and ``limit`` (1-based lines).** Read
 as a confined ``sed -n 'start[,end]p'`` through ``Tools.FileExec``, so the

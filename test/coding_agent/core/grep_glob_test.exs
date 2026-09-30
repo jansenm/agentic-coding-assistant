@@ -86,6 +86,20 @@ defmodule CodingAgent.Core.Tools.GrepGlobTest do
       assert out =~ "needle here"
     end
 
+    test "parses a path containing a colon (the --null boundary)", %{scope: scope} do
+      File.write!(Path.join(@root, "we:ird.txt"), "needle colon\n")
+
+      {:ok, out} = ReqLLM.Tool.execute(grep_tool(scope), %{"pattern" => "colon"})
+      assert out =~ "we:ird.txt:1:needle colon"
+    end
+
+    test "does not truncate a match whose line text contains a colon", %{scope: scope} do
+      File.write!(Path.join(@root, "cfg.txt"), "key: value: needle:x\n")
+
+      {:ok, out} = ReqLLM.Tool.execute(grep_tool(scope), %{"pattern" => "needle"})
+      assert out =~ "cfg.txt:1:key: value: needle:x"
+    end
+
     test "alternation and glob filters", %{scope: scope} do
       {:ok, out} = ReqLLM.Tool.execute(grep_tool(scope), %{"pattern" => "needle|secret_here"})
       assert out =~ "top.txt:1:needle"
@@ -159,9 +173,9 @@ defmodule CodingAgent.Core.Tools.GrepGlobTest do
     test "the cap counts ALL matches, not just an Exec-truncated fragment (review F1)", %{
       scope: scope
     } do
-      # Enough matches that rg's --json stream far exceeds Exec's 256 KiB
-      # cut: before the fix grep saw only the fragment, so the total was
-      # wrong and the "full list" spill held the same fragment.
+      # Enough matches that rg's output far exceeds Exec's 256 KiB cut:
+      # before the fix grep saw only the fragment, so the total was wrong
+      # and the "full list" spill held the same fragment.
       big = Path.join(@root, "many.txt")
       lines = for i <- 1..4_000, do: "match-#{i}-#{String.duplicate("x", 120)}"
       File.write!(big, Enum.join(lines, "\n"))

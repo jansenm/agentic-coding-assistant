@@ -126,9 +126,21 @@ defmodule CodingAgent.Core.Tools.Grep do
     # --hidden so a search that NAMED a hidden entry can see it; the
     # result is filtered by the same naming test below, so nothing
     # else gains hidden entries (see moduledoc).
+    #
+    # `--null` (a NUL after each path) is what makes the plain output
+    # UNAMBIGUOUS: a path may contain `:`, so `path:line:text` cannot be
+    # split reliably, but `path\0line:text` can, because NUL cannot occur
+    # in a path. This replaced `--json` (review F1 follow-up): the JSON
+    # stream is the SAME match set but ~6x larger for a normal search and
+    # ~25x for a broad one (measured: pattern `.` over 500 files -> 16 MB
+    # of JSON vs 686 KB plain), and it had to be `Jason.decode`d line by
+    # line. Reading it whole (required so the count/spill are true, F1)
+    # made a repo-wide broad search into a hundreds-of-MB decode bomb.
+    # The plain+`--null` form carries the identical information at a
+    # fraction of the size, with a cheap split instead of per-line JSON.
     args =
-      ["--json", "--no-config", "--no-ignore", "--color=never", "--max-filesize", "1M"] ++
-        ["--hidden"] ++
+      ["--null", "--line-number", "--no-heading", "--no-config", "--no-ignore", "--color=never"] ++
+        ["--max-filesize", "1M", "--hidden"] ++
         exclude_args(target) ++
         ["-e", pattern, "--", target]
 
@@ -137,15 +149,15 @@ defmodule CodingAgent.Core.Tools.Grep do
     # sandbox bounds the process (no writes, no network), and the scope
     # is already mountable, so delegation needs nothing else.
     #
-    # `truncate: false` is REQUIRED here (review F1): rg's `--json` stream
-    # is machine input, and Exec's default 256 KiB cut would let grep see
+    # `truncate: false` is REQUIRED here (review F1): rg's output is
+    # machine input, and Exec's default 256 KiB cut would let grep see
     # only a fraction of the matches — the count and the "full list" spill
     # were both drawn from that fragment, so the tool reported "1133 of
     # 1133" for a search with 120 000 hits and spilled the same truncated
     # set. Reading the stream whole makes the count and the spill true; the
     # 60s timeout bounds a pathological search, and the spill itself is
-    # capped (ADR 038). It also drops Exec's own spill of the raw JSON
-    # excerpt, which had no reader.
+    # capped (ADR 038). It also drops Exec's own spill of the raw excerpt,
+    # which had no reader.
     profile = scope |> Tools.profile() |> Map.put(:root, root)
 
     case Exec.run({:exec, rg, args}, root, @exec_timeout, profile, truncate: false) do
@@ -200,10 +212,30 @@ defmodule CodingAgent.Core.Tools.Grep do
   defp format_rg_matches(out, root, glob, path, scope) do
     names = [glob, path]
 
-    results =
+    records =
       out
-      |> String.split("\n", trim: true)
-      |> Enum.flat_map(&rg_match_line(&1, root))
+      |> split_rg_records()
+      |> Enum.flat_map(&rg_match_record(&1, root))
+
+    # The physical scope re-check (`Tools.in_scope?/2`) is a full
+    # realpath walk following symlinks; doing it PER MATCH made a broad
+    # search quadratic in hits (measured: 20k matches over 500 files cost
+    # 4.4s). Every match on a file shares that file's verdict, so resolve
+    # it ONCE per distinct path. The check itself stays: an explicitly
+    # named symlink (`path: "src/leak.txt"`) can point outside the scope
+    # and rg will happily read through it (verified), so the physical
+    # re-check is what keeps an out-of-scope match out of the result.
+    allowed =
+      records
+      |> Enum.map(&elem(&1, 0))
+      |> Enum.uniq()
+      |> Enum.filter(&Tools.in_scope?(%{root: root}, &1))
+      |> MapSet.new()
+
+    results =
+      records
+      |> Enum.filter(fn {abs, _n, _text} -> MapSet.member?(allowed, abs) end)
+      |> Enum.map(fn {abs, n, text} -> {Path.relative_to(abs, root), n, text} end)
       |> Enum.filter(&keep_match?(&1, names))
       |> Enum.sort()
 
@@ -220,12 +252,23 @@ defmodule CodingAgent.Core.Tools.Grep do
   defp glob_accepts?(nil, _rel), do: true
   defp glob_accepts?(glob, rel), do: Glob.file_match?(glob, rel, Path.basename(rel))
 
-  defp rg_match_line(line, root) do
-    with {:ok, %{"type" => "match", "data" => data}} <- Jason.decode(line),
-         %{"path" => %{"text" => path}, "line_number" => n, "lines" => %{"text" => text}} <- data,
-         abs = Path.expand(path, root),
-         true <- Tools.in_scope?(%{root: root}, abs) do
-      [{Path.relative_to(abs, root), n, clip(String.trim_trailing(text, "\n"))}]
+  # rg's `--null` output is one record per match, `path\0lineno:text`,
+  # records separated by `\n` (the matched text is a single line, so a
+  # newline only ends a record). Splitting on the newline first is safe
+  # precisely because a match's text cannot contain one.
+  defp split_rg_records(out), do: String.split(out, "\n", trim: true)
+
+  # `path\0lineno:text` -> `{abs, line, text}` (the scope verdict is added
+  # later, once per file). The NUL separates the path from the rest, so a
+  # `:` in the PATH cannot be confused with the one before the line
+  # number; the first `:` in the REST separates line from text (a `:` in
+  # the TEXT is fine). A record without a NUL, or with a non-integer line,
+  # is dropped (never a phantom match).
+  defp rg_match_record(record, root) do
+    with [path, rest] <- String.split(record, "\0", parts: 2),
+         [n_str, text] <- String.split(rest, ":", parts: 2),
+         {n, ""} <- Integer.parse(n_str) do
+      [{Path.expand(path, root), n, clip(String.trim_trailing(text, "\n"))}]
     else
       _ -> []
     end
