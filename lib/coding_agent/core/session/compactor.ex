@@ -390,12 +390,13 @@ defmodule CodingAgent.Core.Session.Compactor do
 
     with {:ok, model_input, base_opts} <-
            Request.build(State.effective_model(state), state.provider_config, state.scope_root),
-         {:ok, response} <-
-           ReqLLM.generate_text(
+         {:ok, stream_response} <-
+           ReqLLM.stream_text(
              model_input,
              summary_context(old_span_text, prior),
              summarize_opts(base_opts)
-           ) do
+           ),
+         {:ok, response} <- ReqLLM.StreamResponse.process_stream(stream_response) do
       case ReqLLM.Response.text(response) do
         text when is_binary(text) and text != "" -> {:ok, text}
         _ -> {:error, :empty_summary}
@@ -422,6 +423,16 @@ defmodule CodingAgent.Core.Session.Compactor do
   # carried-forward input, which accumulates across compactions.
   @summary_output_tokens 4_096
 
+  # The summarizer STREAMS (`stream_text/3` + `StreamResponse.process_stream/1`,
+  # not `generate_text/3`). A non-streaming call waits for the ENTIRE
+  # generation before the first byte arrives, so on a reasoning model
+  # (deepseek-v4.1-flash) the whole think+answer time counts as ONE
+  # inactivity gap against `receive_timeout` — the source of the live
+  # `compaction failed (... "timeout")` loop (measured: non-streaming with
+  # a 2s bound fails at ~7s, streaming with the same 2s bound succeeds at
+  # ~5s, because each SSE chunk resets the idle timer). The turn already
+  # streams (session.ex `stream_attempt/2`); the summarizer simply matched
+  # opencode's behavior late. `max_tokens` still bounds the output.
   defp summarize_opts(base_opts) do
     base_opts
     |> Keyword.put(:receive_timeout, inactivity())
