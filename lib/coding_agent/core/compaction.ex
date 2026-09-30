@@ -81,7 +81,9 @@ defmodule CodingAgent.Core.Compaction do
     # `trim_leading` because a hand-edited or re-serialized store could
     # prepend whitespace — an unrecognized summary would then be
     # re-summarized as new material, the exact thing the marker prevents
-    # (review N21).
+    # (review N21). The marker hangs off the TEXT form only (`text_of/1`):
+    # a summary whose text lives in a non-text content part would not be
+    # recognized, but a compaction summary is always text (review N32).
     msg |> text_of() |> String.trim_leading() |> String.starts_with?(@summary_prefix)
   end
 
@@ -276,10 +278,42 @@ defmodule CodingAgent.Core.Compaction do
 
   defp bound_summary(text) when byte_size(text) <= @max_summary_chars, do: text
 
+  # Cut on BYTES, not graphemes (review N31): the guard above is
+  # `byte_size`, and `String.slice/3` counts graphemes, so multibyte text
+  # (2 bytes for `é`, 4 for an emoji) could store 2-4× the nominal cap —
+  # the opposite of "cannot become the overflow". Keep head AND tail like
+  # `bound_input/1` (review N30): the template's `Next Move` and
+  # `Relevant Files` are at the END, and head-first truncation threw away
+  # exactly the fields the resuming agent needs. `safe_part/2` avoids
+  # splitting a UTF-8 sequence.
   defp bound_summary(text) do
-    String.slice(text, 0, @max_summary_chars) <>
-      "\n\n[... summary truncated: #{byte_size(text)} chars total ...]"
+    half = div(@max_summary_chars, 2)
+    size = byte_size(text)
+    head = trim_trailing(binary_part(text, 0, half))
+    tail = trim_leading(binary_part(text, size - half, half))
+
+    head <>
+      "\n\n[... summary truncated: #{byte_size(text)} chars total; " <>
+      "showing first and last #{half} ...]\n\n" <> tail
   end
+
+  # A byte cut can land mid-UTF-8-sequence. Drop the incomplete trailing
+  # bytes (head) or leading continuation bytes (tail) so the stored text
+  # stays valid — the summary is model output and may be any UTF-8.
+  defp trim_trailing(slice) do
+    if String.valid?(slice) do
+      slice
+    else
+      size = byte_size(slice)
+      if size == 0, do: slice, else: trim_trailing(binary_part(slice, 0, size - 1))
+    end
+  end
+
+  defp trim_leading(<<_byte, rest::binary>> = slice) do
+    if String.valid?(slice), do: slice, else: trim_leading(rest)
+  end
+
+  defp trim_leading(<<>>), do: <<>>
 
   @doc """
   Renders the summary span as one text block for the summarizer model —
@@ -597,9 +631,6 @@ defmodule CodingAgent.Core.Compaction do
     """
   end
 
-  # The inverse of `compact_summary_text/1` for the rolling-summary path:
-  # the prior summary text without our wrapper, so it can be fed back as
-  # `<prior-summary>` and combined rather than nested.
   # The inverse of `compact_summary_text/1` for the rolling-summary path:
   # the prior summary text without our wrapper, or `nil` when there is no
   # body (a header-only message — review N21: returning the header itself

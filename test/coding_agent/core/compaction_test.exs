@@ -207,6 +207,30 @@ defmodule CodingAgent.Core.CompactionTest do
     assert stored =~ "summary truncated"
   end
 
+  test "the summary cap keeps head AND tail, so Next Move/Relevant Files survive (N30)" do
+    # The template ends with Next Move + Relevant Files; head-first
+    # truncation dropped exactly those. Build a summary whose tail is
+    # identifiable.
+    huge =
+      "## Objective\n- start\n" <>
+        String.duplicate("- detail line\n", 3_000) <>
+        "## Next Move\nNEXT-MOVE-SENTINEL\n## Relevant Files\nRELEVANT-FILES-SENTINEL"
+
+    stored = Compaction.prior_summary(Compaction.apply(ctx(30), huge))
+    assert stored =~ "## Objective"
+    assert stored =~ "NEXT-MOVE-SENTINEL"
+    assert stored =~ "RELEVANT-FILES-SENTINEL"
+  end
+
+  test "the summary cap is a BYTE cap, not graphemes (N31)" do
+    # multibyte text: 4x the grapheme count in bytes. The old String.slice
+    # cut 24_000 graphemes = 96k bytes, 4x the nominal cap.
+    stored = Compaction.prior_summary(Compaction.apply(ctx(30), String.duplicate("𝄞", 30_000)))
+    assert byte_size(stored) < 25_000
+    # still valid UTF-8 after the byte-boundary cut
+    assert String.valid?(stored)
+  end
+
   test "summary_prompt without a prior summary: template, no prior block" do
     prompt = Compaction.summary_prompt("USER: do the thing", nil)
 
