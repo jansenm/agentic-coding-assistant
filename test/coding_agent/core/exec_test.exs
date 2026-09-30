@@ -2,6 +2,7 @@ defmodule CodingAgent.Core.ExecTest do
   use ExUnit.Case, async: true
 
   alias CodingAgent.Core.Exec
+  alias CodingAgent.Core.Interrupt
   alias CodingAgent.Core.Sandbox
 
   @tmp_root System.tmp_dir!() |> Path.join("agent-exec-#{System.unique_integer([:positive])}")
@@ -144,63 +145,100 @@ defmodule CodingAgent.Core.ExecTest do
       assert byte_size(File.read!(host)) > 256 * 1024
     end
 
-    test "a runaway producer stays memory-bounded and spills the full stream (OOM fix)" do
+    test "the held memory does not grow with the output size (OOM fix, N34)" do
       # The freeze, 2026-09-30: `collect` buffered EVERY chunk, so a fast
       # printer grew the BEAM to 11 GB before truncation ran at exit. The
       # accumulator now streams past `@max_bytes` into the spill, so the
-      # process peaks near the cap no matter how much the command prints.
-      # 40 MB out; measure the run's own peak RSS via the process info.
-      scratch = Path.join(@tmp_root, "scratch-oom")
-      File.mkdir_p!(scratch)
-      profile = %{root: @tmp_root, scratch: scratch, session_id: nil}
+      # footprint is a function of the CAP, not the output.
+      #
+      # The metric matters (review N34): the output is a chain of refc
+      # BINARIES, which live OUTSIDE the process heap — `:memory` does not
+      # see them, so the first cut of this test was green even on the
+      # buggy version. `:binary` (a list of `{ref, size, refc?}`) does.
+      #
+      # A SLOW producer (64 KiB, then a 4 ms pause), so the consumer
+      # keeps up and the port mailbox stays empty — a saturating one
+      # floods it and makes any measurement scheduling-dependent (19 MB
+      # alone, ~89 MB under the parallel suite). With the mailbox quiet
+      # the metric reflects the ACCUMULATOR: the buggy version holds
+      # O(output) (64 MiB for the 1024-chunk run), the fixed one O(cap)
+      # (~2.7 MB, measured flat across 64/256/1024 chunks).
+      small = peak_binary_for(64)
+      large = peak_binary_for(1024)
 
-      me = self()
+      # held memory must stay at the cap, not grow with the output
+      assert small < 8 * 1024 * 1024
+      assert large < 8 * 1024 * 1024
+      # ... and must not scale with a 16x larger output either
+      assert large < 3 * small
 
-      {pid, ref} =
-        spawn_monitor(fn ->
-          out =
-            Exec.run(
-              {:shell, "yes xx | head -c 41943040"},
-              @tmp_root,
-              30,
-              profile,
-              label: "shell"
-            )
-
-          send(me, {:done, out})
-        end)
-
-      # sample the worker's memory while it runs; it should stay small
-      peak = sample_memory(pid, 0)
-      assert_receive {:done, {:ok, out, 0}}, 30_000
-      assert Process.demonitor(ref, [:flush])
-
-      assert out =~ "output truncated"
-      assert out =~ "full output at /tmp/spill/shell-"
-
-      # the output reached the spill file, bounded by the per-spill cap
-      # (ADR 038: 16 MiB), with an in-file marker
+      # and the spill really happened, with the in-file cap marker
+      scratch = Path.join(@tmp_root, "scratch-oom-1024")
       host = Path.wildcard(Path.join(scratch, "spill/shell-*")) |> List.first()
       assert host != nil
-
       file = File.read!(host)
       assert byte_size(file) >= 16 * 1024 * 1024
       assert file =~ "spill truncated"
-
-      # and the BEAM-side footprint never approached the 40 MB output
-      assert peak < 30 * 1024 * 1024
     end
 
-    # sample the worker's RSS every few ms until it exits
-    defp sample_memory(pid, peak) do
-      case Process.info(pid, :memory) do
-        {:memory, m} ->
+    # Emits `chunks` x 64 KiB with a short pause, so the consumer drains
+    # between chunks; returns the worker's peak binary footprint.
+    defp peak_binary_for(chunks) do
+      scratch = Path.join(@tmp_root, "scratch-oom-#{chunks}")
+      File.mkdir_p!(scratch)
+      profile = %{root: @tmp_root, scratch: scratch, session_id: nil}
+      me = self()
+
+      cmd = "for i in $(seq 1 #{chunks}); do printf '%65536s' x; sleep 0.004; done"
+
+      {pid, ref} =
+        spawn_monitor(fn ->
+          out = Exec.run({:shell, cmd}, @tmp_root, 60, profile, label: "shell")
+          send(me, {:done, out})
+        end)
+
+      peak = sample_binary(pid, 0)
+      assert_receive {:done, {:ok, out, 0}}, 60_000
+      assert Process.demonitor(ref, [:flush])
+      assert out =~ "output truncated"
+      peak
+    end
+
+    # The process's own binary footprint (refc + heap binaries), summed.
+    # `Process.info(pid, :memory)` misses refc binaries entirely — the
+    # whole point of the metric choice.
+    defp sample_binary(pid, peak) do
+      case Process.info(pid, :binary) do
+        {:binary, binaries} ->
+          total = binaries |> Enum.map(&elem(&1, 1)) |> Enum.sum()
           Process.sleep(2)
-          sample_memory(pid, max(peak, m))
+          sample_binary(pid, max(peak, total))
 
         nil ->
           peak
       end
+    end
+
+    test "a chatty command is stopped on time, not at its deadline (N33)" do
+      # Before the fix the stop flag was read only in the `after` tick,
+      # which never fires while data keeps arriving: a build printing
+      # progress every 20 ms ignored esc until its deadline. The flag is
+      # now checked after every chunk too.
+      id = "exec-chatty-stop-#{System.unique_integer([:positive])}"
+      profile = %{root: @tmp_root, session_id: id}
+      Interrupt.clear(id)
+
+      task =
+        Task.async(fn ->
+          Exec.run({:shell, "while true; do echo tick; sleep 0.02; done"}, @tmp_root, 60, profile)
+        end)
+
+      Process.sleep(400)
+      Interrupt.request(id)
+
+      assert {:stopped, out} = Task.await(task, 5_000)
+      assert out =~ "tick"
+      Interrupt.clear(id)
     end
   end
 

@@ -189,7 +189,12 @@ defmodule CodingAgent.Core.Exec do
       {^port, {:data, data}} ->
         case ingest(acc, data) do
           {:ok, acc} ->
-            collect(port, deadline, acc, cut, session_id)
+            # Check stop/deadline after EVERY chunk too, not only on the
+            # quiet `after` tick. A chatty command (a build printing
+            # progress every 20-200 ms, `yes`) keeps data in the mailbox
+            # so the tick NEVER fires: esc was ignored until the deadline
+            # and a saturating command could outlive it (review N33/N33b).
+            check_stop(port, deadline, acc, cut, session_id)
 
           :overflow ->
             # a machine consumer (`grep`/`fd`, `truncate: false`) keeps the
@@ -209,7 +214,7 @@ defmodule CodingAgent.Core.Exec do
         {:ok, finish(acc, cut), 1}
     after
       wake_timeout(deadline, session_id) ->
-        on_wake(port, deadline, acc, cut, session_id)
+        check_stop(port, deadline, acc, cut, session_id)
     end
   end
 
@@ -320,8 +325,11 @@ defmodule CodingAgent.Core.Exec do
   defp wake_timeout(deadline, _session_id), do: min(remaining(deadline), @poll_ms)
 
   # A user stop wins over the deadline; otherwise the deadline kills the
-  # command (its own timeout), and a false wake just re-arms the receive.
-  defp on_wake(port, deadline, state, cut, session_id) do
+  # command (its own timeout), and otherwise the wait continues. Called
+  # from BOTH the `after` tick (a quiet command) and right after each
+  # data chunk (a chatty one), so a command that never pauses is still
+  # stopped/deadlined on time.
+  defp check_stop(port, deadline, state, cut, session_id) do
     cond do
       session_id && Interrupt.requested?(session_id) ->
         kill(port)
