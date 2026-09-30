@@ -160,6 +160,43 @@ defmodule CodingAgent.Core.CompactionTest do
     assert Enum.count(msgs, &Compaction.summary_message?/1) == 1
   end
 
+  test "split excludes the prior summary from the span (review N16)" do
+    # after a compaction the summary sits at the head; later messages
+    # accumulate. A split must pick the LATER span, never the summary (else
+    # render empties it and the provider summarizes nothing, overwriting the
+    # summary).
+    compacted = Compaction.apply(ctx(30), "prior fact")
+
+    grown =
+      ReqLLM.Context.to_list(compacted) ++
+        for _ <- 1..40, do: msg(String.duplicate("x", 1000), :assistant)
+
+    assert {:ok, old, keep} = Compaction.split(grown)
+    refute Enum.any?(old, &Compaction.summary_message?/1)
+    refute Enum.any?(keep, &Compaction.summary_message?/1)
+    # and when nothing but the summary + min_keep remain, split is :none
+    assert Compaction.split(ReqLLM.Context.to_list(compacted)) == :none
+  end
+
+  test "trim keeps the summary pinned, like the system prompt (review N20b)" do
+    compacted = Compaction.apply(ctx(30), "durable fact 1056 tests")
+
+    grown =
+      ReqLLM.Context.to_list(compacted) ++
+        for _ <- 1..60, do: msg(String.duplicate("x", 2000), :assistant)
+
+    ctx = %ReqLLM.Context{messages: grown}
+    assert {:ok, trimmed, dropped} = Compaction.trim(ctx, 100)
+    assert dropped > 0
+
+    kept = ReqLLM.Context.to_list(trimmed)
+    assert Enum.any?(kept, &Compaction.summary_message?/1)
+    assert Compaction.prior_summary(trimmed) =~ "durable fact 1056 tests"
+    # the summary stays right after the system message
+    assert Enum.at(kept, 0).role == :system
+    assert Compaction.summary_message?(Enum.at(kept, 1))
+  end
+
   # -- the summarizer request (template + rolling) ------------------------------
 
   test "summary_prompt without a prior summary: template, no prior block" do

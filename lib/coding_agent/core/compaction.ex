@@ -153,7 +153,7 @@ defmodule CodingAgent.Core.Compaction do
   """
   @spec split(list()) :: :none | {:ok, summary_span :: list(), keep_span :: list()}
   def split(msgs) do
-    {_system, convo} = take_system(msgs)
+    {_pinned, convo} = take_pinned(msgs)
     boundary = keep_start(convo)
 
     cond do
@@ -170,10 +170,36 @@ defmodule CodingAgent.Core.Compaction do
     end
   end
 
-  # The system message stays pinned to the front; it is summarized by
-  # nobody. A context without one (a bare test context) has no prefix.
+  # The pinned HEAD of the context: the system message (never summarized)
+  # and, if present, the synthetic summary that `apply/2` places directly
+  # after it. Both belong to the head, not the conversation:
+  #
+  #   * the system message is the framework/agent prompt — nobody
+  #     summarizes it;
+  #   * the summary is already the compacted state. Excluding it here (not
+  #     just from `render/1`) is what makes the rolling model correct
+  #     (review N16): otherwise `split/1` could pick a span consisting of
+  #     nothing but the summary, `render/1` would empty it, and a provider
+  #     call would replace the summary with a summary of nothing. It also
+  #     keeps the summary pinned through `trim/1` (review N20b), so the
+  #     last-resort trim can no longer eat it.
+  #
+  # A context without a system message (a bare test context) and without a
+  # summary has no prefix.
+  defp take_pinned(msgs) do
+    {system, rest} = take_system(msgs)
+    {summary, rest} = take_summary(rest)
+    {system ++ summary, rest}
+  end
+
   defp take_system([%ReqLLM.Message{role: :system} = sys | rest]), do: {[sys], rest}
   defp take_system(msgs), do: {[], msgs}
+
+  defp take_summary([msg | rest]) do
+    if summary_message?(msg), do: {[msg], rest}, else: {[], [msg | rest]}
+  end
+
+  defp take_summary([]), do: {[], []}
 
   # The index into `convo` where the kept tail begins, chosen so the
   # tail is a whole number of exchanges and holds at least @min_keep
@@ -450,31 +476,31 @@ defmodule CodingAgent.Core.Compaction do
   """
   @spec trim(Context.t(), pos_integer()) :: {:ok, Context.t(), non_neg_integer()} | :none
   def trim(%Context{messages: msgs} = ctx, target_tokens) do
-    {system, convo} = take_system(msgs)
+    {pinned, convo} = take_pinned(msgs)
 
     cond do
       convo == [] ->
         :none
 
-      estimated_tokens(system ++ convo) <= target_tokens ->
+      estimated_tokens(pinned ++ convo) <= target_tokens ->
         :none
 
       true ->
-        keep = trim_keep(convo, target_tokens, system)
+        keep = trim_keep(convo, target_tokens, pinned)
         dropped = length(convo) - length(keep)
 
         if dropped <= 0 do
           :none
         else
-          {:ok, %Context{ctx | messages: system ++ keep}, dropped}
+          {:ok, %Context{ctx | messages: pinned ++ keep}, dropped}
         end
     end
   end
 
   # Drop from the front in whole exchanges; stop when under target or
   # when only min_keep messages would remain.
-  defp trim_keep(convo, target_tokens, system) do
-    if length(convo) <= @min_keep or estimated_tokens(system ++ convo) <= target_tokens do
+  defp trim_keep(convo, target_tokens, pinned) do
+    if length(convo) <= @min_keep or estimated_tokens(pinned ++ convo) <= target_tokens do
       convo
     else
       # advance past the first complete exchange (user, or assistant+tool
@@ -484,7 +510,7 @@ defmodule CodingAgent.Core.Compaction do
       if length(trimmed) >= length(convo) do
         convo
       else
-        trim_keep(trimmed, target_tokens, system)
+        trim_keep(trimmed, target_tokens, pinned)
       end
     end
   end

@@ -239,12 +239,28 @@ defmodule CodingAgent.Core.Session.Compactor do
   # Task.yield/2 could ever observe it (verified: a raising summarizer
   # takes the linked caller down; the {:exit, _} clause never fires).
   defp compact(state, old, summarize_fn, kind) do
-    Logger.debug("compacting context (#{Compaction.total_chars(old)} chars)")
+    span = Compaction.render(old)
+
+    # An empty rendered span means there is nothing NEW to summarize: the
+    # only "old" message is the prior summary itself, which `render/1`
+    # skips by design (review N16). Calling the provider would ask it to
+    # summarize nothing and then REPLACE the prior summary with the
+    # answer — losing facts for no gain, plus a needless non-streamed call.
+    # The prior summary already IS the compacted state, so this is a no-op.
+    if String.trim(span) == "" do
+      {state, false}
+    else
+      do_compact(state, span, summarize_fn, kind)
+    end
+  end
+
+  defp do_compact(state, span, summarize_fn, kind) do
+    Logger.debug("compacting context (#{byte_size(span)} chars rendered)")
     broadcast(state, {:info, "· compacting context (this can take a while)…"})
 
     task =
       Task.Supervisor.async_nolink(task_supervisor(), fn ->
-        summarize_fn.(state, Compaction.render(old))
+        summarize_fn.(state, span)
       end)
 
     case Task.yield(task, wall_clock()) || Task.shutdown(task, :brutal_kill) do
