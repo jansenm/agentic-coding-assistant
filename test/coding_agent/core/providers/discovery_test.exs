@@ -146,6 +146,32 @@ defmodule CodingAgent.Core.Providers.DiscoveryTest do
     end
   end
 
+  describe "catalog half (review N5)" do
+    # The catalog keys providers by ATOM; comparing the string never
+    # matched, so this half of the menu was always empty. Requires a warm
+    # catalog (the app warms it) and a resolvable credential for the scope.
+    test "a native catalog provider yields entries once the catalog is ready and a key exists" do
+      wait_catalog()
+      System.put_env("OPENAI_API_KEY", "test-key")
+      on_exit(fn -> System.delete_env("OPENAI_API_KEY") end)
+
+      assert {:ok, %{entries: entries, note: nil}} = Discovery.models("openai", %{})
+      assert entries != []
+      assert Enum.all?(entries, &(&1.source == :catalog))
+      # the ids are bare model ids, NOT "openai:model" (the menu re-prefixes)
+      assert Enum.any?(entries, &(&1.id == "gpt-4o"))
+      refute Enum.any?(entries, &String.starts_with?(&1.id, "openai:"))
+    end
+
+    defp wait_catalog(deadline \\ System.monotonic_time(:millisecond) + 10_000) do
+      cond do
+        CodingAgent.Core.Providers.Catalog.ready?() -> :ok
+        System.monotonic_time(:millisecond) >= deadline -> flunk("catalog never ready")
+        true -> Process.sleep(20) && wait_catalog(deadline)
+      end
+    end
+  end
+
   describe "all_models_cached/1" do
     test "second call is served from the process cache" do
       stub = start_stub(~s({"models": [{"name": "one"}]}))

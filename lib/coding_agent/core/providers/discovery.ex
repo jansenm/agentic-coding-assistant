@@ -15,6 +15,7 @@ defmodule CodingAgent.Core.Providers.Discovery do
   """
 
   alias CodingAgent.Core.{Providers, UserConfig}
+  alias CodingAgent.Core.Providers.Catalog
 
   @timeout_ms 3_000
 
@@ -130,31 +131,56 @@ defmodule CodingAgent.Core.Providers.Discovery do
   # -- catalog ---------------------------------------------------------------
 
   defp catalog_models(provider) do
-    case catalog_scope(provider) do
-      nil ->
+    with {:ok, scope} <- catalog_scope(provider),
+         true <- Catalog.ready?() do
+      prefix = "#{scope}:"
+
+      entries =
+        [scope: scope]
+        |> ReqLLM.available_models()
+        |> Enum.map(fn spec -> %{id: strip_spec_prefix(spec, prefix), source: :catalog} end)
+
+      {entries, nil}
+    else
+      # unknown name / no native catalog entry -> no catalog half
+      :error ->
         {[], nil}
 
-      scope ->
-        models = ReqLLM.available_models(scope: scope)
-
-        entries = Enum.map(models, &%{id: model_id(&1), source: :catalog})
-        {entries, nil}
+      # The catalog is still warming (ADR 039). `ReqLLM.available_models/1`
+      # would trigger llm_db's cold load right here — in the TUI process —
+      # blocking the menu ~3.7s. Skip it; the menu shows the discovered
+      # models now, and the catalog half appears once the warm lands.
+      false ->
+        {[], nil}
     end
   rescue
     e -> {[], "catalog: #{Exception.message(e)}"}
   end
 
+  # `ReqLLM.available_models/1` returns `"provider:model"` strings; the
+  # menu wants the bare model id (it re-prefixes the provider itself).
+  defp strip_spec_prefix(spec, prefix) do
+    case String.split(spec, prefix, parts: 2) do
+      [_provider, model] -> model
+      _ -> spec
+    end
+  end
+
   defp catalog_scope(provider) do
-    # a scope exists only for native catalog providers; indirections
-    # (provider = "openai") and unknown names have no req_llm catalog
-    atom = String.to_existing_atom(provider)
-    if provider in ReqLLM.Providers.list(), do: atom
+    # A scope exists only for native catalog providers; indirections
+    # (provider = "openai") and unknown names have no req_llm catalog.
+    # The catalog keys providers by ATOM, so compare the atom — comparing
+    # the string never matched and the catalog half was always empty
+    # (review N5).
+    atom = existing_atom(provider)
+    if atom != nil and atom in ReqLLM.Providers.list(), do: {:ok, atom}, else: :error
+  end
+
+  defp existing_atom(string) do
+    String.to_existing_atom(string)
   rescue
     ArgumentError -> nil
   end
-
-  defp model_id(%{id: id}) when is_binary(id), do: id
-  defp model_id(m) when is_map(m), do: Map.get(m, :id) |> to_string()
 
   # -- discovered ------------------------------------------------------------
 
