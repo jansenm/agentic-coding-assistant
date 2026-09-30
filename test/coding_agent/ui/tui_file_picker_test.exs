@@ -69,7 +69,8 @@ defmodule CodingAgent.UI.TuiFilePickerTest do
       type(pid, "@")
       # the loading popup appears at once, then fills in
       wait_loaded(pid)
-      assert %{files: files} = sync(pid).file_popup
+      assert %{prepared: prepared} = sync(pid).file_popup
+      files = Enum.map(prepared, &elem(&1, 0))
       refute files == []
       assert Enum.any?(files, &(&1 == "lib/alpha.ex"))
 
@@ -119,6 +120,32 @@ defmodule CodingAgent.UI.TuiFilePickerTest do
     else
       :ok
     end
+  end
+
+  test "esc cancels an in-flight fetch (review F4)" do
+    root = setup_repo()
+    sid = start_session(root)
+    pid = start_tui(root, sid)
+    fire(pid, :__resize_poll__)
+
+    # Block the fetch so the popup stays loading and we can hold its pid:
+    # a stub "fd" that ignores its args and sleeps past the assertion.
+    stub = Path.join(root, "slow-fd")
+    File.write!(stub, "#!/bin/sh\nsleep 30\n")
+    File.chmod!(stub, 0o755)
+
+    saved = External.probe(:fd)
+    External.put(:fd, {:ok, stub})
+    on_exit(fn -> External.put(:fd, saved) end)
+
+    type(pid, "@")
+    assert %{pid: fetch_pid} = sync(pid).file_popup
+    assert is_pid(fetch_pid)
+
+    key(pid, "esc")
+    assert sync(pid).file_popup == nil
+    # the enumeration process is killed, not left running to the timeout
+    wait_until(fn -> not Process.alive?(fetch_pid) end)
   end
 
   test "@ mid-word is plain text" do

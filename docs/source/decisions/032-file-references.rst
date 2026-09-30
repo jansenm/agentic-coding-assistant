@@ -87,9 +87,14 @@ Consequences
 - Referring to a file costs a few keystrokes, and the offer is exactly
   the reachable set — ``hide``/``ro`` hold because the list came from the
   profile.
-- The list is fetched ONCE when the popup opens and filtered in memory;
-  typing does not spawn a process per keystroke. A stale list (a file
-  created mid-prompt) is accepted for v1.
+- The list is fetched once when the popup opens (in a task, review F8)
+  and filtered in memory; typing does not spawn a process. Review F4
+  moved the query-INDEPENDENT work — the downcase and the hidden test —
+  into that fetch (``ListFiles.prepare/1``), so a keystroke only applies
+  the substring filter: on a 40k-file tree that dropped a keystroke from
+  ~130 ms to ~11-36 ms. Closing the popup now CANCELS the in-flight
+  fetch rather than letting it run to the 60 s timeout.
+- A stale list (a file created mid-prompt) is accepted for v1.
 - ``External`` gains the shared ``exclude_args/0`` (the
   ``**/<dir>/**`` shape) that ``glob`` and the picker both use, so the
   two cannot drift.

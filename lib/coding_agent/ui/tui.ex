@@ -262,9 +262,11 @@ defmodule CodingAgent.UI.Tui do
       # sidebar's fourth block; seeded on mount, updated by
       # {:todos_updated, todos}. Empty = the block is not painted.
       todos: [],
-      # the `@`-file picker (ADR 032): %{files: [...], query: ".", matches:
-      # [...], index: i} while open. `files` is the confined fd list
-      # fetched once; `matches` is the filtered view. nil = closed.
+      # the `@`-file picker (ADR 032): %{prepared: [...], query: ".", matches:
+      # [...], index: i} while open. `prepared` is the confined fd list
+      # fetched once, indexed by `ListFiles.prepare/1` (path + downcased +
+      # hidden?, review F4) so a keystroke only filters, never re-derives;
+      # `matches` is the filtered view. nil = closed.
       file_popup: nil,
       # the `/` command palette (ADR 034): %{query: "...", matches: [...],
       # index: i} while open. Unlike the file picker the candidate list is
@@ -2190,13 +2192,28 @@ defmodule CodingAgent.UI.Tui do
     parent = self()
     sid = state.session_id
 
-    Task.start(fn ->
-      send(parent, {:__file_list__, ref, ListFiles.list(file_scope_for(sid))})
-    end)
+    # Unlinked (a sandbox crash must not take the TUI down), but the pid is
+    # kept so closing the popup can CANCEL the enumeration — otherwise a
+    # fetch for a huge tree ran on after esc, bounded only by the 60s
+    # timeout (review F4).
+    {:ok, pid} =
+      Task.start(fn ->
+        send(parent, {:__file_list__, ref, ListFiles.list(file_scope_for(sid))})
+      end)
 
-    popup = %{loading: true, files: [], query: "", matches: [], index: 0, ref: ref}
+    popup = %{loading: true, prepared: [], query: "", matches: [], index: 0, ref: ref, pid: pid}
     {:noreply, %{state | file_popup: popup}}
   end
+
+  # Close the picker, cancelling an in-flight fetch (its result would be
+  # dropped by ref anyway, but the process should not keep enumerating).
+  defp close_file_popup(state) do
+    cancel_file_fetch(state.file_popup)
+    %{state | file_popup: nil}
+  end
+
+  defp cancel_file_fetch(%{pid: pid}) when is_pid(pid), do: Process.exit(pid, :kill)
+  defp cancel_file_fetch(_), do: :ok
 
   # The scope the picker enumerates: the live session's (mounts/
   # shell_mode/session_id), so hide/ro hold. Without a session (the
@@ -2227,7 +2244,7 @@ defmodule CodingAgent.UI.Tui do
   # not there yet.
   defp handle_file_popup_key(%Event.Key{code: code}, state)
        when code in ["esc", "escape"] do
-    {:noreply, %{state | file_popup: nil}}
+    {:noreply, close_file_popup(state)}
   end
 
   defp handle_file_popup_key(_ev, %{file_popup: %{loading: true}} = state),
@@ -2236,10 +2253,10 @@ defmodule CodingAgent.UI.Tui do
   defp handle_file_popup_key(%Event.Key{code: "enter"}, state) do
     case Enum.at(state.file_popup.matches, state.file_popup.index) do
       nil ->
-        {:noreply, %{state | file_popup: nil}}
+        {:noreply, close_file_popup(state)}
 
       path ->
-        state = %{state | file_popup: nil}
+        state = close_file_popup(state)
         {:noreply, edit(state, {:text, "@#{path} "})}
     end
   end
@@ -2275,7 +2292,7 @@ defmodule CodingAgent.UI.Tui do
   defp handle_file_popup_key(_ev, state), do: {:noreply, state}
 
   defp refilter_file_popup(popup, query) do
-    %{popup | query: query, matches: ListFiles.filter(popup.files, query), index: 0}
+    %{popup | query: query, matches: ListFiles.filter_prepared(popup.prepared, query), index: 0}
   end
 
   defp ctrl_or_alt?(mods) do
@@ -2851,17 +2868,19 @@ defmodule CodingAgent.UI.Tui do
   def handle_info({:__file_list__, ref, result}, %{file_popup: %{ref: ref}} = state) do
     case result do
       {:ok, files} ->
+        prepared = ListFiles.prepare(files)
+
         popup = %{
           state.file_popup
           | loading: false,
-            files: files,
-            matches: ListFiles.filter(files, state.file_popup.query)
+            prepared: prepared,
+            matches: ListFiles.filter_prepared(prepared, state.file_popup.query)
         }
 
         {:noreply, %{state | file_popup: popup}}
 
       {:error, reason} ->
-        state = %{state | file_popup: nil}
+        state = close_file_popup(state)
         state = edit(state, {:text, "@"})
         {:noreply, status_note(state, ListFiles.error_message(reason))}
     end
