@@ -5,7 +5,9 @@ Stand: 2026-09-30, Branch `devel`. **ADR 030 ist umgesetzt** (Slices
 033 (Provider-Retry), 034 (Slash-Commands), 035 (ex_ratatui-Source-Build),
 036 (Undo/Checkpoint), 037 (Compaction: zwei Limits), 038 (Truncation-Spill),
 039 (Modell-Katalog als Prozess), 040 (Kontext-Budget sichtbar) und
-041 (expliziter Provider-Timeout) gelandet. Die
+041 (expliziter Provider-Timeout) gelandet. Seither: ADR 042
+(`subagent_model` + der Built-in `explore`, damit der `task`-Pfad live
+erreichbar wird) mit dem Amendment zu ADR 017. Die
 Review-Records (`review.md`, `review-2026-09-28.md`) sind aus dem
 `-mjansen`-Worktree entfernt; ihre offenen Befunde stehen unten im
 Abschnitt „Review-Befunde“. Der Merge `dev/mjansen` landete als `ca6f734`
@@ -32,10 +34,16 @@ im jeweiligen ADR vermerkt.
 * **Subagent (`task`) live.** Seam und Tab sind gebaut (ADR 018 Amendment
   (ii), 2026-09-25), aber nur mit `test_mode`/Seam-Runner getestet: ein
   echter Lauf startet den Provider im Kind, persistiert nicht, sein
-  Summary landet als Tool-Result im Parent, sein Stream im Tab. Live
-  prüfen: reale Läufe starten sauber (auch mehrere parallel), die
-  Tab-Leiste/crtl-x a zeigen sie, das Band nennt den Leaf, und der
-  Parent-Kontext sieht nur die Zusammenfassung.
+  Summary landet als Tool-Result im Parent, sein Stream im Tab. **Seit dem
+  2026-09-30 ist der Pfad überhaupt erst live erreichbar:** vorher gab es
+  keinen delegierbaren Agenten (beide Built-ins waren `mode: primary`),
+  das `task`-Tool bot eine leere Liste an und jeder Versuch scheiterte am
+  unbekannten `subagent_type` (ADR 017 Amendment, ADR 042). Jetzt: der
+  Built-in `explore` (read-only, ohne Modell) und der optionale Knopf
+  `subagent_model`. Live prüfen: reale Läufe starten sauber (auch mehrere
+  parallel), die Tab-Leiste/ctrl-x a zeigen sie, das Band nennt den Leaf,
+  der Parent-Kontext sieht nur die Zusammenfassung, und `subagent_model`
+  greift (bzw. `explore` erbt das Main-Modell ohne den Knopf).
 * **esc stoppt ein laufendes Kind.** Jetzt weitergeleitet: die TUI ruft
   `Session.interrupt/1` für jedes aktive Kind (ADR 018 Amendment (ii)).
   Live bestätigen, dass ein esc-Doppeldruck einen langen `task`-Lauf

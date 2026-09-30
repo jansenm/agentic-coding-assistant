@@ -151,11 +151,25 @@ defmodule CodingAgent.Core.AgentTest do
   end
 
   describe "Agent.load/1 layering" do
-    test "shipped definitions include build and plan" do
+    test "shipped definitions include build, plan and explore" do
       {:ok, agents} = Agent.load(nil)
       names = Enum.map(agents, & &1.name)
       assert "build" in names
       assert "plan" in names
+      assert "explore" in names
+    end
+
+    test "explore is a delegatable, read-only, model-less subagent (ADR 017/042)" do
+      {:ok, agents} = Agent.load(nil)
+      explore = Enum.find(agents, &(&1.name == "explore"))
+
+      assert explore.mode == :subagent
+      refute Agent.selectable?(explore)
+      assert explore.model == nil
+      assert "edit" in explore.disallowed_tools
+      assert "write_file" in explore.disallowed_tools
+      assert "git" in explore.disallowed_tools
+      assert explore.permission["shell"] == "read_only"
     end
 
     test "project layer overrides user layer by name" do

@@ -37,11 +37,24 @@ defmodule CodingAgent.Core.ToolsTest do
       refute "task" in Enum.map(Tools.all(%{root: ".", depth: 1}), & &1.name)
     end
 
-    test "the description names the available subagents" do
-      tool = CodingAgent.Core.Tools.Task.tool(%{root: ".", subagents: ["explore", "review"]})
+    test "the description names the available subagents with their hints" do
+      tool =
+        CodingAgent.Core.Tools.Task.tool(%{
+          root: ".",
+          subagents: [
+            %{name: "explore", description: "Finds where things are defined."},
+            %{name: "review", description: "Checks a change against a spec."}
+          ]
+        })
 
-      assert tool.description =~ "explore"
-      assert tool.description =~ "review"
+      assert tool.description =~ "explore — Finds where things are defined."
+      assert tool.description =~ "review — Checks a change against a spec."
+    end
+
+    test "the description says so when no subagent is configured" do
+      tool = CodingAgent.Core.Tools.Task.tool(%{root: ".", subagents: []})
+
+      assert tool.description =~ "none configured"
     end
   end
 

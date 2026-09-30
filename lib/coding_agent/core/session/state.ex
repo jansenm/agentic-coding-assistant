@@ -73,8 +73,9 @@ defmodule CodingAgent.Core.Session.State do
     checkpoints: [],
     # Subagent seams (ADR 017/018). `depth` is 0 for a primary session and
     # 1 for a delegated child; depth 1 excludes the `task` tool (bounded
-    # fan-out). `subagents` is the names a `task` call may delegate to,
-    # resolved at init. `persist?` is false for a child: its summary is the
+    # fan-out). `subagents` is what a `task` call may delegate to, as
+    # `%{name, description}` — the description is the delegation hint the
+    # tool advertises. `persist?` is false for a child: its summary is the
     # durable record (in the parent), not a picker entry of its own.
     depth: 0,
     subagents: [],
@@ -206,7 +207,7 @@ defmodule CodingAgent.Core.Session.State do
           doom_pause: map() | nil,
           question_pause: map() | nil,
           depth: non_neg_integer(),
-          subagents: [String.t()],
+          subagents: [%{name: String.t(), description: String.t() | nil}],
           persist?: boolean(),
           recent_calls: [[{String.t(), map()}]],
           interactive: boolean(),

@@ -43,7 +43,7 @@ defmodule CodingAgent.Core.Tools do
           optional(:session_id) => String.t() | nil,
           optional(:shell_mode) => CodingAgent.Core.Permissions.shell_mode(),
           optional(:depth) => non_neg_integer(),
-          optional(:subagents) => [String.t()]
+          optional(:subagents) => [%{name: String.t(), description: String.t() | nil}]
         }
 
   @doc """

@@ -248,3 +248,46 @@ Still open (subagent slice)
    effective model. Claude Code's fuller order (per-invocation >
    definition > env > session) is a possible later refinement; there is
    no per-invocation model override today.
+
+Amendment 2026-09-30: a third built-in, ``explore`` (read-only)
+---------------------------------------------------------------
+
+Decision 0 above said "two, and only two" shipped agents: ``build`` and
+``plan``, because more are user files, not shipped code. That holds for
+*primary* agents. It does not hold for **subagents**, and the omission
+was found live for exactly the reason it was found: with no
+``mode: subagent`` definition anywhere, the ``task`` tool advertised an
+empty roster ("none configured") and every delegation the model tried
+failed with an unknown ``subagent_type``. The seam was unreachable.
+
+The distinction the original decision missed: a **primary** is a
+*persona* — which style the human wants to work in — and a shipped
+persona presumes the user's taste. A **subagent** is *machinery* — a
+capability the ``task`` tool needs to exist at all. Shipping none is not
+neutral; it ships a tool that cannot work. So exactly **one** subagent is
+now shipped as data:
+
+- **``explore``** (``mode: subagent``) — read-only (``edit`` /
+  ``write_file`` / ``git`` removed, read-only shell), for search-heavy,
+  judgement-thin jobs: find where something is defined or used, read a
+  large area before deciding, gather facts from many files to act on a
+  few. It carries **no pinned model** — see ADR 042.
+
+The role boundary is deliberate and stated in the prompt: **a subagent
+sends for information; it does not act.** The parent must be able to
+account for every edit it applies, and a child's transcript never enters
+the parent context (ADR 018), so an edit made by a child would be
+invisible in the record. A full-access ``general`` subagent is therefore
+*not* shipped; a user who wants one writes it against the same
+machinery (the file format already supports it).
+
+The other half of the gap was the delegation surface itself. The
+definition's ``description`` is required at load as "the delegation
+hint", but it never reached the tool. It does now: the session carries
+``subagents`` as ``%{name, description}`` and the ``task`` description
+lists each with its hint, so the model can choose a subagent by what it
+is *for*, not only by name.
+
+This changes ADR 018 not at all (the seam, the tabs, the summary-only
+return all stand); it fills in the built-in roster ADR 017 left empty.
+

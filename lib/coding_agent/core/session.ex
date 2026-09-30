@@ -630,7 +630,10 @@ defmodule CodingAgent.Core.Session do
   # "nothing delegatable" here; the parent's own turn surfaces the load
   # error if it matters, and `Subagent.find_definition/2` reports it.
   defp delegatable_names({:ok, definitions}),
-    do: CodingAgent.Core.Session.Subagent.delegatable(definitions) |> Enum.map(& &1.name)
+    do:
+      definitions
+      |> CodingAgent.Core.Session.Subagent.delegatable()
+      |> Enum.map(&%{name: &1.name, description: &1.description})
 
   defp delegatable_names(_), do: []
 

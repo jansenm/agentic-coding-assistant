@@ -28,19 +28,28 @@ defmodule CodingAgent.Core.Tools.Task do
     ReqLLM.Tool.new!(
       name: @tool_name,
       description: """
-      Delegate a self-contained task to a subagent and get back its
-      summary. Use this when a job is self-contained and would otherwise
-      fill your own context: exploring the codebase, hunting down
-      references, reading a large area before you decide. The subagent
-      runs with its own isolated context and returns only a summary —
-      you never see its transcript.
+      Delegate a self-contained, read-heavy job to a subagent and get back
+      its summary. The subagent runs with its own isolated context — a
+      scratchpad you can throw away — and returns only a final summary;
+      you never see its transcript, its reasoning or its tool calls.
+
+      Delegate when the *search* is much larger than the *answer*: hunting
+      down where something is defined or used, reading a large area before
+      you decide, gathering facts from many files to act on a few. That is
+      work whose intermediate noise you do not want filling your context.
+
+      Do NOT delegate when:
+      - you need the raw facts, only a summary comes back;
+      - the job depends on THIS conversation — the subagent cannot see it;
+      - it is one or two tool calls — just make them;
+      - you must own the result (edits, writes) — you cannot review a diff
+        you never saw, and subagents report in prose.
 
       Usage notes:
-      - `prompt` must be a complete, self-contained instruction: the
-        subagent does not see this conversation.
-      - Give it the goal and the question to answer, not a list of steps.
-      - One focused task per call; call it several times (in one round)
-        for independent jobs.
+      - `prompt` is the whole context: a complete, self-contained
+        instruction naming the goal and the question, not a list of steps.
+      - One focused task per call; call it several times (in one round) for
+        independent jobs — those run in parallel.
       - A subagent may not start further subagents.
 
       Available subagents:
@@ -75,8 +84,21 @@ defmodule CodingAgent.Core.Tools.Task do
 
   defp subagent_list(scope) do
     case Map.get(scope, :subagents, []) do
-      [] -> "(none configured — write one in .coding-agent/agents/)"
-      names -> Enum.map_join(names, "\n", &"  - #{&1}")
+      [] ->
+        "(none configured — add a `mode: subagent` definition under " <>
+          ".coding-agent/agents/)"
+
+      subs ->
+        Enum.map_join(subs, "\n", fn
+          %{name: name, description: desc} when is_binary(desc) and desc != "" ->
+            "  - #{name} — #{desc}"
+
+          %{name: name} ->
+            "  - #{name}"
+
+          name when is_binary(name) ->
+            "  - #{name}"
+        end)
     end
   end
 end
