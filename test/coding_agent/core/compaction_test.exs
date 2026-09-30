@@ -486,6 +486,42 @@ defmodule CodingAgent.Core.CompactionTest do
     assert s2 == s
   end
 
+  test "an empty summarizer answer is retried once before backing off (live :empty_summary)" do
+    s = state(usage: %{last_input_tokens: 136_000})
+    {:ok, counter} = Agent.start_link(fn -> 0 end)
+
+    summarizer = fn _state, _span ->
+      n = Agent.get_and_update(counter, fn n -> {n + 1, n + 1} end)
+
+      # first call empty, second succeeds
+      if n == 1, do: {:error, :empty_summary}, else: {:ok, "recovered summary"}
+    end
+
+    {s2, true} = Compactor.maybe_compact(s, summarizer)
+    assert Agent.get(counter, & &1) == 2
+    assert s2.compaction_backoff == 0
+    assert s2.context != s.context
+  end
+
+  test "a persistently empty summarizer backs off after the one retry" do
+    s = state(usage: %{last_input_tokens: 136_000})
+    {:ok, counter} = Agent.start_link(fn -> 0 end)
+
+    summarizer = fn _state, _span ->
+      Agent.update(counter, &(&1 + 1))
+      {:error, :empty_summary}
+    end
+
+    log =
+      capture_log(fn ->
+        {s2, false} = Compactor.maybe_compact(s, summarizer)
+        assert s2.compaction_backoff == 3
+      end)
+
+    assert Agent.get(counter, & &1) == 2
+    assert log =~ ":empty_summary"
+  end
+
   test "maybe_compact on summarizer error keeps the context and backs off" do
     s = state(usage: %{last_input_tokens: 136_000})
 

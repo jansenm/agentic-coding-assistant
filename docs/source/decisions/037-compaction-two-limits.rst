@@ -254,6 +254,12 @@ Consequences
   which is the point.
 - The hard limit is a true safety net: with the reserve held back, a
   single maximum tool result cannot overflow the window mid-turn.
+- A clean but EMPTY summarizer answer is retried once before backing off
+  (amendment 2026-09-30, found live: `compaction failed (:empty_summary)`
+  after a successful turn). The turn path already retries an empty answer
+  (ADR 033); the summarizer did not, so one flaky empty response skipped
+  compaction on an over-limit context for three turns. One retry catches
+  a transient; a model that consistently returns nothing still backs off.
 - An idle session that crosses the soft limit spends provider time
   summarizing; a user who immediately prompts again pays nothing (the
   hard path covers that case, and the fingerprint discards stale work).

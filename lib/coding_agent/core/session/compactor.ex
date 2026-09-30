@@ -254,7 +254,19 @@ defmodule CodingAgent.Core.Session.Compactor do
     end
   end
 
-  defp do_compact(state, span, summarize_fn, kind) do
+  # A clean but EMPTY answer is retried once (found live: `compaction
+  # failed (:empty_summary)` after a successful turn — a provider can
+  # return `text: ""` for a one-shot call, and the TURN path already
+  # retries that via ADR 033, but the summarizer did not, so one flaky
+  # empty response skipped compaction on an over-limit context for 3
+  # turns). One retry catches a transient without burning a second full
+  # inactivity wait on a model that consistently returns nothing.
+  @summarize_retries 1
+
+  defp do_compact(state, span, summarize_fn, kind),
+    do: do_compact(state, span, summarize_fn, kind, @summarize_retries)
+
+  defp do_compact(state, span, summarize_fn, kind, retries_left) do
     Logger.debug("compacting context (#{byte_size(span)} chars rendered)")
     broadcast(state, {:info, "· compacting context (this can take a while)…"})
 
@@ -266,6 +278,10 @@ defmodule CodingAgent.Core.Session.Compactor do
     case Task.yield(task, wall_clock()) || Task.shutdown(task, :brutal_kill) do
       {:ok, {:ok, summary_text}} ->
         apply_summary(state, summary_text)
+
+      {:ok, {:error, :empty_summary}} when retries_left > 0 ->
+        Logger.warning("summarizer returned an empty answer; retrying once")
+        do_compact(state, span, summarize_fn, kind, retries_left - 1)
 
       {:ok, {:error, reason}} ->
         compaction_failed(state, reason, kind)
@@ -366,6 +382,7 @@ defmodule CodingAgent.Core.Session.Compactor do
   # rendered by `Compaction.render/1`. Everything is CONTAINED: a
   # raise, exit or throw inside req_llm or a provider adapter must
   # surface as {:error, _}, never as a linked crash.
+  #
   @doc false
   @spec summarize(State.t(), String.t()) :: {:ok, String.t()} | {:error, term()}
   def summarize(state, old_span_text) do
