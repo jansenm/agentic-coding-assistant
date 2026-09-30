@@ -199,6 +199,14 @@ defmodule CodingAgent.Core.CompactionTest do
 
   # -- the summarizer request (template + rolling) ------------------------------
 
+  test "apply caps an oversized summary so it cannot become the overflow (review N18)" do
+    huge = String.duplicate("x", 100_000)
+    compacted = Compaction.apply(ctx(30), huge)
+    stored = Compaction.prior_summary(compacted)
+    assert byte_size(stored) < 30_000
+    assert stored =~ "summary truncated"
+  end
+
   test "summary_prompt without a prior summary: template, no prior block" do
     prompt = Compaction.summary_prompt("USER: do the thing", nil)
 
@@ -221,6 +229,14 @@ defmodule CodingAgent.Core.CompactionTest do
     assert prompt =~ "Keep every section, even when empty"
     assert prompt =~ "Preserve exact file paths, symbols, commands, error strings"
     assert prompt =~ "Do not mention the summary process"
+  end
+
+  test "summary_prompt demands measurements and test results verbatim (review N17)" do
+    prompt = Compaction.summary_prompt("USER: do the thing", nil)
+    assert prompt =~ "measurements"
+    assert prompt =~ "test results"
+    assert prompt =~ "exit codes"
+    assert prompt =~ "NUMBERS"
   end
 
   test "summary_prompt with a prior summary: carry-forward rules present" do

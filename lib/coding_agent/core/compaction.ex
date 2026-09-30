@@ -253,11 +253,29 @@ defmodule CodingAgent.Core.Compaction do
 
       summary_msg = %ReqLLM.Message{
         role: :user,
-        content: [ReqLLM.Message.ContentPart.text(compact_summary_text(summary_text))]
+        content: [
+          ReqLLM.Message.ContentPart.text(compact_summary_text(bound_summary(summary_text)))
+        ]
       }
 
       %Context{ctx | messages: system ++ [summary_msg | keep]}
     end
+  end
+
+  # A ceiling on the APPLIED summary (review N18). The provider is asked
+  # for at most ~4k tokens (`Compactor.summarize_opts/1`), but a provider
+  # that ignores `max_tokens` must not be able to store a summary larger
+  # than the window it replaces: the summary rides every later prompt, so
+  # an unbounded one becomes the overflow. Generous relative to the
+  # 4k-token target (~24k chars at 4/ch) and only trims the pathological
+  # case, with an honest marker.
+  @max_summary_chars 24_000
+
+  defp bound_summary(text) when byte_size(text) <= @max_summary_chars, do: text
+
+  defp bound_summary(text) do
+    String.slice(text, 0, @max_summary_chars) <>
+      "\n\n[... summary truncated: #{byte_size(text)} chars total ...]"
   end
 
   @doc """
@@ -339,15 +357,18 @@ defmodule CodingAgent.Core.Compaction do
 
     ## Important Details
     - [constraints/preferences, decisions and why, facts and assumptions, \
+    measurements — counts, exit codes, test results, any number observed — \
     exact context needed to continue, or "(none)"]
 
     ## Work State
     ### Completed
-    - [finished work, verified facts, changes made; otherwise "(none)"]
+    - [finished work, verified facts, commands run with their outcome, \
+    changes made; otherwise "(none)"]
     ### Active
     - [current work, partial changes, investigation state; otherwise "(none)"]
     ### Blocked
-    - [blockers, failing commands, unknowns; otherwise "(none)"]
+    - [blockers, failing commands and their error messages, unknowns; \
+    otherwise "(none)"]
 
     ## Next Move
     1. [immediate concrete action, or "(none)"]
@@ -360,8 +381,9 @@ defmodule CodingAgent.Core.Compaction do
     Rules:
     - Keep every section, even when empty.
     - Use terse bullets, not prose paragraphs.
-    - Preserve exact file paths, symbols, commands, error strings, URLs and \
-    identifiers verbatim.
+    - Preserve exact file paths, symbols, commands, error strings, URLs, \
+    identifiers and NUMBERS (counts, exit codes, test pass/fail, timings) \
+    verbatim — never round or paraphrase a measured value away.
     - Do not mention the summary process or that context was compacted.
     """
     |> String.trim_trailing()

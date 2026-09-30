@@ -378,8 +378,20 @@ defmodule CodingAgent.Core.Session.Compactor do
 
   # GLM on an 80K-char context takes minutes; without an inactivity cap
   # a hung summary stalls every turn's start (found live).
+  #
+  # `max_tokens` caps the summary OUTPUT (review N18). Without it a model
+  # could return a very long summary; `Compaction.apply/2` then stores it
+  # verbatim and the NEXT prompt pays for it — on a small window the
+  # summary itself becomes the overflow. opencode uses the same guard
+  # (SUMMARY_OUTPUT_TOKENS). The value is a generous ceiling, not a
+  # target: the template asks for terse bullets. It also bounds the
+  # carried-forward input, which accumulates across compactions.
+  @summary_output_tokens 4_096
+
   defp summarize_opts(base_opts) do
-    Keyword.put(base_opts, :receive_timeout, inactivity())
+    base_opts
+    |> Keyword.put(:receive_timeout, inactivity())
+    |> Keyword.put(:max_tokens, @summary_output_tokens)
   end
 
   defp summary_context(old_span_text, prior_summary) do
