@@ -174,6 +174,7 @@ defmodule CodingAgent.Core.Providers.DiscoveryTest do
 
   describe "all_models_cached/1" do
     test "second call is served from the process cache" do
+      wait_catalog()
       stub = start_stub(~s({"models": [{"name": "one"}]}))
 
       cfg = %{
@@ -196,6 +197,39 @@ defmodule CodingAgent.Core.Providers.DiscoveryTest do
       Discovery.invalidate()
       assert {:ok, %{entries: post}} = Discovery.all_models_cached(cfg)
       refute Enum.any?(post, &(&1.id == "loc:one"))
+    end
+
+    test "does not cache while the catalog is still loading (review N24)" do
+      # A cold menu open returned `{[], nil}` (the `Catalog.ready?/0` guard
+      # in catalog_models/1) and cached it, pinning the empty catalog half
+      # for the process lifetime. This owns the global llm_db store for its
+      # duration and reloads on exit so later sync tests still see a catalog.
+      LLMDB.Catalog.clear!()
+      on_exit(fn -> LLMDB.load() end)
+      refute CodingAgent.Core.Providers.Catalog.ready?()
+
+      # a FRESH process: the cache lives in the process dictionary
+      cached? =
+        Task.async(fn ->
+          {:ok, _} = Discovery.all_models_cached(%{})
+          Process.get(:__discovery_all_cache__)
+        end)
+        |> Task.await(5_000)
+
+      assert cached? == nil
+
+      # once ready, the fetch is cached as before
+      LLMDB.load()
+      assert CodingAgent.Core.Providers.Catalog.ready?()
+
+      cached? =
+        Task.async(fn ->
+          {:ok, _} = Discovery.all_models_cached(%{})
+          Process.get(:__discovery_all_cache__) != nil
+        end)
+        |> Task.await(5_000)
+
+      assert cached?
     end
   end
 end

@@ -89,10 +89,16 @@ defmodule CodingAgent.Core.Providers.Discovery do
     case Process.get(cache_key) do
       nil ->
         result = all_models(config)
-        # cache only successes: a failed fetch (server briefly down at
-        # first menu open) must retry on the next open, not be served
-        # as gospel for the TUI's lifetime
-        if match?({:ok, %{note: nil}}, result), do: Process.put(cache_key, result)
+
+        # Cache only a COMPLETE result: a failed fetch (server briefly
+        # down) must retry on the next open, and a cold catalog must NOT
+        # be pinned either — `catalog_models/1` returns `{[], nil}` while
+        # `Catalog.ready?/0` is false (ADR 039), which looks like a clean
+        # success, so a menu opened in the first ~2s froze the empty
+        # catalog half for the TUI's lifetime (review N24).
+        if match?({:ok, %{note: nil}}, result) and Catalog.ready?() do
+          Process.put(cache_key, result)
+        end
 
         result
 
