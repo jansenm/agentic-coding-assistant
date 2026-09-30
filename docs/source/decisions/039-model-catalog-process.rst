@@ -104,6 +104,15 @@ Consequences
   readiness (the app warms it); tests that do not pin a window keep
   seeing the fallback while the catalog is cold, so their numbers are
   unchanged.
+- **The catalog only helps once a ``[providers.*]`` entry names a catalog
+  provider.** The shipped ``config.toml`` declares only ``ollama`` and
+  ``ollama_cloud``, neither of which is a req_llm catalog scope
+  (``:ollama`` has zero candidates; ``:ollama_cloud`` does not exist
+  there), so a stock install resolves the fallback window for everything
+  (review N25). The menu's catalog half is likewise empty until a
+  ``openai``/``anthropic``/… entry (or an explicit ``context_window``) is
+  configured — expected, but worth stating so the "catalog half" work is
+  not mistaken for a stock-install feature.
 - **A resumed session is unaffected in the common case.** A model in the
   catalog re-resolves on the next boot; a model absent from it already
   used the fallback.
@@ -117,11 +126,13 @@ Open questions
    (no network); a live feed would set
    ``snapshot_source: {:github_releases, …}``. Deferred until a feed is
    wanted; the timer is intentionally absent now.
-2. **Per-model windows on model switch.** ADR 037 open question 1 still
-   stands: the window resolves for the model at init; a later switch
-   does not re-resolve. With the catalog now loadable on demand, the
-   switch path *could* re-resolve cheaply — but that is a decision for
-   that question, not this record.
+2. **Per-model windows on model switch — RESOLVED (review N9, N26).**
+   ADR 037 open question 1: the window resolved only for the model at
+   init. ``Session.recompute_window/1`` now re-resolves on every
+   effective-model change — ``apply_model/2`` (``set_model``),
+   ``apply_pending_switches/2`` (the turn boundary) and the idle
+   ``set_agent`` branch (N26: an agent definition may pin its own model,
+   ADR 017). With the catalog loadable on demand the re-resolve is cheap.
 3. **Provisional-window compaction.** If a turn is somehow sent before
    the catalog is ready on a cataloged model, the decision uses the
    fallback window. In practice the window arrives first; if that ever

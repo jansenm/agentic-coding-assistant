@@ -103,6 +103,20 @@ window ``W``:
   worst-case result *could* push past ``hard`` — but ``hard`` stays well
   below ``W`` and above ``soft``, which is strictly better than a
   summarize (or a trim) firing at every call on a barely-used window.
+  **Measured over the whole catalog (review N27):** 3198 of 7758 models
+  (41.2%) sit under ``4 * reserve``, so the floor governs for them — a
+  far larger share than "very small windows" suggests; no model gains
+  reserve, every one loses some. When the worst case does occur (a 64k
+  window, one 256 KiB tool result ≈ 65536 tokens), ``trim_hard/1`` drops
+  the oldest exchanges but the survivor can still exceed the window
+  (measured: `dropped=2`, ≈65547 tokens left on a 65536-token window),
+  so the session sends over ``W`` — the outcome the reserve is meant to
+  prevent, accepted here only because the alternative (a trim at every
+  call) is worse. A second consequence in the same path (also N27): while
+  the *stale* ``last_input_tokens`` stays above ``hard``, the backoff
+  branch trims instead of counting down, so the retry budget does not
+  advance until a successful turn refreshes the count — log noise on an
+  already-overfull window, no data loss.
 - If ``hard <= soft`` (very small windows), ``soft := hard`` so the
   order is never inverted.
 
