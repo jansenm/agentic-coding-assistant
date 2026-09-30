@@ -3,8 +3,9 @@
 Stand: 2026-09-30, Branch `devel`. **ADR 030 ist umgesetzt** (Slices
 1–7, gelandet); seither sind ADR 031 (`todowrite`), 032 (`@`-Picker),
 033 (Provider-Retry), 034 (Slash-Commands), 035 (ex_ratatui-Source-Build),
-036 (Undo/Checkpoint), 037 (Compaction: zwei Limits), 038 (Truncation-Spill)
-und 039 (Modell-Katalog als Prozess) gelandet. Die
+036 (Undo/Checkpoint), 037 (Compaction: zwei Limits), 038 (Truncation-Spill),
+039 (Modell-Katalog als Prozess), 040 (Kontext-Budget sichtbar) und
+041 (expliziter Provider-Timeout) gelandet. Die
 Review-Records (`review.md`, `review-2026-09-28.md`) sind aus dem
 `-mjansen`-Worktree entfernt; ihre offenen Befunde stehen unten im
 Abschnitt „Review-Befunde“. Der Merge `dev/mjansen` landete als `ca6f734`

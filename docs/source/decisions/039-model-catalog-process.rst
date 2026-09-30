@@ -40,11 +40,11 @@ from the app env (0 ms).
 
 Two constraints shape the fix:
 
-- **The catalog has exactly one consumer.** ``Grep``/``Discovery`` build
-  the model menu, not llm_db; ``req_llm`` reaches the catalog only for
-  native string specs (our indirected providers go through
-  ``ReqLLM.model!/1`` with a map, which does not force the load). The
-  only value we take from llm_db is the context window.
+- **The catalog has exactly one consumer in OUR code.** ``Grep``/``Discovery``
+  build the model menu, not llm_db; the only value we take from llm_db is
+  the context window. (``req_llm`` itself reaches the catalog internally
+  for native string specs — see Consequences — which is why a cold cache
+  can still cost the first turn.)
 - **llm_db is built to be a process-owned cache.** It stores the catalog
   in ``:persistent_term`` and swaps snapshots atomically by digest;
   reads are lock-free, and a load takes a global lock only while it
@@ -82,8 +82,15 @@ Consequences
 ------------
 
 - **The startup hang is gone.** ``mix tui`` mounts in the ~50 ms the rest
-  of the mount costs; the catalog finishes in the background well before
-  the first turn needs it.
+  of the mount costs; the catalog finishes in the background, typically
+  before the first turn needs it.
+- **A very fast first prompt still pays the load.** The warm is
+  asynchronous, so a prompt sent within the first ~4s of boot resolves
+  the native string spec through ``req_llm``, which reaches ``LLMDB`` and
+  takes the same ~3.7s cold load — in the provider path rather than the
+  mount (measured: ``ReqLLM.model!/1`` cold ≈ 3.9s). Rare in practice (a
+  human types slower than that), and bounded: the next call is warm. This
+  is why "well before" is "usually before", not a guarantee.
 - **The window is correct by the first turn.** The re-resolve lands
   within seconds of boot and before any user turn, so the compaction
   decision uses the real window. A ``config.toml`` ``context_window``

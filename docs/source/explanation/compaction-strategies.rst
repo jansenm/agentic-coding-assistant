@@ -92,12 +92,20 @@ not because it happened to fall in the recently-summarized span. The
 prior summary is explicitly "discarded after this: anything you do not
 carry into the new summary is lost" — the model is told the stakes.
 
-Our ADR 037 summarizes only the *new* span each time and replaces it with
-a fresh summary. A fact recorded in the first summary of a session is not
-guaranteed to be in the third: each compaction re-derives from the span
-at hand. The review session that motivated ADR 037 compacted **three
-times** (ADR 037, Context), which is exactly the case the rolling
-approach is built for.
+At the time of writing, our ADR 037 summarized only the *new* span each
+time and replaced it with a fresh summary, with no carry-forward
+instruction: the prior summary sat *inside* the span (so it was not
+excluded), but a fact it held was only preserved if the model happened to
+restate it. A fact recorded in the first summary of a session was
+therefore not guaranteed to be in the third. The review session that
+motivated ADR 037 compacted **three times** (ADR 037, Context) — the case
+the rolling approach is built for.
+
+.. note::
+   This gap is now closed: the summarizer uses a fixed template and folds
+   the prior summary forward (ADR 037 decision 5, adopted 2026-09-30). The
+   comparison table below still shows the state *before* that change, kept
+   as the record of why it was made.
 
 3. Prune: deletion without a model
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -176,10 +184,12 @@ How we compare
      - This harness (ADR 023/037)
      - opencode 1.18.33
    * - Summarizer instruction
-     - free-form prose naming fact *kinds*
+     - fixed template + rolling prior summary (adopted from here, ADR 037
+       decision 5); previously free-form prose
      - fixed Markdown template, all sections kept, exact-identifier rule
    * - Across repeated compactions
-     - fresh span each time; earlier summary can be lost
+     - rolling: prior summary carried forward (adopted 2026-09-30);
+       previously re-derived each span, so early facts could be lost
      - rolling: prior summary carried forward, conversation wins conflicts
    * - Non-model reduction
      - none

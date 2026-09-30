@@ -50,8 +50,10 @@ the projected context size, the window, and both limits::
     436k before a call.
 
 The numbers are read from the SAME ``Compactor`` helpers the sidebar
-mirrors and the decision uses (ADR 029), so display, prompt and behaviour
-cannot disagree.
+mirrors and the decision uses (ADR 029), so display, prompt and
+behaviour never disagree *with each other*. They can still be jointly
+stale for the model actually in use — ADR 037 OQ1 (the window on a model
+switch) — which is why a switch now re-resolves the window (review N9).
 
 **2. An action hint only near a line.** Past soft, the block adds: finish
 the current step and end the turn so summarization happens with headroom,
@@ -101,3 +103,8 @@ Open questions
    poor fit for facts, a dedicated notes/memory block (its own injected
    section and panel space) is the follow-up. Start with the todo field,
    which reuses the existing survival channel.
+4. **The budget on a model switch — CLOSED (review N9).** The block made
+   ADR 037 OQ1 visible: after a model switch the line reported the OLD
+   model's window. ``Session.recompute_window/1`` now re-resolves on every
+   effective-model change, so the block, the sidebar and the decision all
+   track the current model.
