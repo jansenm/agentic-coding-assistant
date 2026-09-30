@@ -35,6 +35,9 @@ defmodule CodingAgent.Core.Config do
   @default_context_window_tokens 500_000
   @default_compaction_soft_ratio 0.5
   @default_compaction_hard_reserve_tokens 64_000
+  # The hard limit is at most this fraction of the window, so a window
+  # smaller than the absolute reserve does not collapse it (review N1).
+  @hard_window_floor_ratio 0.75
   @default_compaction_wall_clock_ms 300_000
   @default_compaction_inactivity_ms 120_000
   @default_provider_retries 3
@@ -293,6 +296,16 @@ defmodule CodingAgent.Core.Config do
   resolves it ONCE at init and the sidebar/decision never re-read the
   layered config per frame (the CPU-storm lesson). ``soft`` is clamped
   to ``hard`` so the order never inverts on a small window.
+
+  The hard limit is ``window - reserve`` but ALSO floored at
+  ``window * @hard_window_floor_ratio`` (0.75). Without the floor a
+  window smaller than the reserve collapses ``hard`` to 1 — the reserve
+  is an absolute 64k, so e.g. ``openai:gpt-3.5-turbo`` (window 16385)
+  gave ``hard = max(16385 - 64000, 1) = 1`` and ``soft = 1``: a pre-call
+  summarize at 4% utilisation, degrading to a lossy trim if the
+  summarize call failed (review N1). The floor keeps the reserve at most
+  a quarter of the window for small windows and is continuous with the
+  ``window - reserve`` branch at ``window = 4 * reserve``.
   """
   @spec compaction_limits(String.t() | nil | t(), String.t() | nil) ::
           {pos_integer(), pos_integer(), pos_integer()}
@@ -301,10 +314,11 @@ defmodule CodingAgent.Core.Config do
   def compaction_limits(%__MODULE__{} = snapshot, model) do
     window = context_window(snapshot, model)
     reserve = compaction_hard_reserve_tokens(snapshot)
-    hard = max(window - reserve, 1)
+    floor = round(window * @hard_window_floor_ratio)
+    hard = max(window - reserve, floor)
     ratio = compaction_soft_ratio(snapshot)
     soft = min(round(window * ratio), hard)
-    {window, max(soft, 1), hard}
+    {window, max(soft, 1), max(hard, 1)}
   end
 
   def compaction_limits(scope_root, model), do: compaction_limits(snapshot(scope_root), model)

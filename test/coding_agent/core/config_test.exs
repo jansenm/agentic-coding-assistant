@@ -196,17 +196,23 @@ defmodule CodingAgent.Core.ConfigTest do
     end
 
     test "compaction limits derive from the window (ADR 037)" do
-      snapshot = %Config{config: %{"context_window" => 200_000}}
-      # soft = round(200k * 0.5), hard = 200k - 64k
-      assert Config.compaction_limits(snapshot, nil) == {200_000, 100_000, 136_000}
+      snapshot = %Config{config: %{"context_window" => 400_000}}
+      # soft = round(400k * 0.5); hard = 400k - 64k (reserve > the 0.75 floor)
+      assert Config.compaction_limits(snapshot, nil) == {400_000, 200_000, 336_000}
     end
 
-    test "compaction limits collapse soft onto hard on a tiny window" do
+    test "compaction hard limit is floored on a window below 4x the reserve (review N1)" do
+      # window 50k < reserve 64k: without the floor hard collapsed to 1
+      # and a pre-call summarize fired at ~4% utilisation. Floor at 75%.
       snapshot = %Config{config: %{"context_window" => 50_000}}
-      {window, soft, hard} = Config.compaction_limits(snapshot, nil)
-      assert window == 50_000
-      assert soft == hard
-      assert hard == max(50_000 - 64_000, 1)
+      assert Config.compaction_limits(snapshot, nil) == {50_000, 25_000, 37_500}
+    end
+
+    test "the hard floor keeps the reserve at most a quarter of a small window" do
+      # window 200k: window - reserve = 136k < 150k floor, so the floor
+      # governs — the absolute reserve is capped at 25% for smaller windows.
+      snapshot = %Config{config: %{"context_window" => 200_000}}
+      assert Config.compaction_limits(snapshot, nil) == {200_000, 100_000, 150_000}
     end
 
     test "context_window honours a config.toml value over the catalog/default" do
