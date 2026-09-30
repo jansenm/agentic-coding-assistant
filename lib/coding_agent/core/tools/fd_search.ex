@@ -48,6 +48,7 @@ defmodule CodingAgent.Core.Tools.FdSearch do
           {:ok, out, _} -> {:error, {:fd_failed, out}}
           {:timeout, out} -> {:error, {:fd_timeout, out}}
           {:stopped, out} -> {:error, {:fd_stopped, out}}
+          {:raw_too_large, out} -> {:error, {:fd_too_large, out}}
           {:error, reason} -> {:error, reason}
           {:sandbox_error, reason} -> {:error, reason}
         end
@@ -72,6 +73,9 @@ defmodule CodingAgent.Core.Tools.FdSearch do
 
   def error_message({:fd_stopped, _out}),
     do: "fd search stopped by the user"
+
+  def error_message({:fd_too_large, _out}),
+    do: "fd produced more output than can be held in memory; narrow the pattern"
 
   def error_message(reason), do: "fd failed: #{inspect(reason)}"
 

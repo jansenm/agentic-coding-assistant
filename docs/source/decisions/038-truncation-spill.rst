@@ -134,9 +134,11 @@ Mechanism
   ``sandbox_path/1`` (host → the ``/tmp/…`` the model sees), the size cap
   and the naming rule. ``Scratch.from_scope/1`` is reused — no second
   scope rule.
-- ``Exec``: ``run/5`` learns ``:label`` (default ``"exec"``); ``finish``
-  spills via ``Core.Spill`` before formatting the marker. ``Exec.format``
-  is unchanged (it renders whatever ``run`` returned).
+- ``Exec``: ``run/5`` learns ``:label`` (default ``"exec"``). The output
+  accumulator STREAMS into the spill once it passes the cap (amendment
+  below), so the spill is written while the command runs, not assembled
+  as one big binary first. ``Exec.format`` is unchanged (it renders
+  whatever ``run`` returned).
 - ``grep``: ``format_results/1`` takes the scope; on the cap path it
   spills the full set and appends the path note.
 - ``webfetch``: ``tool/1`` passes the scope; ``cap/2`` spills the full
@@ -178,3 +180,42 @@ Open questions
    truncates a tool result for the summarizer (not for the model); that
    is a lossy-summary concern (ADR 037), not a retrieve-the-full-text
    concern. Out of scope.
+
+Amendment 2026-09-30: the spill is written as the command runs
+--------------------------------------------------------------
+
+**Status: Accepted; shipped the same day.**
+
+The mechanism above bounded what the MODEL sees, but not what the BEAM
+HELD while the command ran: ``Exec.collect/5`` appended every chunk to a
+buffer and truncated only when the process exited. A fast, unbounded
+printer (``while true; do echo; done``, ``yes``, a runaway ``find``) grew
+the BEAM to **11 GB**; four OOM kills in 26 minutes froze the whole
+desktop (RAM+swap exhausted, ``journald`` watchdog starved for 3 min).
+The same class hit ``grep``/``glob``, whose ``truncate: false`` contract
+keeps the whole stream by design, and ``read_file``, where the 256 KiB
+cap was checked only AFTER a full ``cat``.
+
+The accumulator now STREAMS. It buffers up to ``@max_bytes`` (256 KiB);
+crossing that materializes once, freezes the head, starts a rolling tail
+window (``@tail_bytes``), and appends every further chunk to the spill
+file via ``Spill.open_writer/2``/``write/2``/``finish/1``. Memory is
+O(``@max_bytes``) regardless of output size, and the spill — the same
+``/tmp/spill/<label>-<n>`` file the model is told to read — is written
+incrementally, bounded by the existing 16 MiB per-spill cap.
+
+Two consequences:
+
+- ``truncate: false`` (``grep``/``glob``) cannot use a head/tail cut, so
+  it keeps the whole stream but now under a hard ``@max_raw_bytes``
+  (64 MiB) safety cap: past it the command is killed and the caller gets
+  a bounded ``:raw_too_large`` failure (``rg``/``fd`` surface it as their
+  own error), not an OOM.
+- ``read_file``'s over-cap rejection is unchanged in message, but the
+  BEAM no longer holds the whole oversized file first: the buffer is
+  capped at 256 KiB and the "larger than N KiB" check reads the cap-bounded
+  result.
+
+The regression test runs a 40 MB producer and samples the worker's peak
+RSS: it stays under 30 MB (was: tracks the full output), and the spill
+file holds the output up to the 16 MiB cap with its in-file marker.

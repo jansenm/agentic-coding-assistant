@@ -55,6 +55,94 @@ defmodule CodingAgent.Core.Spill do
     end
   end
 
+  @doc """
+  Opens a streaming spill writer: the caller writes the output AS IT
+  ARRIVES (``write/2``) instead of assembling the whole buffer in BEAM
+  memory first. This is what bounds ``Exec``'s memory for an unbounded
+  command (found live: a runaway ``shell`` grew the BEAM to 11 GB and
+  four OOM kills froze the desktop). The file is the same path
+  ``spill/3`` produces, bounded by the same ``@max_bytes``; past that the
+  writer records an in-file marker and stops taking bytes.
+
+  ``scratch`` ``nil``/``""`` (no session) returns ``:no_scratch``: the
+  caller keeps its plain in-memory truncation.
+  """
+  @spec open_writer(String.t() | nil, String.t()) ::
+          {:ok, writer()} | :no_scratch | {:error, term()}
+  def open_writer(scratch, label)
+
+  def open_writer(scratch, _label) when not is_binary(scratch) or scratch == "",
+    do: :no_scratch
+
+  def open_writer(scratch, label) when is_binary(label) do
+    dir = dir(scratch)
+
+    with :ok <- File.mkdir_p(dir) do
+      host = Path.join(dir, "#{label}-#{System.unique_integer([:positive, :monotonic])}")
+
+      case File.open(host, [:write, :binary, :raw]) do
+        {:ok, io} ->
+          {:ok, %{io: io, host: host, scratch: scratch, written: 0, capped?: false, path: nil}}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
+
+  @typedoc "A streaming spill writer (see `open_writer/2`)."
+  @type writer :: %{
+          io: File.io_device(),
+          host: String.t(),
+          scratch: String.t(),
+          written: non_neg_integer(),
+          capped?: boolean(),
+          path: String.t() | nil
+        }
+
+  @doc """
+  Writes `data` to the spill file, respecting ``@max_bytes``. Returns
+  ``{:ok, writer}`` while under the cap and ``{:capped, writer}`` once the
+  cap is hit (the file carries a marker; further writes are ignored).
+  """
+  @spec write(writer(), iodata()) :: {:ok, writer()} | {:capped, writer()}
+  def write(%{capped?: true} = writer, _data), do: {:capped, writer}
+
+  def write(%{io: io, written: n} = writer, data) do
+    size = IO.iodata_length(data)
+
+    if n + size <= @max_bytes do
+      IO.binwrite(io, data)
+      {:ok, %{writer | written: n + size}}
+    else
+      remaining = max(@max_bytes - n, 0)
+
+      if remaining > 0 do
+        IO.binwrite(io, binary_part(IO.iodata_to_binary(data), 0, remaining))
+      end
+
+      IO.binwrite(io, "\n\n[... spill truncated at #{@max_bytes} bytes ...]\n")
+      {:capped, %{writer | written: @max_bytes, capped?: true}}
+    end
+  end
+
+  @doc """
+  Closes the writer and returns ``{:ok, writer}`` with the sandbox path
+  filled in (the path the model is told to read). Idempotent: a writer
+  already closed (``path`` set) is returned unchanged.
+  """
+  @spec finish(writer()) :: {:ok, writer()}
+  def finish(%{path: path} = writer) when is_binary(path), do: {:ok, writer}
+
+  def finish(%{io: io, host: host, scratch: scratch} = writer) do
+    File.close(io)
+    {:ok, %{writer | path: sandbox_path(host, scratch)}}
+  end
+
+  @doc "The host path of a spill writer (for reading the full output back)."
+  @spec host_path(writer()) :: String.t()
+  def host_path(%{host: host}), do: host
+
   @doc "The host spill directory inside a session scratch."
   @spec dir(String.t()) :: String.t()
   def dir(scratch), do: Path.join(scratch, @subdir)

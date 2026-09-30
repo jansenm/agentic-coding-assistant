@@ -206,6 +206,11 @@ defmodule CodingAgent.Core.Tools.Grep do
       {:stopped, _partial} ->
         Tools.error("rg search stopped by the user")
 
+      {:raw_too_large, _partial} ->
+        Tools.error(
+          "rg produced more output than can be held in memory; narrow the pattern or path"
+        )
+
       {:sandbox_error, reason} ->
         Tools.error("cannot confine the search: #{inspect(reason)}")
 

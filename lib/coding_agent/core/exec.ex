@@ -24,9 +24,19 @@ defmodule CodingAgent.Core.Exec do
 
   alias CodingAgent.Core.Interrupt
   alias CodingAgent.Core.Sandbox
+  alias CodingAgent.Core.Spill
 
   @max_bytes 256 * 1024
   @tail_bytes 128 * 1024
+  # the head we keep for the display; the rolling tail follows it
+  @head_bytes @max_bytes - @tail_bytes
+
+  # A `truncate: false` caller (`grep`, `glob`) wants the whole stream and
+  # cannot use the head/tail cut, so its buffer is bounded only by this
+  # hard safety cap: past it the command is killed and the caller gets
+  # `{:raw_too_large, _}` rather than the BEAM growing to OOM. Generous —
+  # far above any real search — and only reachable by a runaway producer.
+  @max_raw_bytes 64 * 1024 * 1024
 
   # While a command runs, `collect/4` wakes at most this often to look for
   # a user stop (see the moduledoc's "cancellation" note). A quiet hang
@@ -86,7 +96,13 @@ defmodule CodingAgent.Core.Exec do
       the overflow is written to the session scratch (the profile's
       `:scratch`, ADR 022) and the head+tail marker names the path so the
       model can read the rest. Defaults to `"exec"`. With no scratch the
-      plain head+tail truncation stands.
+      plain head+tail truncation stands. `nil` suppresses the spill
+      entirely (a reader that only needs "is it too big?", not the text).
+    * `:max_output` — the hard byte ceiling for the `truncate: false`
+      (raw) mode; default `@max_raw_bytes`. A caller with its own cap
+      (`read_file`) passes `cap + 1` so the command is stopped the moment
+      the cap is exceeded, instead of being served a silently truncated
+      result (`{:raw_too_large, _}` instead of data loss).
   """
   @spec run(Sandbox.spec(), String.t(), pos_integer(), Sandbox.profile(), keyword()) :: outcome()
   def run(spec, cwd, secs, profile, opts \\ []) do
@@ -94,6 +110,7 @@ defmodule CodingAgent.Core.Exec do
     env = Keyword.get(opts, :env, [])
     truncate? = Keyword.get(opts, :truncate, true)
     label = Keyword.get(opts, :label, "exec")
+    max_output = Keyword.get(opts, :max_output, @max_raw_bytes)
     scratch = Map.get(profile, :scratch)
     session_id = Map.get(profile, :session_id)
 
@@ -110,7 +127,9 @@ defmodule CodingAgent.Core.Exec do
         deliver_stdin(port, stdin)
 
         deadline = System.monotonic_time(:millisecond) + secs * 1000
-        collect(port, deadline, "", {truncate?, label, scratch}, session_id)
+        cut = %{truncate?: truncate?, label: label, scratch: scratch, max_raw: max_output}
+
+        collect(port, deadline, new_acc(cut), cut, session_id)
 
       {:error, reason} ->
         {:sandbox_error, reason}
@@ -154,27 +173,145 @@ defmodule CodingAgent.Core.Exec do
   # The `after` is the MINIMUM of the time left to the deadline and
   # `@poll_ms`: a running command's data messages wake the receive first,
   # but a silent one is re-checked for a user stop on this tick.
-  defp collect(port, deadline, buf, cut, session_id) do
+  #
+  # ## Bounded memory (the OOM freeze, 2026-09-30)
+  #
+  # Every chunk is folded through `ingest/2`, which caps what is held in
+  # the BEAM. Before this, `buf` grew without limit: a `while true; do
+  # echo; done` (any fast printer) reached 11 GB and four OOM kills that
+  # froze the whole desktop, because truncation only ran at process exit.
+  # Now, once `@max_bytes` is passed, the accumulator STREAMS: the head is
+  # frozen, the tail is a rolling window, and further chunks are appended
+  # to the session scratch (ADR 038's `Spill`). Memory is O(`@max_bytes`),
+  # not O(output).
+  defp collect(port, deadline, acc, cut, session_id) do
     receive do
       {^port, {:data, data}} ->
-        collect(port, deadline, [buf | data], cut, session_id)
+        case ingest(acc, data) do
+          {:ok, acc} ->
+            collect(port, deadline, acc, cut, session_id)
+
+          :overflow ->
+            # a machine consumer (`grep`/`fd`, `truncate: false`) keeps the
+            # whole output by contract; past the hard safety cap we refuse
+            # rather than reproduce the OOM — a bounded, honest failure.
+            kill(port)
+            {:raw_too_large, finish(acc, cut)}
+        end
 
       {^port, {:exit_status, code}} ->
         wait_closed(port)
-        {:ok, finish(buf, cut), code}
+        {:ok, finish(acc, cut), code}
 
       {^port, :closed} ->
         # os process died without a status delivery (e.g. killed by us
         # earlier or exec failure) — treat as failure signal
-        {:ok, finish(buf, cut), 1}
+        {:ok, finish(acc, cut), 1}
     after
       wake_timeout(deadline, session_id) ->
-        on_wake(port, deadline, buf, cut, session_id)
+        on_wake(port, deadline, acc, cut, session_id)
     end
   end
 
-  defp finish(buf, {false, _label, _scratch}), do: IO.iodata_to_binary(buf)
-  defp finish(buf, {true, label, scratch}), do: truncate(buf, label, scratch)
+  # Two accumulator shapes. `:raw` keeps everything (bounded by
+  # `@max_raw_bytes`). `:buffer` holds up to `@max_bytes`; crossing that
+  # freezes `:head` and `:tail` and flips to streaming into `:spill`.
+  # `cut` (label + scratch) rides along so the lazy spill can open.
+  defp new_acc(cut) do
+    if cut.truncate? do
+      %{mode: :buffer, buf: [], total: 0, head: nil, tail: <<>>, spill: :unopened, cut: cut}
+    else
+      %{mode: :raw, chunks: [], size: 0, cut: cut}
+    end
+  end
+
+  defp ingest(%{mode: :raw, chunks: chunks, size: n, cut: cut} = acc, data) do
+    n = n + IO.iodata_length(data)
+    if n > cut.max_raw, do: :overflow, else: {:ok, %{acc | chunks: [chunks | data], size: n}}
+  end
+
+  defp ingest(%{mode: :buffer, buf: buf, total: total, cut: cut} = acc, data) do
+    total = total + IO.iodata_length(data)
+
+    if total <= @max_bytes do
+      {:ok, %{acc | buf: [buf | data], total: total}}
+    else
+      # crossing the cap: materialize once, split head/tail, spill the
+      # WHOLE buffer, and stream from here on.
+      all = IO.iodata_to_binary([buf | data])
+      head = binary_part(all, 0, @head_bytes)
+      tail = binary_part(all, byte_size(all) - @tail_bytes, @tail_bytes)
+      spill = cut.scratch |> open_spill(cut.label) |> spill_write(all)
+
+      {:ok, %{acc | mode: :stream, buf: nil, total: total, head: head, tail: tail, spill: spill}}
+    end
+  end
+
+  defp ingest(%{mode: :stream, head: head, tail: tail, total: total, spill: spill} = acc, data) do
+    spill = spill_write(spill, data)
+
+    {:ok,
+     %{
+       acc
+       | head: head,
+         tail: roll_tail(tail, data),
+         total: total + IO.iodata_length(data),
+         spill: spill
+     }}
+  end
+
+  defp roll_tail(tail, data) do
+    combined = tail <> data
+
+    if byte_size(combined) > @tail_bytes do
+      binary_part(combined, byte_size(combined) - @tail_bytes, @tail_bytes)
+    else
+      combined
+    end
+  end
+
+  # the spill opens lazily on first overflow; no scratch or no label
+  # (a reader that only wants the cap check) => :none
+  defp open_spill(_scratch, label) when not is_binary(label), do: :none
+
+  defp open_spill(scratch, label) do
+    case Spill.open_writer(scratch, label) do
+      {:ok, w} -> w
+      _ -> :none
+    end
+  end
+
+  defp spill_write(spill, _data) when spill in [:none, :unopened], do: spill
+
+  defp spill_write(spill, data) when is_map(spill) do
+    case Spill.write(spill, data) do
+      {:ok, w} -> w
+      {:capped, w} -> w
+    end
+  end
+
+  defp finish(%{mode: :raw, chunks: chunks}, _cut), do: IO.iodata_to_binary(chunks)
+
+  defp finish(%{mode: :buffer, buf: buf}, _cut), do: IO.iodata_to_binary(buf)
+
+  defp finish(%{mode: :stream, head: head, tail: tail, total: total, spill: spill}, _cut) do
+    path = close_spill(spill)
+
+    head <>
+      "\n\n[... output truncated: #{total} bytes total; showing first " <>
+      "#{byte_size(head)} and last #{@tail_bytes}#{path_note(path)} ...]\n\n" <> tail
+  end
+
+  # Closes the spill (idempotent) and returns the sandbox path to name.
+  defp close_spill(spill) when is_map(spill) do
+    {:ok, closed} = Spill.finish(spill)
+    closed.path
+  end
+
+  defp close_spill(_), do: nil
+
+  defp path_note(nil), do: ""
+  defp path_note(path), do: "; full output at #{path}"
 
   # Wake at the poll interval, or at the deadline if that is sooner. With
   # no session to watch there is nothing to check, so wait the whole
@@ -184,18 +321,18 @@ defmodule CodingAgent.Core.Exec do
 
   # A user stop wins over the deadline; otherwise the deadline kills the
   # command (its own timeout), and a false wake just re-arms the receive.
-  defp on_wake(port, deadline, buf, cut, session_id) do
+  defp on_wake(port, deadline, state, cut, session_id) do
     cond do
       session_id && Interrupt.requested?(session_id) ->
         kill(port)
-        {:stopped, finish(buf, cut)}
+        {:stopped, finish(state, cut)}
 
       remaining(deadline) <= 0 ->
         kill(port)
-        {:timeout, finish(buf, cut)}
+        {:timeout, finish(state, cut)}
 
       true ->
-        collect(port, deadline, buf, cut, session_id)
+        collect(port, deadline, state, cut, session_id)
     end
   end
 
@@ -242,42 +379,6 @@ defmodule CodingAgent.Core.Exec do
     end
   end
 
-  @doc "Truncates output, keeping head and tail (tail matters for test summaries)."
-  @spec truncate(iodata()) :: String.t()
-  def truncate(chunks), do: truncate(chunks, nil, nil)
-
-  # The truncation with an optional spill (ADR 038): the FULL buffer goes
-  # to the session scratch, and the marker names the path so the model can
-  # read the rest. No scratch -> the plain head+tail marker (today's
-  # behaviour).
-  defp truncate(chunks, label, scratch) do
-    data = IO.iodata_to_binary(chunks)
-    size = byte_size(data)
-
-    if size <= @max_bytes do
-      data
-    else
-      head = binary_part(data, 0, @max_bytes - @tail_bytes)
-      tail = binary_part(data, size - @tail_bytes, @tail_bytes)
-
-      head <>
-        "\n\n[... output truncated: #{size} bytes total; showing first " <>
-        "#{byte_size(head)} and last #{@tail_bytes}" <>
-        spill_note(data, label, scratch) <> " ...]\n\n" <> tail
-    end
-  end
-
-  defp spill_note(_data, nil, _scratch), do: ""
-  defp spill_note(_data, _label, nil), do: ""
-  defp spill_note(_data, _label, ""), do: ""
-
-  defp spill_note(data, label, scratch) do
-    case CodingAgent.Core.Spill.spill(data, scratch, label) do
-      {:ok, path} -> "; full output at #{path}"
-      _ -> ""
-    end
-  end
-
   @doc """
   Formats a tool result for the model: the command, a status line, and
   the combined output.
@@ -285,7 +386,7 @@ defmodule CodingAgent.Core.Exec do
   @spec format(
           String.t(),
           String.t(),
-          {:exit, integer()} | :timeout | :stopped,
+          {:exit, integer()} | :timeout | :stopped | :raw_too_large,
           non_neg_integer(),
           pos_integer()
         ) ::
@@ -297,6 +398,7 @@ defmodule CodingAgent.Core.Exec do
         {:exit, code} -> "exit #{code} (non-zero — the command failed)"
         :timeout -> "TIMED OUT after #{secs_requested}s (output below is partial)"
         :stopped -> "STOPPED by the user (output below is partial)"
+        :raw_too_large -> "output too large to buffer; narrow the command"
       end
 
     """

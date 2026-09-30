@@ -38,19 +38,22 @@ defmodule CodingAgent.Core.Tools.FileExec do
 
   @doc """
   Reads a file through a confined `cat`. Returns `{:ok, contents}` or
-  `{:error, message}`. The size cap is enforced by reading the output
-  back (a larger file is reported, not truncated).
+  `{:error, message}`. A file larger than `max_bytes` is REPORTED, not
+  truncated, and never fully buffered: the read is capped at `max_bytes +
+  1` (`truncate: false`, `:max_output`), so the moment the file is known
+  too big the command is killed and the BEAM holds only that much.
   """
   @spec read(Tools.scope(), String.t(), pos_integer(), pos_integer()) ::
           {:ok, String.t()} | {:error, String.t()}
   def read(scope, path, secs, max_bytes) do
     profile = Tools.profile(scope)
+    opts = [truncate: false, max_output: max_bytes + 1, label: nil]
 
-    case Exec.run({:exec, @cat, ["--", path]}, cwd(scope), secs, profile) do
-      {:ok, output, 0} when byte_size(output) <= max_bytes ->
+    case Exec.run({:exec, @cat, ["--", path]}, cwd(scope), secs, profile, opts) do
+      {:ok, output, 0} ->
         {:ok, output}
 
-      {:ok, _output, 0} ->
+      {:raw_too_large, _partial} ->
         Tools.error("file larger than #{div(max_bytes, 1024)} KiB: #{path}")
 
       {:ok, output, _code} ->

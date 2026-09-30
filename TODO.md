@@ -64,6 +64,21 @@ im jeweiligen ADR vermerkt.
 * **hide für Dateien mit `--dev-bind`** wurde live gefunden und gefixt
   (Nodev-EACCES); ein Live-Lauf über die Mount-Konfiguration bestätigt es.
 
+**Erledigt (OOM-Freeze, 2026-09-30):** Ein laufender Befehl, der
+unbegrenzt ausgibt (`while true; do echo; done`, `yes`, ein `find` ohne
+Ende), brachte den BEAM auf 11 GB; vier OOM-Kills in 26 Minuten füllten
+Swap und ließen den Desktop 3–4 Minuten einfrieren (`journald`
+Watchdog-Timeout). Ursache: `Core.Exec.collect` puffert **jeden** Chunk
+und kürzt erst am Prozessende — auch `read_file` (Cap-Prüfung nach
+vollem `cat`) und `grep`/`glob` (`truncate: false` hält alles). Jetzt
+**streamt** der Akkumulator: bis 256 KiB puffern, danach Kopf einfrieren,
+Tail-Fenster rollen und **während des Laufs** in die Session-Scratch
+(ADR 038) schreiben → Speicher O(Cap), nicht O(output). Regressionstest
+misst den Peak-RSS eines 40-MB-Produzenten (<30 MB). `read_file` bricht
+über seinem eigenen Cap ab (`:max_output`), `grep`/`fd` bekommen bei
+einem Runaway ein ehrliches `:raw_too_large` statt OOM. ADR 038
+Amendment. Commit(s) folgen.
+
 ## ADR 030 — One boundary (umgesetzt 2026-09-27)
 
 Der Umbau aus `docs/source/decisions/030-one-boundary.rst`: **eine**

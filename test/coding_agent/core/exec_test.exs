@@ -143,6 +143,65 @@ defmodule CodingAgent.Core.ExecTest do
       assert host != nil
       assert byte_size(File.read!(host)) > 256 * 1024
     end
+
+    test "a runaway producer stays memory-bounded and spills the full stream (OOM fix)" do
+      # The freeze, 2026-09-30: `collect` buffered EVERY chunk, so a fast
+      # printer grew the BEAM to 11 GB before truncation ran at exit. The
+      # accumulator now streams past `@max_bytes` into the spill, so the
+      # process peaks near the cap no matter how much the command prints.
+      # 40 MB out; measure the run's own peak RSS via the process info.
+      scratch = Path.join(@tmp_root, "scratch-oom")
+      File.mkdir_p!(scratch)
+      profile = %{root: @tmp_root, scratch: scratch, session_id: nil}
+
+      me = self()
+
+      {pid, ref} =
+        spawn_monitor(fn ->
+          out =
+            Exec.run(
+              {:shell, "yes xx | head -c 41943040"},
+              @tmp_root,
+              30,
+              profile,
+              label: "shell"
+            )
+
+          send(me, {:done, out})
+        end)
+
+      # sample the worker's memory while it runs; it should stay small
+      peak = sample_memory(pid, 0)
+      assert_receive {:done, {:ok, out, 0}}, 30_000
+      assert Process.demonitor(ref, [:flush])
+
+      assert out =~ "output truncated"
+      assert out =~ "full output at /tmp/spill/shell-"
+
+      # the output reached the spill file, bounded by the per-spill cap
+      # (ADR 038: 16 MiB), with an in-file marker
+      host = Path.wildcard(Path.join(scratch, "spill/shell-*")) |> List.first()
+      assert host != nil
+
+      file = File.read!(host)
+      assert byte_size(file) >= 16 * 1024 * 1024
+      assert file =~ "spill truncated"
+
+      # and the BEAM-side footprint never approached the 40 MB output
+      assert peak < 30 * 1024 * 1024
+    end
+
+    # sample the worker's RSS every few ms until it exits
+    defp sample_memory(pid, peak) do
+      case Process.info(pid, :memory) do
+        {:memory, m} ->
+          Process.sleep(2)
+          sample_memory(pid, max(peak, m))
+
+        nil ->
+          peak
+      end
+    end
   end
 
   describe "cancellation (esc kills a running command)" do
