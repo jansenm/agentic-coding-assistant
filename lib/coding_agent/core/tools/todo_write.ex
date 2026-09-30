@@ -29,9 +29,15 @@ defmodule CodingAgent.Core.Tools.TodoWrite do
   # sidebar, only read back in the injected block. It is where durable
   # facts live that compaction must not lose (paths, numbers, decisions).
   # Per-item AND total caps, because notes ride every request too and a
-  # 500-char note on each of 64 items would double the prompt.
-  @max_notes_chars 500
-  @max_notes_total_chars 4_000
+  # max-length note on each of 64 items would bloat the prompt.
+  #
+  # The per-item cap is generous (review: a legitimate note was bounced at
+  # 589 chars, and the lossy re-write cost more context than the note). A
+  # fact worth keeping is prose with hashes in it, not a haiku. 1000 still
+  # bounds the block: at the 64-item ceiling the worst case is the total
+  # cap, not 64 x 1000. The total keeps the old ratio — 8 max-length notes.
+  @max_notes_chars 1_000
+  @max_notes_total_chars 8_000
 
   @doc "Whether `name` is the todo-write tool."
   @spec name() :: String.t()
@@ -60,8 +66,10 @@ defmodule CodingAgent.Core.Tools.TodoWrite do
         It is NOT shown in the user's panel; it is read back to you in
         this block on every request. Use it to hold facts you must not
         lose when the conversation is summarized — exact paths, test
-        counts, decisions and why, measured numbers. Keep it to a few
-        lines per item.
+        counts, decisions and why, measured numbers. A note may run to
+        #{@max_notes_chars} characters (and #{@max_notes_total_chars} across the
+        whole list), so write the fact out rather than abbreviating it
+        into something you will have to re-derive later.
 
       Use it when a task spans several steps, after receiving new
       instructions, or before starting a new plan. Keep exactly one item
@@ -96,7 +104,8 @@ defmodule CodingAgent.Core.Tools.TodoWrite do
                   "description" =>
                     "Optional private memory for this item (not shown in the " <>
                       "panel; read back to you each request). Hold facts that " <>
-                      "must survive summarization: paths, numbers, decisions."
+                      "must survive summarization: paths, numbers, decisions. " <>
+                      "Up to #{@max_notes_chars} characters."
                 }
               },
               "required" => ["content", "status"]
@@ -131,8 +140,9 @@ defmodule CodingAgent.Core.Tools.TodoWrite do
 
           notes_total(list) > @max_notes_total_chars ->
             {:error,
-             "todo `notes` are too long in total (limit #{@max_notes_total_chars} chars); " <>
-               "keep each item's notes to the facts compaction must not lose"}
+             "todo `notes` are too long in total (limit #{@max_notes_total_chars} chars, " <>
+               "you wrote #{notes_total(list)}); keep each item's notes to the facts " <>
+               "compaction must not lose"}
 
           true ->
             parse_items(list)
@@ -176,7 +186,9 @@ defmodule CodingAgent.Core.Tools.TodoWrite do
         {:error, "each todo needs a non-empty `content`"}
 
       String.length(content) > @max_content_chars ->
-        {:error, "a todo `content` is too long (limit #{@max_content_chars} chars)"}
+        {:error,
+         "a todo `content` is too long (limit #{@max_content_chars} chars, " <>
+           "you wrote #{String.length(content)})"}
 
       status not in @statuses ->
         {:error,
@@ -186,7 +198,9 @@ defmodule CodingAgent.Core.Tools.TodoWrite do
         {:error, "todo `notes` must be a string, got: #{inspect(notes)}"}
 
       is_binary(notes) and String.length(notes) > @max_notes_chars ->
-        {:error, "a todo `notes` is too long (limit #{@max_notes_chars} chars)"}
+        {:error,
+         "a todo `notes` is too long (limit #{@max_notes_chars} chars, " <>
+           "you wrote #{String.length(notes)})"}
 
       true ->
         {:ok, put_notes(%{"content" => flatten(content), "status" => status}, notes)}

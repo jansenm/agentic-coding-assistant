@@ -217,17 +217,55 @@ defmodule CodingAgent.Core.Session.TodoWriteTest do
 
       assert reason =~ "must be a string"
 
-      long = [%{"content" => "A", "status" => "pending", "notes" => String.duplicate("x", 501)}]
+      long = [%{"content" => "A", "status" => "pending", "notes" => String.duplicate("x", 1001)}]
+
       assert {:error, reason} = TodoWrite.parse(%{"todos" => long})
       assert reason =~ "notes"
+      # the cap names what was actually written, so one bounce is enough
+      assert reason =~ "limit 1000 chars, you wrote 1001"
 
       # total cap across items
       many =
         Enum.map(1..20, fn i ->
-          %{"content" => "t#{i}", "status" => "pending", "notes" => String.duplicate("y", 400)}
+          %{"content" => "t#{i}", "status" => "pending", "notes" => String.duplicate("y", 500)}
         end)
 
       assert {:error, reason} = TodoWrite.parse(%{"todos" => many})
+      assert reason =~ "in total"
+      assert reason =~ "you wrote 10000"
+    end
+
+    test "a 589-char note is accepted (review: the cap bounced a legitimate note)" do
+      note = String.duplicate("x", 589)
+
+      assert {:ok, [todo]} =
+               TodoWrite.parse(%{
+                 "todos" => [%{"content" => "A", "status" => "pending", "notes" => note}]
+               })
+
+      assert todo["notes"] == note
+    end
+
+    test "a max-length note is accepted per item, and eight of them fit the total" do
+      note = String.duplicate("x", 1000)
+
+      assert {:ok, [todo]} =
+               TodoWrite.parse(%{
+                 "todos" => [%{"content" => "A", "status" => "pending", "notes" => note}]
+               })
+
+      assert todo["notes"] == note
+
+      eight =
+        Enum.map(1..8, fn i ->
+          %{"content" => "t#{i}", "status" => "pending", "notes" => note}
+        end)
+
+      assert {:ok, todos} = TodoWrite.parse(%{"todos" => eight})
+      assert length(todos) == 8
+
+      nine = eight ++ [%{"content" => "t9", "status" => "pending", "notes" => note}]
+      assert {:error, reason} = TodoWrite.parse(%{"todos" => nine})
       assert reason =~ "in total"
     end
   end

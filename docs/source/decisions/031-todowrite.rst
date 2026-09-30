@@ -119,10 +119,17 @@ messages that compaction can summarize away. Two deliberate properties:
     survival property the list itself relies on (decision 4).
 
 Because notes ride every request, they are bounded: ``@max_notes_chars``
-(500) per item and ``@max_notes_total_chars`` (4000) across the list, or
-the block would bloat the system prompt. Notes are kept as-is (not
-flattened to one line, unlike ``content``) — they never reach the
-sidebar's row math, so line breaks are useful structure.
+(1000) per item and ``@max_notes_total_chars`` (8000) across the list, or
+the block would bloat the system prompt. The per-item bound was raised
+from 500 to 1000 by a review finding: a legitimate note — refs, SHAs, a
+commit-to-finding mapping, measured numbers — was bounced at 589
+characters, and re-deriving the trimmed half would have cost more of the
+window than the note itself. Notes are the channel *designed* to survive
+compaction, so it is the wrong channel to ration. The total keeps the old
+ratio of roughly eight max-length notes, so the block's ceiling is
+unchanged. Notes are kept as-is (not flattened to one line, unlike
+``content``) — they never reach the sidebar's row math, so line breaks
+are useful structure.
 
 Consequences
 ------------
