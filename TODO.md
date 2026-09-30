@@ -164,6 +164,18 @@ Die beiden Review-Records sind aus dem `-mjansen`-Worktree entfernt — der
 Record selbst bleibt in der Historie (`review.md` via `ca6f734`). Anker
 sind **Symbol + Commit**, keine Zeilennummern (die Lehre aus den Rebases).
 
+**Erledigt (Review-Abarbeitung 2026-09-30, das zweite `review.md`):** alle
+15 neuen Befunde `N1`–`N15` sind abgearbeitet — `N2` (grep verlor eine
+benannte Einzeldatei; `-H`), `N1` (`hard` kollabierte bei Fenstern unter
+der Reserve; Floor auf 75 % des Fensters), `N7` (tote Session riss die TUI
+aus den Aktionsverben; ein `safe_call/5`), `N5` (die Katalog-Hälfte des
+Modell-Menüs war leer; String-vs-Atom **und** `available_models`-Arity —
+dazu `Catalog.ready?`-Guard gegen den Kalt-Lock, N12), `N9` (Fenster wurde
+beim Modellwechsel nicht neu aufgelöst; `Session.recompute_window/1`),
+`N3` (1-MiB-Walk-Cap dokumentiert), `N12/N13/N14` (Doku), `N6/N10/N11`
+(Nits), `N8` (Doku-Zeile, wo man die Notizen liest), `N4`/`N15` waren
+schon erledigt bzw. bestätigt. Commits `a244f99`…`e359b48`.
+
 **Erledigt (Code-Review-Abarbeitung 2026-09-29):** die Korrektheits-
 Befunde aus `review-2026-09-28.md` sind abgearbeitet —
 `Exec.run/5 :truncate` (F2/F5: die Maschinensicht auf `fd` wird nicht

@@ -110,7 +110,9 @@ messages that compaction can summarize away. Two deliberate properties:
   - **Notes are NOT shown in the sidebar.** The panel is the human's view
     of *intent and progress* (a checklist); notes are the model's private
     working memory. Rendering them would turn the panel into a log and let
-    a private channel drift into the human-facing one.
+    a private channel drift into the human-facing one. To read them back
+    for a post-mortem, inspect the live session with ``Session.state/1``
+    (or the stored state); they are not in the export or the display view.
   - **Notes DO ride the injected block.** ``Prompt.todos_block/1`` renders
     them as an indented sub-line under their item, so the model reads them
     back on every request and compaction cannot eat them — the same
