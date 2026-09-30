@@ -27,6 +27,23 @@ im jeweiligen ADR vermerkt.
 
 ## Zuerst: Live-Smoke
 
+* **`compact`-Tool: nutzt der Agent es, und wann?** Das Tool ist seit
+  `28c4403` da (ADR 040 OQ1), aber noch **nicht live beobachtet**. Der
+  nächste lange Lauf zeigt zwei Dinge: (a) findet das Modell den Hebel
+  überhaupt (der Budget-Block nennt ihn jetzt), und (b) zieht es ihn am
+  richtigen Punkt — **viel Rauschen rein, wenig Ergebnis raus**, nach
+  einem erledigten, suchlastigen Schritt, *nachdem* der Ertrag in
+  `notes` steht — statt zu früh oder statt `notes`. **Entschieden
+  (2026-09-30): erst messen, dann genau eine Nachschärfung.** Wenn nötig,
+  dann in der **Tool-Beschreibung** (der Ort, an dem die Entscheidung
+  fällt): den Randfall „nach einem lauten, abgeschlossenen Schritt" und
+  die notes-first-Regel explizit machen. *Keine* Fahrplan-Semantik
+  („nach jedem Todo compacten") — das wäre schlechter als nichts, weil
+  jeder Compact Minuten Provider-Zeit blockiert und Detail wegwirft.
+  Verworfene größere Option (nicht jetzt): ein dynamisches
+  Rausch-Signal im Budget-Block (Anteil Tool-Ausgaben aus erledigten
+  Schritten) — eigener Hebel, eigenes Design.
+
 * **Frage-Dialog doppelt gestellt?** Der Race-Fix (ADR 027 Amendment)
   muss live bestätigt werden: der Dialog darf nach der Antwort bleiben,
   wenn der Agent nachfragt; der zweite identische Ask sollte ausbleiben.
