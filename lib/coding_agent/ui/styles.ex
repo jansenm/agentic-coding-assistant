@@ -243,6 +243,58 @@ defmodule CodingAgent.UI.Styles do
     end)
   end
 
+  @doc """
+  One sidebar row for an active subagent (ADR 018): `▸ name · model`,
+  truncated to `max_width`. The active tab's row is `:agent`-coloured and
+  carries `▸`; the others are `:muted`. No emoji (width is unreliable), no
+  status glyph beyond the marker — the panel answers "which delegations
+  are live and which am I looking at", the tab and band carry the rest.
+  """
+  @spec subagent_line(String.t() | nil, String.t() | nil, boolean(), pos_integer(), surface()) ::
+          Text.Line.t()
+  def subagent_line(agent, model, active?, max_width, surface \\ :base) do
+    marker = if active?, do: "▸ ", else: "· "
+    role = if active?, do: :agent, else: :muted
+
+    label =
+      [agent || "?", model]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.join(" · ")
+
+    Text.Line.new([
+      Text.Span.new(marker, style: role(role, surface)),
+      Text.Span.new(truncate(label, max(max_width - 2, 1)), style: role(role, surface))
+    ])
+  end
+
+  @doc """
+  The subagent tab row (ADR 018): the labels, the ACTIVE one bracketed and
+  `:accent`-coloured, the rest `:muted`; `counts` (e.g. `{1, "finished"}`)
+  appended muted. Rendered on `:chrome` (it sits above the composer). The
+  first label is always `"primary"`; `active` is the active child's agent
+  name, or `nil` for the primary.
+  """
+  @spec tab_line([String.t() | nil], String.t() | nil, [{non_neg_integer(), String.t()}]) ::
+          Text.Line.t()
+  def tab_line(labels, active, counts) do
+    spans =
+      Enum.map(labels, fn
+        "primary" -> tab_span("primary", active == nil)
+        name -> tab_span(name || "?", name != nil and name == active)
+      end)
+
+    count_spans =
+      Enum.map(counts, fn {n, word} ->
+        Text.Span.new("+#{n} #{word}", style: role(:muted, :chrome))
+      end)
+
+    sep = Text.Span.new("  ", style: role(:muted, :chrome))
+    Text.Line.new(Enum.intersperse(spans ++ count_spans, sep))
+  end
+
+  defp tab_span(name, true), do: Text.Span.new("[#{name}]", style: role(:accent, :chrome))
+  defp tab_span(name, false), do: Text.Span.new(" #{name} ", style: role(:muted, :chrome))
+
   # Geometric Unicode only, like the status badge (emoji width is
   # unreliable and breaks the row math).
   defp todo_marker("completed"), do: {"✔", :muted}

@@ -5,11 +5,12 @@ defmodule CodingAgent.UI.TuiSubagentTest do
 
   # Subagent surfacing (ADR 017/018): the parent publishes
   # {:subagent_started, child_id, name, model}; the live band names the
-  # LEAF of the active delegation while the child runs, and reverts to the
-  # primary when it finishes. The child's transcript never blends into the
-  # parent view (the tab view itself is a later slice).
+  # agent of the view the human is LOOKING AT (owner decision 2026-09-30,
+  # "always what I see") — the primary while the parent tab is active, the
+  # child once its tab is opened — not the newest background job. The
+  # child's transcript never blends into the parent view.
 
-  test "the live band names the active subagent, then the primary again" do
+  test "the live band names the view the human is on, not the newest child" do
     root = Path.join(System.tmp_dir!(), "tui-sub-#{System.unique_integer()}")
     File.mkdir_p!(root)
     on_exit(fn -> File.rm_rf!(root) end)
@@ -36,24 +37,42 @@ defmodule CodingAgent.UI.TuiSubagentTest do
 
     assert Enum.any?(buffer(pid), &String.contains?(&1, "agent build"))
 
-    # a subagent starts: the band names the leaf
+    # a subagent starts: its TAB appears, but the human is still on the
+    # parent tab — so the band still names the primary (the child's own
+    # model is visible in the sidebar's subagent block, not the band)
     agent(pid, {:subagent_started, "child-1", "explorer", "ollama:explorer-model"})
     state = sync(pid)
 
-    assert state.active_subagent == "child-1"
     assert Map.has_key?(state.subagents, "child-1")
+    assert state.active_tab == nil
+
+    rows = buffer(pid)
+    assert Enum.any?(rows, &String.contains?(&1, "agent build"))
+    refute Enum.any?(rows, &String.contains?(&1, "agent explorer"))
+
+    # open the child tab: NOW the band follows it
+    state = run_menu(pid, "a")
+    child = Enum.find(state.menu_popup.items, &match?(%{id: {:tab, "child-1"}}, &1))
+    :ok = open_popup_selection(pid, state, child)
+    assert sync(pid).active_tab == "child-1"
 
     rows = buffer(pid)
     assert Enum.any?(rows, &String.contains?(&1, "agent explorer"))
     assert Enum.any?(rows, &String.contains?(&1, "model ollama:explorer-model"))
 
-    # it finishes: the band reverts to the primary, but the TAB is KEPT
-    # (finished, read-only) — the owner keeps every subagent of a session
+    # it finishes: the TAB is KEPT (finished, read-only) — the owner keeps
+    # every subagent of a session; the band stays on the view (explorer)
     agent(pid, {:subagent_finished, "child-1", :ok})
     state = sync(pid)
 
-    assert state.active_subagent == nil
     assert %{"child-1" => %{finished?: true, agent: "explorer"}} = state.subagents
+    assert state.active_tab == "child-1"
+
+    # back to the parent tab: the band reverts to the primary
+    state = run_menu(pid, "a")
+    primary = Enum.find(state.menu_popup.items, &match?(%{id: {:tab, nil}}, &1))
+    :ok = open_popup_selection(pid, state, primary)
+    assert sync(pid).active_tab == nil
 
     rows = buffer(pid)
     assert Enum.any?(rows, &String.contains?(&1, "agent build"))
@@ -85,7 +104,8 @@ defmodule CodingAgent.UI.TuiSubagentTest do
     agent(pid, {:subagent_finished, "child-x", :error})
 
     state = sync(pid)
-    assert state.active_subagent == nil
+    # the tab is kept (finished); the human is still on the parent tab
+    assert state.active_tab == nil
 
     assert Enum.any?(state.transcript, fn
              {:info, text} -> String.contains?(text, "subagent ended with an error")
@@ -187,7 +207,34 @@ defmodule CodingAgent.UI.TuiSubagentTest do
 
       agent(pid, {:subagent_started, "c1", "explorer", "m"})
       rows = buffer(pid)
+      # the active tab is bracketed and accented; the row lives above the
+      # composer now (owner decision 2026-09-30)
+      assert Enum.any?(rows, &String.contains?(&1, "[primary]"))
       assert Enum.any?(rows, &String.contains?(&1, "explorer"))
+    end
+
+    test "the sidebar lists ACTIVE subagents, marks the viewed one, drops finished", %{pid: pid} do
+      agent(pid, {:subagent_started, "c1", "explorer", "m1"})
+      agent(pid, {:subagent_started, "c2", "reviewer", "m2"})
+
+      rows = buffer(pid)
+      assert Enum.any?(rows, &String.contains?(&1, "subagents"))
+      assert Enum.any?(rows, &String.contains?(&1, "explorer · m1"))
+      assert Enum.any?(rows, &String.contains?(&1, "reviewer · m2"))
+
+      # open c1's tab: its sidebar row is marked (▸), the other not
+      state = run_menu(pid, "a")
+      child = Enum.find(state.menu_popup.items, &match?(%{id: {:tab, "c1"}}, &1))
+      :ok = open_popup_selection(pid, state, child)
+
+      rows = buffer(pid)
+      assert Enum.any?(rows, &String.contains?(&1, "▸ explorer · m1"))
+      assert Enum.any?(rows, &String.contains?(&1, "· reviewer · m2"))
+
+      # c2 finishes: it leaves the ACTIVE list (its tab is kept)
+      agent(pid, {:subagent_finished, "c2", :ok})
+      rows = buffer(pid)
+      refute Enum.any?(rows, &String.contains?(&1, "reviewer · m2"))
     end
 
     test "opening a tab renders the child's transcript read-only", %{pid: pid} do

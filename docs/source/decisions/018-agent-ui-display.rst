@@ -510,3 +510,30 @@ without re-cutting the three that exist. TODO.md's O5 (the empty rows)
 and this heading are deliberately independent of the tab work: neither
 reads the ``subagents`` map; the shipped tab bar took the row above the
 transcript and did not touch this panel.
+
+Amendment 2026-09-30: the band follows the view; tabs move to the composer; subagents in the panel
+--------------------------------------------------------------------------------------------------
+
+Three owner decisions after the first real subagent run, all closing
+gaps that made the delegation invisible:
+
+1. **The live band follows ``active_tab``, not ``active_subagent``.**
+   There were TWO pointers: ``active_tab`` (what the transcript renders)
+   and ``active_subagent`` (set on child start). ``band_identity/1`` read
+   the second, so with the transcript on the parent the band still named
+   the newest child — two answers to "who am I looking at". The rule is
+   now one sentence, *the band describes the view the human is in*: on
+   the parent tab it names the primary even while a child runs, on a
+   child tab the child. ``active_subagent`` is deleted; nothing else
+   read it.
+2. **The tab bar moves from above the transcript to directly above the
+   composer.** It switches which view the field and transcript show, so
+   its home is the input, not the reading area. It stays one row, appears
+   only once a child exists, and the active tab is now ``:accent`` (the
+   old all-``:muted`` row was so quiet the owner never noticed it). The
+   pane math (``layout_overhead/1``) is unchanged — one row either way.
+3. **The sidebar gains a ``subagents`` block: the ACTIVE children only.**
+   Name and model, the viewed tab marked (``▸``), finished ones dropped
+   (their tab is kept, but they are no longer "what is happening"). This
+   is the panel block the earlier amendment anticipated; bounded like the
+   todo block (``@subagent_cap`` 8).

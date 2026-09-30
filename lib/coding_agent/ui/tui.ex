@@ -2,12 +2,14 @@ defmodule CodingAgent.UI.Tui do
   @moduledoc """
   The phase-5 terminal UI driver (5a render foundation + 5b interaction).
 
-  Layout: transcript pane (scrollable) / live band (what the RUNNING turn
-  is doing) / composer panel (input field + its setup meta row). The band
-  and the composer are separate rows because they answer separate
-  questions: the band names the agent and model EXECUTING the turn, the
-  composer's row names the ones the NEXT input will use — Tab switches the
-  latter while a running turn keeps its own. Input is an ExRatatui
+  Layout: transcript pane (scrollable) / live band (the running turn's
+  status, plus the agent and model of the VIEW you are in) / composer
+  panel (input field + its setup meta row). The band and the composer are
+  separate rows because they answer separate questions: the band's
+  identity follows the view you are looking at (the primary, or a
+  subagent tab — owner decision 2026-09-30), the composer's row names the
+  ones the NEXT input will use — Tab switches the latter while a running
+  turn keeps its own. Input is an ExRatatui
   Textarea — enter inserts a newline (ADR 011 composition-first default);
   alt-enter sends the buffer to the agent. The ADR 011 keymap is the
   action table; UI.Bridge translates terminal events; UI.Keymap resolves
@@ -83,8 +85,8 @@ defmodule CodingAgent.UI.Tui do
 
   defp input_height(state), do: Composer.height(composer(state))
 
-  # The subagent tab bar (ADR 018) takes one row above the transcript when
-  # it is present (measure = paint, ADR 028): the pane height must drop by
+  # The subagent tab bar (ADR 018) takes one row above the composer when it
+  # is present (measure = paint, ADR 028): the pane height must drop by
   # that row, or the viewport over-reserves and the last line clips.
   defp layout_overhead(state) do
     tab_h = if map_size(Map.get(state, :subagents, %{})) > 0, do: 1, else: 0
@@ -273,12 +275,12 @@ defmodule CodingAgent.UI.Tui do
       # the static registry filtered in memory. nil = closed.
       command_popup: nil,
       # subagent tabs (ADR 018): child_id => child state (identity,
-      # transcript, stream, finished?). The live band names the leaf of
-      # the active delegation. Empty until a `task` call starts a child.
+      # transcript, stream, finished?). The live band names the agent of
+      # whichever view is active. Empty until a `task` call starts a child.
       subagents: %{},
-      active_subagent: nil,
       # the child tab currently shown (nil = the parent transcript). The
-      # transcript pane renders this child's own entries read-only.
+      # transcript pane renders this child's own entries read-only; the
+      # live band's identity follows it too (one pointer, "what I see").
       active_tab: nil,
       last_error: nil,
       scroll_offset: 0,
@@ -476,9 +478,9 @@ defmodule CodingAgent.UI.Tui do
         # names the LEAF of the active delegation while a child runs; a
         # finished tab is KEPT (read-only) until the view is discarded.
         # The child's transcript is never blended into the parent view;
-        # `active_tab` selects which transcript the pane renders.
+        # `active_tab` selects which transcript the pane renders, and the
+        # live band's identity follows it.
         subagents: %{},
-        active_subagent: nil,
         active_tab: nil,
         # the agent executing the CURRENT turn (unknown until the
         # session broadcasts {:turn_started, agent}); used to attribute
@@ -3300,19 +3302,17 @@ defmodule CodingAgent.UI.Tui do
   # A `task` call started a child session (ADR 017/018): subscribe to the
   # child's channel so its stream reaches the tab buffer (the parent
   # channel carries only the start/finish events). The tab is kept after
-  # the child finishes (the owner keeps every subagent of a session); the
-  # band names the LEAF while it runs.
+  # the child finishes (the owner keeps every subagent of a session). The
+  # band does NOT switch here — it follows the human's active tab (owner
+  # decision 2026-09-30); the new tab is merely announced in the tab bar
+  # and the sidebar.
   def handle_info({:agent, {:subagent_started, child_id, agent, model}}, state) do
     state = touch(state)
     sub = child_state(agent, model)
 
     subscribe_child(child_id)
 
-    state = %{
-      state
-      | subagents: Map.put(state.subagents, child_id, sub),
-        active_subagent: child_id
-    }
+    state = %{state | subagents: Map.put(state.subagents, child_id, sub)}
 
     # the tab bar appears with the first child: re-derive the pane height
     # so the transcript viewport matches what render/2 will paint (ADR 028)
@@ -3340,14 +3340,7 @@ defmodule CodingAgent.UI.Tui do
         :error -> state.subagents
       end
 
-    {:noreply,
-     %{
-       state
-       | subagents: subagents,
-         active_subagent:
-           if(state.active_subagent == child_id, do: nil, else: state.active_subagent),
-         transcript: transcript
-     }}
+    {:noreply, %{state | subagents: subagents, transcript: transcript}}
   end
 
   def handle_info({:agent, {:turn_started, agent}}, state) do
@@ -3653,27 +3646,40 @@ defmodule CodingAgent.UI.Tui do
     [mid_area, _air_area] =
       Layout.split(mid_area, :horizontal, [{:length, min(@measure, mid_area.width)}, {:min, 0}])
 
-    # The subagent tab bar (ADR 018) claims one row above the transcript
-    # only while a `task` child exists for this session — the parent-only
-    # view keeps its full height when nothing was delegated.
-    {tab_area, transcript_full} =
-      if map_size(Map.get(state, :subagents, %{})) > 0 do
-        [t, rest] = Layout.split(mid_area, :vertical, [{:length, 1}, {:min, 0}])
-        {t, rest}
-      else
-        {nil, mid_area}
+    # The subagent tab bar (ADR 018) belongs with the INPUT, not above the
+    # transcript (owner decision 2026-09-30): it switches which view the
+    # field/transcript shows, so it sits directly above the composer where
+    # the human's attention is. It claims one row only while a `task` child
+    # exists; a parent-only session keeps its full height.
+    tabs? = map_size(Map.get(state, :subagents, %{})) > 0
+
+    # Stacked regions sharing ONE air row between them: transcript, the
+    # live band (what the running turn does), and the input field (what the
+    # next input uses), with the tab row sandwiched above the field when
+    # tabs exist. No borders in this stack — the air row separates them.
+    template =
+      case tabs? do
+        true ->
+          [
+            {:min, 0},
+            {:length, 1},
+            {:length, band_h},
+            {:length, 1},
+            {:length, 1},
+            {:length, in_h}
+          ]
+
+        false ->
+          [{:min, 0}, {:length, 1}, {:length, band_h}, {:length, 1}, {:length, in_h}]
       end
 
-    # three stacked regions sharing ONE air row between them: transcript,
-    # the live band (what the running turn is doing), the input field
-    # (what the next input will use). The air row is what separates them
-    # visually — no borders anywhere in this stack.
-    [transcript_area, _air1, band_area, _air2, input_area] =
-      Layout.split(
-        transcript_full,
-        :vertical,
-        [{:min, 0}, {:length, 1}, {:length, band_h}, {:length, 1}, {:length, in_h}]
-      )
+    areas = Layout.split(mid_area, :vertical, template)
+
+    {tab_area, transcript_area, band_area, input_area} =
+      case areas do
+        [tr, _air1, band, _air2, tab, input] -> {tab, tr, band, input}
+        [tr, _air1, band, _air2, input] -> {nil, tr, band, input}
+      end
 
     sidebar_widgets =
       if sidebar_area do
@@ -4505,15 +4511,16 @@ defmodule CodingAgent.UI.Tui do
     committed ++ streaming
   end
 
-  # The band names the LEAF of the active delegation while a subagent runs
-  # (ADR 018 amendment: "the running agent, whoever that is"), else the
-  # primary's running identity. The child runs inside the parent's turn,
-  # so the parent's status stays the one shown; only the identity changes.
+  # The band names the agent of the view the human is LOOKING AT (owner
+  # decision 2026-09-30: "always what I see"). On a child tab that is the
+  # child; on the parent tab it is the primary — even while a child runs,
+  # because the row describes the VIEW, not the newest background job. The
+  # band used to follow `active_subagent` (set on child start), so it named
+  # a child the transcript was not showing. One pointer (`active_tab`), so
+  # band and transcript cannot disagree.
   defp band_identity(state) do
-    sub = Map.get(state, :subagents, %{}) |> Map.get(Map.get(state, :active_subagent))
-
-    case sub do
-      %{agent: agent, model: model} ->
+    case active_child(state) do
+      {_id, %{agent: agent, model: model}} ->
         {agent, model}
 
       _ ->
@@ -4656,25 +4663,30 @@ defmodule CodingAgent.UI.Tui do
     shown = Enum.take(running, @tab_bar_cap)
     hidden_running = length(running) - length(shown)
 
-    primary = tab_label("primary", active_tab == nil)
-
-    tabs = Enum.map(shown, fn {id, c} -> tab_label(Map.get(c, :agent), id == active_tab) end)
+    labels = ["primary" | Enum.map(shown, fn {_id, c} -> Map.get(c, :agent) end)]
 
     counts =
-      []
-      |> maybe_count(hidden_running, "running")
-      |> maybe_count(length(finished), "finished")
+      [{hidden_running, "running"}, {length(finished), "finished"}]
+      |> Enum.reject(fn {n, _} -> n == 0 end)
 
+    # the row is on the chrome surface (above the composer); Styles owns
+    # the roles and the accent-vs-muted split
     %Paragraph{
-      text: "  " <> Enum.join([primary | tabs] ++ counts, "  "),
-      style: Styles.role(:muted)
+      text: Styles.tab_line(labels, active_tab_name(state, active_tab), counts),
+      style: Styles.surface(:chrome)
     }
   end
 
-  defp tab_label(name, true), do: "[#{name}]"
-  defp tab_label(name, false), do: " #{name} "
-  defp maybe_count(acc, 0, _word), do: acc
-  defp maybe_count(acc, n, word), do: acc ++ ["+#{n} #{word}"]
+  # the agent name of the active tab (nil = the primary tab), so the
+  # label can be accented
+  defp active_tab_name(_state, nil), do: nil
+
+  defp active_tab_name(state, id) do
+    case Map.get(state.subagents, id) do
+      %{agent: name} -> name
+      _ -> nil
+    end
+  end
 
   defp sidebar_widget(state) do
     usage = CodingAgent.Core.Session.Usage.from_map(Map.get(state, :session_usage))
@@ -4758,12 +4770,14 @@ defmodule CodingAgent.UI.Tui do
     ]
 
     todo_lines = todo_section(Map.get(state, :todos, []))
+    subagent_lines = subagent_section(Map.get(state, :subagents, %{}), active_tab_id(state))
 
     lines =
       [Styles.heading(scope_name(Map.get(state, :scope_root)), :sidebar), Styles.gap()] ++
         Styles.definition_list(identity, :sidebar) ++
         [Styles.gap()] ++
-        Styles.definition_list(stats, :sidebar) ++ cost_line ++ todo_lines ++ help
+        Styles.definition_list(stats, :sidebar) ++
+        cost_line ++ subagent_lines ++ todo_lines ++ help
 
     %Paragraph{
       text: lines,
@@ -4799,6 +4813,44 @@ defmodule CodingAgent.UI.Tui do
   end
 
   defp todo_section(_), do: []
+
+  # The sidebar's SUBAGENT block (ADR 018, owner request 2026-09-30): the
+  # ACTIVE `task` children only — a finished child's tab is kept (read-only)
+  # but it is no longer "what is happening", and listing every delegation a
+  # session ever ran would grow the panel without bound. The active TAB is
+  # marked so the panel and the transcript agree on which view the human is
+  # in. Empty when nothing is delegated, so a solo session gains no chrome.
+  @subagent_cap 8
+
+  defp subagent_section(subagents, _active_tab) when map_size(subagents) == 0, do: []
+
+  defp subagent_section(subagents, active_tab) do
+    running =
+      subagents
+      |> Enum.reject(fn {_id, c} -> Map.get(c, :finished?, false) end)
+      |> Enum.sort_by(fn {_id, c} -> Map.get(c, :agent) end)
+
+    case running do
+      [] ->
+        []
+
+      _ ->
+        shown = Enum.take(running, @subagent_cap)
+        hidden = length(running) - length(shown)
+
+        [Styles.gap(), Styles.section_header("subagents", :sidebar)] ++
+          Enum.map(shown, fn {id, c} ->
+            Styles.subagent_line(
+              Map.get(c, :agent),
+              Map.get(c, :model),
+              id == active_tab,
+              @sidebar_width - 4,
+              :sidebar
+            )
+          end) ++
+          if hidden > 0, do: [Styles.section_header("… +#{hidden} more", :sidebar)], else: []
+    end
+  end
 
   # The identity rows for the agent slot (B4/ADR 018). While a turn is IN
   # FLIGHT, running and next are BOTH shown so they can differ (Tab only
