@@ -107,9 +107,18 @@ Consequences
   commands take at most a simple trailing token (``/model <name>``,
   ``/export md``), split on whitespace. A command that needs more opens
   its existing popup instead.
-- ``/`` at a word boundary is now a trigger; ``/`` mid-word (a path,
-  ``and/or``) stays text. This is the same trade ADR 032 accepted for
-  ``@``.
+- ``/`` at the **line start** opens the palette; any ``/`` after text
+  (mid-word like ``and/or``, or after a space like ``run /bin/ls``)
+  stays text. Review F2 tightened this from "word boundary" to "line
+  start": a spilled path the agent was invited to read
+  (``/tmp/spill/...``) stands at the word start and was captured by the
+  palette, so the message could not be typed. This is stricter than the
+  ``@`` trade (ADR 032), and matches ``Commands.parse/1``, which only
+  reads a leading ``/name`` as a command.
+- **A slash that was not a command is written back.** Esc, or Enter with
+  no matching command, returns the typed ``/query`` to the composer
+  (review F2) — the same "the user typed it, do not swallow it" rule
+  ``@`` got on an error (review F7). Before, the message vanished.
 
 Open questions
 --------------

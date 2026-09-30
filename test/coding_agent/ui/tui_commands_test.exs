@@ -126,4 +126,40 @@ defmodule CodingAgent.UI.TuiCommandsTest do
     assert sync(pid).command_popup == nil
     assert ExRatatui.textarea_get_value(sync(pid).textarea) == "and/"
   end
+
+  test "/ after text stays plain text (a path, not a command)", %{root: root} do
+    pid = start_tui(root)
+    fire(pid, :__resize_poll__)
+
+    type(pid, "run /bin/ls")
+    assert sync(pid).command_popup == nil
+    assert ExRatatui.textarea_get_value(sync(pid).textarea) == "run /bin/ls"
+  end
+
+  test "esc returns a typed /query to the composer (a spilled path stays a message)",
+       %{root: root} do
+    pid = start_tui(root)
+    fire(pid, :__resize_poll__)
+
+    type(pid, "/tmp/spill/grep-1")
+    assert sync(pid).command_popup != nil
+
+    key(pid, "esc")
+    st = sync(pid)
+    assert st.command_popup == nil
+    assert ExRatatui.textarea_get_value(st.textarea) == "/tmp/spill/grep-1"
+  end
+
+  test "enter with no matching command returns the query, not nothing", %{root: root} do
+    pid = start_tui(root)
+    fire(pid, :__resize_poll__)
+
+    type(pid, "/notacommand")
+    assert sync(pid).command_popup.matches == []
+
+    key(pid, "enter")
+    st = sync(pid)
+    assert st.command_popup == nil
+    assert ExRatatui.textarea_get_value(st.textarea) == "/notacommand"
+  end
 end

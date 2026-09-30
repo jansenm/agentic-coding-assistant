@@ -1472,14 +1472,19 @@ defmodule CodingAgent.UI.Tui do
             {:noreply, question_text(state, code)}
 
           # `@` at a word boundary opens the file picker (ADR 032) and
-          # `/` at a word boundary opens the command palette (ADR 034).
+          # `/` at the LINE START opens the command palette (ADR 034).
           # Both triggers are TEXT, not keymap actions: `@` and `/` are
           # ordinary chars that must stay typable mid-word (an email, a
           # path like `and/or`).
+          #
+          # `/` fires only at the line start, matching `Commands.parse/1`
+          # (which treats only a leading `/name` as a command): a slash
+          # after a space or mid-word is plain text — the review measured
+          # `run /bin/ls` opening the palette and eating the path (F2).
           code == "@" and at_word_boundary?(state) ->
             open_file_popup(state)
 
-          code == "/" and at_word_boundary?(state) ->
+          code == "/" and at_line_start?(state) ->
             open_command_popup(state)
 
           true ->
@@ -2160,6 +2165,15 @@ defmodule CodingAgent.UI.Tui do
       end
   end
 
+  # The command trigger is stricter than `@`: a command is only a command
+  # at the START of the (composer) line, which is exactly what
+  # `Commands.parse/1` accepts (`/name` as the whole trimmed input). A `/`
+  # after any text — even a space, e.g. `run /bin/ls` — is plain text.
+  defp at_line_start?(state) do
+    {_row, col} = ExRatatui.textarea_cursor(state.textarea)
+    col <= 0
+  end
+
   # Opens the picker: the confined file list is fetched ASYNCHRONOUSLY
   # (review F8): `ListFiles.list/1` (and the `Session.state/1` behind
   # `file_scope/1`) ran synchronously in the TUI GenServer and froze the
@@ -2271,7 +2285,11 @@ defmodule CodingAgent.UI.Tui do
   # -- `/` command palette (ADR 034) -------------------------------------------
 
   # The registry is static, so the palette only filters in memory; no
-  # process call, no scope. The typed `/` is consumed by the trigger.
+  # process call, no scope. The typed `/` is consumed by the trigger and
+  # materializes on selection — or, if the user did not intend a command,
+  # the whole `/query` is written BACK as text on esc / enter-with-no-match
+  # (review F2: a spilled path like `/tmp/spill/grep-1` is a message, and
+  # swallowing it on esc turned the message into nothing).
   defp open_command_popup(state) do
     popup = %{query: "", matches: Commands.all(), index: 0}
     {:noreply, %{state | command_popup: popup}}
@@ -2280,7 +2298,7 @@ defmodule CodingAgent.UI.Tui do
   defp handle_command_popup_key(%Event.Key{code: "enter"}, state) do
     case Enum.at(state.command_popup.matches, state.command_popup.index) do
       nil ->
-        {:noreply, %{state | command_popup: nil}}
+        {:noreply, restore_command_text(state)}
 
       command ->
         run_command(command, [], state)
@@ -2289,7 +2307,7 @@ defmodule CodingAgent.UI.Tui do
 
   defp handle_command_popup_key(%Event.Key{code: code}, state)
        when code in ["esc", "escape"] do
-    {:noreply, %{state | command_popup: nil}}
+    {:noreply, restore_command_text(state)}
   end
 
   defp handle_command_popup_key(%Event.Key{code: "up"}, state) do
@@ -2322,6 +2340,15 @@ defmodule CodingAgent.UI.Tui do
 
   defp refilter_command_popup(popup, query) do
     %{popup | query: query, matches: Commands.filter(query), index: 0}
+  end
+
+  # Close the palette and write the typed `/query` back into the composer,
+  # so a slash that was not meant as a command (the review's spilled-path
+  # case) stays a message instead of vanishing.
+  defp restore_command_text(state) do
+    query = state.command_popup.query
+    state = %{state | command_popup: nil}
+    edit(state, {:text, "/" <> query})
   end
 
   # Runs a registry command. The record names an action the TUI already
