@@ -130,6 +130,71 @@ defmodule CodingAgent.Core.CompactionTest do
     assert Enum.count(ReqLLM.Context.to_list(compacted), &(&1.role == :system)) == 1
   end
 
+  test "summary_message?/prior_summary identify our synthetic summary" do
+    compacted = Compaction.apply(ctx(30), "durable fact: 42")
+    [sys, summary | _] = ReqLLM.Context.to_list(compacted)
+
+    assert Compaction.summary_message?(summary)
+    refute Compaction.summary_message?(sys)
+    refute Compaction.summary_message?(msg("an ordinary user turn"))
+    assert Compaction.prior_summary(compacted) =~ "durable fact: 42"
+    # the wrapper header is stripped, so it can be fed back as prior-summary
+    refute Compaction.prior_summary(compacted) =~ "Conversation summary"
+  end
+
+  test "prior_summary is nil when no summary is present" do
+    assert Compaction.prior_summary(ctx(5)) == nil
+  end
+
+  test "render skips a prior summary (it is carried forward separately)" do
+    compacted = Compaction.apply(ctx(30), "unique-prior-marker")
+    rendered = Compaction.render(ReqLLM.Context.to_list(compacted))
+    refute rendered =~ "unique-prior-marker"
+  end
+
+  test "apply replaces the prior summary, not accumulating them" do
+    once = Compaction.apply(ctx(30), "first")
+    twice = Compaction.apply(once, "second")
+    msgs = ReqLLM.Context.to_list(twice)
+
+    assert Enum.count(msgs, &Compaction.summary_message?/1) == 1
+  end
+
+  # -- the summarizer request (template + rolling) ------------------------------
+
+  test "summary_prompt without a prior summary: template, no prior block" do
+    prompt = Compaction.summary_prompt("USER: do the thing", nil)
+
+    assert prompt =~ "<conversation>\nUSER: do the thing\n</conversation>"
+    refute prompt =~ "<prior-summary>"
+    # the full section template is present (none silently optional)
+    for section <- [
+          "## Objective",
+          "## Important Details",
+          "## Work State",
+          "### Completed",
+          "### Active",
+          "### Blocked",
+          "## Next Move",
+          "## Relevant Files"
+        ] do
+      assert prompt =~ section
+    end
+
+    assert prompt =~ "Keep every section, even when empty"
+    assert prompt =~ "Preserve exact file paths, symbols, commands, error strings"
+    assert prompt =~ "Do not mention the summary process"
+  end
+
+  test "summary_prompt with a prior summary: carry-forward rules present" do
+    prompt = Compaction.summary_prompt("USER: more", "## Objective\n- old goal")
+
+    assert prompt =~ "<prior-summary>\n## Objective\n- old goal\n</prior-summary>"
+    assert prompt =~ "Carry forward objectives"
+    assert prompt =~ "the conversation wins"
+    assert prompt =~ "anything you do not carry into the new summary is lost"
+  end
+
   test "total_chars counts text parts" do
     msgs = [msg("hello"), msg("world", :assistant)]
     assert Compaction.total_chars(msgs) == 10

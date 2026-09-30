@@ -336,12 +336,14 @@ defmodule CodingAgent.Core.Session.Compactor do
   @doc false
   @spec summarize(State.t(), String.t()) :: {:ok, String.t()} | {:error, term()}
   def summarize(state, old_span_text) do
+    prior = Compaction.prior_summary(state.context)
+
     with {:ok, model_input, base_opts} <-
            Request.build(State.effective_model(state), state.provider_config),
          {:ok, response} <-
            ReqLLM.generate_text(
              model_input,
-             summary_context(old_span_text),
+             summary_context(old_span_text, prior),
              summarize_opts(base_opts)
            ) do
       case ReqLLM.Response.text(response) do
@@ -364,26 +366,15 @@ defmodule CodingAgent.Core.Session.Compactor do
     Keyword.put(base_opts, :receive_timeout, inactivity())
   end
 
-  defp summary_context(old_span_text) do
+  defp summary_context(old_span_text, prior_summary) do
+    # No system message: the summarizer is a one-shot text transform, and
+    # the instruction is the request. The request TEXT (template +
+    # rolling-summary rules) is built by `Compaction.summary_prompt/2` —
+    # pure, and the place that wording is testable without a provider.
     Context.new()
-    |> Context.append(ReqLLM.Context.system(summary_prompt()))
-    |> Context.append(ReqLLM.Context.user(old_span_text))
-  end
-
-  # The instruction demands FACTS, not narrative: a prose summary lost
-  # the measured numbers and the resumed agent re-derived them (found
-  # live: 29 rewrites of one document). Tool calls/arguments are now in
-  # the rendered span (`Compaction.render/1`), so "which file / which
-  # command" is answerable; the prompt makes preserving them explicit.
-  defp summary_prompt do
-    "Summarize the following (possibly interrupted) coding-agent " <>
-      "conversation for later reuse. Preserve, as compact bullet facts: " <>
-      "the user's goals; decisions made and why; every file touched " <>
-      "(exact paths); every command/tool run (exact command and its " <>
-      "outcome, including test counts and error messages); numbers " <>
-      "measured; and anything explicitly promised or left unfinished. " <>
-      "Keep exact identifiers, paths and numbers verbatim — do not " <>
-      "paraphrase them away. Omit small talk."
+    |> Context.append(
+      ReqLLM.Context.user(Compaction.summary_prompt(old_span_text, prior_summary))
+    )
   end
 
   # -- The two limits (ADR 037) -------------------------------------------------

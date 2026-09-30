@@ -276,6 +276,14 @@ agent after the first compaction — found live), and the kept tail is
 snapped to a **complete exchange** boundary so a tool result is never
 separated from the assistant call that produced it.
 
+The summary itself is a **fixed template** (Objective / Important
+Details / Work State / Next Move / Relevant Files, every section kept)
+and **rolls forward**: when a prior summary exists, the summarizer folds
+the new span into it rather than re-deriving from the span alone, so a
+fact caught by an early summary is not lost on the third compaction
+(`Compaction.summary_prompt/2`; ADR 037 decision 5). The template is
+adapted from opencode — see :doc:`compaction-strategies`.
+
 **One reader of the limit policy.** ``Compactor.soft_limit/1`` and
 ``Compactor.hard_limit/1`` read the window/limits the session resolved
 once at init; the sidebar renders exactly what the decision uses. A

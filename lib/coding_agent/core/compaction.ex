@@ -65,6 +65,44 @@ defmodule CodingAgent.Core.Compaction do
   @spec min_keep() :: pos_integer()
   def min_keep, do: @min_keep
 
+  # The stable prefix every synthetic summary message carries. It is the
+  # marker that identifies a prior summary, so the next compaction can
+  # CARRY IT FORWARD instead of re-deriving from the span alone (a fact
+  # recorded in an early summary must survive the third compaction, not
+  # only the one that first saw it). Kept as a literal so both the writer
+  # (`apply/2`) and the reader (`prior_summary/1`) cannot drift.
+  @summary_prefix "[Conversation summary — earlier messages were compacted"
+
+  @doc "Whether a message is a synthetic compaction summary."
+  @spec summary_message?(ReqLLM.Message.t()) :: boolean()
+  def summary_message?(%ReqLLM.Message{role: :user} = msg) do
+    # A summary is always our synthetic user message with the marker
+    # prefix; nothing the model or user writes starts with it in practice,
+    # and a false positive at worst skips one message from a render.
+    String.starts_with?(text_of(msg), @summary_prefix)
+  end
+
+  def summary_message?(_), do: false
+
+  @doc """
+  The most recent summary text already in `context`, or `nil`. This is
+  the "prior summary" a rolling compaction folds the new span into, so
+  facts carried by an earlier summary are not lost when the span that
+  first produced them is summarized again.
+  """
+  @spec prior_summary(Context.t() | [ReqLLM.Message.t()]) :: String.t() | nil
+  def prior_summary(%Context{messages: msgs}), do: prior_summary(msgs)
+
+  def prior_summary(msgs) when is_list(msgs) do
+    msgs
+    |> Enum.filter(&summary_message?/1)
+    |> List.last()
+    |> case do
+      nil -> nil
+      msg -> strip_summary_prefix(text_of(msg))
+    end
+  end
+
   @doc """
   The first-turn fallback plan (no usage data yet): chars-based, `:none`
   when below `trigger_chars`, otherwise `{:ok, summary_span,
@@ -202,11 +240,131 @@ defmodule CodingAgent.Core.Compaction do
   and their arguments, and tool-result names, are included so the
   summary can preserve *what was done*, not just prose. The result is
   bounded by `@max_summary_input_chars`, with an explicit marker.
+
+  A prior summary message is SKIPPED: it is carried forward separately
+  (`prior_summary/1`) and re-rendering it as conversation would duplicate
+  it and let the model summarize its own prior summary as if it were new
+  material.
   """
   @spec render(list()) :: String.t()
   def render(msgs) do
-    rendered = Enum.map_join(msgs, "\n\n", &render_message/1)
+    rendered =
+      msgs
+      |> Enum.reject(&summary_message?/1)
+      |> Enum.map_join("\n\n", &render_message/1)
+
     bound_input(rendered)
+  end
+
+  @doc """
+  The summarizer request text for a span, given the prior summary (or
+  `nil` on the first compaction). Two shapes:
+
+    * **first** — fill the fixed template from the span alone;
+    * **rolling** — fold the new span into `prior_summary`, which is
+      discarded after ("anything you do not carry into the new summary is
+      lost"), so a fact recorded in an early summary survives the third
+      compaction instead of being re-derived from the span each time.
+
+  The template enumerates the fact categories (objective, decisions,
+  work state, next move, files) so none is silently dropped, and it is
+  the SAME structure every time, so a resumed agent reads one stable
+  shape. Wording adapted from opencode (MIT, 2026-09-30; see
+  `docs/source/explanation/compaction-strategies`); the identity is ours.
+  """
+  @spec summary_prompt(String.t(), String.t() | nil) :: String.t()
+  def summary_prompt(span, prior) do
+    conversation =
+      "Here is the conversation so far:\n\n<conversation>\n#{span}\n</conversation>"
+
+    case prior do
+      nil ->
+        [
+          conversation,
+          "Create a summary from the conversation in the <conversation> tags " <>
+            "so another coding agent can continue the work.",
+          summary_template()
+        ]
+        |> Enum.join("\n\n")
+
+      prior ->
+        [
+          conversation,
+          "Here is the summary of everything before the <conversation> above:\n\n" <>
+            "<prior-summary>\n#{prior}\n</prior-summary>",
+          summary_update_instructions(),
+          summary_template()
+        ]
+        |> Enum.join("\n\n")
+    end
+  end
+
+  # The fixed fill-in structure. Every section is kept even when empty, so
+  # the model cannot silently omit a category it did not consider.
+  defp summary_template do
+    """
+    Output exactly the Markdown structure shown inside <template>, keeping \
+    the section order unchanged. Do not include the <template> tags or any \
+    text outside the structure in your response.
+
+    <template>
+    ## Objective
+    - [one or two brief sentences: what the user is trying to accomplish]
+
+    ## Important Details
+    - [constraints/preferences, decisions and why, facts and assumptions, \
+    exact context needed to continue, or "(none)"]
+
+    ## Work State
+    ### Completed
+    - [finished work, verified facts, changes made; otherwise "(none)"]
+    ### Active
+    - [current work, partial changes, investigation state; otherwise "(none)"]
+    ### Blocked
+    - [blockers, failing commands, unknowns; otherwise "(none)"]
+
+    ## Next Move
+    1. [immediate concrete action, or "(none)"]
+    2. [next action if known, or "(none)"]
+
+    ## Relevant Files
+    - [path: why it matters, or "(none)"]
+    </template>
+
+    Rules:
+    - Keep every section, even when empty.
+    - Use terse bullets, not prose paragraphs.
+    - Preserve exact file paths, symbols, commands, error strings, URLs and \
+    identifiers verbatim.
+    - Do not mention the summary process or that context was compacted.
+    """
+    |> String.trim_trailing()
+  end
+
+  # The rolling-summary rules (only when a prior summary exists).
+  defp summary_update_instructions do
+    """
+    The <prior-summary> summarizes everything that happened before the \
+    <conversation>. Construct a new summary that combines both. The \
+    <prior-summary> is discarded after this: anything you do not carry into \
+    the new summary is lost.
+
+    When combining:
+    - Carry forward objectives, constraints, user directives, decisions and \
+    parallel workstreams from the <prior-summary> even when the \
+    <conversation> does not mention them. Drop only what is finished and no \
+    longer needed.
+    - The <conversation> is more recent than the <prior-summary>. Where they \
+    conflict, the conversation wins: state the corrected fact and drop the \
+    old claim.
+    - Add new progress, decisions, constraints and context from the \
+    conversation.
+    - Move completed work from "Active" to "Completed".
+    - If a blocker is resolved, update the summary while keeping details \
+    still needed to continue.
+    - Update "Objective" and "Next Move" to reflect the current work state.
+    """
+    |> String.trim_trailing()
   end
 
   defp render_message(%ReqLLM.Message{role: :assistant} = msg) do
@@ -386,5 +544,15 @@ defmodule CodingAgent.Core.Compaction do
 
     #{summary}
     """
+  end
+
+  # The inverse of `compact_summary_text/1` for the rolling-summary path:
+  # the prior summary text without our wrapper, so it can be fed back as
+  # `<prior-summary>` and combined rather than nested.
+  defp strip_summary_prefix(text) do
+    case String.split(text, "\n\n", parts: 2) do
+      [_header, rest] -> String.trim(rest)
+      _ -> text
+    end
   end
 end

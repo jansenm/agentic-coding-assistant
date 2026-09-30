@@ -203,14 +203,14 @@ What we might adopt, and the cost
 
 Ordered by value per unit of change; none is decided here.
 
-1. **Template + rolling summary (prompt-only).** The ``SUMMARY_TEMPLATE``
-   sections and ``SUMMARY_UPDATE_INSTRUCTIONS`` translate directly into
-   our ``summary_prompt/0``: same provider, same call, a longer and more
-   structured instruction. It is the cheapest change with the largest
-   expected effect, and it targets the exact failure we have (facts lost
-   across a third compaction). The cost is a summary that is slightly
-   longer and a prompt we must keep calibrated per model family (the
-   prompt files are per-family, ADR 024).
+1. **Template + rolling summary (prompt-only).** *Adopted 2026-09-30
+   (ADR 037 decision 5).* The ``SUMMARY_TEMPLATE`` sections and
+   ``SUMMARY_UPDATE_INSTRUCTIONS`` translated directly into our
+   ``Compaction.summary_prompt/2``: same provider, same call, a
+   structured instruction and a carried-forward prior summary instead of
+   a free-form one. It is the cheapest change with the largest expected
+   effect, and it targets the exact failure we have (facts lost across a
+   third compaction).
 
 2. **A prune pass (small new mechanism).** Deterministic, no provider
    call, and it shrinks the context before the summarizer sees it, so it

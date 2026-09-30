@@ -17,7 +17,9 @@ Compaction: a soft idle limit, a hard reserve, and lossless summaries
    destroying the facts a resumed agent needs. The threshold becomes a
    percentage of the model window with an absolute reserve under the top;
    the soft limit runs while the session is **idle**, the hard limit runs
-   **pre-call, busy or not**.
+   **pre-call, busy or not**. Decision 5 (a fixed summary template and a
+   carried-forward prior summary) was added 2026-09-30 after reading a
+   sibling implementation; see :doc:`../explanation/compaction-strategies`.
 
 Context
 -------
@@ -157,6 +159,38 @@ path is repaired so a resumed agent does not redo measured work:
   **complete exchange** boundary, keeping at least ``min_keep`` (6)
   recent messages, so the freshest reasoning survives without tearing an
   exchange apart.
+
+**5. The summary is a fixed template and ROLLS FORWARD (amendment,
+2026-09-30).** *owner* After reading how a sibling (opencode 1.18.33)
+compacts — recorded in :doc:`../explanation/compaction-strategies` — the
+free-form summary instruction is replaced by two changes, both prompt
+and plumbing, no new mechanism:
+
+- **A fixed section template.** The summarizer is told to output one
+  Markdown shape (Objective / Important Details / Work State
+  {Completed, Active, Blocked} / Next Move / Relevant Files), **keep
+  every section even when empty**, use terse bullets, preserve exact
+  paths/symbols/commands/error strings verbatim, and **not mention the
+  summary process**. The structure is what makes "the right things"
+  survive: every category is considered, so a fact cannot be dropped
+  merely because the model did not think to include it. A resumed agent
+  also reads one stable shape instead of an arbitrary prose blob.
+- **The prior summary is carried forward.** ``Compaction.prior_summary/1``
+  finds the existing synthetic summary message, and
+  ``Compaction.summary_prompt/2`` folds the new span into it: *"carry
+  forward objectives, constraints, decisions … even when the conversation
+  does not mention them; where they conflict, the conversation wins; the
+  prior summary is discarded after this, so anything you do not carry is
+  lost."* Before this, each compaction re-derived from the span at hand,
+  so a fact recorded in an early summary could vanish on the third pass —
+  exactly what the review session (three compactions, ADR 037 Context)
+  suffered.
+
+``Compaction.render/1`` skips a summary message when rendering the span,
+so the prior summary is never re-summarized as if it were new material;
+it is carried separately, in its own ``<prior-summary>`` block. The
+template is a stable contract, so it lives as a pure function
+(``Compaction.summary_prompt/2``) testable without a provider.
 
 Mechanism
 ---------
