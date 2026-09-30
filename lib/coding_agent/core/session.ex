@@ -313,7 +313,8 @@ defmodule CodingAgent.Core.Session do
   boundary verb, like `/undo`), `:nothing` when there is no whole old
   exchange to summarize.
   """
-  @spec compact(String.t()) :: :started | :not_running | :nothing | {:error, term()}
+  @spec compact(String.t()) ::
+          :started | :turn_running | :already_compacting | :nothing | {:error, term()}
   def compact(id), do: safe_call(id, :compact, "compact", @call_timeout)
 
   @doc """
@@ -710,11 +711,11 @@ defmodule CodingAgent.Core.Session do
   # `Compactor.can_compact?/1` reports false in test_mode, so that path
   # is :nothing, never a booked task with no provider.
   def handle_call(:compact, _from, %{status: status} = state) when status != :idle,
-    do: {:reply, :not_running, state}
+    do: {:reply, :turn_running, state}
 
   def handle_call(:compact, _from, %{idle_compaction_ref: ref} = state)
       when is_reference(ref),
-      do: {:reply, :not_running, state}
+      do: {:reply, :already_compacting, state}
 
   def handle_call(:compact, _from, state) do
     if Compactor.can_compact?(state) do

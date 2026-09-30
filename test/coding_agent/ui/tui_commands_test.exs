@@ -136,6 +136,23 @@ defmodule CodingAgent.UI.TuiCommandsTest do
     assert ExRatatui.textarea_get_value(sync(pid).textarea) == "run /bin/ls"
   end
 
+  test "a slash with text after the cursor is an edit, not a command (review N6)",
+       %{root: root} do
+    pid = start_tui(root)
+    fire(pid, :__resize_poll__)
+
+    type(pid, "abc")
+    # move the cursor to column 0; the composer is not empty
+    key(pid, "left")
+    key(pid, "left")
+    key(pid, "left")
+
+    type(pid, "/")
+    assert sync(pid).command_popup == nil
+    # the slash lands at the cursor, the text is not shifted by a write-back
+    assert ExRatatui.textarea_get_value(sync(pid).textarea) == "/abc"
+  end
+
   test "esc returns a typed /query to the composer (a spilled path stays a message)",
        %{root: root} do
     pid = start_tui(root)

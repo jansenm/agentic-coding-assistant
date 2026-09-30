@@ -715,12 +715,20 @@ defmodule CodingAgent.UI.Tui do
   end
 
   # The store keeps reasoning RAW; the display shape (trailing-newline
-  # trim + hard line breaks) is applied ONCE here, at the resume boundary.
+  # trim + hard line breaks + the thinking cap) is applied ONCE here, at
+  # the resume boundary, through the SAME helper the live path uses.
   # `display_entries/1` then trusts every transcript reasoning entry to be
   # already hardened, so a frame never re-runs `render_reasoning/1` over
   # the whole session (that was O(session) per render — the lag once a
-  # long session's backlog grew).
-  defp harden_entry({:reasoning, t}), do: {:reasoning, render_reasoning(t)}
+  # long session's backlog grew). The cap matters on resume too (review
+  # N10): without it a persisted 200-line trace came back 200 lines long.
+  defp harden_entry({:reasoning, t}) do
+    case cap_reasoning(render_reasoning(t)) do
+      nil -> {:reasoning, ""}
+      text -> {:reasoning, text}
+    end
+  end
+
   defp harden_entry(entry), do: entry
 
   # One stored display row -> a transcript entry. Kinds mirror the live
@@ -1474,19 +1482,20 @@ defmodule CodingAgent.UI.Tui do
             {:noreply, question_text(state, code)}
 
           # `@` at a word boundary opens the file picker (ADR 032) and
-          # `/` at the LINE START opens the command palette (ADR 034).
+          # `/` with an EMPTY composer opens the command palette (ADR 034).
           # Both triggers are TEXT, not keymap actions: `@` and `/` are
           # ordinary chars that must stay typable mid-word (an email, a
           # path like `and/or`).
           #
-          # `/` fires only at the line start, matching `Commands.parse/1`
-          # (which treats only a leading `/name` as a command): a slash
-          # after a space or mid-word is plain text — the review measured
-          # `run /bin/ls` opening the palette and eating the path (F2).
+          # `/` fires only when the composer is empty, matching
+          # `Commands.parse/1` (which treats only a whole `/name` input as
+          # a command): a slash after any text (mid-word or after a space,
+          # `run /bin/ls`) is plain text (review F2), and a slash with text
+          # after the cursor is an edit, not a command (review N6).
           code == "@" and at_word_boundary?(state) ->
             open_file_popup(state)
 
-          code == "/" and at_line_start?(state) ->
+          code == "/" and composer_empty?(state) ->
             open_command_popup(state)
 
           true ->
@@ -2167,13 +2176,17 @@ defmodule CodingAgent.UI.Tui do
       end
   end
 
-  # The command trigger is stricter than `@`: a command is only a command
-  # at the START of the (composer) line, which is exactly what
-  # `Commands.parse/1` accepts (`/name` as the whole trimmed input). A `/`
-  # after any text — even a space, e.g. `run /bin/ls` — is plain text.
-  defp at_line_start?(state) do
-    {_row, col} = ExRatatui.textarea_cursor(state.textarea)
-    col <= 0
+  # The command trigger is the strictest: a command is only a command when
+  # the composer is otherwise EMPTY, matching `Commands.parse/1` (which
+  # reads `/name` as the entire trimmed input). A `/` after any text (even
+  # a space: `run /bin/ls`, or on a later line) is plain text, and a `/`
+  # with text after the cursor is an edit, not a command — the empty rule
+  # means the slash can always be written back in place on esc (review N6:
+  # col-0-mid-text consumed the slash and the write-back moved "abc" to
+  # "/abc"). `@` uses the looser word-boundary rule (a path is appended to
+  # text); `/` is strict because a command is the WHOLE input.
+  defp composer_empty?(state) do
+    state.textarea |> ExRatatui.textarea_get_value() |> String.trim() == ""
   end
 
   # Opens the picker: the confined file list is fetched ASYNCHRONOUSLY
@@ -2434,7 +2447,8 @@ defmodule CodingAgent.UI.Tui do
     case Session.compact(state.session_id) do
       :started -> {:noreply, status_note(state, "compacting context…")}
       :nothing -> {:noreply, status_note(state, "nothing to compact")}
-      :not_running -> {:noreply, status_note(state, "already compacting, or a turn is running")}
+      :turn_running -> {:noreply, status_note(state, "cannot compact while a turn runs")}
+      :already_compacting -> {:noreply, status_note(state, "already compacting")}
       {:error, :not_found} -> {:noreply, status_note(state, "session is gone")}
       {:error, :timeout} -> {:noreply, status_note(state, "session did not respond")}
       {:error, reason} -> {:noreply, status_note(state, "compact failed: #{inspect(reason)}")}
@@ -4250,19 +4264,27 @@ defmodule CodingAgent.UI.Tui do
   # reasoning trace must not eat the screen; the full fidelity lives in
   # the core session). nil when there was nothing to persist.
   defp persist_reasoning(reasoning) do
-    case reasoning |> render_reasoning() |> String.trim() do
+    case cap_reasoning(render_reasoning(reasoning)) do
+      nil -> nil
+      text -> {:reasoning, text}
+    end
+  end
+
+  # The one place reasoning text is trimmed and capped for display: blank
+  # -> nil (nothing to show), otherwise the first @thinking_cap lines. The
+  # live path (`persist_reasoning/1`) and the resume path (`harden_entry/1`)
+  # share it, so the two cannot drift (review N10).
+  defp cap_reasoning(text) do
+    case String.trim(text) do
       "" ->
         nil
 
-      text ->
-        lines = String.split(text, "\n")
+      trimmed ->
+        lines = String.split(trimmed, "\n")
 
-        capped =
-          if length(lines) > @thinking_cap,
-            do: Enum.take(lines, @thinking_cap) |> Enum.join("\n"),
-            else: text
-
-        {:reasoning, capped}
+        if length(lines) > @thinking_cap,
+          do: Enum.take(lines, @thinking_cap) |> Enum.join("\n"),
+          else: trimmed
     end
   end
 
