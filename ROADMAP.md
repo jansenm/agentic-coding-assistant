@@ -136,10 +136,10 @@ same problem viewed from different ends.
      `shell_test.exs`; the former `demo/acceptance_2c.exs` asserted the
      pre-ADR-030 "shell is always-ask" behaviour and was removed.
      LLM round-trip demo (agent summarizes real failures) still to do live.
-   - **2d. grep + glob** ✅ — read-only tools, slot into existing
-     containment (`read_only/1` + `in_scope?/2`; dirs in walks are
-     scope-checked too — the symlinked-dir lesson twice). Grep:
-     line-numbered matches, cap 200, binary sniff, skip `_build`/
+   - **2d. grep + glob** ✅ — read-only tools, running as confined
+     processes under the session profile (ADR 030; `Tools.in_scope?/2`
+     remains only as the discovery predicate, not the enforcement).
+     Grep: line-numbered matches, cap 200, binary sniff, skip `_build`/
      `deps`/`.git`. Glob: pure-string matcher (Elixir 1.20 has no
      `Path.match/2`) in `Tools.Glob.glob_match?/2` — `**` spans
      segments, braces, per-segment `*`/`?` — cap 500. Live-verified:

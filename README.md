@@ -12,7 +12,9 @@ and the ADR log under [docs/source/decisions/](docs/source/decisions/index.rst).
 
 ## Quick start
 
-    # Requirements: Erlang/OTP 28, Elixir 1.20 (see ADR 008)
+    # Requirements: Erlang/OTP 28, Elixir 1.20 (see ADR 008),
+    # a Rust toolchain (rustc/cargo) — ex_ratatui's NIF is built from
+    # source (ADR 035)
     mix deps.get
     mix tui                   # the terminal UI (the only surface)
 
