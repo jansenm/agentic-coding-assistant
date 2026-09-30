@@ -79,9 +79,31 @@ defmodule CodingAgent.Core.Providers.CatalogTest do
 
     assert_receive {:agent, ^id, {:context_window, window, soft, hard}}, 2000
     assert window == 128_000
-    # hard = window - reserve (64k); soft = round(window * 0.5)
-    assert {soft, hard} == {64_000, 64_000}
+    # hard = max(window - reserve(64k), 0.75*window) = 96_000 (N1 floor);
+    # soft = round(window * 0.5) = 64_000
+    assert {soft, hard} == {64_000, 96_000}
     assert {:ok, %{context_window: 128_000}} = Session.state(id)
+
+    :ok = Session.stop(id)
+  end
+
+  test "a model switch re-resolves the window (ADR 037 OQ1, review N9)" do
+    alias CodingAgent.Core.Session
+
+    wait_ready()
+
+    id = "model-switch-#{System.unique_integer([:positive])}"
+
+    {:ok, _pid} =
+      CodingAgent.Core.Session.Supervisor.start_session(id: id, model: "openai:gpt-4o")
+
+    # 128k for gpt-4o
+    assert {:ok, %{context_window: 128_000}} = Session.state(id)
+
+    # switch to a model with a much smaller window: the budget must follow,
+    # else the provider rejects a context the budget thought fit.
+    :ok = Session.set_model(id, "openai:gpt-3.5-turbo")
+    assert {:ok, %{model: "openai:gpt-3.5-turbo", context_window: 16_385}} = Session.state(id)
 
     :ok = Session.stop(id)
   end

@@ -252,16 +252,21 @@ Consequences
 Open questions
 --------------
 
-1. **Per-model windows on model switch (deferred by owner, 2026-09-29;
-   revisit later).** The session may switch models mid-life (the model
-   menu) or an agent may pin one (ADR 017), and different models have
-   different windows. This ADR resolves the window **once at init** and
-   ignores the switch: after a switch the limits keep describing the
-   model the session started on. That is a known, accepted gap for now —
-   a reminder to come back to it, not a silent omission. When revisited:
-   re-resolve on `apply_model/2` (and `apply_agent` when it pins a
-   model), and decide whether a per-model table (``[context_windows]``)
-   is wanted or the single key plus fallback is enough.
+1. **Per-model windows on model switch — RESOLVED (2026-09-30, review
+   N9).** The session may switch models mid-life (the model menu) or an
+   agent may pin one (ADR 017), and different models have different
+   windows. Originally the window was resolved **once at init** and the
+   switch was ignored, so the limits kept describing the old model — now
+   visible in the prompt (ADR 040), and a 128k→16k switch left the
+   session budgeting against 128k while the provider rejected at 16k.
+   ``Session.recompute_window/1`` now re-resolves on every effective-model
+   change: ``apply_model/2`` (both the idle ``set_model`` path and the
+   turn-boundary switch) and the agent switch (a pinned model, ADR 017)
+   all call it, sharing one path with the catalog-ready re-resolve. The
+   sidebar/budget block update via the same ``{:context_window, …}``
+   broadcast. Still open within this question: whether a per-model table
+   (``[context_windows]``) is wanted; the single key plus catalog suffices
+   for now.
 2. **Chunked summarization.** Bounding the input by chunking the old
    span (multiple summarize calls, hierarchical) versus one call with a
    hard character cap. Chunking preserves more but multiplies the

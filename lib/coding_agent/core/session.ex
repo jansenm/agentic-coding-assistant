@@ -1159,7 +1159,13 @@ defmodule CodingAgent.Core.Session do
   # Apply a new model and, with it, the model-selected framework prompt.
   defp apply_model(state, model) do
     base_prompt = Prompt.base(system_prompt_override(state), state.scope_root, model)
+
+    # A different model has a different window (ADR 037 OQ1, review N9):
+    # re-resolve the compaction limits for the NEW effective model, so the
+    # sidebar, the budget block and the next decision describe the model
+    # that will actually run.
     %{state | model: model, base_prompt: base_prompt}
+    |> recompute_window()
   end
 
   # Re-derive the system prompt from the (fresh) base + the current agent
@@ -1259,16 +1265,18 @@ defmodule CodingAgent.Core.Session do
   # Re-resolve the window/limits against the now-loaded catalog. A
   # configured window never listens (it always wins), but re-resolving is
   # harmless; we skip the broadcast when nothing changed.
-  defp refresh_catalog_window(%{scope_root: scope_root, model: model} = state) do
-    snapshot = Config.snapshot(scope_root)
+  defp refresh_catalog_window(state), do: recompute_window(state)
 
-    effective_model =
-      case state.agent do
-        %{model: pinned} when is_binary(pinned) and pinned != "" -> pinned
-        _ -> model
-      end
-
-    {window, soft, hard} = Config.compaction_limits(snapshot, effective_model)
+  # Re-resolve the compaction window/limits for the state's CURRENT
+  # effective model (ADR 037 OQ1, review N9) and broadcast when they
+  # change, so the sidebar, the budget block and the next decision stay
+  # consistent. Called after a catalog warm AND after a model/agent switch
+  # (the switch is what made "resolved once at init" visibly wrong: the
+  # session kept the old model's window, and the provider could then reject
+  # a context the budget thought fit — or vice versa).
+  defp recompute_window(state) do
+    snapshot = Config.snapshot(state.scope_root)
+    {window, soft, hard} = Config.compaction_limits(snapshot, State.effective_model(state))
 
     if {window, soft, hard} ==
          {state.context_window, state.compaction_soft_limit, state.compaction_hard_limit} do
@@ -1553,10 +1561,16 @@ defmodule CodingAgent.Core.Session do
 
     # Then the model: a model switch swaps the model-selected framework
     # prompt (ADR 024) and re-applies the just-set agent body on top.
-    case session.pending_model do
-      :none -> state
-      model -> state |> apply_model(model) |> recompose_prompt()
-    end
+    state =
+      case session.pending_model do
+        :none -> state
+        model -> state |> apply_model(model) |> recompose_prompt()
+      end
+
+    # The agent may pin its own model (ADR 017), so either switch can change
+    # the effective model — and with it the window (review N9). Re-resolve
+    # once, after both are applied, for the state that will actually run.
+    recompute_window(state)
   end
 
   # One turn at a time, in arrival order: after a worker finishes, run
