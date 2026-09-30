@@ -85,8 +85,18 @@ receives the profile (which carries ``:scratch``); a new ``:label``
 option names the spill, and ``finish/3`` writes the FULL buffer to
 scratch when it would truncate, replacing the head/tail marker with a
 note that names the path and gives the head. ``grep`` spills the full
-match list (it has it in BEAM); ``webfetch`` spills the full de-tagged
-text. All three share ``Core.Spill`` — one writer, one naming rule.
+match list; ``webfetch`` spills the full de-tagged text. All three share
+``Core.Spill`` — one writer, one naming rule.
+
+.. note::
+   A review caught that "full match list" was originally untrue: ``grep``
+   ran ``rg`` through ``Exec`` with the default truncation, so it received
+   only a 256 KiB fragment of the ``--json`` stream, and both the reported
+   match count and the spill were drawn from that fragment (measured:
+   "1133 of 1133" for 120 000 hits). ``grep`` now reads the stream whole
+   (``Exec.run(…, truncate: false)``), so the count and the spill are
+   both complete; the timeout bounds the search and ``Core.Spill`` caps
+   the file.
 
 **3. ``read_file`` gains ``offset`` and ``limit`` (1-based lines).** Read
 as a confined ``sed -n 'start[,end]p'`` through ``Tools.FileExec``, so the

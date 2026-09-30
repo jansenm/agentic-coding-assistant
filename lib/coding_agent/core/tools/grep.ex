@@ -136,9 +136,19 @@ defmodule CodingAgent.Core.Tools.Grep do
     # like shell/git. Tools.profile/1 builds the profile; a confining
     # sandbox bounds the process (no writes, no network), and the scope
     # is already mountable, so delegation needs nothing else.
+    #
+    # `truncate: false` is REQUIRED here (review F1): rg's `--json` stream
+    # is machine input, and Exec's default 256 KiB cut would let grep see
+    # only a fraction of the matches — the count and the "full list" spill
+    # were both drawn from that fragment, so the tool reported "1133 of
+    # 1133" for a search with 120 000 hits and spilled the same truncated
+    # set. Reading the stream whole makes the count and the spill true; the
+    # 60s timeout bounds a pathological search, and the spill itself is
+    # capped (ADR 038). It also drops Exec's own spill of the raw JSON
+    # excerpt, which had no reader.
     profile = scope |> Tools.profile() |> Map.put(:root, root)
 
-    case Exec.run({:exec, rg, args}, root, @exec_timeout, profile) do
+    case Exec.run({:exec, rg, args}, root, @exec_timeout, profile, truncate: false) do
       # The target does not exist (or is out of the profile's reach):
       # rg's own diagnostic is the model-readable answer.
       {:ok, out, 2} when out != "" ->

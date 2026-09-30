@@ -155,6 +155,23 @@ defmodule CodingAgent.Core.Tools.GrepGlobTest do
       assert out =~ "capped at #{Tools.Grep.max_results()}"
       File.rm!(big)
     end
+
+    test "the cap counts ALL matches, not just an Exec-truncated fragment (review F1)", %{
+      scope: scope
+    } do
+      # Enough matches that rg's --json stream far exceeds Exec's 256 KiB
+      # cut: before the fix grep saw only the fragment, so the total was
+      # wrong and the "full list" spill held the same fragment.
+      big = Path.join(@root, "many.txt")
+      lines = for i <- 1..4_000, do: "match-#{i}-#{String.duplicate("x", 120)}"
+      File.write!(big, Enum.join(lines, "\n"))
+
+      {:ok, out} = ReqLLM.Tool.execute(grep_tool(scope), %{"pattern" => "match-"})
+
+      # the true total, not the pre-truncation fragment count
+      assert out =~ "capped at #{Tools.Grep.max_results()} of 4000 matches"
+      File.rm!(big)
+    end
   end
 
   # -- helpers ----------------------------------------------------------------
