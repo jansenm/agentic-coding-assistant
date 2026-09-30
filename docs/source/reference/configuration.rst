@@ -101,6 +101,15 @@ naming the file (ADR 014).
      - integer
      - ``5000``
      - Milliseconds to wait between provider-timeout retries (ADR 033).
+   * - ``provider_receive_timeout_ms``
+     - integer
+     - ``120000``
+     - Provider transport inactivity timeout for a call (ADR 041). On a
+       streaming call this is the inter-chunk idle budget: the socket may
+       be silent this long before the call fails. Without it the turn
+       inherited req_llm's 30s default, which a reasoning model's slow
+       first token can exceed. A non-positive value falls through to the
+       default.
    * - ``checkpoint_depth``
      - integer
      - ``1``

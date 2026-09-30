@@ -148,3 +148,9 @@ Open questions
    today (a global/project knob). A flaky local ollama and a cloud
    endpoint may want different policies; the provider table
    (ADR 014) is the natural home.
+
+.. note::
+   The transport timeout this retry chain waits on was implicit until
+   ADR 041: the turn inherited req_llm's 30s default, so
+   ``3 × (30s + 5s)`` was the real worst case for a silent model. ADR 041
+   makes it explicit (``provider_receive_timeout_ms``, default 120s).

@@ -39,6 +39,7 @@ defmodule CodingAgent.Core.Config do
   @default_compaction_inactivity_ms 120_000
   @default_provider_retries 3
   @default_provider_retry_delay_ms 5_000
+  @default_provider_receive_timeout_ms 120_000
   @default_checkpoint_depth 1
 
   # req_llm's canonical reasoning efforts (ADR 029); the accepted
@@ -346,6 +347,31 @@ defmodule CodingAgent.Core.Config do
   def provider_retry_delay_ms(scope_root), do: provider_retry_delay_ms(snapshot(scope_root))
 
   @doc """
+  The provider transport INACTIVITY timeout for a call, in milliseconds
+  (ADR 041).
+
+  On a streaming call this is the inter-chunk idle budget: the socket may
+  be silent for at most this long before the call fails. The turn path
+  previously set nothing and inherited ``req_llm``'s 30s default, which a
+  reasoning model's slow first token can exceed (measured: a 35s stall
+  failed at ~30s on the turn path). Resolution mirrors
+  ``provider_retries/1``: the layered ``provider_receive_timeout_ms`` in
+  ``config.toml`` (project over global), the app-env override, then the
+  default (120_000 — ``req_llm``'s own image value, well under the 300s
+  thinking path).
+  """
+  @spec provider_receive_timeout_ms(String.t() | nil | t()) :: pos_integer()
+  def provider_receive_timeout_ms, do: provider_receive_timeout_ms(nil)
+
+  def provider_receive_timeout_ms(%__MODULE__{} = snapshot),
+    do:
+      configured_positive_count(snapshot, "provider_receive_timeout_ms") ||
+        app(:provider_receive_timeout_ms, @default_provider_receive_timeout_ms)
+
+  def provider_receive_timeout_ms(scope_root),
+    do: provider_receive_timeout_ms(snapshot(scope_root))
+
+  @doc """
   How many git checkpoints a session keeps for ``/undo`` (ADR 036).
 
   A checkpoint is written before every turn; ``/undo`` restores the most
@@ -370,6 +396,16 @@ defmodule CodingAgent.Core.Config do
   defp configured_count(%__MODULE__{config: config}, key) do
     case config[key] do
       n when is_integer(n) and n >= 0 -> n
+      _ -> nil
+    end
+  end
+
+  # Like `configured_count/2` but requires a POSITIVE integer: for a
+  # timeout, 0 is never meaningful (it would fail every call instantly),
+  # so a 0 falls through to the next source instead of being accepted.
+  defp configured_positive_count(%__MODULE__{config: config}, key) do
+    case config[key] do
+      n when is_integer(n) and n > 0 -> n
       _ -> nil
     end
   end

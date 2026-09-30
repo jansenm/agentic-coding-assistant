@@ -259,6 +259,19 @@ defmodule CodingAgent.Core.ConfigTest do
       assert Config.provider_retries(snapshot) == 3
     end
 
+    test "provider receive timeout defaults to 120000 and honors config.toml" do
+      assert Config.provider_receive_timeout_ms(%Config{config: %{}}) == 120_000
+
+      assert Config.provider_receive_timeout_ms(%Config{
+               config: %{"provider_receive_timeout_ms" => 300_000}
+             }) == 300_000
+
+      # non-positive falls through to the default (a zero-timeout call is never wanted)
+      assert Config.provider_receive_timeout_ms(%Config{
+               config: %{"provider_receive_timeout_ms" => 0}
+             }) == 120_000
+    end
+
     test "checkpoint depth defaults to 1 and honors config.toml" do
       assert Config.checkpoint_depth(%Config{config: %{}}) == 1
       assert Config.checkpoint_depth(%Config{config: %{"checkpoint_depth" => 0}}) == 0

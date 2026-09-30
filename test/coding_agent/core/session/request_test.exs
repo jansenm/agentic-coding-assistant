@@ -65,4 +65,10 @@ defmodule CodingAgent.Core.Session.RequestTest do
     assert {:error, _} = Request.build(nil, %{})
     assert {:error, _} = Request.build("", %{})
   end
+
+  test "sets the transport receive_timeout so the turn never inherits req_llm's 30s (ADR 041)" do
+    assert {:ok, _input, opts} = Request.build("ollama:qwen3:14b", %{})
+    assert opts[:receive_timeout] == CodingAgent.Core.Config.provider_receive_timeout_ms()
+    assert opts[:receive_timeout] > 30_000
+  end
 end

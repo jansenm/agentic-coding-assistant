@@ -16,12 +16,18 @@ defmodule CodingAgent.Core.Session.Request do
   fails the turn.
   """
 
-  alias CodingAgent.Core.{Providers, UserConfig}
+  alias CodingAgent.Core.{Config, Providers, UserConfig}
 
   @doc """
   Assembles the call for the given model spec under the given
   provider-config snapshot. Returns `{:ok, model_input, opts}` or an
   error tuple (unknown provider, bad entry).
+
+  The transport inactivity timeout (`receive_timeout`, ADR 041) is set
+  here — once, for BOTH call sites (the turn loop and the compactor's
+  summarize call) — so neither inherits `req_llm`'s 30s default and the
+  two cannot drift. The compactor still overrides it with its own
+  inactivity budget for the summarize call.
   """
   @spec build(String.t() | nil, %{String.t() => term()} | nil) ::
           {:ok, String.t() | map(), keyword()} | {:error, term()}
@@ -32,11 +38,12 @@ defmodule CodingAgent.Core.Session.Request do
 
     with {:ok, model_input} <- Providers.model_input(name, model_id, cfg),
          {:ok, opts} <- call_opts(name, cfg) do
-      {:ok, model_input, opts}
+      {:ok, model_input,
+       Keyword.put(opts, :receive_timeout, Config.provider_receive_timeout_ms())}
     end
   end
 
-  # Credentials: env first (UserConfig.credential), then keyless.
+  # Credentials: env first, then keyless.
   defp call_opts(provider, cfg) do
     case UserConfig.credential(provider) do
       {:ok, %{api_key: key}} -> {:ok, with_url(provider, cfg, api_key: key)}
