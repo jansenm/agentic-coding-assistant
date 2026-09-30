@@ -28,10 +28,19 @@ defmodule CodingAgent.Core.Session.Request do
   summarize call) — so neither inherits `req_llm`'s 30s default and the
   two cannot drift. The compactor still overrides it with its own
   inactivity budget for the summarize call.
+
+  `scope_root` is threaded into the timeout read so a PROJECT
+  `config.toml` can set it, like every other layered knob (review N23:
+  without it the project layer was silently ignored). `build/2` is the
+  no-scope form, for the global/app-env read and the tests.
   """
   @spec build(String.t() | nil, %{String.t() => term()} | nil) ::
           {:ok, String.t() | map(), keyword()} | {:error, term()}
-  def build(model, provider_config) do
+  def build(model, provider_config), do: build(model, provider_config, nil)
+
+  @spec build(String.t() | nil, %{String.t() => term()} | nil, String.t() | nil | Config.t()) ::
+          {:ok, String.t() | map(), keyword()} | {:error, term()}
+  def build(model, provider_config, scope_root) do
     [name | rest] = String.split(model || "", ":", parts: 2)
     model_id = Enum.at(rest, 0) || ""
     cfg = provider_config || %{}
@@ -39,7 +48,7 @@ defmodule CodingAgent.Core.Session.Request do
     with {:ok, model_input} <- Providers.model_input(name, model_id, cfg),
          {:ok, opts} <- call_opts(name, cfg) do
       {:ok, model_input,
-       Keyword.put(opts, :receive_timeout, Config.provider_receive_timeout_ms())}
+       Keyword.put(opts, :receive_timeout, Config.provider_receive_timeout_ms(scope_root))}
     end
   end
 

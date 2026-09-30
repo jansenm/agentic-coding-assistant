@@ -2371,7 +2371,8 @@ defmodule CodingAgent.Core.Session do
     context = Keyword.get(overrides, :context, state.context)
     tools = Keyword.get(overrides, :tools, current_tools(state))
 
-    with {:ok, model_input, base_opts} <- Request.build(model, state.provider_config) do
+    with {:ok, model_input, base_opts} <-
+           Request.build(model, state.provider_config, state.scope_root) do
       opts =
         base_opts
         |> Keyword.put(:tools, tools)

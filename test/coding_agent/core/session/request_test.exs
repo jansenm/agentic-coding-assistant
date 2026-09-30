@@ -71,4 +71,23 @@ defmodule CodingAgent.Core.Session.RequestTest do
     assert opts[:receive_timeout] == CodingAgent.Core.Config.provider_receive_timeout_ms()
     assert opts[:receive_timeout] > 30_000
   end
+
+  test "reads a PROJECT provider_receive_timeout_ms when given a scope root (review N23)" do
+    root = Path.join(System.tmp_dir!(), "req-timeout-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(Path.join(root, ".coding-agent"))
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    File.write!(
+      Path.join(root, ".coding-agent/config.toml"),
+      "provider_receive_timeout_ms = 7000\n"
+    )
+
+    # the scope-aware form sees the project value ...
+    assert {:ok, _input, opts} = Request.build("ollama:qwen3:14b", %{}, root)
+    assert opts[:receive_timeout] == 7_000
+
+    # ... while the no-scope form reads only global/app-env
+    assert {:ok, _input, global} = Request.build("ollama:qwen3:14b", %{})
+    assert global[:receive_timeout] == CodingAgent.Core.Config.provider_receive_timeout_ms()
+  end
 end

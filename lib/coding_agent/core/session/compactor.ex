@@ -372,7 +372,7 @@ defmodule CodingAgent.Core.Session.Compactor do
     prior = Compaction.prior_summary(state.context)
 
     with {:ok, model_input, base_opts} <-
-           Request.build(State.effective_model(state), state.provider_config),
+           Request.build(State.effective_model(state), state.provider_config, state.scope_root),
          {:ok, response} <-
            ReqLLM.generate_text(
              model_input,
