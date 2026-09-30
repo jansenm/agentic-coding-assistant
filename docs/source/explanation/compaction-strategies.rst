@@ -65,11 +65,14 @@ The attached rules are the interesting part:
 - **Do not mention the summary process or that context was compacted** —
   the resumed agent must not know (or narrate) that it was summarized.
 
-Our `summary_prompt/0` (``Session.Compactor``) is a free-form paragraph
-naming the same *kinds* of facts ("every file touched (exact paths);
-every command/tool run …; numbers measured") but imposing no structure,
-so the shape of the result is the model's choice. The template is a
-different mechanism: it enumerates the categories so none is forgotten.
+At the time this page was first written, our instruction
+(`Compactor.summary_prompt/0`) was a free-form paragraph naming the same
+*kinds* of facts ("every file touched (exact paths); every command/tool
+run …; numbers measured") but imposing no structure, so the shape of the
+result was the model's choice. The template is a different mechanism: it
+enumerates the categories so none is forgotten. This harness has since
+adopted the template (`Compaction.summary_prompt/2`, ADR 037 decision 5),
+keeping the measurements demand in §1.
 
 2. Summaries accumulate (rolling summary)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
