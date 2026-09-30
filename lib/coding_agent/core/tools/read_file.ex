@@ -35,12 +35,14 @@ defmodule CodingAgent.Core.Tools.ReadFile do
         offset: [
           type: :integer,
           required: false,
-          doc: "1-based first line to read (requires `limit`; omit both for the whole file)"
+          doc:
+            "1-based first line to read (default 1; requires `limit` when given; omit both for the whole file)"
         ],
         limit: [
           type: :integer,
           required: false,
-          doc: "Number of lines to read from `offset` (default 200 when `offset` is given)"
+          doc:
+            "Number of lines to read from `offset` (or the first `limit` lines when `offset` is omitted; default 200)"
         ]
       ],
       callback: fn args -> execute(scope, args) end
@@ -72,7 +74,10 @@ defmodule CodingAgent.Core.Tools.ReadFile do
   end
 
   defp window(scope, path, offset, limit) do
-    with {:ok, offset} <- positive(offset, "offset"),
+    # `limit` alone means "the first N lines": offset defaults to 1. An
+    # explicit offset is still validated (0/negative is a real error), so
+    # `offset || 1` only fills the absent case (0 is truthy in Elixir).
+    with {:ok, offset} <- positive(offset || 1, "offset"),
          limit <- if(limit == nil, do: @default_limit, else: limit),
          {:ok, limit} <- positive(limit, "limit") do
       case Tools.FileExec.read_window(scope, path, offset, limit, @timeout_secs) do

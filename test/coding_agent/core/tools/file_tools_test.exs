@@ -114,6 +114,16 @@ defmodule CodingAgent.Core.Tools.FileToolsTest do
       assert win =~ "lines 1-200 of 300"
     end
 
+    test "limit without an offset reads from the first line", %{scope: scope} do
+      File.write!(Path.join(scope.root, "lines.txt"), Enum.map_join(1..10, "\n", &"L#{&1}"))
+      tool = find_tool("read_file", scope)
+
+      {:ok, win} = ReqLLM.Tool.execute(tool, %{"path" => "lines.txt", "limit" => 3})
+      assert win =~ "L1\nL2\nL3"
+      assert win =~ "lines 1-3 of 10"
+      refute win =~ "offset must be"
+    end
+
     test "rejects a non-positive offset", %{scope: scope} do
       tool = find_tool("read_file", scope)
       assert {:error, msg} = ReqLLM.Tool.execute(tool, %{"path" => "top.txt", "offset" => 0})
