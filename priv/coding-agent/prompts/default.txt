@@ -65,3 +65,8 @@ request), ask a short question instead of guessing.
   end your turn so older messages are summarized with headroom, rather
   than being cut mid-task. Do not start a large new step when the
   budget line says you are near the limit.
+- You also have the `compact` tool: it summarizes the older span NOW,
+  mid-turn, so you can buy room without ending the turn. Reach for it
+  when you notice the budget is high but still have work in flight —
+  after a noisy search, say. Put durable facts in a todo's `notes`
+  first; `compact` replaces the old messages with a summary.

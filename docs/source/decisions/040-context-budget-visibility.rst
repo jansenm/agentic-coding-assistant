@@ -72,6 +72,12 @@ gain a short "Context budget" section: the line exists, summarizing is
 lossy, use ``notes`` for durable facts, and end the turn at a step
 boundary when past the line.
 
+**5. The model gets its own lever: the ``compact`` tool (amendment
+2026-09-30).** See open question 1 (now closed). The tool is described
+there; it is registered in the read-only bucket (intercepted by the
+session, like ``todowrite``), and the budget block names it in every
+case so the model knows the verb exists before it is at a wall.
+
 Consequences
 ------------
 
@@ -89,12 +95,21 @@ Consequences
 Open questions
 --------------
 
-1. **Does it help?** This is the experiment. The next long agent run
-   shows whether the model self-regulates (ends turns / records notes) or
-   ignores the line. A self-triggered ``compact`` tool is the natural
-   second half IF the experiment shows the model wants to act but has no
-   lever beyond ending the turn (which costs a human re-prompt). Not
-   built here — forcing more compaction is deliberately deferred.
+1. **Does it help? — CLOSED, and the second half is BUILT (2026-09-30).**
+   The first long agent run answered it: over a full day of review work
+   the model triggered **no** compaction of its own and **was**
+   auto-compacted mid-turn three times (plus four turn-end soft passes).
+   It saw the budget line but had no lever beyond ending its turn. The
+   `compact` tool is therefore built (``Core.Tools.Compact``): the model
+   can summarize the older span NOW, mid-turn, exactly like the human's
+   `/compact` — it ignores the thresholds ("is it over a line?" is the
+   wrong question when the model has decided it wants headroom), is
+   intercepted by the session like ``todowrite``, and returns a one-line
+   result (how much was reclaimed, or "nothing to compact"). The budget
+   block now NAMES the lever in every case, so the verb is known before
+   the wall, and the guidance past soft/hard points at it. Whether the
+   model uses it WELL (not too early, not instead of recording notes) is
+   the open half of the experiment.
 2. **The soft pass still cannot fire mid-turn.** Visibility lets the
    model *end the turn* to trigger it, but a turn that must stay open in
    one shot still relies on the hard pass. A round-boundary soft pass is a

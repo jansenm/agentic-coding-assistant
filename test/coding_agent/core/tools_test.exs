@@ -8,8 +8,17 @@ defmodule CodingAgent.Core.ToolsTest do
       names = Tools.read_only() |> Enum.map(& &1.name)
       # `question` is read-only by nature: the session intercepts the call
       # and the human answers it (ADR 027). `todowrite` is pure session
-      # state, also intercepted (ADR 031).
-      assert names == ["list_dir", "read_file", "grep", "glob", "question", "todowrite"]
+      # state (ADR 031) and `compact` is the model's own compaction lever
+      # (ADR 040 OQ1), both intercepted too.
+      assert names == [
+               "list_dir",
+               "read_file",
+               "grep",
+               "glob",
+               "question",
+               "todowrite",
+               "compact"
+             ]
     end
 
     test "tools are valid ReqLLM.Tool structs" do

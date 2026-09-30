@@ -256,7 +256,11 @@ they are the questions we have actually been asking:
 
 So the "let the agent manage its own context" experiment (ADR 040) has no
 off-the-shelf precedent to copy; the parts with precedent are the
-summarizer prompt and prune.
+summarizer prompt and prune. As of 2026-09-30 this harness goes one step
+past the reference: the ``compact`` tool (ADR 040 decision 5) lets the
+MODEL trigger a summary mid-turn, which opencode's runtime-only
+compaction deliberately does not. Whether that is an improvement or a
+foot-gun is precisely what the experiment is now measuring.
 
 References
 ----------

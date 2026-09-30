@@ -237,5 +237,23 @@ defmodule CodingAgent.Core.Session.PromptTest do
       assert Prompt.with_budget(base(), %{used: 1, window: nil}) == base()
       assert Prompt.with_budget(base(), %{}) == base()
     end
+
+    test "names the compact tool as a lever, calm and past the lines (ADR 040 OQ1)" do
+      calm =
+        Prompt.with_budget(base(), %{used: 100_000, window: 500_000, soft: 250_000, hard: 436_000})
+        |> system_text()
+
+      past_soft =
+        Prompt.with_budget(base(), %{used: 300_000, window: 500_000, soft: 250_000, hard: 436_000})
+        |> system_text()
+
+      at_hard =
+        Prompt.with_budget(base(), %{used: 440_000, window: 500_000, soft: 250_000, hard: 436_000})
+        |> system_text()
+
+      for text <- [calm, past_soft, at_hard] do
+        assert text =~ "`compact` tool"
+      end
+    end
   end
 end

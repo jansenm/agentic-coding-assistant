@@ -194,6 +194,11 @@ defmodule CodingAgent.Core.Session.Prompt do
   than having it happen mid-think. When nothing is near a limit the block
   is still sent — one constant-size line per request — so the model
   learns the metric instead of meeting it only at the wall.
+
+  Since the `compact` tool exists (ADR 040 OQ1, answered 2026-09-30) the
+  block also names that lever: the model can summarize NOW instead of
+  only ending its turn. The lever is mentioned in the calm case too, so
+  the model knows the verb exists before it is at a wall.
   """
   @spec with_budget(ReqLLM.Context.t(), map()) :: ReqLLM.Context.t()
   def with_budget(context, %{window: window} = budget) when is_integer(window) and window > 0 do
@@ -211,7 +216,8 @@ defmodule CodingAgent.Core.Session.Prompt do
     base =
       "Context budget: ~#{k(used)} / #{k(window)} tokens (#{pct}%). " <>
         "Older messages are summarized automatically at #{k(soft)} when your turn ends, " <>
-        "and forced at #{k(hard)} before a call."
+        "and forced at #{k(hard)} before a call; you may also call the `compact` tool " <>
+        "any time to summarize the older span now and free room."
 
     case guidance(used, soft, hard) do
       nil -> base
@@ -225,13 +231,14 @@ defmodule CodingAgent.Core.Session.Prompt do
     cond do
       used >= hard ->
         "You are at the hard limit: older messages will be summarized before your next " <>
-          "call. Record any fact you must keep in a todo's `notes` now."
+          "call. Call `compact` now to do it deliberately, and record any fact you must " <>
+          "keep in a todo's `notes` first."
 
       used >= soft ->
-        "You are past the auto-summary line. When the current step is done, end your turn " <>
-          "(or ask the human to continue) so older messages are summarized with headroom — " <>
-          "and put durable facts (paths, numbers, decisions) in a todo's `notes` first; " <>
-          "notes survive summarization."
+        "You are past the auto-summary line. Call `compact` when the current step is " <>
+          "done to buy headroom without losing your place — and put durable facts " <>
+          "(paths, numbers, decisions) in a todo's `notes` first; notes survive " <>
+          "summarization."
 
       true ->
         nil

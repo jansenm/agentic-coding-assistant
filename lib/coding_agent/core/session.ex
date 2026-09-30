@@ -1949,14 +1949,23 @@ defmodule CodingAgent.Core.Session do
     q_calls = question_calls(calls)
     t_calls = task_calls(calls)
     d_calls = todo_calls(calls)
+    c_calls = compact_calls(calls)
 
     answerable =
-      Enum.reject(calls, &(&1 in q_calls or &1 in t_calls or &1 in d_calls))
+      Enum.reject(calls, &(&1 in q_calls or &1 in t_calls or &1 in d_calls or &1 in c_calls))
 
     # A `todowrite` call mutates session state, not the filesystem, and
     # never parks (ADR 031). Apply it up front so the round's sibling
     # calls and the next request see the new list.
     {state, todo_results} = apply_todos(state, d_calls)
+
+    # A `compact` call (ADR 040 OQ1) shrinks the context NOW, mid-turn,
+    # ignoring the thresholds — the model decided it wants headroom (the
+    # same verb the human has via `/compact`). Apply it before the round's
+    # request is built so siblings and the next call see the smaller
+    # context. Like `todowrite` it never parks and has no filesystem
+    # effect.
+    {state, compact_results} = apply_compact(state, c_calls)
 
     plan = Gate.classify(state.id, state.policy, state.scope_root, answerable)
 
@@ -1979,6 +1988,7 @@ defmodule CodingAgent.Core.Session do
     known_results =
       answered ++
         todo_results ++
+        compact_results ++
         blacklist_results ++
         no_reason_results ++ Enum.map(plan.denied, &Gate.denied_result/1)
 
@@ -2003,7 +2013,7 @@ defmodule CodingAgent.Core.Session do
 
         broadcast_tools(
           state,
-          known_calls ++ t_calls ++ plan.auto ++ plan.pending ++ q_calls ++ d_calls,
+          known_calls ++ t_calls ++ plan.auto ++ plan.pending ++ q_calls ++ d_calls ++ c_calls,
           results
         )
 
@@ -2013,7 +2023,13 @@ defmodule CodingAgent.Core.Session do
       plan.pending == [] ->
         auto_results = execute_tools(state, plan.auto)
         results = known_results ++ task_results ++ auto_results
-        broadcast_tools(state, known_calls ++ t_calls ++ plan.auto ++ q_calls ++ d_calls, results)
+
+        broadcast_tools(
+          state,
+          known_calls ++ t_calls ++ plan.auto ++ q_calls ++ d_calls ++ c_calls,
+          results
+        )
+
         state = complete_round(state, calls, results)
         finish_round(state)
 
@@ -2035,7 +2051,7 @@ defmodule CodingAgent.Core.Session do
 
         broadcast_tools(
           state,
-          known_calls ++ t_calls ++ plan.auto ++ d_calls,
+          known_calls ++ t_calls ++ plan.auto ++ d_calls ++ c_calls,
           known_results ++ task_results ++ auto_results
         )
 
@@ -2053,6 +2069,72 @@ defmodule CodingAgent.Core.Session do
       {_id, name, _args} = ToolCall.normalize(call)
       name == CodingAgent.Core.Tools.TodoWrite.name()
     end)
+  end
+
+  # The `compact` calls in a round (ADR 040 OQ1). Intercepted before the
+  # gate, like `todowrite`: pure session-state mutation (the context
+  # shrinks), no filesystem effect, never parks.
+  defp compact_calls(calls) do
+    Enum.filter(calls, fn call ->
+      {_id, name, _args} = ToolCall.normalize(call)
+      name == CodingAgent.Core.Tools.Compact.name()
+    end)
+  end
+
+  # Runs the model's own compaction, synchronously, in the turn worker.
+  # `Compactor.compact_now/2` ignores the soft/hard thresholds (the model
+  # asked — "is it over a line?" is the wrong question, exactly like the
+  # human's `/compact`). It blocks the worker on the summarize call, which
+  # is the whole point: the round's siblings and the NEXT request must see
+  # the smaller context, and the model gets a result describing what
+  # happened. `test_mode` short-circuits (a clean `{state, false}`).
+  defp apply_compact(state, []), do: {state, []}
+
+  defp apply_compact(state, c_calls) do
+    {state, results} =
+      Enum.reduce(c_calls, {state, []}, fn call, {state, acc} ->
+        {id, _name, _args} = ToolCall.normalize(call)
+        before = Compactor.projected_tokens(state)
+
+        case run_compact(state) do
+          {state, true} ->
+            reclaimed = max(before - Compactor.projected_tokens(state), 0)
+
+            result = %{
+              id: id,
+              name: CodingAgent.Core.Tools.Compact.name(),
+              content:
+                "compacted: older messages summarized, ~#{reclaimed} tokens reclaimed " <>
+                  "(now ~#{Compactor.projected_tokens(state)} of #{Compactor.window(state)})"
+            }
+
+            {state, [result | acc]}
+
+          {state, false} ->
+            result = %{
+              id: id,
+              name: CodingAgent.Core.Tools.Compact.name(),
+              content:
+                "nothing to compact: no older exchange to summarize yet (context is " <>
+                  "~#{Compactor.projected_tokens(state)} of #{Compactor.window(state)})"
+            }
+
+            {state, [result | acc]}
+        end
+      end)
+
+    {state, Enum.reverse(results)}
+  end
+
+  # The in-turn compaction body. The `idle_compaction_runner` seam (kept
+  # in the worker snapshot) is reused so a test can drive the shrink
+  # without a provider, exactly as the background pass does; otherwise
+  # `compact_now/2` runs the real summarizer synchronously.
+  defp run_compact(state) do
+    case state.idle_compaction_runner do
+      nil -> Compactor.compact_now(state)
+      fun -> fun.(state)
+    end
   end
 
   # Applies each todo call (the LAST one wins, as a full replace) and

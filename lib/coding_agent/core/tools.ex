@@ -19,6 +19,7 @@ defmodule CodingAgent.Core.Tools do
   for enforcement any more.
   """
 
+  alias CodingAgent.Core.Tools.Compact
   alias CodingAgent.Core.Tools.Edit
   alias CodingAgent.Core.Tools.Git
   alias CodingAgent.Core.Tools.Glob
@@ -67,7 +68,11 @@ defmodule CodingAgent.Core.Tools do
       Question.tool(scope),
       # pure session state, intercepted before execution (ADR 031);
       # available to every agent including plan
-      TodoWrite.tool(scope)
+      TodoWrite.tool(scope),
+      # the model's own compaction lever (ADR 040 OQ1): pure session
+      # state, intercepted before execution, no filesystem effect and no
+      # human prompt; available to every agent including plan
+      Compact.tool(scope)
     ]
   end
 
