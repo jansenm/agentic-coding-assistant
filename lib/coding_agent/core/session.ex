@@ -91,7 +91,16 @@ defmodule CodingAgent.Core.Session do
     GenServer.start_link(__MODULE__, opts, name: via(id))
   end
 
-  @doc "Returns the session's current state (messages, status)."
+  @doc """
+  Returns the session's current state (messages, status).
+
+  Degrades instead of raising (the TUI reads the session from many
+  render/key paths): a gone session (`:noproc`), a normal shutdown, or a
+  `:timeout` on a busy one reads as `{:error, :not_found | :timeout}`.
+  Note that an unexpected `:exit` — a real crash in the session process —
+  also reads as `:not_found`; it is logged at error level so the crash is
+  not entirely silent. All callers branch on `{:error, _}`.
+  """
   @spec state(String.t()) :: {:ok, State.t()} | {:error, :not_found | :timeout}
   def state(id) do
     GenServer.call(via(id), :state)
@@ -102,10 +111,18 @@ defmodule CodingAgent.Core.Session do
     # terminated the whole TUI server live (log 2026-09-29: ExRatatui.Server
     # "terminating ... GenServer.call(... :state, 5000) EXIT time out").
     # Callers already branch on `{:error, _}`, so degrade instead.
-    :exit, {:noproc, _} -> {:error, :not_found}
-    :exit, {:normal, _} -> {:error, :not_found}
-    :exit, {:timeout, _} -> {:error, :timeout}
-    :exit, _ -> {:error, :not_found}
+    :exit, {:noproc, _} ->
+      {:error, :not_found}
+
+    :exit, {:normal, _} ->
+      {:error, :not_found}
+
+    :exit, {:timeout, _} ->
+      {:error, :timeout}
+
+    :exit, reason ->
+      Logger.error("session #{id} state read exited: #{inspect(reason)}")
+      {:error, :not_found}
   end
 
   @doc """

@@ -178,6 +178,10 @@ defmodule CodingAgent.Core.SessionTest do
       assert state.model == default
     end
 
+    test "state/1 degrades a gone session to :not_found instead of raising" do
+      assert {:error, :not_found} = Session.state("does-not-exist-#{System.unique_integer()}")
+    end
+
     test "subscribed process receives status events (self-included)" do
       # subscribing from the test process must not register the test in
       # the event registry more than once, and DOWN cleanup must not crash
