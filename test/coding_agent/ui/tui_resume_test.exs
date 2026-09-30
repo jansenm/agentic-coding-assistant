@@ -202,6 +202,41 @@ defmodule CodingAgent.UI.TuiResumeTest do
     end
   end
 
+  describe "reasoning hardening on resume" do
+    # The store keeps reasoning RAW; the display shape (hard line breaks
+    # + no trailing newline) is applied once when a row is resumed.
+    # `display_entries/1` trusts that and no longer re-runs it per frame
+    # (the O(session)-per-render lag once the backlog grew).
+
+    test "resumed reasoning rows are hardened once at the resume boundary" do
+      sid = "resume-reasoning-#{System.unique_integer()}"
+
+      :ok =
+        Store.save(
+          CodingAgent.Core.Session.State.new(
+            id: sid,
+            context: ReqLLM.Context.new([ReqLLM.Context.user("hi")]),
+            model: "m",
+            status: :idle
+          )
+        )
+
+      :ok = Store.append_display(sid, :reasoning, "first thought\nsecond thought\n")
+
+      pid =
+        start_supervised!(
+          {Tui, [name: nil, test_mode: {80, 24}, resume_id: sid, scope_root: File.cwd!()]}
+        )
+
+      reasoning = Enum.find(sync(pid).transcript, fn e -> elem(e, 0) == :reasoning end)
+      assert {:reasoning, text} = reasoning
+      # trailing newline trimmed...
+      refute String.ends_with?(text, "\n")
+      # ...and a hard break appended to the non-final line
+      assert text == "first thought  \nsecond thought"
+    end
+  end
+
   describe "orderly fallback on an unloadable resume" do
     # User request: a corrupt/invalid session file should produce a
     # friendly message and an orderly retreat — not a crash and not a

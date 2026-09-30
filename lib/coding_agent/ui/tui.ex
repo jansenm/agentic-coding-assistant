@@ -707,9 +707,19 @@ defmodule CodingAgent.UI.Tui do
         entries
         |> Enum.map(&display_entry/1)
         |> Enum.reject(&is_nil/1)
+        |> Enum.map(&harden_entry/1)
         |> Enum.reject(fn entry -> entry_text(entry) == "" end)
     end
   end
+
+  # The store keeps reasoning RAW; the display shape (trailing-newline
+  # trim + hard line breaks) is applied ONCE here, at the resume boundary.
+  # `display_entries/1` then trusts every transcript reasoning entry to be
+  # already hardened, so a frame never re-runs `render_reasoning/1` over
+  # the whole session (that was O(session) per render — the lag once a
+  # long session's backlog grew).
+  defp harden_entry({:reasoning, t}), do: {:reasoning, render_reasoning(t)}
+  defp harden_entry(entry), do: entry
 
   # One stored display row -> a transcript entry. Kinds mirror the live
   # transcript shapes so the render layer treats resumed and live entries
@@ -3337,7 +3347,11 @@ defmodule CodingAgent.UI.Tui do
         pane_h = max(h - layout_overhead(state), 1)
 
         if state.last_pane_width == pane_w and state.last_pane_height == pane_h do
-          {:noreply, state}
+          # unchanged size: nothing to repaint, so skip the frame. The
+          # 500ms idle poll was forcing a full render every tick (the
+          # transcript rebuild is O(session)), which read as the UI being
+          # busy while merely idle.
+          {:noreply, state, %{render?: false}}
         else
           state =
             state
@@ -3348,7 +3362,7 @@ defmodule CodingAgent.UI.Tui do
         end
 
       _ ->
-        {:noreply, state}
+        {:noreply, state, %{render?: false}}
     end
   end
 
@@ -4059,8 +4073,8 @@ defmodule CodingAgent.UI.Tui do
   # and the fence markers themselves are skipped: code blocks preserve
   # their own newlines and injected spaces corrupt the literal text.
   # Idempotent (a line already ending in "  " is left alone) because it
-  # runs again when an entry is restored and whenever display shape is
-  # rebuilt.
+  # still runs on restored entries via harden_entry/1; the live path
+  # hardens once in persist_reasoning/1 and never again per frame.
   defp harden_line_breaks(text) do
     lines = String.split(text, "\n")
     last = length(lines) - 1
@@ -4215,7 +4229,7 @@ defmodule CodingAgent.UI.Tui do
         case entry do
           {:user, t} ->
             agent = Enum.at(agents, turn)
-            {acc ++ [{:user, t, agent}], turn + 1, agent}
+            {[{:user, t, agent} | acc], turn + 1, agent}
 
           {:assistant, t} ->
             # attribute to the CURRENT turn's agent; when the turn_agents
@@ -4225,27 +4239,28 @@ defmodule CodingAgent.UI.Tui do
             # so the assistant box footer shows the real agent, not the
             # neutral "agent" label.
             agent = last || Map.get(state, :active_agent)
-            {acc ++ [{:assistant, t, agent}], turn, last}
+            {[{:assistant, t, agent} | acc], turn, last}
 
           {:info, t} when is_binary(t) ->
             agent = last || Map.get(state, :active_agent)
-            {acc ++ [{:info, t, agent}], turn, last}
+            {[{:info, t, agent} | acc], turn, last}
 
           {kind, _} when kind in [:reasoning, :tool] ->
-            # persisted reasoning is trimmed too (the window math must
-            # see the same string the widget paints)
-            entry =
-              case entry do
-                {:reasoning, t} -> {:reasoning, render_reasoning(t)}
-                other -> other
-              end
-
-            {acc ++ [entry], turn, last}
+            # already in display shape: live reasoning was hardened by
+            # persist_reasoning/1 before it entered the transcript, resumed
+            # reasoning by harden_entry/1 at the resume boundary — so this
+            # hot path must NOT re-run render_reasoning/1.
+            {[entry | acc], turn, last}
 
           other ->
-            {acc ++ [other], turn, last}
+            {[other | acc], turn, last}
         end
       end)
+
+    # prepend+reverse: the reduce accumulated in reverse, one O(n) pass.
+    # (`acc ++ [x]` here made every frame O(n^2) — the second half of the
+    # long-session lag.)
+    transcript = Enum.reverse(transcript)
 
     # The live (streaming) entries carry the CURRENT turn's agent: the
     # last recorded turn agent when there is one, else the active_agent
