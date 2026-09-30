@@ -1650,9 +1650,10 @@ defmodule CodingAgent.Core.Session do
 
         # user stop (Interrupt.request/1): the partial text streamed so
         # far becomes the turn's answer (opencode esc parity — nothing
-        # lost, the model can be nudged on from there)
+        # lost, the model can be nudged on from there), or, with no text,
+        # a boundary-like stop with a note. See `interrupted_turn/2`.
         {:interrupted, partial} ->
-          state = state |> drop_interrupt() |> complete_turn(partial, [])
+          state = interrupted_turn(state, partial)
           {state, {:ok, state}}
 
         {:error, reason} ->
@@ -1671,6 +1672,21 @@ defmodule CodingAgent.Core.Session do
     persist(state)
     state
   end
+
+  # A stop that arrived mid-stream. With partial TEXT, that text is the
+  # turn's answer (opencode esc parity — nothing lost). With NO text — a
+  # stop during reasoning, or before the first delta — an answer would be
+  # empty: `complete_turn("", [])` appended an empty assistant message and
+  # broadcast an empty `llm_message`, so the turn ended with no visible
+  # word and looked like the agent had "just stopped working" (found live).
+  # Fall through to the same boundary end the between-rounds stop uses.
+  @doc false
+  @spec interrupted_turn(State.t(), String.t()) :: State.t()
+  def interrupted_turn(state, partial) when partial in [nil, ""],
+    do: state |> drop_interrupt() |> stop_at_boundary()
+
+  def interrupted_turn(state, partial),
+    do: state |> drop_interrupt() |> complete_turn(partial, [])
 
   # The permission checkpoint (ADR 010): read-only tools pass by policy
   # (allow class defaults); state-changing tools get the effective
@@ -2210,7 +2226,9 @@ defmodule CodingAgent.Core.Session do
         {state, {:ok, state}}
 
       {:interrupted, partial} ->
-        state = state |> drop_interrupt() |> complete_turn(partial, [])
+        # same rule as the main loop: keep partial text, or end with a
+        # note when nothing streamed (never an empty assistant message)
+        state = interrupted_turn(state, partial)
         {state, {:ok, state}}
 
       {:error, reason} ->

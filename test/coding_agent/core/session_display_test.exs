@@ -147,4 +147,59 @@ defmodule CodingAgent.Core.Session.DisplayTest do
       assert [%{kind: :reasoning}, %{kind: :assistant}] = Store.display(id)
     end
   end
+
+  describe "a stop with no streamed text" do
+    test "ends the turn with a note, not an empty assistant message (found live)" do
+      # The bug: a stop during reasoning (nothing but thoughts streamed)
+      # hit `complete_turn("", [])`, which appended an EMPTY assistant
+      # message to the context and broadcast an empty `llm_message` — no
+      # answer, no note, indistinguishable from "the agent just stopped".
+      id = "disp-stop-#{System.unique_integer([:positive])}"
+
+      {:ok, _} =
+        CodingAgent.Core.Session.Supervisor.start_session(
+          id: id,
+          scope_root: @tmp_root,
+          test_mode: true
+        )
+
+      {:ok, state} = Session.state(id)
+      state = Session.interrupted_turn(state, "")
+
+      # idle, and NO empty assistant message was appended
+      assert state.status == :idle
+
+      refute Enum.any?(state.context.messages, fn m ->
+               m.role == :assistant and m.content == [] and (m.tool_calls || []) == []
+             end)
+
+      # a visible reason reached the transcript
+      assert Enum.any?(Store.display(id), &(&1.kind == :info and &1.text =~ "stopped"))
+
+      # the flag is cleared so the next turn starts clean
+      refute CodingAgent.Core.Interrupt.requested?(id)
+    end
+
+    test "keeps the partial text when something streamed" do
+      id = "disp-stop-partial-#{System.unique_integer([:positive])}"
+
+      {:ok, _} =
+        CodingAgent.Core.Session.Supervisor.start_session(
+          id: id,
+          scope_root: @tmp_root,
+          test_mode: true
+        )
+
+      {:ok, state} = Session.state(id)
+      state = Session.interrupted_turn(state, "half an answer")
+
+      assert state.status == :idle
+      assert Enum.any?(state.context.messages, &(&1.role == :assistant))
+
+      assert Enum.any?(
+               Store.display(id),
+               &(&1.kind == :assistant and &1.text =~ "half an answer")
+             )
+    end
+  end
 end
