@@ -2546,12 +2546,35 @@ defmodule CodingAgent.Core.Session do
                }}
           end
         catch
-          {:stream_error, error} -> {:error, {:stream_error, error}}
+          {:stream_error, error} ->
+            # The stream failed mid-flight, but `req_llm`'s transport
+            # retry loop (`ReqLLM.Streaming.Retry.stream/6`) may still be
+            # retrying on a fresh socket BEHIND this returned error
+            # (review N29: an idle timeout is classified `:retry` there,
+            # not `:no_retry`, so it retries even though the pre-start
+            # classification path would not). The session is about to
+            # retry the same provider itself, so an abandoned stream must
+            # be closed — otherwise the old attempts keep hitting the
+            # provider, adding parallel load and cost (up to 4 × 4 = 16
+            # provider hits for one failed turn). Same close the hard
+            # interrupt path uses.
+            _ = safe_close(stream_response)
+            {:error, {:stream_error, error}}
         after
           Interrupt.unregister(state.id)
         end
       end
     end
+  end
+
+  # Best-effort close of an abandoned stream response: it must never
+  # raise into the catch clause that is already handling a failure.
+  defp safe_close(stream_response) do
+    ReqLLM.StreamResponse.close(stream_response)
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
   end
 
   # Waits `ms` in small chunks so a user stop (esc) is honored promptly
