@@ -174,7 +174,17 @@ dazu `Catalog.ready?`-Guard gegen den Kalt-Lock, N12), `N9` (Fenster wurde
 beim Modellwechsel nicht neu aufgelöst; `Session.recompute_window/1`),
 `N3` (1-MiB-Walk-Cap dokumentiert), `N12/N13/N14` (Doku), `N6/N10/N11`
 (Nits), `N8` (Doku-Zeile, wo man die Notizen liest), `N4`/`N15` waren
-schon erledigt bzw. bestätigt. Commits `a244f99`…`e359b48`.
+schon erledigt bzw. bestätigt. Commits `a244f99`…`e78cc94`.
+
+**Erledigt (Review-Abarbeitung 2026-09-30, `review-fdbeaed.md`):** die
+sieben neuen Befunde aus dem Summary-Vorlagen-Commit — `N16`/`N20b` (nach
+einer Compaction bestand der einzige „alte" Span aus der Summary selbst;
+`render/1` leerte ihn und ein Provider-Call überschrieb die Summary;
+`trim/1` fraß sie zuerst — `take_pinned/1` pinnt System **und** Summary),
+`N17` (die Vorlage ließ „numbers measured"/Testzahlen fallen; wieder
+drin), `N18` (`max_tokens` im Summarize-Aufruf + Cap in `apply/2`), `N19`
+(Doku), `N21` (Marker-Randfälle), `N22` (Prior-Einrahmung getestet).
+Commits `bbcbd88`…`4e49557`.
 
 **Erledigt (Code-Review-Abarbeitung 2026-09-29):** die Korrektheits-
 Befunde aus `review-2026-09-28.md` sind abgearbeitet —
