@@ -188,5 +188,47 @@ defmodule CodingAgent.Core.Session.TodoWriteTest do
       assert {:ok, todos} = TodoWrite.parse(%{"todos" => ok})
       assert length(todos) == 64
     end
+
+    test "carries agent-private notes, trimmed but not flattened" do
+      assert {:ok, [todo]} =
+               TodoWrite.parse(%{
+                 "todos" => [
+                   %{"content" => "A", "status" => "pending", "notes" => "  line1\nline2  "}
+                 ]
+               })
+
+      assert todo["notes"] == "line1\nline2"
+    end
+
+    test "a blank note is dropped, so an item keeps its minimal shape" do
+      assert {:ok, [todo]} =
+               TodoWrite.parse(%{
+                 "todos" => [%{"content" => "A", "status" => "pending", "notes" => "   "}]
+               })
+
+      refute Map.has_key?(todo, "notes")
+    end
+
+    test "rejects a non-string note and caps per-item and total notes size" do
+      assert {:error, reason} =
+               TodoWrite.parse(%{
+                 "todos" => [%{"content" => "A", "status" => "pending", "notes" => 42}]
+               })
+
+      assert reason =~ "must be a string"
+
+      long = [%{"content" => "A", "status" => "pending", "notes" => String.duplicate("x", 501)}]
+      assert {:error, reason} = TodoWrite.parse(%{"todos" => long})
+      assert reason =~ "notes"
+
+      # total cap across items
+      many =
+        Enum.map(1..20, fn i ->
+          %{"content" => "t#{i}", "status" => "pending", "notes" => String.duplicate("y", 400)}
+        end)
+
+      assert {:error, reason} = TodoWrite.parse(%{"todos" => many})
+      assert reason =~ "in total"
+    end
   end
 end

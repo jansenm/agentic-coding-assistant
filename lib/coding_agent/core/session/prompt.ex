@@ -184,7 +184,7 @@ defmodule CodingAgent.Core.Session.Prompt do
       Enum.map_join(todos, "\n", fn todo ->
         status = todo["status"] || todo[:status] || "pending"
         content = todo["content"] || todo[:content] || ""
-        "- [#{status}] #{content}"
+        "- [#{status}] #{content}#{notes_suffix(todo)}"
       end)
 
     "Current todo list (maintained with `todowrite`; send the complete list to update):\n" <>
@@ -192,6 +192,20 @@ defmodule CodingAgent.Core.Session.Prompt do
   end
 
   def todos_block(_), do: nil
+
+  # The agent-private notes for an item, rendered as an indented sub-line
+  # (or several). Not shown in the sidebar — only here, so the model reads
+  # its own durable facts back on every request and compaction cannot eat
+  # them (the same survival property the list itself relies on).
+  defp notes_suffix(todo) do
+    case todo["notes"] || todo[:notes] do
+      notes when is_binary(notes) and notes != "" ->
+        notes |> String.split("\n", trim: true) |> Enum.map_join("", &"\n    #{&1}")
+
+      _ ->
+        ""
+    end
+  end
 
   # Appends `block` to the system message (the first message) of
   # `context`, one blank line between. The stored context is untouched.

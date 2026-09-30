@@ -25,6 +25,14 @@ defmodule CodingAgent.Core.Tools.TodoWrite do
   @max_items 64
   @max_content_chars 500
 
+  # `notes` is the agent-private half of an item: not rendered in the
+  # sidebar, only read back in the injected block. It is where durable
+  # facts live that compaction must not lose (paths, numbers, decisions).
+  # Per-item AND total caps, because notes ride every request too and a
+  # 500-char note on each of 64 items would double the prompt.
+  @max_notes_chars 500
+  @max_notes_total_chars 4_000
+
   @doc "Whether `name` is the todo-write tool."
   @spec name() :: String.t()
   def name, do: @tool_name
@@ -47,7 +55,13 @@ defmodule CodingAgent.Core.Tools.TodoWrite do
 
       Each item has:
       - `content`: the task, in imperative form ("Fix the parser");
-      - `status`: one of `pending`, `in_progress`, `completed`.
+      - `status`: one of `pending`, `in_progress`, `completed`;
+      - `notes` (optional): private working memory you keep for yourself.
+        It is NOT shown in the user's panel; it is read back to you in
+        this block on every request. Use it to hold facts you must not
+        lose when the conversation is summarized — exact paths, test
+        counts, decisions and why, measured numbers. Keep it to a few
+        lines per item.
 
       Use it when a task spans several steps, after receiving new
       instructions, or before starting a new plan. Keep exactly one item
@@ -76,6 +90,13 @@ defmodule CodingAgent.Core.Tools.TodoWrite do
                   "type" => "string",
                   "enum" => @statuses,
                   "description" => "The item's state"
+                },
+                "notes" => %{
+                  "type" => "string",
+                  "description" =>
+                    "Optional private memory for this item (not shown in the " <>
+                      "panel; read back to you each request). Hold facts that " <>
+                      "must survive summarization: paths, numbers, decisions."
                 }
               },
               "required" => ["content", "status"]
@@ -104,15 +125,31 @@ defmodule CodingAgent.Core.Tools.TodoWrite do
   def parse(args) do
     case Map.get(args, "todos") || Map.get(args, :todos) do
       list when is_list(list) ->
-        if length(list) > @max_items do
-          {:error, "too many todos (#{length(list)}); the limit is #{@max_items}"}
-        else
-          parse_items(list)
+        cond do
+          length(list) > @max_items ->
+            {:error, "too many todos (#{length(list)}); the limit is #{@max_items}"}
+
+          notes_total(list) > @max_notes_total_chars ->
+            {:error,
+             "todo `notes` are too long in total (limit #{@max_notes_total_chars} chars); " <>
+               "keep each item's notes to the facts compaction must not lose"}
+
+          true ->
+            parse_items(list)
         end
 
       other ->
         {:error, "`todos` must be an array, got: #{inspect(other)}"}
     end
+  end
+
+  defp notes_total(list) do
+    Enum.reduce(list, 0, fn item, acc ->
+      case Map.get(item, "notes") || Map.get(item, :notes) do
+        n when is_binary(n) -> acc + String.length(n)
+        _ -> acc
+      end
+    end)
   end
 
   defp parse_items(items) do
@@ -132,6 +169,7 @@ defmodule CodingAgent.Core.Tools.TodoWrite do
   defp parse_item(item) when is_map(item) do
     content = Map.get(item, "content") || Map.get(item, :content)
     status = Map.get(item, "status") || Map.get(item, :status)
+    notes = Map.get(item, "notes") || Map.get(item, :notes)
 
     cond do
       not is_binary(content) or String.trim(content) == "" ->
@@ -144,12 +182,30 @@ defmodule CodingAgent.Core.Tools.TodoWrite do
         {:error,
          "todo `status` must be one of #{Enum.join(@statuses, ", ")}, got: #{inspect(status)}"}
 
+      notes != nil and not is_binary(notes) ->
+        {:error, "todo `notes` must be a string, got: #{inspect(notes)}"}
+
+      is_binary(notes) and String.length(notes) > @max_notes_chars ->
+        {:error, "a todo `notes` is too long (limit #{@max_notes_chars} chars)"}
+
       true ->
-        {:ok, %{"content" => flatten(content), "status" => status}}
+        {:ok, put_notes(%{"content" => flatten(content), "status" => status}, notes)}
     end
   end
 
   defp parse_item(other), do: {:error, "each todo must be an object, got: #{inspect(other)}"}
+
+  # `notes` is kept as-is (not flattened to one line): it never reaches the
+  # sidebar, only the model, so line breaks are useful structure. A blank
+  # note is dropped, so the item shape stays minimal.
+  defp put_notes(todo, notes) when is_binary(notes) do
+    case String.trim(notes) do
+      "" -> todo
+      trimmed -> Map.put(todo, "notes", trimmed)
+    end
+  end
+
+  defp put_notes(todo, _), do: todo
 
   # One line per item: a newline in model-supplied content would break the
   # sidebar's row math. The text survives; the line break does not.

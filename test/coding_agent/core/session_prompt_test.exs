@@ -163,4 +163,27 @@ defmodule CodingAgent.Core.Session.PromptTest do
       assert Prompt.with_environment(context, "m", "/tmp") == context
     end
   end
+
+  describe "todos_block/1" do
+    test "one [status] line per item" do
+      block = Prompt.todos_block([%{"content" => "Fix parser", "status" => "in_progress"}])
+      assert block =~ "- [in_progress] Fix parser"
+    end
+
+    test "renders agent-private notes as an indented sub-line" do
+      block =
+        Prompt.todos_block([
+          %{"content" => "Fix parser", "status" => "in_progress", "notes" => "a.ex:42\n13 fails"}
+        ])
+
+      assert block =~ "- [in_progress] Fix parser"
+      assert block =~ "\n    a.ex:42"
+      assert block =~ "\n    13 fails"
+    end
+
+    test "an item with no notes has no sub-line" do
+      block = Prompt.todos_block([%{"content" => "A", "status" => "pending"}])
+      refute block =~ "\n    "
+    end
+  end
 end

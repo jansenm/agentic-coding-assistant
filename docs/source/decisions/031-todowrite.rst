@@ -101,6 +101,27 @@ mirrors the list from ``{:todos_updated, todos}`` (broadcast with the
 tool result) and seeds it from ``Session.state/1`` on mount, exactly as
 ``session_usage`` and ``session_effort`` are seeded.
 
+**6. An item may carry agent-private ``notes`` (amendment, 2026-09-30).**
+Each item optionally takes ``notes``: durable facts the model wants to
+keep — exact paths, test counts, decisions and why, measured numbers. It
+is the place to externalize knowledge that would otherwise sit in old
+messages that compaction can summarize away. Two deliberate properties:
+
+  - **Notes are NOT shown in the sidebar.** The panel is the human's view
+    of *intent and progress* (a checklist); notes are the model's private
+    working memory. Rendering them would turn the panel into a log and let
+    a private channel drift into the human-facing one.
+  - **Notes DO ride the injected block.** ``Prompt.todos_block/1`` renders
+    them as an indented sub-line under their item, so the model reads them
+    back on every request and compaction cannot eat them — the same
+    survival property the list itself relies on (decision 4).
+
+Because notes ride every request, they are bounded: ``@max_notes_chars``
+(500) per item and ``@max_notes_total_chars`` (4000) across the list, or
+the block would bloat the system prompt. Notes are kept as-is (not
+flattened to one line, unlike ``content``) — they never reach the
+sidebar's row math, so line breaks are useful structure.
+
 Consequences
 ------------
 
