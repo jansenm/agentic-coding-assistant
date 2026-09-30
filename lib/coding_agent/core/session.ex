@@ -2824,9 +2824,12 @@ defmodule CodingAgent.Core.Session do
 
   # Apply a background compaction result only if the context still matches
   # the fingerprint captured at start; otherwise discard it (a new turn
-  # began while the summary ran). Only the context and the backoff are
+  # began while the summary ran). Only the context, usage and backoff are
   # adopted from the task's state — it is a worker_snapshot, so its
-  # subscribers/worker handles are stale.
+  # subscribers/worker handles are stale. `usage` comes along because a
+  # successful compaction resets `last_input_tokens` to the shrunk
+  # context's estimate (see Compactor.note_shrunk_context/1), and the
+  # sidebar must stop showing the pre-compaction count.
   defp apply_compaction_result(state, new_state) do
     fp = state.idle_compaction_fp
     state = %{state | idle_compaction_ref: nil, idle_compaction_fp: nil}
@@ -2843,6 +2846,7 @@ defmodule CodingAgent.Core.Session do
         state = %{
           state
           | context: new_state.context,
+            usage: new_state.usage,
             compaction_backoff: new_state.compaction_backoff
         }
 

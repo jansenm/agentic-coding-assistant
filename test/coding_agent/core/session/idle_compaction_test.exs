@@ -91,6 +91,31 @@ defmodule CodingAgent.Core.Session.IdleCompactionTest do
            end)
   end
 
+  test "the adopted background result lowers the displayed token count" do
+    # The live bug: after the soft pass the sidebar still showed the
+    # pre-compaction count. The worker resets last_input_tokens to the
+    # shrunk context's estimate (Compactor.note_shrunk_context/1); the
+    # session must adopt that usage, not only the context.
+    id = "idle-usage-#{System.unique_integer()}"
+
+    runner = fn state ->
+      summary = %ReqLLM.Message{role: :user, content: [ReqLLM.Message.ContentPart.text("S")]}
+      context = %{state.context | messages: [summary]}
+      usage = %{state.usage | last_input_tokens: 42}
+
+      {%{state | context: context, usage: usage}, true}
+    end
+
+    start(id, idle_compaction_runner: runner)
+
+    assert {:ok, _} = Session.run(id, "hello")
+
+    assert eventually(fn ->
+             {:ok, st} = Session.state(id)
+             st.usage.last_input_tokens == 42
+           end)
+  end
+
   test "a stale idle result (context changed) is discarded" do
     id = "idle-stale-#{System.unique_integer()}"
     parent = self()

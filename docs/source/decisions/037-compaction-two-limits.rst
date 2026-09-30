@@ -248,6 +248,13 @@ Consequences
   dropped.
 - Cost: two thresholds and a background task are more moving parts; the
   fingerprint guard is the subtle piece and needs its own tests.
+- After a successful compaction, ``last_input_tokens`` is reset to the
+  compacted context's own estimate and a ``{:usage_updated, ...}`` event
+  is broadcast, so the sidebar, the next trigger decision and the
+  model-facing budget block (ADR 040) all agree at once. Without it the
+  display kept showing the pre-compaction count until the next provider
+  turn happened to report a fresh one (found live: 400k after a
+  successful soft pass).
 
 Open questions
 --------------

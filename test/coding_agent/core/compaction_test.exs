@@ -9,7 +9,7 @@ defmodule CodingAgent.Core.CompactionTest do
   import ExUnit.CaptureLog
 
   alias CodingAgent.Core.Compaction
-  alias CodingAgent.Core.Session.{Compactor, State}
+  alias CodingAgent.Core.Session.{Compactor, State, Usage}
 
   defp msg(text, role \\ :user) do
     %ReqLLM.Message{role: role, content: [ReqLLM.Message.ContentPart.text(text)]}
@@ -423,6 +423,27 @@ defmodule CodingAgent.Core.CompactionTest do
     assert Enum.at(msgs, 1).role == :user
     assert s2.compaction_backoff == 0
     assert s2.compaction_warned == false
+  end
+
+  test "a successful compaction resets last_input_tokens to the shrunk size" do
+    # The bug (found live): the sidebar shows Usage.last_input_tokens, and
+    # a compaction left it at the pre-compaction 136k, so the display kept
+    # showing the old number until the next provider turn happened to
+    # report a fresh count.
+    s = state(usage: %{last_input_tokens: 136_000})
+    assert Usage.last_input_tokens(s.usage) == 136_000
+
+    {s2, true} = Compactor.maybe_compact(s, fn _state, _span -> {:ok, "a short summary"} end)
+
+    # the count now reflects the compacted context, not the old 136k
+    assert Usage.last_input_tokens(s2.usage) < 136_000
+
+    assert Usage.last_input_tokens(s2.usage) ==
+             div(Compaction.total_chars(s2.context.messages), 4)
+
+    # and it is what the next decision sees, so the shrunk context does
+    # not immediately look over the limit again
+    assert Compactor.decide(s2, Compactor.soft_limit(s2)) == :none
   end
 
   test "maybe_compact_idle uses the soft limit, not the hard one" do

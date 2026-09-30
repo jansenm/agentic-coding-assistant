@@ -291,8 +291,24 @@ defmodule CodingAgent.Core.Session.Compactor do
     # compaction_warned resets with the new context: the NEXT approach
     # to the trigger deserves its warning again (warn-once per approach)
     state = %{state | context: context, compaction_backoff: 0, compaction_warned: false}
+    state = note_shrunk_context(state)
     broadcast(state, {:context_compacted, Compaction.min_keep()})
     {state, true}
+  end
+
+  # `last_input_tokens` is the count the PROVIDER last saw, so after the
+  # context shrinks it overstates the real size by the whole summarized
+  # span. Left alone, the sidebar keeps showing the pre-compaction number
+  # (found live: 400k after a successful compaction, until the next
+  # provider turn happened to report a fresh count). Reset it to the
+  # compacted context's own chars/4 estimate — the same fallback
+  # `projected_tokens/1` uses — and broadcast, so the display, the next
+  # trigger and the model-facing budget block all agree at once.
+  defp note_shrunk_context(%State{usage: usage} = state) do
+    estimate = div(Compaction.total_chars(state.context.messages), 4)
+    usage = %{usage | last_input_tokens: estimate}
+    broadcast(state, {:usage_updated, usage})
+    %{state | usage: usage}
   end
 
   # A failure degrades. The soft pass simply backs off. The hard pass
@@ -334,7 +350,8 @@ defmodule CodingAgent.Core.Session.Compactor do
           {:info, "· context over the hard limit — trimmed #{dropped} old messages"}
         )
 
-        {%{state | context: trimmed, compaction_warned: false}, true}
+        state = note_shrunk_context(%{state | context: trimmed, compaction_warned: false})
+        {state, true}
 
       :none ->
         # nothing left to trim (a huge single exchange): keep it and let
