@@ -16,6 +16,8 @@ erl_crash.dump
 /.idea/
 *.iml
 
+review-*.*
+
 # Docs build
 /docs/build/
 
