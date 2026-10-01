@@ -121,7 +121,7 @@ defmodule CodingAgent.Core.Session.PromptTest do
   # -- ADR 024: the per-call environment block ----------------------------
 
   describe "environment/2" do
-    test "carries the model, cwd, git-repo flag, platform and date", %{root: root} do
+    test "carries the model, cwd, git-repo flag, platform, date and harness", %{root: root} do
       block = Prompt.environment("ollama:test", root)
 
       assert block =~ "<env>"
@@ -130,6 +130,17 @@ defmodule CodingAgent.Core.Session.PromptTest do
       assert block =~ "Is directory a git repo: no"
       assert block =~ "Platform: "
       assert block =~ "Today's date: #{Date.utc_today()}"
+      assert block =~ "Harness: #{Prompt.harness()}"
+    end
+
+    test "names the software the model is running in, not only the machine" do
+      # This repo is both the harness and the product, so the block has to
+      # say something about the harness: a reviewing agent otherwise has to
+      # infer that the thing it is inside is the thing it is reading.
+      block = Prompt.environment("m", File.cwd!())
+
+      assert block =~ ~r/^  Harness: \S.*$/m
+      refute block =~ "Harness: unknown"
     end
 
     test "reports a git repo when .git is present", %{root: root} do

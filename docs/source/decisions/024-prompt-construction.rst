@@ -85,6 +85,23 @@ This is cheap, mechanical, and genuinely useful — the model cannot infer
 the date or that it is in a git repo, and a wrong assumption there costs
 a tool round.
 
+.. note::
+   **Amendment 2026-10-01 — the block names the harness.** The field list
+   quoted above is opencode's, not ours. Ours is the same minus
+   ``Workspace root folder`` (we have no separate worktree root) plus one
+   line: ``Harness: CodingAgent (agentic coding assistant, unreleased)``,
+   emitted from ``Prompt.harness/0``.
+
+   The reason is specific to this project: the repository is **both** the
+   harness and the product, so an agent reviewing the code it is running in
+   otherwise has to infer that the software it is inside is the software it
+   is reading. The other fields describe the *machine*; this one describes
+   the *program*.
+
+   The product has no name of its own yet — the README says CodingAgent,
+   the app is ``:coding_agent``, and ``mix.exs`` carries no product name.
+   When it gets one, ``Prompt.harness/0`` is the single place to change it.
+
 Decision
 --------
 
@@ -156,9 +173,10 @@ line is replaced with ours; the calibration prose is what we keep.
 Consequences
 ------------
 
-- The agent gains a working directory, platform, date and model identity
-  it currently lacks, and a prompt calibrated to its model rather than
-  one tuned for a frontier model.
+- The agent gains a working directory, platform, date, model identity and
+  the name of the harness it runs in, which it currently lacks, and a
+  prompt calibrated to its model rather than one tuned for a frontier
+  model.
 - ``base_prompt`` stays prompt-cacheable; only the suffix changes per
   call.
 - The provider-file set is a maintenance surface that drifts (opencode

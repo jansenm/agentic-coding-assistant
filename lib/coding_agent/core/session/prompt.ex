@@ -99,8 +99,9 @@ defmodule CodingAgent.Core.Session.Prompt do
 
   @doc """
   The per-call environment block (ADR 024): model identity, working
-  directory, platform, date. Appended to the system message ON THE WIRE
-  only — never persisted, because it changes every call.
+  directory, the harness it is running in, platform, date. Appended to the
+  system message ON THE WIRE only — never persisted, because it changes
+  every call.
   """
   @spec environment(String.t() | nil, String.t() | nil) :: String.t()
   def environment(model, scope_root) do
@@ -114,6 +115,7 @@ defmodule CodingAgent.Core.Session.Prompt do
       Is directory a git repo: #{if git_repo?(dir), do: "yes", else: "no"}
       Platform: #{platform()}
       Today's date: #{Date.utc_today()}
+      Harness: #{harness()}
     </env>\
     """
   end
@@ -356,6 +358,18 @@ defmodule CodingAgent.Core.Session.Prompt do
     # for a worktree) at the scope root. We do not shell out to git.
     File.exists?(Path.join(dir, ".git"))
   end
+
+  # The harness line for the environment block. Named so the model knows
+  # WHICH software it is running in, not only which machine: this repo is
+  # both the harness and the product, so a reviewing agent otherwise has
+  # to infer "the thing I am inside is the thing I am reading".
+  #
+  # The product has no name of its own yet — README calls it "CodingAgent",
+  # `mix.exs` the app `:coding_agent`. When it gets one, this is the ONE
+  # place to change: the ADR 024 field list is updated with it.
+  @harness "CodingAgent (agentic coding assistant, unreleased)"
+  @spec harness() :: String.t()
+  def harness, do: @harness
 
   defp platform do
     case :os.type() do
