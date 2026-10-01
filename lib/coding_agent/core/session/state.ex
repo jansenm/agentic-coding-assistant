@@ -66,10 +66,11 @@ defmodule CodingAgent.Core.Session.State do
     # so the exchange stays atomic.
     question_pause: nil,
     # File checkpoints for /undo (ADR 036), newest LAST: a list of
-    # `%{ref, commit, tree, index_backup, untracked, at}`. A checkpoint is
-    # written before every turn; `/undo` restores the newest and drops it,
-    # bounded by `checkpoint_depth`. Durable (the store state BLOB), so a
-    # resumed session can undo across a restart. Old snapshots heal to [].
+    # `%{ref, commit, tree, staged_tree, untracked, at}` (see
+    # `CodingAgent.Core.Checkpoint.t/0`). A checkpoint is written before
+    # every turn; `/undo` restores the newest and drops it, bounded by
+    # `checkpoint_depth`. Durable (the store state BLOB), so a resumed
+    # session can undo across a restart. Old snapshots heal to [].
     checkpoints: [],
     # Subagent seams (ADR 017/018). `depth` is 0 for a primary session and
     # 1 for a delegated child; depth 1 excludes the `task` tool (bounded

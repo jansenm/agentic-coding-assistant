@@ -129,7 +129,7 @@ defmodule CodingAgent.Core.CheckpointTest do
 
     write("a.txt", "staged-B\n")
     git!(["add", "a.txt"])
-    {:ok, cp_b} = Checkpoint.snapshot(scope, "s1", cp_a.commit)
+    {:ok, cp_b} = Checkpoint.snapshot(scope, "s1")
 
     # restore the OLDER checkpoint: its staged state must win
     :ok = Checkpoint.restore(scope, cp_a)
@@ -141,23 +141,48 @@ defmodule CodingAgent.Core.CheckpointTest do
     assert git!(["show", ":a.txt"]) == "staged-B\n"
   end
 
-  test "the ref is keyed by commit, not session (no collision)", %{scope: scope} do
+  test "the ref carries the session id AND the commit (reviews N54)", %{scope: scope} do
     write("a.txt", "v1\n")
     git!(["add", "-A"])
     git!(["commit", "-qm", "init"])
 
     {:ok, cp} = Checkpoint.snapshot(scope, "s1")
-    assert cp.ref == Checkpoint.ref_prefix() <> cp.commit
+    assert cp.ref == Checkpoint.ref_prefix() <> "s1/" <> cp.commit
   end
 
-  test "snapshot chains checkpoints and restore drops the ref", %{scope: scope} do
+  test "each snapshot is a ROOT commit, not chained (review N53)", %{scope: scope} do
+    # The chain used to pin every trimmed snapshot as an ancestor, so git
+    # gc could never reclaim it. Root commits let a dropped ref's objects
+    # go. Two snapshots must not share ancestry.
     write("a.txt", "v1\n")
     git!(["add", "-A"])
     git!(["commit", "-qm", "init"])
 
     {:ok, cp1} = Checkpoint.snapshot(scope, "s1")
     write("a.txt", "v2\n")
-    {:ok, cp2} = Checkpoint.snapshot(scope, "s1", cp1.commit)
+    {:ok, cp2} = Checkpoint.snapshot(scope, "s1")
+
+    assert cp1.commit != cp2.commit
+    # cp2 is a root commit: exactly one reachable commit (itself)
+    assert git!(["rev-list", "--count", cp2.commit]) == "1\n"
+    # and cp1 is NOT an ancestor of cp2
+    {_out, code} =
+      System.cmd("git", ["merge-base", "--is-ancestor", cp1.commit, cp2.commit],
+        cd: @root,
+        stderr_to_stdout: true
+      )
+
+    assert code == 1
+  end
+
+  test "snapshot then restore drops only its own ref", %{scope: scope} do
+    write("a.txt", "v1\n")
+    git!(["add", "-A"])
+    git!(["commit", "-qm", "init"])
+
+    {:ok, cp1} = Checkpoint.snapshot(scope, "s1")
+    write("a.txt", "v2\n")
+    {:ok, cp2} = Checkpoint.snapshot(scope, "s1")
 
     # both refs exist
     refs = git!(["for-each-ref", "refs/coding-agent/checkpoints/"])
@@ -169,5 +194,65 @@ defmodule CodingAgent.Core.CheckpointTest do
     refs = git!(["for-each-ref", "refs/coding-agent/checkpoints/"])
     refute refs =~ cp2.commit
     assert refs =~ cp1.commit
+  end
+
+  describe "reconcile/2 (review N54)" do
+    test "drops refs of unknown sessions, keeps known and live ones", %{scope: scope} do
+      write("a.txt", "v1\n")
+      git!(["add", "-A"])
+      git!(["commit", "-qm", "init"])
+
+      {:ok, cp_live} = Checkpoint.snapshot(scope, "tui-live")
+      # different content, so the two commits differ (same tree would hash
+      # the same within a second)
+      write("a.txt", "v2\n")
+      {:ok, cp_dead} = Checkpoint.snapshot(scope, "tui-dead")
+
+      # only "tui-live" is known
+      dropped = Checkpoint.reconcile(scope, ["tui-live"])
+
+      assert cp_dead.ref in dropped
+      refute cp_live.ref in dropped
+      refs = git!(["for-each-ref", "refs/coding-agent/checkpoints/"])
+      assert refs =~ cp_live.commit
+      refute refs =~ cp_dead.commit
+    end
+
+    test "never touches a LEGACY ref (no session segment)", %{scope: scope} do
+      # A pre-N54 ref name is `<prefix><commit>`: unattributable. The
+      # reconciliation must leave it — the review record notes such a ref
+      # is exactly what preserved a lost artefact.
+      write("a.txt", "v1\n")
+      git!(["add", "-A"])
+      git!(["commit", "-qm", "init"])
+
+      tree = git!(["write-tree"]) |> String.trim()
+
+      legacy =
+        System.cmd(
+          "git",
+          [
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@e.com",
+            "commit-tree",
+            tree,
+            "-m",
+            "legacy"
+          ],
+          cd: @root,
+          stderr_to_stdout: true
+        )
+        |> elem(0)
+        |> String.trim()
+
+      git!(["update-ref", Checkpoint.ref_prefix() <> legacy, legacy])
+
+      dropped = Checkpoint.reconcile(scope, [])
+
+      refute (Checkpoint.ref_prefix() <> legacy) in dropped
+      assert git!(["for-each-ref", "refs/coding-agent/checkpoints/"]) =~ legacy
+    end
   end
 end

@@ -85,11 +85,17 @@ stash, or any branch:
    (``GIT_INDEX_FILE`` in the session scratch, ADR 022) — captures
    tracked and untracked, honouring ``.gitignore``.
 2. ``git write-tree`` → the tree object.
-3. ``git commit-tree <tree> -p <previous>`` → a commit (the chain makes
-   the stack traversable).
+3. ``git commit-tree <tree>`` → a **root** commit (no parent). An earlier
+   version parented each snapshot on the previous one; review N53 showed
+   that kept every trimmed snapshot reachable as an ancestor, so ``git
+   gc`` could never reclaim it — ``checkpoint_depth`` bounded the refs,
+   not the objects. Nothing traverses the chain (restore works off the
+   tree), so the parent bought only that leak.
 4. ``git update-ref refs/coding-agent/checkpoints/<session-id>/<commit>
-   <commit>`` — the commit is in the name, so repeated snapshots never
-   collide and the ref anchors the object against ``git gc``.
+   <commit>`` — the session id makes a ref attributable (review N54: the
+   reconciliation pass can collect the refs of gone sessions without
+   decoding their state), and the commit half keeps two sessions from
+   colliding. The ref anchors the object against ``git gc``.
 
 The whole thing runs confined with the ``git`` tool's profile
 (``git_write: true``), so ADR 030 holds: no unconfined git. The temp
@@ -129,11 +135,18 @@ Consequences
   available" and is bounded by the same timeout as the git tool.
 - The repo gains a ``refs/coding-agent/`` namespace. It is invisible to
   normal git usage and removable (`git update-ref -d`), but it is state
-  in the user's ``.git``. It is kept bounded two ways: the live session
-  drops the ref of every checkpoint trimmed off the depth, and
+  in the user's ``.git``. It is kept bounded three ways: the live session
+  drops the ref of every checkpoint trimmed off the depth;
   ``Store.delete/1`` drops the refs of every checkpoint a departing
   session still holds (the state is read before its row goes, because the
-  refs live in the scope repo, not the store).
+  refs live in the scope repo, not the store); and — added after reviews
+  N53–N55 — ``Checkpoint.reconcile/2`` runs on session start and drops the
+  refs of sessions that are neither persisted nor live (a TUI killed
+  before cleanup left them). Because snapshots are now root commits
+  (N53), a dropped ref's objects are collectable; and because the ref
+  carries the session id (N54), ``reconcile/2`` can attribute a ref
+  without decoding the session. It is deliberately conservative: an
+  unattributable legacy ref is never touched.
 - **The restore deletes files**: any untracked, non-ignored file under
   the scope root that is absent from the checkpoint is removed. That is
   the intent (take back what the agent created), but it is the sharpest

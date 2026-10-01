@@ -16,11 +16,14 @@ defmodule CodingAgent.Core.Checkpoint do
        the session scratch, ADR 022), so the real index is never written;
     2. ``git write-tree`` → the worktree tree object;
     3. ``git write-tree`` on the REAL index → the staged tree;
-    4. ``git commit-tree`` → a commit (parented on the previous
-       checkpoint) so the objects are reachable;
-    5. ``git update-ref refs/coding-agent/checkpoints/<commit>`` → anchors
-       the object against ``git gc``; the ref is keyed by the commit, so
-       two sessions in one repo cannot collide and a rename needs no fix.
+    4. ``git commit-tree`` → a ROOT commit (no parent, review N53) so
+       ``git gc`` can reclaim a snapshot the moment its ref is dropped;
+    5. ``git update-ref refs/coding-agent/checkpoints/<session-id>/<commit>``
+       → anchors the object against ``git gc``. The session id is in the
+       name (review N54) so a ref can be attributed to a session without
+       decoding its state, and the reconciliation pass (``reconcile/1``)
+       can collect the orphans; the commit half keeps two sessions from
+       colliding.
 
   Restore:
 
@@ -62,11 +65,10 @@ defmodule CodingAgent.Core.Checkpoint do
   Returns ``{:ok, checkpoint}`` on success, ``:skip`` when the scope root
   is not a git work tree (nothing to undo) or there is no session scratch
   (a per-call tmpfs ``/tmp`` cannot carry the temp index), or
-  ``{:error, reason}`` when git ran but failed. `previous` is the parent
-  commit for the chain, or nil for the first checkpoint in a session.
+  ``{:error, reason}`` when git ran but failed.
   """
-  @spec snapshot(map(), String.t(), String.t() | nil) :: {:ok, t()} | :skip | {:error, term()}
-  def snapshot(scope, session_id, previous \\ nil) do
+  @spec snapshot(map(), String.t()) :: {:ok, t()} | :skip | {:error, term()}
+  def snapshot(scope, session_id) do
     root = Path.expand(scope.root)
 
     case scratch_paths(session_id) do
@@ -82,8 +84,8 @@ defmodule CodingAgent.Core.Checkpoint do
           staged_tree = staged_tree(scope, root)
 
           with {:ok, tree} <- write_tree(scope, root, tmp_sandbox),
-               {:ok, commit} <- commit_tree(scope, root, tree, previous),
-               {:ok, ref} <- anchor(scope, root, commit) do
+               {:ok, commit} <- commit_tree(scope, root, tree),
+               {:ok, ref} <- anchor(scope, root, session_id, commit) do
             {:ok,
              %{
                ref: ref,
@@ -126,10 +128,56 @@ defmodule CodingAgent.Core.Checkpoint do
     :ok
   end
 
-  @doc false
-  # The ref prefix every checkpoint uses. Exposed so a cleanup path can
-  # reason about (or garbage-collect) the namespace.
+  @doc "The ref prefix every checkpoint uses."
+  @spec ref_prefix() :: String.t()
   def ref_prefix, do: "refs/coding-agent/checkpoints/"
+
+  @doc """
+  Drops checkpoint refs whose session is GONE (review N54): killed before
+  `Store.delete/1` ran, or deleted without cleanup. Returns the dropped
+  refs.
+
+  `known_sessions` is every session id that must be preserved — the
+  store's persisted ids plus the live registry ids. A ref is dropped only
+  when ALL hold:
+
+    * it is in the NEW name form (``<prefix><session-id>/<commit>``), i.e.
+      it has a session segment — so it can be attributed at all; and
+    * that segment is not in `known_sessions`.
+
+  Legacy refs (``<prefix><commit>``, written before this change) are
+  LEFT ALONE. They cannot be attributed, and per the review record that is
+  exactly the shape holding the only surviving copy of a lost artefact —
+  a reconciliation that cannot tell whose ref it is must not delete it.
+  Best effort: a non-git root, or a git failure, drops nothing.
+  """
+  @spec reconcile(map(), [String.t()]) :: [String.t()]
+  def reconcile(scope, known_sessions) do
+    root = Path.expand(scope.root)
+    known = known_sessions |> Enum.map(&ref_name/1) |> MapSet.new()
+
+    case git(scope, root, ["for-each-ref", "--format=%(refname)", ref_prefix()], []) do
+      {:ok, out, 0} ->
+        out
+        |> split_lines()
+        |> Enum.filter(&String.starts_with?(&1, ref_prefix()))
+        |> Enum.filter(&orphan?(&1, known))
+        |> tap(fn refs -> Enum.each(refs, &drop_ref(scope, root, &1)) end)
+
+      _ ->
+        []
+    end
+  end
+
+  # A ref is an orphan only if it is in the new (attributable) form AND its
+  # session segment is unknown. The new form has exactly one `/` after the
+  # prefix (the commit half is a bare hash, no slash).
+  defp orphan?(ref, known) do
+    case ref |> String.replace_prefix(ref_prefix(), "") |> String.split("/", parts: 2) do
+      [session, _commit] -> not MapSet.member?(known, session)
+      _legacy -> false
+    end
+  end
 
   # -- git plumbing -----------------------------------------------------------
 
@@ -160,17 +208,23 @@ defmodule CodingAgent.Core.Checkpoint do
     end
   end
 
-  defp commit_tree(scope, root, tree, previous) do
-    args =
-      [
-        "-c",
-        "user.name=coding-agent",
-        "-c",
-        "user.email=coding-agent@localhost",
-        "commit-tree",
-        tree
-      ] ++
-        if(previous, do: ["-p", previous], else: []) ++ ["-m", "coding-agent checkpoint"]
+  # A ROOT commit (no parent): review N53. Parenting each snapshot on the
+  # previous one kept every trimmed snapshot reachable as an ancestor, so
+  # `git gc` could never reclaim it and `checkpoint_depth` bounded only the
+  # refs, not the objects. Nothing traverses the chain (Restore works off
+  # `tree`/`staged_tree`), so dropping the parent costs nothing and lets a
+  # dropped ref's objects be collected.
+  defp commit_tree(scope, root, tree) do
+    args = [
+      "-c",
+      "user.name=coding-agent",
+      "-c",
+      "user.email=coding-agent@localhost",
+      "commit-tree",
+      tree,
+      "-m",
+      "coding-agent checkpoint"
+    ]
 
     case git(scope, root, args, []) do
       {:ok, out, 0} -> {:ok, String.trim(out)}
@@ -178,12 +232,36 @@ defmodule CodingAgent.Core.Checkpoint do
     end
   end
 
-  defp anchor(scope, root, commit) do
-    ref = ref_prefix() <> commit
+  # The ref carries the SESSION id (review N54), so a ref can be attributed
+  # to its session without decoding the session's state — which is what the
+  # reconciliation pass needs. The commit half still disambiguates.
+  defp anchor(scope, root, session_id, commit) do
+    ref = ref_prefix() <> ref_name(session_id) <> "/" <> commit
 
     case git(scope, root, ["update-ref", ref, commit], []) do
       {:ok, _, 0} -> {:ok, ref}
       {:ok, out, code} -> {:error, {:anchor_failed, code, String.trim(out)}}
+    end
+  end
+
+  # The ref path segment for a session id. git ref names forbid space,
+  # `/` boundaries are ours, and `~^:?*[`, a leading dot, `..` and a
+  # trailing `.lock` are forbidden. Session ids are `tui-<pid>` or
+  # generated ids, but a renamed session could carry anything, so sanitize
+  # rather than trust. Public so `reconcile/2` sanitizes the keep-set the
+  # same way and cannot mismatch what `anchor/4` wrote.
+  @doc false
+  @spec ref_name(String.t()) :: String.t()
+  def ref_name(session_id) do
+    session_id
+    |> to_string()
+    |> String.replace(~r|[~^:?*\[\]\\/\s]+|, "-")
+    |> String.replace("..", "-")
+    |> String.trim_leading(".")
+    |> String.trim_trailing(".lock")
+    |> case do
+      "" -> "unknown"
+      name -> name
     end
   end
 

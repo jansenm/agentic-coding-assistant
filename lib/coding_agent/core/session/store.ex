@@ -642,6 +642,21 @@ defmodule CodingAgent.Core.Session.Store do
   defp decode_message(_), do: {:error, :corrupt_message}
 
   @doc """
+  Every persisted session id. Used by the checkpoint reconciliation pass
+  (review N54): a ref whose session id is not among these (and is not
+  live) is an orphan.
+  """
+  @spec ids() :: [String.t()]
+  def ids do
+    with_db(fn db ->
+      case fetch_all(db, "SELECT id FROM sessions", []) do
+        {:ok, rows} -> Enum.map(rows, fn [id] -> id end)
+        _ -> []
+      end
+    end)
+  end
+
+  @doc """
   Resolves a session id that may be a PREFIX (unique): "1730" matches
   "tui-1730..." when exactly one session does. Ambiguous and missing
   ids are errors — never guesses (fail-closed, like load/1).
@@ -701,7 +716,17 @@ defmodule CodingAgent.Core.Session.Store do
       {:ok, %State{scope_root: root, checkpoints: cps}} when is_binary(root) and cps != [] ->
         %{root: root, checkpoints: cps}
 
-      _ ->
+      # No state to read: either the session genuinely had no checkpoints,
+      # or the state blob would not decode. The second case must not look
+      # like the first (review N55): it would silently leak every ref of
+      # that session. The reconciliation pass (Checkpoint.reconcile/2, run
+      # on the next session start) is the backstop; this log says so.
+      other ->
+        Logger.debug(
+          "checkpoint refs not cleaned for #{id}: state unreadable " <>
+            "(#{inspect(other)}); reconciliation will collect them"
+        )
+
         nil
     end
   end

@@ -462,6 +462,14 @@ defmodule CodingAgent.Core.Session do
     test_mode = Keyword.get(opts, :test_mode, false)
     policy = Keyword.get(opts, :policy) || snapshot.permissions
 
+    # Drop checkpoint refs of sessions that are GONE (review N54): a killed
+    # TUI leaves refs behind, and (before N53) each pinned its whole tree.
+    # Runs before this session's first snapshot, and this session is
+    # registered (alive) by the time it could take one, so a ref of a live
+    # session is never a candidate. Best effort; a non-git or unwritable
+    # root is a no-op.
+    reconcile_checkpoints(scope_root, id)
+
     # Resume support (4a): a resumed session must carry the persisted
     # usage forward. last_input_tokens is the ONLY sound compaction
     # measure; without it decide/2 takes the chars fallback and compacts
@@ -637,6 +645,28 @@ defmodule CodingAgent.Core.Session do
       |> Enum.map(&%{name: &1.name, description: &1.description})
 
   defp delegatable_names(_), do: []
+
+  # Collect checkpoint refs whose session is gone (review N54). The keep
+  # set is every persisted session id, every LIVE session id, and this one
+  # (not yet registered during init). Conservative: only refs in the
+  # attributable `<session>/<commit>` form are candidates, so a legacy or
+  # unattributable ref is never deleted.
+  defp reconcile_checkpoints(scope_root, id) do
+    known = [id | Store.ids()] ++ live_session_ids()
+    _ = Checkpoint.reconcile(%{root: scope_root}, known)
+    :ok
+  rescue
+    e ->
+      Logger.debug("checkpoint reconcile skipped: #{Exception.message(e)}")
+      :ok
+  end
+
+  defp live_session_ids do
+    # Registry entries are {key, pid, value}; match the session keys.
+    Registry.select(CodingAgent.Registry, [{{{:session, :"$1"}, :_, :_}, [], [:"$1"]}])
+  rescue
+    _ -> []
+  end
 
   # Resolves the named agent definition and applies it. Returns
   # `{:ok, agent_or_nil, policy, system_prompt}` or `{:error, reason}`.
@@ -1417,9 +1447,7 @@ defmodule CodingAgent.Core.Session do
         state
 
       true ->
-        previous = state.checkpoints |> List.last() |> then(&(&1 && &1.commit))
-
-        case Checkpoint.snapshot(tool_scope(state), state.id, previous) do
+        case Checkpoint.snapshot(tool_scope(state), state.id) do
           {:ok, cp} ->
             kept = Enum.take(state.checkpoints ++ [cp], -depth)
             dropped = (state.checkpoints ++ [cp]) |> Enum.drop(-depth)
