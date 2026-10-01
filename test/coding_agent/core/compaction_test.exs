@@ -9,6 +9,7 @@ defmodule CodingAgent.Core.CompactionTest do
   import ExUnit.CaptureLog
 
   alias CodingAgent.Core.Compaction
+  alias CodingAgent.Core.Interrupt
   alias CodingAgent.Core.Session.{Compactor, State, Usage}
 
   defp msg(text, role \\ :user) do
@@ -390,7 +391,7 @@ defmodule CodingAgent.Core.CompactionTest do
     s = state(usage: %{last_input_tokens: 1_000})
     assert Compactor.decide(s, Compactor.soft_limit(s)) == :none
 
-    {s2, true} =
+    {s2, :changed} =
       Compactor.compact_now(s, fn _state, span -> {:ok, "sum of #{byte_size(span)}"} end)
 
     msgs = ReqLLM.Context.to_list(s2.context)
@@ -399,16 +400,61 @@ defmodule CodingAgent.Core.CompactionTest do
     assert s2.compaction_backoff == 0
   end
 
-  test "compact_now is a no-op when there is nothing to summarize" do
+  test "compact_now is :nothing when there is nothing to summarize" do
     s = state(context: ctx(3))
-    {s2, false} = Compactor.compact_now(s, fn _state, _span -> flunk("must not summarize") end)
+    {s2, :nothing} = Compactor.compact_now(s, fn _state, _span -> flunk("must not summarize") end)
     assert s2 == s
   end
 
   test "compact_now is structurally inert in test_mode" do
     s = state(test_mode: true)
-    {s2, false} = Compactor.compact_now(s, fn _state, _span -> flunk("must not summarize") end)
+    {s2, :nothing} = Compactor.compact_now(s, fn _state, _span -> flunk("must not summarize") end)
     assert s2 == s
+  end
+
+  # review N41: a failure is NEVER reported as `:nothing` — the model must
+  # be able to tell "asked too early" from "the summarizer failed".
+  test "compact_now reports a summarize failure as {:failed, reason}, not :nothing" do
+    s = state(usage: %{last_input_tokens: 1_000})
+
+    log =
+      capture_log(fn ->
+        assert {s2, {:failed, :timeout}} =
+                 Compactor.compact_now(s, fn _state, _span -> {:error, :timeout} end)
+
+        assert s2.compaction_backoff == 3
+      end)
+
+    assert log =~ "compaction failed"
+  end
+
+  test "compact_now honors an existing backoff without a provider call (N41)" do
+    s = state(usage: %{last_input_tokens: 1_000}, compaction_backoff: 2)
+
+    assert {^s, {:failed, :backoff}} =
+             Compactor.compact_now(s, fn _state, _span -> flunk("must not summarize") end)
+  end
+
+  # review N43: a stop during the summarize cancels it and reports
+  # :interrupted instead of blocking the whole wall clock.
+  test "compact_now is :interrupted when the user stops during the summary (N43)" do
+    s = state(usage: %{last_input_tokens: 1_000}, id: "n43-#{System.unique_integer()}")
+    Interrupt.clear(s.id)
+
+    task =
+      Task.async(fn ->
+        Compactor.compact_now(s, fn _state, _span ->
+          Process.sleep(3_000)
+          {:ok, "too late"}
+        end)
+      end)
+
+    Process.sleep(300)
+    Interrupt.request(s.id)
+
+    assert {^s, :interrupted} = Task.await(task, 2_000)
+    assert s.compaction_backoff == 0
+    Interrupt.clear(s.id)
   end
 
   # -- warn-once ----------------------------------------------------------------

@@ -43,6 +43,7 @@ defmodule CodingAgent.Core.Session.Compactor do
 
   alias CodingAgent.Core.Compaction
   alias CodingAgent.Core.Config
+  alias CodingAgent.Core.Interrupt
   alias CodingAgent.Core.Session.{Request, State, Usage}
   alias ReqLLM.Context
 
@@ -54,6 +55,35 @@ defmodule CodingAgent.Core.Session.Compactor do
   @consecutive_failures 3
 
   @warn_fraction 0.8
+
+  # While a summarize task runs, how often the wait re-checks the user
+  # stop. The summarize call is a slow provider call inside a Task; esc
+  # must cancel it (review N43), so the wait polls the interrupt flag
+  # rather than blocking the whole wall clock.
+  @compact_poll_ms 250
+
+  # A clean but EMPTY answer is retried once (found live: `compaction
+  # failed (:empty_summary)` after a successful turn — a provider can
+  # return `text: ""` for a one-shot call, and the TURN path already
+  # retries that via ADR 033, but the summarizer did not, so one flaky
+  # empty response skipped compaction on an over-limit context for 3
+  # turns). One retry catches a transient without burning a second full
+  # inactivity wait on a model that consistently returns nothing.
+  @summarize_retries 1
+
+  @typedoc """
+  What one compaction attempt did (review N41: `changed?` conflated three
+  different situations, and the model-facing tool needs to tell them
+  apart):
+
+  - `:changed` — older messages were summarized and the context shrank;
+  - `:nothing` — there was no whole old exchange to summarize;
+  - `:interrupted` — the user stopped the turn while it ran; the context
+    is untouched and no backoff is set (the user asked);
+  - `{:failed, reason}` — the summarize call failed (timeout, provider
+    error, empty answer); the context is untouched and backoff is set.
+  """
+  @type outcome :: :changed | :nothing | :interrupted | {:failed, term()}
 
   @typedoc "Injected summarizer: session state and rendered old span in, summary text out."
   @type summarize_fn :: (State.t(), String.t() -> {:ok, String.t()} | {:error, term()})
@@ -95,7 +125,7 @@ defmodule CodingAgent.Core.Session.Compactor do
     limit = hard_limit(state)
 
     case decide(state, limit) do
-      {:ok, {old, _keep}} -> compact(state, old, summarize_fn, :hard)
+      {:ok, {old, _keep}} -> state |> compact(old, summarize_fn, :hard) |> as_changed?()
       :none -> warn_approaching(state)
     end
   end
@@ -122,10 +152,18 @@ defmodule CodingAgent.Core.Session.Compactor do
     limit = soft_limit(state)
 
     case decide(state, limit) do
-      {:ok, {old, _keep}} -> compact(state, old, summarize_fn, :soft)
+      {:ok, {old, _keep}} -> state |> compact(old, summarize_fn, :soft) |> as_changed?()
       :none -> {state, false}
     end
   end
+
+  # The automatic passes (`maybe_compact`, `maybe_compact_idle`, `trim_hard`,
+  # `warn_approaching`) keep the original `{state, changed?}` contract —
+  # their callers persist on `true` and ~15 tests pin it. Only the MANUAL /
+  # tool path (`compact_now/2`) needs the richer `outcome` (review N41), so
+  # the outcome is folded back here.
+  defp as_changed?({state, :changed}), do: {state, true}
+  defp as_changed?({state, _}), do: {state, false}
 
   @doc """
   Whether there is a span worth compacting at all (a manual `/compact`
@@ -141,24 +179,45 @@ defmodule CodingAgent.Core.Session.Compactor do
   end
 
   @doc """
-  A MANUAL compaction (`/compact`, ctrl-x c): summarize the older span
-  NOW, ignoring the soft/hard limits — the human asked for it, so "is it
-  over a threshold?" is the wrong question. Returns `{state, changed?}`
-  like the other passes; `:none` (nothing worth compacting) leaves the
-  state untouched. The caller runs this in a background task (the summary
-  is a slow provider call), so it must not block the session.
+  A MANUAL or MODEL-initiated compaction (`/compact` via `Compact.compact_now`,
+  the `compact` tool, both ignoring the soft/hard limits). Returns
+  `{state, outcome}` (see `t:outcome/0`).
+
+  Two callers, two shapes:
+
+  - the human's `/compact` and the background soft pass run it in a
+    background task (the summary is slow), so the session PROCESS is
+    never blocked — but the TASK blocks, and the wait honors the user
+    stop (review N43): a `stop` returns `:interrupted` and leaves the
+    context untouched.
+  - the `compact` TOOL runs it synchronously in the turn worker on
+    purpose (the round's siblings and the next request must see the
+    smaller context). There the same poll is what makes esc work.
+
+  `:nothing` is genuinely "no whole old exchange"; a FAILURE is
+  `{:failed, reason}`, never `:nothing` (review N41 — the two were one
+  value, so a timeout was reported to the model as "nothing to compact").
   """
-  @spec compact_now(State.t(), summarize_fn() | nil) :: {State.t(), boolean()}
+  @spec compact_now(State.t(), summarize_fn() | nil) :: {State.t(), outcome()}
   def compact_now(state, summarize_fn \\ nil)
 
-  def compact_now(%State{test_mode: true} = state, _summarize_fn), do: {state, false}
+  def compact_now(%State{test_mode: true} = state, _summarize_fn), do: {state, :nothing}
 
   def compact_now(%State{} = state, nil), do: compact_now(state, &summarize/2)
 
   def compact_now(%State{} = state, summarize_fn) do
-    case Compaction.split(state.context.messages) do
-      {:ok, old, _keep} -> compact(state, old, summarize_fn, :manual)
-      :none -> {state, false}
+    if state.compaction_backoff > 0 do
+      # review N41: a model that calls `compact` repeatedly on a flaky
+      # provider must not re-arm a provider call each round. Honor the
+      # same backoff the automatic passes do — but do NOT decrement it
+      # here (that counter is per turn; the model must not burn it with a
+      # burst of calls). The hard-limit trim stays `maybe_compact`'s job.
+      {state, {:failed, :backoff}}
+    else
+      case Compaction.split(state.context.messages) do
+        {:ok, old, _keep} -> compact(state, old, summarize_fn, :manual)
+        :none -> {state, :nothing}
+      end
     end
   end
 
@@ -229,15 +288,19 @@ defmodule CodingAgent.Core.Session.Compactor do
 
   # -- The summarize operation -------------------------------------------------
 
-  # The summarize call is a slow NON-streaming round trip: tell the UI
-  # NOW, otherwise the user stares at a running dot with no reasoning,
-  # no answer, no clue (found live — 2+ min of silence).
+  # The summarize call is a slow provider round trip: tell the UI NOW,
+  # otherwise the user stares at a running dot with no reasoning, no
+  # answer, no clue (found live — 2+ min of silence). The note is emitted
+  # HERE, before the retry loop — emitting it in `do_compact` (which the
+  # empty-answer retry re-enters) told the transcript the compaction
+  # started twice (review N46).
+  #
   # The summarize task runs under a Task.Supervisor with async_nolink:
   # the task executes third-party code (req_llm, provider adapters), and
   # a plain Task.async/1 LINKS the task to the session — a crash inside
   # the provider stack would then kill the whole session process before
-  # Task.yield/2 could ever observe it (verified: a raising summarizer
-  # takes the linked caller down; the {:exit, _} clause never fires).
+  # the wait could ever observe it (verified: a raising summarizer takes
+  # the linked caller down; the {:exit, _} clause never fires).
   defp compact(state, old, summarize_fn, kind) do
     span = Compaction.render(old)
 
@@ -245,37 +308,25 @@ defmodule CodingAgent.Core.Session.Compactor do
     # only "old" message is the prior summary itself, which `render/1`
     # skips by design (review N16). Calling the provider would ask it to
     # summarize nothing and then REPLACE the prior summary with the
-    # answer — losing facts for no gain, plus a needless non-streamed call.
-    # The prior summary already IS the compacted state, so this is a no-op.
+    # answer — losing facts for no gain, plus a needless call. The prior
+    # summary already IS the compacted state, so this is `:nothing`.
     if String.trim(span) == "" do
-      {state, false}
+      {state, :nothing}
     else
-      do_compact(state, span, summarize_fn, kind)
+      broadcast(state, {:info, "· compacting context (this can take a while)…"})
+      do_compact(state, span, summarize_fn, kind, @summarize_retries)
     end
   end
 
-  # A clean but EMPTY answer is retried once (found live: `compaction
-  # failed (:empty_summary)` after a successful turn — a provider can
-  # return `text: ""` for a one-shot call, and the TURN path already
-  # retries that via ADR 033, but the summarizer did not, so one flaky
-  # empty response skipped compaction on an over-limit context for 3
-  # turns). One retry catches a transient without burning a second full
-  # inactivity wait on a model that consistently returns nothing.
-  @summarize_retries 1
-
-  defp do_compact(state, span, summarize_fn, kind),
-    do: do_compact(state, span, summarize_fn, kind, @summarize_retries)
-
   defp do_compact(state, span, summarize_fn, kind, retries_left) do
     Logger.debug("compacting context (#{byte_size(span)} chars rendered)")
-    broadcast(state, {:info, "· compacting context (this can take a while)…"})
 
     task =
       Task.Supervisor.async_nolink(task_supervisor(), fn ->
         summarize_fn.(state, span)
       end)
 
-    case Task.yield(task, wall_clock()) || Task.shutdown(task, :brutal_kill) do
+    case await(task, wall_clock(), state.id) do
       {:ok, {:ok, summary_text}} ->
         apply_summary(state, summary_text)
 
@@ -292,12 +343,49 @@ defmodule CodingAgent.Core.Session.Compactor do
       {:ok, other} ->
         compaction_failed(state, {:unexpected_summarizer_result, other}, kind)
 
-      nil ->
+      :timeout ->
         Logger.warning(
           "compaction summarize exceeded #{div(wall_clock(), 1000)}s, keeping full context"
         )
 
         compaction_failed(state, :wall_clock_exceeded, kind)
+
+      :interrupted ->
+        # the user stopped the turn while the summary ran (review N43).
+        # Kill the task (it holds a live provider call) and report the
+        # stop; the context is untouched and NO backoff is set — the
+        # human asked, it is not a provider failure.
+        {state, :interrupted}
+    end
+  end
+
+  # Wait up to `budget`, but wake every `@compact_poll_ms` to honor a
+  # user stop (review N43: the summarize call used to be uninterruptible
+  # — a model-initiated `compact` could hold the turn for up to 600 s
+  # with esc inert, the shape ADR 043 exists to prevent). A stop kills
+  # the task and returns `:interrupted`.
+  defp await(task, budget, session_id) do
+    deadline = System.monotonic_time(:millisecond) + budget
+    do_await(task, deadline, session_id)
+  end
+
+  defp do_await(task, deadline, session_id) do
+    left = deadline - System.monotonic_time(:millisecond)
+
+    cond do
+      session_id && Interrupt.requested?(session_id) ->
+        Task.shutdown(task, :brutal_kill)
+        :interrupted
+
+      left <= 0 ->
+        Task.shutdown(task, :brutal_kill)
+        :timeout
+
+      true ->
+        case Task.yield(task, min(left, @compact_poll_ms)) do
+          nil -> do_await(task, deadline, session_id)
+          result -> result
+        end
     end
   end
 
@@ -309,7 +397,7 @@ defmodule CodingAgent.Core.Session.Compactor do
     state = %{state | context: context, compaction_backoff: 0, compaction_warned: false}
     state = note_shrunk_context(state)
     broadcast(state, {:context_compacted, Compaction.min_keep()})
-    {state, true}
+    {state, :changed}
   end
 
   # `last_input_tokens` is the count the PROVIDER last saw, so after the
@@ -342,9 +430,14 @@ defmodule CodingAgent.Core.Session.Compactor do
     state = %{state | compaction_backoff: @consecutive_failures}
 
     if kind == :hard and projected_tokens(state) >= hard_limit(state) do
-      trim_hard(state)
+      # the hard pass must not leave an over-window context: the trim's
+      # success is a `:changed` outcome, its `:none` stays a failure
+      case trim_hard(state) do
+        {state, true} -> {state, :changed}
+        {state, false} -> {state, {:failed, reason}}
+      end
     else
-      {state, false}
+      {state, {:failed, reason}}
     end
   end
 

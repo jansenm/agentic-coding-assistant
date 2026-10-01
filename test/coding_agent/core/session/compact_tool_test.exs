@@ -70,7 +70,7 @@ defmodule CodingAgent.Core.Session.CompactToolTest do
       summary = %ReqLLM.Message{role: :user, content: [ReqLLM.Message.ContentPart.text("S")]}
       trimmed = %{state | context: %{state.context | messages: [summary]}}
 
-      {trimmed, true}
+      {trimmed, :changed}
     end
 
     start(id, idle_compaction_runner: runner)
@@ -87,6 +87,62 @@ defmodule CodingAgent.Core.Session.CompactToolTest do
     last = List.last(st.context.messages)
     assert last.role in [:user, :tool]
     assert Enum.any?(st.context.messages, &(&1.role == :user and text(&1) =~ "S"))
+  end
+
+  test "the 'reclaimed' number measures the stored context, not the provider overhead (N42)" do
+    id = "compact-reclaimed-#{System.unique_integer([:positive])}"
+
+    # a summarizer that keeps a tiny context (a big, honest shrink)
+    runner = fn state ->
+      summary = %ReqLLM.Message{role: :user, content: [ReqLLM.Message.ContentPart.text("S")]}
+      {%{state | context: %{state.context | messages: [summary]}}, :changed}
+    end
+
+    # the provider's last_input_tokens is INFLATED (framework prompt + tool
+    # schemas are not in the stored messages). The old code subtracted
+    # projected_tokens (max of that and chars/4), so "reclaimed" carried
+    # the whole overhead, and could even go NEGATIVE while claiming a win.
+    start(id,
+      idle_compaction_runner: runner,
+      usage: %{input_tokens: 0, output_tokens: 0, last_input_tokens: 4_300, cost: nil}
+    )
+
+    :ok = Session.debug_gate(id, [compact_call()])
+
+    {:ok, st} = Session.state(id)
+
+    content =
+      Enum.find_value(st.context.messages, fn m ->
+        if m.role == :tool, do: text(m)
+      end)
+
+    # the stored context was 6 msgs x ~2k chars = ~3k tokens, now 1 msg:
+    # reclaimed must be well under the inflated 4_300, i.e. it did not add
+    # the ~4k overhead, and it is never negative
+    assert content =~ "reclaimed"
+    [_, n] = Regex.run(~r/~(\d+) tokens reclaimed/, content)
+    reclaimed = String.to_integer(n)
+    assert reclaimed > 0
+    refute content =~ "-"
+  end
+
+  test "a failed summarizer is reported honestly, not as 'nothing to compact' (N41)" do
+    id = "compact-failed-#{System.unique_integer([:positive])}"
+
+    start(id,
+      idle_compaction_runner: fn state ->
+        {%{state | compaction_backoff: 3}, {:failed, :wall_clock_exceeded}}
+      end
+    )
+
+    :ok = Session.debug_gate(id, [compact_call()])
+
+    {:ok, st} = Session.state(id)
+    content = Enum.find_value(st.context.messages, fn m -> if m.role == :tool, do: text(m) end)
+
+    assert content =~ "compaction failed"
+    assert content =~ "timed out"
+    refute content =~ "nothing to compact"
   end
 
   test "test_mode's default summarizer reports 'nothing to compact' without a provider" do
@@ -112,7 +168,7 @@ defmodule CodingAgent.Core.Session.CompactToolTest do
 
     runner = fn state ->
       summary = %ReqLLM.Message{role: :user, content: [ReqLLM.Message.ContentPart.text("S")]}
-      {%{state | context: %{state.context | messages: [summary]}}, true}
+      {%{state | context: %{state.context | messages: [summary]}}, :changed}
     end
 
     start(id, idle_compaction_runner: runner, policy: CodingAgent.Core.Permissions.load(nil, nil))
@@ -131,6 +187,32 @@ defmodule CodingAgent.Core.Session.CompactToolTest do
     # both the compact result and the read_file result are present
     assert Enum.any?(texts, &(&1 =~ "compacted"))
     assert Enum.any?(st.context.messages, &(&1.role == :tool))
+  end
+
+  test "an agent that does not advertise compact cannot use it (N45)" do
+    id = "compact-fenced-#{System.unique_integer([:positive])}"
+
+    # a policy whose `enabled` whitelist excludes `compact`: the toolset
+    # narrowing means compact is NOT advertised, so the interception must
+    # not run it (it used to, bypassing the toolset entirely).
+    policy = %{CodingAgent.Core.Permissions.load(nil, nil) | enabled: ["read_file"]}
+
+    runner = fn state ->
+      summary = %ReqLLM.Message{role: :user, content: [ReqLLM.Message.ContentPart.text("S")]}
+      {%{state | context: %{state.context | messages: [summary]}}, :changed}
+    end
+
+    start(id, idle_compaction_runner: runner, policy: policy)
+
+    before = Session.state(id) |> elem(1) |> Map.get(:context) |> ReqLLM.Context.to_list()
+    :ok = Session.debug_gate(id, [compact_call()])
+
+    {:ok, st} = Session.state(id)
+    after_msgs = ReqLLM.Context.to_list(st.context)
+
+    # the context did NOT shrink, and no "compacted" result was produced
+    assert length(after_msgs) >= length(before)
+    refute Enum.any?(st.context.messages, &(&1.role == :tool and text(&1) =~ "compacted"))
   end
 
   defp text(%ReqLLM.Message{content: content}) do

@@ -42,6 +42,7 @@ defmodule CodingAgent.Core.Session do
 
   require Logger
 
+  alias CodingAgent.Core.Compaction
   alias CodingAgent.Core.Config
   alias CodingAgent.Core.Checkpoint
   alias CodingAgent.Core.Events
@@ -1949,7 +1950,7 @@ defmodule CodingAgent.Core.Session do
     q_calls = question_calls(calls)
     t_calls = task_calls(calls)
     d_calls = todo_calls(calls)
-    c_calls = compact_calls(calls)
+    c_calls = compact_calls(state, calls)
 
     answerable =
       Enum.reject(calls, &(&1 in q_calls or &1 in t_calls or &1 in d_calls or &1 in c_calls))
@@ -2074,11 +2075,28 @@ defmodule CodingAgent.Core.Session do
   # The `compact` calls in a round (ADR 040 OQ1). Intercepted before the
   # gate, like `todowrite`: pure session-state mutation (the context
   # shrinks), no filesystem effect, never parks.
-  defp compact_calls(calls) do
-    Enum.filter(calls, fn call ->
-      {_id, name, _args} = ToolCall.normalize(call)
-      name == CodingAgent.Core.Tools.Compact.name()
-    end)
+  #
+  # Unlike `todowrite`, `compact` spends provider time and discards
+  # context, so it must respect the toolset a policy/agent actually
+  # ADVERTISES (review N45). The gate never sees it (intercepted first),
+  # and `ToolRunner.tools/2`'s narrowing (`[tools] enabled`, an agent's
+  # `disallowedTools`) only filters what is advertised — so without this
+  # guard an agent that disabled `compact` could still call it. A call
+  # that reaches here but is NOT in the exposed set falls through to the
+  # gate as an unknown tool (denied), the same as any other.
+  defp compact_calls(state, calls) do
+    if compact_exposed?(state) do
+      Enum.filter(calls, fn call ->
+        {_id, name, _args} = ToolCall.normalize(call)
+        name == CodingAgent.Core.Tools.Compact.name()
+      end)
+    else
+      []
+    end
+  end
+
+  defp compact_exposed?(state) do
+    Enum.any?(current_tools(state), &(&1.name == CodingAgent.Core.Tools.Compact.name()))
   end
 
   # Runs the model's own compaction, synchronously, in the turn worker.
@@ -2094,43 +2112,72 @@ defmodule CodingAgent.Core.Session do
     {state, results} =
       Enum.reduce(c_calls, {state, []}, fn call, {state, acc} ->
         {id, _name, _args} = ToolCall.normalize(call)
-        before = Compactor.projected_tokens(state)
+        before = stored_tokens(state)
 
-        case run_compact(state) do
-          {state, true} ->
-            reclaimed = max(before - Compactor.projected_tokens(state), 0)
+        {state, content} =
+          case run_compact(state) do
+            {state, :changed} ->
+              # how much the CONTEXT itself shrank — measured on the stored
+              # messages, not `projected_tokens/1`. That value is the max of
+              # the provider count and chars/4, and the provider count
+              # includes the framework prompt + tool schemas the stored
+              # context does NOT contain, so subtracting it credited the
+              # whole per-request overhead as "reclaimed" (review N42) — on
+              # a small context it could even report a win while the request
+              # grew. The trailing "(now ...)" stays `projected_tokens`,
+              # the number the budget block and the next trigger use.
+              {state,
+               "compacted: older messages summarized, ~#{reclaimed_tokens(state, before)} tokens reclaimed (now ~#{Compactor.projected_tokens(state)} of #{Compactor.window(state)})"}
 
-            result = %{
-              id: id,
-              name: CodingAgent.Core.Tools.Compact.name(),
-              content:
-                "compacted: older messages summarized, ~#{reclaimed} tokens reclaimed " <>
-                  "(now ~#{Compactor.projected_tokens(state)} of #{Compactor.window(state)})"
-            }
+            {state, :nothing} ->
+              {state,
+               "nothing to compact: no older exchange to summarize yet (context is " <>
+                 "~#{Compactor.projected_tokens(state)} of #{Compactor.window(state)})"}
 
-            {state, [result | acc]}
+            {state, :interrupted} ->
+              {state,
+               "compaction stopped: you interrupted it; the context is unchanged " <>
+                 "(~#{Compactor.projected_tokens(state)} of #{Compactor.window(state)})"}
 
-          {state, false} ->
-            result = %{
-              id: id,
-              name: CodingAgent.Core.Tools.Compact.name(),
-              content:
-                "nothing to compact: no older exchange to summarize yet (context is " <>
-                  "~#{Compactor.projected_tokens(state)} of #{Compactor.window(state)})"
-            }
+            {state, {:failed, reason}} ->
+              {state,
+               "compaction failed (#{compact_reason(reason)}); the context is unchanged " <>
+                 "(~#{Compactor.projected_tokens(state)} of #{Compactor.window(state)}). " <>
+                 "Recent failures back off automatic retries for a few turns."}
+          end
 
-            {state, [result | acc]}
-        end
+        result = %{id: id, name: CodingAgent.Core.Tools.Compact.name(), content: content}
+        {state, [result | acc]}
       end)
 
     {state, Enum.reverse(results)}
   end
 
+  # The stored-context token delta, the honest "reclaimed" number (N42).
+  defp reclaimed_tokens(state, before) do
+    max(before - stored_tokens(state), 0)
+  end
+
+  defp stored_tokens(state), do: div(Compaction.total_chars(state.context.messages), 4)
+
+  # A short, model-facing reason for the failed-compaction result; the full
+  # term is `inspect`'d so a provider struct does not bloat the tool text.
+  defp compact_reason(reason) do
+    case reason do
+      :wall_clock_exceeded -> "summarizer timed out"
+      :empty_summary -> "summarizer returned nothing"
+      :backoff -> "a recent compaction failed, backing off"
+      other -> inspect(other, printable_limit: 60)
+    end
+  end
+
   # The in-turn compaction body. The `idle_compaction_runner` seam (kept
   # in the worker snapshot) is reused so a test can drive the shrink
   # without a provider, exactly as the background pass does; otherwise
-  # `compact_now/2` runs the real summarizer synchronously.
-  defp run_compact(state) do
+  # `compact_now/2` runs the real summarizer synchronously. Public for
+  # tests (the result shape is core behavior).
+  @doc false
+  def run_compact(state) do
     case state.idle_compaction_runner do
       nil -> Compactor.compact_now(state)
       fun -> fun.(state)
