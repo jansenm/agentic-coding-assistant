@@ -135,6 +135,31 @@ sporadisch leerer Response übersprang die Compaction bei übervollem
 Kontext für 3 Turns. `do_compact` retried `:empty_summary` jetzt einmal
 an der `summarize_fn`-Naht. Commit `2664034`.
 
+**Erledigt (Review-Abarbeitung 2026-10-01, `review-devel-2026-09-30c.md`):**
+der dritte Record bestätigte N33–N40 per Messung und brachte 12 neue — alle
+abgearbeitet, dazu der live gefundene Reasonung-Tab-Bug (`5559f07`).
+**Hoch:** `N41` (`compact_now/2` gab für „nichts zu compacten" und „Summary
+fehlgeschlagen" dasselbe `{state, false}` — das Modell las bei einem Timeout
+wörtlich „no older exchange"; jetzt ein getaggtes `outcome` `:changed |
+:nothing | :interrupted | {:failed, reason}`, und der Tool-Pfad respektiert
+`compaction_backoff`), `N42` (die „reclaimed"-Zahl zog den `projected_tokens`
+ab, der Framework-Prompt **und** Tool-Schemas enthält → jeder Report trug die
+~4k Overhead, konnte bei kleinem Kontext einen **Zuwachs als Gewinn** melden;
+jetzt der Delta des gespeicherten Kontexts), `N43` (ein modell-initiierter
+Compact war nicht abbrechbar — bis ~600 s mit totem esc, die Form, die ADR 043
+verhindern soll; die Warteschleife pollt jetzt `Interrupt` alle 250 ms).
+**Mittel:** `N44` (Tool-Text versprach „the detail you still need stays",
+`split` hält nur die letzten ~3 Exchanges), `N45` (keine Policy konnte das
+Tool fencen; die Interception prüft jetzt das beworbene Toolset).
+**Niedrig:** `N46` (der Empty-Retry duplizierte die „compacting…"-Note),
+`N47` (Doc „must not block"), `N48` (ADR 040s Eröffnungsnote widersprach
+Decision 5), `N49` (zwei Spill-Marker → einer), `N50` (`{:raw_too_large,
+size}` zählte den überlaufenden Chunk nicht), `N51` (staler `cap + 1`-Satz).
+**Flake:** `N52` (der N28-Test maß die Wall-Clock einer kalten Session, der
+einmalige ~3–4-s-llm_db-Load lag darin → ~1/3 rot; jetzt ab dem Accept
+gemessen, 8 Seeds stabil). Commits `5559f07`, `01f0ec2`, `39cf26e`, `3534b93`,
+`5381796`, `214a000`.
+
 ## ADR 030 — One boundary (umgesetzt 2026-09-27)
 
 Der Umbau aus `docs/source/decisions/030-one-boundary.rst`: **eine**
