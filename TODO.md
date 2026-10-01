@@ -224,14 +224,14 @@ ohne confinement. Alle sieben Slices sind gelandet:
 
 ## Nächste Schritte (priorisiert)
 
-0. **Doku: Reference-Quadrant füllen.** Aufgesetzt (2026-09-29):
-   `reference/index.rst` + `reference/configuration.rst` (alle Keys,
-   Defaults, Layer) + `reference/commands.rst` (Slash-Commands aus der
-   Registry) + Drift-Tests
-   (`test/coding_agent/docs/config_reference_test.exs`). Offen, sobald es
-   sie gibt: `reference/cli.rst` (`mix tui`-Flags), `reference/tools.rst`
-   (Tool-Schemas). Anwender-Doku = Reference (Fakten); Tutorials/How-tos
-   später.
+0. **Doku: Reference-Quadrant — erledigt (2026-10-01).**
+   `reference/{index,configuration,commands}.rst` existierten; ergänzt um
+   `reference/cli.rst` (`mix tui`-Flags, Env-Vars, Datei-Orte) und
+   `reference/tools.rst` (Read-only/Gated/Delegation-Buckets, Scope,
+   Caps), beide in der `index.rst`-Toctree. Drift-Tests decken die
+   Config-Fläche ab (`test/coding_agent/docs/config_reference_test.exs`);
+   CLI/Tools sind (noch) nicht drift-getestet. Anwender-Doku = Reference
+   (Fakten); Tutorials/How-tos bleiben später.
 1. **Nächster offener Feature-Punkt.** T14 ist erledigt (ADR 038); die
    verbleibenden T-Punkte sind T9 (`websearch`) und T10
    (`apply_patch`/LSP/Skills/MCP/Fuzzy-Edit, der größte Brocken). T13
@@ -482,10 +482,12 @@ den Token-Zeilen) — plus die ctrl-Hinweise. Offen:
 
 ## Doku-Staleness
 
-* **ADR 020** steht auf `Proposed`, ist aber versendet (SQLite-Engine
-  läuft, `exqlite` drin).
-* **ADR 018** steht auf `Proposed` (das Amendment sagt Accepted; Teil 1
-  ist shipped).
+* ~~**ADR 020** steht auf `Proposed`~~ — **erledigt (2026-10-01):**
+  auf `Accepted` (die SQLite-Engine läuft seit dem Merge).
+* ~~**ADR 018** steht auf `Proposed`~~ — **erledigt (2026-10-01):** auf
+  `Accepted` (Teil 1 und der Tab sind shipped).
+* **ADR 007** bleibt bewusst `Proposed`: die Spezialisten-Matrix ist
+  ungebaut (ROADMAP „6c“), der Record ist ein Plan, keine Entscheidung.
 
 ## Offene ADR-Fragen
 
