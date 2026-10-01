@@ -233,9 +233,9 @@ ohne confinement. Alle sieben Slices sind gelandet:
    (Tool-Schemas). Anwender-Doku = Reference (Fakten); Tutorials/How-tos
    später.
 1. **Nächster offener Feature-Punkt.** T14 ist erledigt (ADR 038); die
-   verbleibenden T-Punkte sind T9 (`websearch`), T10 (`apply_patch`/LSP/
-   Skills/MCP/Fuzzy-Edit) und T13 (verschachtelte `AGENTS.md`). T13 ist
-   der kleinste, T10 der größte Brocken.
+   verbleibenden T-Punkte sind T9 (`websearch`) und T10
+   (`apply_patch`/LSP/Skills/MCP/Fuzzy-Edit, der größte Brocken). T13
+   (verschachtelte `AGENTS.md`) ist erledigt (2026-10-01).
 
 2. **Compaction: zwei Limits + verlustfreie Summaries (ADR 037).**
    **erledigt (2026-09-29):** Der Trigger ist jetzt prozentual vom
@@ -259,7 +259,7 @@ ohne confinement. Alle sieben Slices sind gelandet:
 | T8 | Undo/Redo via Git-Checkpoint + `/undo` | **erledigt** (2026-09-29, ADR 036): Checkpoint pro Turn, `/undo` stellt Dateien wieder her |
 | T9 | `websearch` neben `webfetch` | offen (Such-API-Abhängigkeit; `webfetch` ist da) |
 | T10 | `apply_patch`, LSP, Skills, MCP — inkl. fuzzy-match-Kette für `edit` | offen; `edit` ist exakt-match-only (opencode hat 9 Fuzzy-Strategien + LSP-Diagnostik nach jedem Edit) |
-| T13 | Verschachtelte `AGENTS.md` (Monorepo) | offen; wir lesen nur den Scope-Root einmal (`ProjectMemory.load/1`) |
+| T13 | Verschachtelte `AGENTS.md` (Monorepo) | **erledigt** (2026-10-01): `ProjectMemory` läuft von der Scope-Wurzel **aufwärts** bis zur Git-Wurzel und hängt alle `AGENTS.md` an (Wurzel zuerst, Scope zuletzt = allgemein → spezifisch); Unterordner werden **nicht** rekursiv gelesen, sondern im Abschnitt „Deeper files" erwähnt (der Agent liest sie selbst). Dateisystem-only (kein `git`-Aufruf), funktioniert unter dem read-only-Root. |
 | T14 | Truncation spült Volltext in eine abrufbare Datei | **erledigt** (2026-09-29, ADR 038): Overflow aus `Exec`/`grep`/`webfetch` landet im Scratch (als `/tmp/...` sichtbar), der Hinweis nennt den Pfad; `read_file` liest per `offset`/`limit` fensterweise auch Dateien >256 KiB |
 | T1/T2/T3/T6/T11/T12 | Framework-Prompt (ADR 024), Doom-Guard (ADR 026), Agentenfelder (ADR 024/025/029), `question` (ADR 027), Store-Flake, Provider-Prompts (ADR 024) | **erledigt** |
 

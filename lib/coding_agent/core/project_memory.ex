@@ -10,6 +10,22 @@ defmodule CodingAgent.Core.ProjectMemory do
   Kept out of the session loop (P3 factoring): the session asks for the
   section and composes; the file I/O and its failure policy live here.
 
+  ## Nested files (monorepos)
+
+  A session started in a subdirectory used to read only
+  ``<scope_root>/AGENTS.md`` and lose the repo-root conventions. Now the
+  loader walks UP from the scope root to the **git root** (the nearest
+  ancestor with a ``.git`` entry; the scope root itself when it is the
+  root, or when there is no git metadata) and concatenates every
+  ``AGENTS.md`` on that path, **root first, scope last** — general to
+  specific, so a more specific file is read as overriding the general one.
+
+  It does NOT collect subdirectories below the scope root: a monorepo can
+  have hundreds, most irrelevant to the work at hand, and reading them all
+  is unbounded. The section instead TELLS the model that subdirectories
+  may carry their own ``AGENTS.md`` and to read them with ``read_file``
+  when it works there (opencode does the same: it walks up, not down).
+
   Policy, unchanged from when this lived in `Session`:
 
     * a missing `AGENTS.md` is the normal case, not an error;
@@ -23,8 +39,9 @@ defmodule CodingAgent.Core.ProjectMemory do
   @max_bytes 64 * 1024
 
   @doc """
-  Appends the project-memory section to `prompt`. A nil scope root, a
-  missing file, or an unreadable file leaves `prompt` unchanged.
+  Appends the project-memory section to `prompt`. A nil scope root, no
+  readable file on the walk, or only unreadable files leave `prompt`
+  unchanged.
   """
   @spec append(String.t(), String.t() | nil) :: String.t()
   def append(prompt, scope_root) do
@@ -39,38 +56,107 @@ defmodule CodingAgent.Core.ProjectMemory do
   readable memory to add.
   """
   @spec load(String.t() | nil) :: String.t() | nil
-  def load(scope_root) do
-    file = scope_root && Path.join(scope_root, @agents_file)
+  def load(scope_root) when is_binary(scope_root) do
+    scope_root
+    |> dirs()
+    |> Enum.flat_map(&read/1)
+    |> case do
+      [] -> nil
+      files -> section(files, Path.expand(scope_root))
+    end
+  end
 
+  def load(_), do: nil
+
+  # The directories to read, git root -> scope root. `[scope_root]` alone
+  # when there is no git metadata, so a non-repo scope reads exactly the
+  # one file it always did.
+  @doc false
+  @spec dirs(String.t()) :: [String.t()]
+  def dirs(scope_root) do
+    scope = Path.expand(scope_root)
+
+    case git_root(scope) do
+      nil -> [scope]
+      git -> chain(git, scope)
+    end
+  end
+
+  # The nearest ancestor of `dir` (inclusive) holding a `.git` entry — a
+  # directory (normal checkout) or a file (worktree/submodule gitfile).
+  # Filesystem only, no git invocation, so it is cheap and sandbox-agnostic.
+  defp git_root(dir) do
     cond do
-      not is_binary(file) -> nil
-      not File.regular?(file) -> nil
-      true -> read(file)
+      File.exists?(Path.join(dir, ".git")) -> dir
+      Path.dirname(dir) == dir -> nil
+      true -> git_root(Path.dirname(dir))
     end
   end
 
-  defp read(file) do
-    case File.read(file) do
-      {:ok, bytes} when byte_size(bytes) <= @max_bytes ->
-        section(bytes)
+  # Every directory from `git` down to `scope`, root first. `scope` is `git`
+  # or a descendant of it (it was found by walking up from `scope`).
+  defp chain(git, scope), do: do_chain(scope, git, [])
 
-      {:ok, bytes} ->
-        Logger.warning("AGENTS.md larger than 64 KiB; truncated for the system prompt")
-        section(binary_part(bytes, 0, @max_bytes))
+  defp do_chain(scope, git, acc) do
+    acc = [scope | acc]
 
-      {:error, reason} ->
-        Logger.warning("AGENTS.md unreadable: #{inspect(reason)}")
-        nil
+    if scope == git or Path.dirname(scope) == scope,
+      do: acc,
+      else: do_chain(Path.dirname(scope), git, acc)
+  end
+
+  # One readable AGENTS.md as `[{path, text}]`, or `[]` when absent /
+  # unreadable / oversized beyond the cap.
+  defp read(dir) do
+    file = Path.join(dir, @agents_file)
+
+    if File.regular?(file) do
+      case File.read(file) do
+        {:ok, bytes} when byte_size(bytes) <= @max_bytes ->
+          [{file, bytes}]
+
+        {:ok, bytes} ->
+          Logger.warning("AGENTS.md larger than 64 KiB; truncated for the system prompt")
+          [{file, binary_part(bytes, 0, @max_bytes)}]
+
+        {:error, reason} ->
+          Logger.warning("AGENTS.md unreadable: #{inspect(reason)}")
+          []
+      end
+    else
+      []
     end
   end
 
-  defp section(text) do
+  # The section: an intro, one labelled sub-section per file (labelled by
+  # its path relative to the git root, so the model sees the scope), and a
+  # pointer to deeper files it must read itself.
+  defp section(files, scope_root) do
+    body =
+      Enum.map_join(files, "\n\n", fn {path, text} ->
+        "## #{label(path, scope_root)}\n\n#{String.trim_trailing(text)}"
+      end)
+
     """
     # Project memory (AGENTS.md)
 
-    Conventions and context for THIS project, written by the team:
+    Conventions and context for this project, written by the team. Files are
+    listed from the repository root down to the working directory; where
+    they conflict, a more specific file (later) wins.
 
-    #{String.trim_trailing(text)}
+    #{body}
+
+    ## Deeper files
+
+    Subdirectories below the working directory may have their own `AGENTS.md`.
+    Read them with the `read_file` tool when you work there — they are not
+    included above.
     """
   end
+
+  # A file's label: its path relative to the scope root. A file at the
+  # scope root is `AGENTS.md`; an ancestor is `../../AGENTS.md`; no
+  # absolute host path is leaked. Enough for the model to see where a rule
+  # comes from.
+  defp label(path, scope_root), do: Path.relative_to(path, scope_root)
 end
