@@ -366,24 +366,23 @@ ist gefixt.
 
 **Offen:**
 
-* **`scope_root` ungleich Git-Wurzel ist weder unterstützt noch
-  verweigert (halbe Funktionsfähigkeit).** `mix tui` pinnt
-  `scope_root: File.cwd!()` (Mix-Task `Tui`) ohne
-  Toplevel-Normalisierung; `Bwrap.git_dirs/1` sucht `.git` nur direkt
-  unter `<scope_root>`, und `Checkpoint.ensure_repo/3`
-  nutzt `rev-parse --is-inside-work-tree`, was im
-  Unterverzeichnis **true** liefert. Startet man aus einem Unterordner
-  eines Repos, findet kein Git-Schreibvorgang ein beschreibbares `.git`
-  (der `/`-Bind ist read-only): `git add`/`commit` und der
-  Checkpoint-Temp-Index scheitern mit EROFS, `take_checkpoint` schluckt
-  das als `Logger.warning` — seit dem F3-Fix zusätzlich als einmalige
-  Notiz. Kein Datenverlust (der Checkpoint scheitert geschlossen; der
-  „repo-weite Restore"-Effekt tritt nur unter `Sandbox.None` auf, also
-  mit bereits entfernter Grenze). Entweder `scope_root` beim Start auf
-  `git rev-parse --show-toplevel` normalisieren, oder mit klarer Meldung
-  verweigern, oder als „nicht unterstützt" dokumentieren. Reproduzierbar
-  unter echtem bwrap; Test fehlt (ADR 030 grenzt den Prozess, nicht den
-  Startpunkt).
+* ~~**`scope_root` ungleich Git-Wurzel**~~ — **erledigt (2026-10-01).**
+  Die Ursache war breiter als der Record sagte: `mix tui` pinnt
+  `scope_root: File.cwd!()`, und ein Unterordner-Scope brach **drei**
+  Dinge — `.git` wurde nicht gefunden (Git-Schreibvorgänge und der
+  Checkpoint-Index starben mit EROFS auf dem read-only `/`-Bind; das
+  `rev-parse --is-inside-work-tree` in `ensure_repo` meldet trotzdem
+  „true", also still), die Projekt-Config `<scope_root>/.coding-agent`
+  wurde nicht gefunden, und nur `AGENTS.md` war durch T13 schon geheilt.
+  **Fix, die T13-Lektion auf alle angewandt:** neues `Core.Repo` (eine
+  Quelle der Aufwärtssuche, fs-only, kein `git`-Aufruf) — `Bwrap.git_dirs`
+  läuft damit aufwärts zum Git-Root, `UserConfig.project_dir` löst die
+  Projekt-Config am Git-Root auf. **`scope_root` bleibt bewusst das
+  Arbeitsverzeichnis** (nicht auf `--show-toplevel` normalisiert), sonst
+  verlöre T13 die Package-spezifische `AGENTS.md`. Kein Git aufwärts:
+  unverändert „kein Checkpoint / Config am Scope" (kein Fehler).
+  Tests: Bwrap bindet das `.git` über einem Unterordner; Config liest die
+  Repo-Wurzel aus einem Unterordner.
 
 * **`active_tab`-Lebensdauer.** Der Zeiger wird bei Session-Wechsel neu
   gebaut und fällt überall über `active_child/1` sauber auf den Parent
