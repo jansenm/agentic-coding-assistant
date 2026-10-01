@@ -37,11 +37,12 @@ defmodule CodingAgent.Core.Tools.Compact do
     ReqLLM.Tool.new!(
       name: @tool_name,
       description: """
-      Summarize older messages to free context, keeping the recent
+      Summarize older messages to free context, keeping the MOST RECENT
       exchanges verbatim. Use this when you are running low on context
       (see the "Context budget" line) but still have work to do: it
-      compacts NOW instead of waiting for your turn to end, so the detail
-      you still need stays and the older noise is folded into a summary.
+      compacts NOW instead of waiting for your turn to end. The older
+      noise is folded into a summary; anything OLDER than the last few
+      exchanges is no longer available verbatim.
 
       When NOT to use it:
       - Early in a task, or when you have plenty of context left — there
