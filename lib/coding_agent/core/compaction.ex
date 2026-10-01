@@ -272,13 +272,14 @@ defmodule CodingAgent.Core.Compaction do
     end
   end
 
-  # A ceiling on the APPLIED summary (review N18). The provider is asked
-  # for at most ~4k tokens (`Compactor.summarize_opts/1`), but a provider
-  # that ignores `max_tokens` must not be able to store a summary larger
-  # than the window it replaces: the summary rides every later prompt, so
-  # an unbounded one becomes the overflow. Generous relative to the
-  # 4k-token target (~24k chars at 4/ch) and only trims the pathological
-  # case, with an honest marker.
+  # A ceiling on the APPLIED summary (review N18). The summarize call sets
+  # NO `max_tokens` (removed in `160f252`: it counted reasoning tokens and
+  # made a reasoning model return an empty answer), so the provider is asked
+  # for nothing in particular and this guard is the ONLY bound on what is
+  # stored. An unbounded summary would ride every later prompt and become
+  # the overflow, so the stored text is capped regardless of what the
+  # provider returns. Generous (~24k chars at 4/ch) and only trims the
+  # pathological case, with an honest marker.
   @max_summary_chars 24_000
 
   defp bound_summary(text) when byte_size(text) <= @max_summary_chars, do: text

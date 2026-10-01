@@ -16,7 +16,9 @@ erl_crash.dump
 /.idea/
 *.iml
 
+# Review records are untracked artefacts; the convention file is tracked.
 review-*.*
+!review-process.md
 
 # Docs build
 /docs/build/

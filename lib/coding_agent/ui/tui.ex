@@ -346,7 +346,7 @@ defmodule CodingAgent.UI.Tui do
   defp question_prompt_of(_), do: nil
 
   defp mount_session(id, opts, prompt) do
-    id = id || Keyword.get(opts, :session_id) || "tui-#{System.unique_integer([:positive])}"
+    id = id || Keyword.get(opts, :session_id) || CodingAgent.Core.Session.new_id()
 
     with {:ok, _pid, restored, notice} <- start_session(id, opts) do
       # real terminal dimensions: captured at mount, kept fresh by a

@@ -716,13 +716,24 @@ defmodule CodingAgent.Core.Session.Store do
       {:ok, %State{scope_root: root, checkpoints: cps}} when is_binary(root) and cps != [] ->
         %{root: root, checkpoints: cps}
 
-      # No state to read: either the session genuinely had no checkpoints,
-      # or the state blob would not decode. The second case must not look
-      # like the first (review N55): it would silently leak every ref of
-      # that session. The reconciliation pass (Checkpoint.reconcile/2, run
-      # on the next session start) is the backstop; this log says so.
+      # Readable state, no refs to drop: the common, benign case (a fresh
+      # session, or one that never took a snapshot). Silent.
+      {:ok, %State{}} ->
+        nil
+
+      # Never persisted (a `persist?: false` session, e.g. a subagent):
+      # there is no state, and therefore no refs. Benign, silent.
+      {:error, :enoent} ->
+        nil
+
+      # The state exists but would not decode. This must not look like
+      # "no refs" (review N55): a corrupt/foreign state may hold refs this
+      # call can no longer name, so they would leak silently. Loud at
+      # warning — the same level as this module's sibling failures (review
+      # N62) — and the reconciliation pass (Checkpoint.reconcile/2, run off
+      # the next session start) is the backstop this names.
       other ->
-        Logger.debug(
+        Logger.warning(
           "checkpoint refs not cleaned for #{id}: state unreadable " <>
             "(#{inspect(other)}); reconciliation will collect them"
         )

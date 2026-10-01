@@ -471,12 +471,14 @@ defmodule CodingAgent.Core.CompactionTest do
                {"ollama:session", @default}
     end
 
-    test "an UNKNOWN window trusts the pin with the default cap" do
+    test "an UNKNOWN window falls back to the session model (review N58)" do
+      # The pin's window cannot be verified as big enough, so it must not be
+      # handed the full span; the session model (known good) summarizes.
       assert Compactor.resolve_target("ollama:session", "ollama:cheap", :unknown) ==
-               {"ollama:cheap", @default}
+               {"ollama:session", @default}
 
       assert Compactor.resolve_target("ollama:session", "ollama:cheap", :loading) ==
-               {"ollama:cheap", @default}
+               {"ollama:session", @default}
     end
   end
 

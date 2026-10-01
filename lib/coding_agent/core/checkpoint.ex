@@ -18,12 +18,16 @@ defmodule CodingAgent.Core.Checkpoint do
     3. ``git write-tree`` on the REAL index → the staged tree;
     4. ``git commit-tree`` → a ROOT commit (no parent, review N53) so
        ``git gc`` can reclaim a snapshot the moment its ref is dropped;
-    5. ``git update-ref refs/coding-agent/checkpoints/<session-id>/<commit>``
+    5. ``git update-ref
+       refs/coding-agent/checkpoints/<store>/<session-id>/<commit>``
        → anchors the object against ``git gc``. The session id is in the
        name (review N54) so a ref can be attributed to a session without
        decoding its state, and the reconciliation pass (``reconcile/1``)
        can collect the orphans; the commit half keeps two sessions from
-       colliding.
+       colliding. The **store** segment (review N61) namespaces the ref by
+       the store that owns the keep-set, so a repo shared by several stores
+       or worktrees never has one store's reconciliation judge another's
+       refs.
 
   Restore:
 
@@ -141,9 +145,13 @@ defmodule CodingAgent.Core.Checkpoint do
   store's persisted ids plus the live registry ids. A ref is dropped only
   when ALL hold:
 
-    * it is in the NEW name form (``<prefix><session-id>/<commit>``), i.e.
-      it has a session segment — so it can be attributed at all; and
-    * that segment is not in `known_sessions`.
+    * it is in the NEW name form
+      (``<prefix><store>/<session-id>/<commit>``) — so it can be attributed
+      at all; and
+    * its store segment is the SAME store the keep-set came from, so one
+      store's reconciliation never judges another store's refs (review
+      N61); and
+    * its session segment is not in `known_sessions`.
 
   Legacy refs (``<prefix><commit>``, written before this change) are
   LEFT ALONE. They cannot be attributed, and per the review record that is
@@ -161,7 +169,7 @@ defmodule CodingAgent.Core.Checkpoint do
         out
         |> split_lines()
         |> Enum.filter(&String.starts_with?(&1, ref_prefix()))
-        |> Enum.filter(&orphan?(&1, known))
+        |> Enum.filter(&orphan?(&1, store_ns(), known))
         |> tap(fn refs -> Enum.each(refs, &drop_ref(scope, root, &1)) end)
 
       _ ->
@@ -169,15 +177,20 @@ defmodule CodingAgent.Core.Checkpoint do
     end
   end
 
-  # A ref is an orphan only if it is in the new (attributable) form AND its
-  # session segment is unknown. The new form has exactly one `/` after the
-  # prefix (the commit half is a bare hash, no slash).
-  defp orphan?(ref, known) do
-    case ref |> String.replace_prefix(ref_prefix(), "") |> String.split("/", parts: 2) do
-      [session, _commit] -> not MapSet.member?(known, session)
-      _legacy -> false
+  # A ref is an orphan only if it is in the new (attributable) form, it is
+  # in THIS store's namespace, and its session segment is unknown. The
+  # commit half is a bare hash, no slash.
+  defp orphan?(ref, store, known) do
+    case ref |> String.replace_prefix(ref_prefix(), "") |> String.split("/", parts: 3) do
+      [^store, session, _commit] -> not MapSet.member?(known, session)
+      _other -> false
     end
   end
+
+  # The store segment: the store DB path, sanitized to one ref-safe
+  # segment. A path is unique per store, so this namespaces the ref without
+  # a registry (review N61).
+  defp store_ns, do: ref_name(CodingAgent.Core.Session.Store.path())
 
   # -- git plumbing -----------------------------------------------------------
 
@@ -232,11 +245,12 @@ defmodule CodingAgent.Core.Checkpoint do
     end
   end
 
-  # The ref carries the SESSION id (review N54), so a ref can be attributed
-  # to its session without decoding the session's state — which is what the
-  # reconciliation pass needs. The commit half still disambiguates.
+  # The ref carries the STORE (review N61) and the SESSION id (review N54),
+  # so a ref can be attributed to its store and session without decoding
+  # state — which is what the reconciliation pass needs. The commit half
+  # still disambiguates two snapshots of one session.
   defp anchor(scope, root, session_id, commit) do
-    ref = ref_prefix() <> ref_name(session_id) <> "/" <> commit
+    ref = ref_prefix() <> store_ns() <> "/" <> ref_name(session_id) <> "/" <> commit
 
     case git(scope, root, ["update-ref", ref, commit], []) do
       {:ok, _, 0} -> {:ok, ref}

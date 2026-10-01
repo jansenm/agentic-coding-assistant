@@ -93,6 +93,27 @@ defmodule CodingAgent.Core.Session do
   end
 
   @doc """
+  A fresh default session id. Globally unique (a ULID, not
+  `System.unique_integer`, which restarts at the same base in every VM):
+  the id names git checkpoint refs in a repo shared across worktrees and
+  stores (review N61), so two VMs rolling the same counter could collide
+  and make reconciliation keep the wrong session's refs.
+  """
+  @spec new_id() :: String.t()
+  def new_id, do: "tui-" <> ulid()
+
+  # A ULID-shaped, lexicographically sortable id with 80 bits of entropy in
+  # the random suffix — enough that the cross-VM collision the integer
+  # counter allowed cannot happen. Pure Elixir, no dependency.
+  defp ulid do
+    ts = System.system_time(:millisecond)
+    <<r1::unsigned-40, r2::unsigned-40>> = :crypto.strong_rand_bytes(10)
+    base36(ts, 10) <> base36(r1, 8) <> base36(r2, 8)
+  end
+
+  defp base36(n, width), do: n |> Integer.to_string(36) |> String.pad_leading(width, "0")
+
+  @doc """
   Returns the session's current state (messages, status).
 
   Degrades instead of raising (the TUI reads the session from many
@@ -464,11 +485,14 @@ defmodule CodingAgent.Core.Session do
 
     # Drop checkpoint refs of sessions that are GONE (review N54): a killed
     # TUI leaves refs behind, and (before N53) each pinned its whole tree.
-    # Runs before this session's first snapshot, and this session is
-    # registered (alive) by the time it could take one, so a ref of a live
-    # session is never a candidate. Best effort; a non-git or unwritable
-    # root is a no-op.
-    reconcile_checkpoints(scope_root, id)
+    # Best effort; a non-git or unwritable root is a no-op. Runs OFF the
+    # start path (review N63): `Checkpoint.reconcile/2` shells out to a
+    # confined `git for-each-ref` with a 60 s timeout, so a cold bwrap start
+    # or a stalled git would hold `Session.start_link` — and thus every
+    # session start — for up to a minute with no UI feedback. This id is
+    # passed explicitly, so this session is always in the keep-set even
+    # though the pass now runs after registration.
+    schedule_checkpoint_reconcile(scope_root, id)
 
     # Resume support (4a): a resumed session must carry the persisted
     # usage forward. last_input_tokens is the ONLY sound compaction
@@ -646,10 +670,30 @@ defmodule CodingAgent.Core.Session do
 
   defp delegatable_names(_), do: []
 
+  # Schedule the orphan-ref sweep (review N54) off the start path (review
+  # N63). The start returns immediately; the git call runs in a supervised
+  # task, so a cold/slow git never delays a session start. The keep-set
+  # (every persisted id, every live id, plus THIS id, captured at schedule
+  # time) is snapshotted in the task.
+  defp schedule_checkpoint_reconcile(scope_root, id) do
+    # `Task.start/1` links, so the whole body must be crash-proof: a raise
+    # or exit here must never take the session down. `reconcile_checkpoints`
+    # already rescues; this catch is the belt for an exit.
+    Task.start(fn ->
+      try do
+        reconcile_checkpoints(scope_root, id)
+      catch
+        kind, reason ->
+          Logger.debug("checkpoint reconcile task ended: #{inspect({kind, reason})}")
+          :ok
+      end
+    end)
+  end
+
   # Collect checkpoint refs whose session is gone (review N54). The keep
-  # set is every persisted session id, every LIVE session id, and this one
-  # (not yet registered during init). Conservative: only refs in the
-  # attributable `<session>/<commit>` form are candidates, so a legacy or
+  # set is every persisted session id, every LIVE session id, and `id`.
+  # Conservative: only refs in the attributable
+  # `<store>/<session>/<commit>` form are candidates, so a legacy or
   # unattributable ref is never deleted.
   defp reconcile_checkpoints(scope_root, id) do
     known = [id | Store.ids()] ++ live_session_ids()
@@ -2579,9 +2623,11 @@ defmodule CodingAgent.Core.Session do
       soft: Compactor.soft_limit(state),
       hard: Compactor.hard_limit(state),
       # the tool-round budget the guard checks (ADR 025), so the model can
-      # see "turn 54 of 200" instead of decoding its own state blob
+      # see "turn 54 of 200" instead of decoding its own state blob. Read
+      # through `tool_budget/1` — the SAME function `gate_tools` uses — so
+      # the number shown and the number enforced cannot drift (review N66).
       rounds: state.tool_rounds,
-      max_rounds: State.tool_budget(state) || :infinity
+      max_rounds: tool_budget(state)
     }
   end
 

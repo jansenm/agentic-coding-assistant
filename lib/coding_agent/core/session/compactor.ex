@@ -538,10 +538,12 @@ defmodule CodingAgent.Core.Session.Compactor do
   # The summarizer model AND the byte cap for the rendered span, resolved
   # together (ADR 044 caveat). A pinned compaction model must be able to
   # HOLD the span; rather than fail on a small model, the span is bounded
-  # to a fraction of that model's window. If the window is unknown we trust
-  # the model with the default cap (the same "unknown falls back" stance the
-  # rest of the system takes); if it is KNOWN and too small for a useful
-  # span, the pin is dropped and the session model summarizes instead.
+  # to a fraction of that model's window. When the window is NOT known
+  # (`:loading`/`:unknown`, review N58) the pin cannot be verified as big
+  # enough, so the SESSION model — already known good — summarizes with the
+  # default cap instead of handing an unverified small model the full span.
+  # If the window is KNOWN and too small for a useful span, the pin is
+  # dropped for the same reason.
   #
   # Fraction and floor: half the window goes to the old span, leaving room
   # for the system body, the template, the kept tail and the output. Below
@@ -579,8 +581,11 @@ defmodule CodingAgent.Core.Session.Compactor do
       else: {pinned, cap}
   end
 
-  # unknown / loading: trust the pin with the default cap
-  def resolve_target(_session, pinned, _), do: {pinned, Compaction.max_input_chars()}
+  # unknown / loading: the pin's window cannot be verified, so fall back to
+  # the SESSION model (known good) with the default cap rather than trust an
+  # unverified small model with the full span (review N58 — the branch a
+  # first over-limit turn hits, because the catalog warms in the background).
+  def resolve_target(session, _pinned, _), do: {session, Compaction.max_input_chars()}
 
   # GLM on an 80K-char context takes minutes; without an inactivity cap
   # a hung summary stalls every turn's start (found live).

@@ -318,8 +318,11 @@ resumed session must carry the persisted ``usage`` (and
 otherwise ``last_input_tokens`` restarts at 0 and a just-resumed context
 takes the chars fallback and compacts on the first command (found live).
 
-The summarize call is a non-streaming round trip on the same model,
-executed in a task under
+The summarize call **streams** (``stream_text/3`` — a non-streaming call
+counts the whole think+answer time as one inactivity gap against
+``receive_timeout``), on the session model by default and on a pinned
+``compaction`` agent model when one is defined (ADR 044). It is executed
+in a task under
 :mod:`CodingAgent.Core.Session.Compactor.TaskSupervisor` — **never
 linked to the session process** (a crash inside the provider stack
 must degrade, not kill the turn) — and bounded twice: a receive

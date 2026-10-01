@@ -141,13 +141,18 @@ defmodule CodingAgent.Core.CheckpointTest do
     assert git!(["show", ":a.txt"]) == "staged-B\n"
   end
 
-  test "the ref carries the session id AND the commit (reviews N54)", %{scope: scope} do
+  test "the ref carries the store, the session id AND the commit (reviews N54, N61)", %{
+    scope: scope
+  } do
     write("a.txt", "v1\n")
     git!(["add", "-A"])
     git!(["commit", "-qm", "init"])
 
     {:ok, cp} = Checkpoint.snapshot(scope, "s1")
-    assert cp.ref == Checkpoint.ref_prefix() <> "s1/" <> cp.commit
+    # <prefix><store>/<session>/<commit>: store-namespaced, so a repo shared
+    # across stores never has one store's reconcile judge another's refs.
+    assert String.starts_with?(cp.ref, Checkpoint.ref_prefix())
+    assert String.ends_with?(cp.ref, "/s1/" <> cp.commit)
   end
 
   test "each snapshot is a ROOT commit, not chained (review N53)", %{scope: scope} do
@@ -253,6 +258,25 @@ defmodule CodingAgent.Core.CheckpointTest do
 
       refute (Checkpoint.ref_prefix() <> legacy) in dropped
       assert git!(["for-each-ref", "refs/coding-agent/checkpoints/"]) =~ legacy
+    end
+
+    test "never touches a ref in ANOTHER store's namespace (review N61)", %{scope: scope} do
+      # The keep-set comes from THIS store; a ref under a different store
+      # segment was written by a session whose store this reconciliation
+      # cannot judge, so it must be left alone even when the session id is
+      # unknown here.
+      write("a.txt", "v1\n")
+      git!(["add", "-A"])
+      git!(["commit", "-qm", "init"])
+
+      {:ok, cp} = Checkpoint.snapshot(scope, "tui-live")
+      foreign = Checkpoint.ref_prefix() <> "someotherstore/tui-live/" <> cp.commit
+      git!(["update-ref", foreign, cp.commit])
+
+      dropped = Checkpoint.reconcile(scope, [])
+
+      refute foreign in dropped
+      assert git!(["for-each-ref", "refs/coding-agent/checkpoints/"]) =~ foreign
     end
   end
 end
