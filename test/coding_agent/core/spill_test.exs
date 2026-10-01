@@ -63,7 +63,11 @@ defmodule CodingAgent.Core.SpillTest do
       {:ok, w} = Spill.finish(w)
       data = File.read!(Spill.host_path(w))
 
-      assert data =~ "spill truncated"
+      # the marker names the same things `spill/3` does (review N49):
+      # the TOTAL bytes, not just the cap
+      assert data =~
+               ~r/\[\.\.\. spill truncated: \d+ bytes total; showing first \d+ and last \d+ \.\.\.\]/
+
       # head: the first chunk; tail: the last chunk (the useful part of a
       # crashed run's log). The first version dropped the tail.
       assert data =~ "CHUNK1-START"

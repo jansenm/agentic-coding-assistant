@@ -107,9 +107,10 @@ defmodule CodingAgent.Core.Exec do
       entirely (a reader that only needs "is it too big?", not the text).
     * `:max_output` — the hard byte ceiling for the `truncate: false`
       (raw) mode; default `@max_raw_bytes`. A caller with its own cap
-      (`read_file`) passes `cap + 1` so the command is stopped the moment
-      the cap is exceeded, instead of being served a silently truncated
-      result (`{:raw_too_large, _}` instead of data loss).
+      (`read_file`) passes exactly its `max_bytes`, so the read is stopped
+      the moment the cap is exceeded and the caller gets `{:raw_too_large,
+      _}` (which carries ONLY the byte count, not the buffer) rather than a
+      silently truncated result.
   """
   @spec run(Sandbox.spec(), String.t(), pos_integer(), Sandbox.profile(), keyword()) :: outcome()
   def run(spec, cwd, secs, profile, opts \\ []) do
@@ -203,14 +204,17 @@ defmodule CodingAgent.Core.Exec do
             # and a saturating command could outlive it (review N33/N33b).
             check_stop(port, deadline, acc, cut, session_id)
 
-          :overflow ->
+          {:overflow, size} ->
             # a machine consumer (`grep`/`fd`, `truncate: false`) keeps the
             # whole output by contract; past the hard safety cap we refuse
             # rather than reproduce the OOM — a bounded, honest failure.
-            # Return only the SIZE, not the buffer: materializing it would
-            # cost the very O(cap) the cap exists to avoid (review N38).
+            # `size` counts the overflowing chunk too (review N50: reporting
+            # `acc.size` alone undercounted — a 1 MiB read against a 256 KiB
+            # cap said 262144). It is still only the count, never the
+            # buffer: materializing it would cost the very O(cap) the cap
+            # exists to avoid (review N38).
             kill(port)
-            {:raw_too_large, acc.size}
+            {:raw_too_large, size}
         end
 
       {^port, {:exit_status, code}} ->
@@ -241,7 +245,7 @@ defmodule CodingAgent.Core.Exec do
 
   defp ingest(%{mode: :raw, chunks: chunks, size: n, cut: cut} = acc, data) do
     n = n + IO.iodata_length(data)
-    if n > cut.max_raw, do: :overflow, else: {:ok, %{acc | chunks: [chunks | data], size: n}}
+    if n > cut.max_raw, do: {:overflow, n}, else: {:ok, %{acc | chunks: [chunks | data], size: n}}
   end
 
   defp ingest(%{mode: :buffer, buf: buf, total: total, cut: cut} = acc, data) do

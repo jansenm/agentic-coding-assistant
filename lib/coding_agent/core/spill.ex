@@ -94,6 +94,7 @@ defmodule CodingAgent.Core.Spill do
              host: host,
              scratch: scratch,
              written: 0,
+             total: 0,
              head_cap: @max_bytes - @tail_bytes,
              tail: [],
              tail_size: 0,
@@ -113,6 +114,7 @@ defmodule CodingAgent.Core.Spill do
           host: String.t(),
           scratch: String.t(),
           written: non_neg_integer(),
+          total: non_neg_integer(),
           head_cap: non_neg_integer(),
           tail: iodata(),
           tail_size: non_neg_integer(),
@@ -127,14 +129,14 @@ defmodule CodingAgent.Core.Spill do
   under the cap and ``{:capped, writer}`` at/after the cap.
   """
   @spec write(writer(), iodata()) :: {:ok, writer()} | {:capped, writer()}
-  def write(%{capped?: true} = writer, data), do: {:capped, add_tail(writer, data)}
+  def write(%{capped?: true} = writer, data), do: {:capped, add_tail(bump(writer, data), data)}
 
   def write(%{io: io, written: n, head_cap: cap} = writer, data) do
     size = IO.iodata_length(data)
 
     if n + size <= cap do
       IO.binwrite(io, data)
-      {:ok, %{writer | written: n + size}}
+      {:ok, %{writer | written: n + size, total: writer.total + size}}
     else
       space = max(cap - n, 0)
       bin = IO.iodata_to_binary(data)
@@ -143,12 +145,17 @@ defmodule CodingAgent.Core.Spill do
         IO.binwrite(io, binary_part(bin, 0, space))
       end
 
-      IO.binwrite(io, "\n\n[... spill truncated at #{@max_bytes} bytes ...]\n")
+      # The marker is written by `finish/1` (not here), once the total is
+      # known, so the two spill paths name the same thing.
       tail = binary_part(bin, space, byte_size(bin) - space)
 
-      {:capped, %{writer | written: cap, capped?: true} |> add_tail(tail)}
+      capped = %{writer | written: cap, capped?: true, total: writer.total + size}
+      {:capped, add_tail(capped, tail)}
     end
   end
+
+  defp bump(%{total: total} = writer, data),
+    do: %{writer | total: total + IO.iodata_length(data)}
 
   # The tail is kept as iodata and only COLLAPSED (to its last
   # `@tail_bytes`) once it exceeds twice that, so the per-chunk cost is
@@ -174,9 +181,29 @@ defmodule CodingAgent.Core.Spill do
   @spec finish(writer()) :: {:ok, writer()}
   def finish(%{path: path} = writer) when is_binary(path), do: {:ok, writer}
 
-  def finish(%{io: io, host: host, scratch: scratch, tail: tail, tail_size: n} = writer) do
-    # the rolling tail is flushed last, after the marker, so the file
-    # keeps the same head + tail shape as `spill/3`
+  def finish(
+        %{
+          io: io,
+          host: host,
+          scratch: scratch,
+          tail: tail,
+          tail_size: n,
+          total: total,
+          written: written
+        } = writer
+      ) do
+    # On overflow, write the SAME marker shape `spill/3` uses, now that the
+    # total is known (review N49): total bytes, the kept head, the kept
+    # tail. Below the cap there is no marker — the file is the whole output.
+    if writer.capped? do
+      kept_tail = if n > 0, do: n, else: 0
+
+      IO.binwrite(
+        io,
+        "\n\n[... spill truncated: #{total} bytes total; showing first #{written} and last #{kept_tail} ...]\n"
+      )
+    end
+
     if n > 0, do: IO.binwrite(io, tail)
     File.close(io)
     {:ok, %{writer | path: sandbox_path(host, scratch), tail: [], tail_size: 0}}
