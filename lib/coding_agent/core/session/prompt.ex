@@ -210,8 +210,11 @@ defmodule CodingAgent.Core.Session.Prompt do
 
   # The budget block text. `used` is the projected tokens (provider count or
   # chars/4, whichever is larger — the same value the compaction decision
-  # uses); soft is the turn-end trigger, hard the pre-call one.
-  defp budget_block(%{used: used, window: window, soft: soft, hard: hard}) do
+  # uses); soft is the turn-end trigger, hard the pre-call one. `rounds` /
+  # `max_rounds` name the TOOL-ROUND budget the guard checks (ADR 025); the
+  # model could not see that number, only its own decoded state blob
+  # (harness feedback, 2026-10-01). `max_rounds` may be `:infinity`.
+  defp budget_block(%{used: used, window: window, soft: soft, hard: hard} = budget) do
     pct = trunc(used * 100 / max(window, 1))
 
     base =
@@ -220,11 +223,25 @@ defmodule CodingAgent.Core.Session.Prompt do
         "and forced at #{k(hard)} before a call; you may also call the `compact` tool " <>
         "any time to summarize the older span now and free room."
 
+    base = base <> rounds_clause(budget)
+
     case guidance(used, soft, hard) do
       nil -> base
       guidance -> base <> "\n" <> guidance
     end
   end
+
+  # The tool-round line, only when the caller supplies it (a resumed/older
+  # turn may not). It names the guard the model cannot otherwise see.
+  defp rounds_clause(%{rounds: rounds, max_rounds: max}) when is_integer(rounds) do
+    case max do
+      :infinity -> " Tool rounds this turn: #{rounds}."
+      n when is_integer(n) -> " Tool rounds this turn: #{rounds} / #{n}."
+      _ -> " Tool rounds this turn: #{rounds}."
+    end
+  end
+
+  defp rounds_clause(_), do: ""
 
   # The action hint, only once the model is actually near a line. Keeping it
   # out of the calm case avoids nagging a session that has room.

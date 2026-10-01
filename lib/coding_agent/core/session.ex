@@ -2577,7 +2577,11 @@ defmodule CodingAgent.Core.Session do
       used: Compactor.projected_tokens(state),
       window: Compactor.window(state),
       soft: Compactor.soft_limit(state),
-      hard: Compactor.hard_limit(state)
+      hard: Compactor.hard_limit(state),
+      # the tool-round budget the guard checks (ADR 025), so the model can
+      # see "turn 54 of 200" instead of decoding its own state blob
+      rounds: state.tool_rounds,
+      max_rounds: State.tool_budget(state) || :infinity
     }
   end
 

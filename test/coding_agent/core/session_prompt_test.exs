@@ -255,5 +255,42 @@ defmodule CodingAgent.Core.Session.PromptTest do
         assert text =~ "`compact` tool"
       end
     end
+
+    test "names the tool-round budget when the caller supplies it" do
+      text =
+        Prompt.with_budget(base(), %{
+          used: 1,
+          window: 500_000,
+          soft: 250_000,
+          hard: 436_000,
+          rounds: 54,
+          max_rounds: 200
+        })
+        |> system_text()
+
+      assert text =~ "Tool rounds this turn: 54 / 200."
+
+      # an unbounded budget reads plainly too
+      unbounded =
+        Prompt.with_budget(base(), %{
+          used: 1,
+          window: 500_000,
+          soft: 250_000,
+          hard: 436_000,
+          rounds: 7,
+          max_rounds: :infinity
+        })
+        |> system_text()
+
+      assert unbounded =~ "Tool rounds this turn: 7."
+    end
+
+    test "omits the rounds line when the caller does not supply it" do
+      text =
+        Prompt.with_budget(base(), %{used: 1, window: 500_000, soft: 250_000, hard: 436_000})
+        |> system_text()
+
+      refute text =~ "Tool rounds"
+    end
   end
 end
