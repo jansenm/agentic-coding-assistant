@@ -48,19 +48,12 @@ im jeweiligen ADR vermerkt.
   muss live bestätigt werden: der Dialog darf nach der Antwort bleiben,
   wenn der Agent nachfragt; der zweite identische Ask sollte ausbleiben.
   Nur mit echtem Provider prüfbar.
-* **Subagent (`task`) live.** Seam und Tab sind gebaut (ADR 018 Amendment
-  (ii), 2026-09-25), aber nur mit `test_mode`/Seam-Runner getestet: ein
-  echter Lauf startet den Provider im Kind, persistiert nicht, sein
-  Summary landet als Tool-Result im Parent, sein Stream im Tab. **Seit dem
-  2026-09-30 ist der Pfad überhaupt erst live erreichbar:** vorher gab es
-  keinen delegierbaren Agenten (beide Built-ins waren `mode: primary`),
-  das `task`-Tool bot eine leere Liste an und jeder Versuch scheiterte am
-  unbekannten `subagent_type` (ADR 017 Amendment, ADR 042). Jetzt: der
-  Built-in `explore` (read-only, ohne Modell) und der optionale Knopf
-  `subagent_model`. Live prüfen: reale Läufe starten sauber (auch mehrere
-  parallel), die Tab-Leiste/ctrl-x a zeigen sie, das Band nennt den Leaf,
-  der Parent-Kontext sieht nur die Zusammenfassung, und `subagent_model`
-  greift (bzw. `explore` erbt das Main-Modell ohne den Knopf).
+* ~~**Subagent (`task`) live**~~ — **bestätigt (2026-10-01).** Reale
+  `task`-Läufe funktionieren: Umschalten in den Tab geht, der Leaf-Report
+  kommt an. Der Pfad war bis 2026-09-30 überhaupt erst erreichbar (vorher
+  kein delegierbarer Agent → leere Liste, unbekannter `subagent_type`;
+  ADR 017 Amendment, ADR 042: `explore` + `subagent_model`). Kein
+  offener Punkt mehr.
 * **esc stoppt ein laufendes Kind.** Weitergeleitet: die TUI ruft
   `Session.interrupt/1` für jedes aktive Kind (ADR 018 Amendment (ii)).
   Live bleibt zu bestätigen, dass ein esc-Doppeldruck einen langen
@@ -305,6 +298,32 @@ Damit ist aus dem alten P3-Befund nur noch offen:
 Die beiden Review-Records sind aus dem `-mjansen`-Worktree entfernt — der
 Record selbst bleibt in der Historie (`review.md` via `ca6f734`). Anker
 sind **Symbol + Commit**, keine Zeilennummern (die Lehre aus den Rebases).
+
+**Erledigt (Review-Abarbeitung 2026-10-01, `review-devel-2026-10-01.md`,
+N58–N66):** der Record bestätigte N53–N56 per Messung (Root-Commits,
+Reconcile lässt 0/14 Legacy-Refs liegen, `:internal` nicht wählbar) und
+brachte neun neue — alle abgearbeitet. **Mittel:** `N58` (ein **gepinnter**
+Compaction-Modell wurde mit dem vollen 300k-Zeichen-Cap vertraut, solange
+der Katalog `:loading`/`:unknown` ist — genau das kleine-Fenster-Versagen,
+das ADR 044 verhindern soll, und der Zweig, den ein erster Over-Limit-Turn
+trifft; jetzt fällt ein unverifiziertes Pin auf das **Session-Modell**
+zurück), `N61` (Checkpoint-Refs hingen an `System.unique_integer`, das in
+jeder VM gleich beginnt, während `.git` und Default-Store über Worktrees
+geteilt sind; `Session.new_id/0` liefert jetzt eine ULID, und der Ref ist
+zusätzlich nach **Store** namespaced — fremde Stores verwirft Reconcile
+nie), `N64` (`.gitignore review-*.*` verschluckte auch
+`review-process.md`; `!review-process.md` ergänzt und die Konvention ins
+Repo geholt). **Niedrig:** `N62` (der N55-Skip war `Logger.debug`,
+gefiltert; jetzt `warning`, aber nur für einen **kaputten** State — ein
+lesbarer ohne Refs und ein nie persistierter Subagent bleiben still), `N63`
+(Reconcile lief synchron in `Session.init/1` über einen 60-s-Git-Call;
+jetzt ein crash-sicheres `Task.start/1` **off** dem Startpfad), `N65`
+(veraltete Handover-Zeile in `review-process.md`), `N66` (Budget-Block und
+Guard lasen `tool_budget` über zwei Funktionen; der Block nutzt jetzt
+dieselbe wie `gate_tools`), `N59` (`bound_summary`-Kommentar zitterte den
+entfernten `max_tokens`-Cap), `N60` (`explanation/memory.rst` nannte den
+Summarize-Call „non-streaming … on the same model"). Commit `323c187`;
+der Record liegt als `review-devel-2026-10-01.md.triaged` daneben.
 
 **Erledigt (Review-Abarbeitung 2026-09-30, das zweite `review.md`):** alle
 15 neuen Befunde `N1`–`N15` sind abgearbeitet — `N2` (grep verlor eine
