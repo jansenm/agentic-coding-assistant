@@ -5,12 +5,14 @@ UI: running vs. next agent, and subagent views
 
 .. adr::
    :id: 018
-   :status: Proposed
+   :status: Accepted
    :date: 2026-09-17
    :tags: ui, agents, subagent, tui
 
 .. note::
-   Proposed 2026-09-17. The two-slot display and the next-agent switch
+   Accepted 2026-10-01 (status was stale at ``Proposed``; both parts and
+   the tab shipped — see below). Proposed 2026-09-17. The two-slot
+   display and the next-agent switch
    can ship with ADR 017. Subagent **views** need the ``task`` seam
    (the slice after ADR 017) and are specified here so that seam is
    built with the UI contract in mind, not retrofitted.

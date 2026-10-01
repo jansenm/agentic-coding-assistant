@@ -5,20 +5,20 @@ Session storage: selectable stores, per-store SQLite, two explicit views
 
 .. adr::
    :id: 020
-   :status: Proposed
+   :status: Accepted
    :date: 2026-09-19
    :tags: persistence, sessions, storage, memory, sqlite, tooling
 
 .. note::
-   Proposed 2026-09-19; being implemented. Supersedes the *format*
-   commitment of slice 4a (``term_to_binary`` blob, ``Store``) without
-   changing the domain contract: ``Store.save/1``/``load/1`` keep
-   returning a ``%Core.Session.State{}``, so the storage change is
-   encapsulated. The requirement that leads this ADR is **R0 — session
-   management is a first-class product surface**, not the storage
-   engine. The engine is chosen *after* the surface. Revisit the
-   "Session storage principles" in ``explanation/memory.rst`` together
-   with this ADR.
+   Accepted 2026-10-01 (status was stale at ``Proposed`` while the engine
+   shipped). Supersedes the *format* commitment of slice 4a
+   (``term_to_binary`` blob, ``Store``) without changing the domain
+   contract: ``Store.save/1``/``load/1`` keep returning a
+   ``%Core.Session.State{}``, so the storage change is encapsulated. The
+   requirement that leads this ADR is **R0 — session management is a
+   first-class product surface**, not the storage engine. The engine is
+   chosen *after* the surface. Revisit the "Session storage principles"
+   in ``explanation/memory.rst`` together with this ADR.
 
    Shipped so far: slice 1 (picker as session manager), slice 2 (store
    selection), slice 3a (SQLite engine — one DB per store, metadata
