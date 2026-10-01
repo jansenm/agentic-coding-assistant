@@ -237,10 +237,29 @@ ohne confinement. Alle sieben Slices sind gelandet:
    Tool-Namen/-Argumente, der System-Prompt überlebt, die Tail-Grenze
    ist exchange-sicher. Details in
    `docs/source/decisions/037-compaction-two-limits.rst`.
-   **Reminder / bewusst vertagt (Owner 2026-09-29):** das Fenster wird
-   **einmal** beim Init aufgelöst; ein Modellwechsel (`apply_model/2`)
-   löst es **nicht** neu auf (ADR 037 offene Frage 1). Später
-   wieder aufgreifen — ggf. pro-Modell-Tabelle.
+   ~~**Reminder / bewusst vertagt (Owner 2026-09-29):** das Fenster wird
+   einmal beim Init aufgelöst; ein Modellwechsel löst es nicht neu auf.~~
+   **Erledigt (N9):** `Session.recompute_window/1` löst bei jedem
+   Modell-/Agentenwechsel und beim Katalog-Warm neu auf. Offen bleibt nur
+   die Frage, ob eine Pro-Modell-Tabelle (`[context_windows]`) gewünscht
+   ist — die einzelne Key-plus-Katalog-Kette reicht derzeit.
+
+   **Owner-Befund „the compact window is once again too big to compact"
+   (2026-10-01) — adressiert.** Ursache: Das Live-Modell
+   `ollama_cloud:deepseek-v4.1-flash` steht **nicht** im Katalog
+   (`Catalog.context_window/1` → `:unknown`), also fiel die Auflösung
+   still auf den 500 000-Token-Default: soft 250k, hard 436k, während die
+   Live-Session bei `last_input_tokens = 152 290` erst 61 % des soft-Limits
+   erreicht hatte. Die `300090 chars rendered` aus früheren Läufen waren
+   das separate Span-Cap, nicht das Fenster. **Behandlung (Owner-Wahl:
+   „konfigurieren + sichtbar machen"):** `Config.context_window_resolved/2`
+   nennt jetzt die Herkunft (`:configured | {:catalog, n} | :loading |
+   :fallback`); ein `:fallback` loggt einmal pro Session eine
+   handlungsfähige Warnung (Modell, angenommenes Fenster, Config-Key) und
+   markiert die Sidebar-Zeile `soft at` als `(assumed)`. `context_window`
+   in `config.toml` setzen behebt es. Getestet: `Catalog`/`Config`; das
+   Owner-Feedback war zuerst in opencode beobachtet, die hiesige TUI ist
+   dort überlegen, die Absicherung bleibt trotzdem sinnvoll.
 
 ## Kern-Features gegen opencode (T-Liste)
 
