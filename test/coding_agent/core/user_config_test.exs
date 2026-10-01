@@ -122,6 +122,31 @@ defmodule CodingAgent.Core.UserConfigTest do
   defp global_dir, do: UserConfig.global_dir()
   defp project_dir, do: UserConfig.project_dir(@tmp_root)
 
+  describe "project config follows the git root (review scope_root)" do
+    test "a subdirectory scope reads the repo-root .coding-agent" do
+      repo = Path.join(@tmp_root, "repo")
+      sub = Path.join(repo, "pkg/sub")
+      File.mkdir_p!(Path.join(repo, ".git"))
+      File.mkdir_p!(sub)
+
+      File.mkdir_p!(Path.join(repo, ".coding-agent"))
+
+      File.write!(Path.join([repo, ".coding-agent", "config.toml"]), """
+      model = "from-repo-root"
+      """)
+
+      # scope is the SUBDIRECTORY; the config at the repo root must be read
+      assert UserConfig.project_dir(sub) == Path.join(repo, ".coding-agent")
+      assert UserConfig.load(sub).config["model"] == "from-repo-root"
+    end
+
+    test "no enclosing repo: project_dir stays at the scope root" do
+      plain = Path.join(@tmp_root, "plain/nested")
+      File.mkdir_p!(plain)
+      assert UserConfig.project_dir(plain) == Path.join(plain, ".coding-agent")
+    end
+  end
+
   test "layer 0: shipped provider defaults reach the merged config" do
     # no user files written — the shipped defaults alone provide entries
     cfg = UserConfig.load(nil)

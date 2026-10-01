@@ -55,12 +55,21 @@ defmodule CodingAgent.Core.UserConfig do
   end
 
   @doc """
-  The project config directory for a scope root
-  (`<scope_root>/.coding-agent`).
+  The project config directory for a scope root: `<git_root>/.coding-agent`,
+  where `git_root` is the enclosing repository's root (`Core.Repo.root/1`).
+
+  A session started in a SUBDIRECTORY used `<scope_root>/.coding-agent`, so
+  a repo config at the root was not found (the same up-not-down rule that
+  fixed nested `AGENTS.md`, review T13). With no enclosing repo the scope
+  root is used unchanged, so a non-git scope behaves exactly as before.
   """
   @spec project_dir(String.t() | nil) :: String.t() | nil
   def project_dir(nil), do: nil
-  def project_dir(scope_root) when is_binary(scope_root), do: Path.join(scope_root, @project_dir)
+
+  def project_dir(scope_root) when is_binary(scope_root) do
+    root = CodingAgent.Core.Repo.root(scope_root) || Path.expand(scope_root)
+    Path.join(root, @project_dir)
+  end
 
   defp home do
     System.get_env("HOME") || raise("HOME not set; cannot resolve config paths")
@@ -177,10 +186,22 @@ defmodule CodingAgent.Core.UserConfig do
 
   defp load_permissions(scope_root) do
     new_file = project_path(scope_root, "permissions")
-    legacy = Path.join(scope_root, "agent-permissions.toml")
-    legacy = if File.exists?(legacy) and not File.exists?(new_file), do: legacy, else: nil
+    legacy = legacy_permissions(scope_root)
 
     CodingAgent.Core.Permissions.load(global_path("permissions"), new_file || legacy)
+  end
+
+  # The pre-ADR-014 location, `agent-permissions.toml`, read only when the
+  # new file is absent. It lived at the scope root (the old behavior);
+  # check the git root too, since `project_dir/1` moved there.
+  defp legacy_permissions(scope_root) do
+    roots = [Path.expand(scope_root) | List.wrap(CodingAgent.Core.Repo.root(scope_root))]
+
+    Enum.find(roots, &File.exists?(Path.join(&1, "agent-permissions.toml")))
+    |> case do
+      nil -> nil
+      root -> Path.join(root, "agent-permissions.toml")
+    end
   end
 
   # -- Credentials (auth.toml, global only) --------------------------------------

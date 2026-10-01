@@ -68,42 +68,13 @@ defmodule CodingAgent.Core.ProjectMemory do
 
   def load(_), do: nil
 
-  # The directories to read, git root -> scope root. `[scope_root]` alone
-  # when there is no git metadata, so a non-repo scope reads exactly the
-  # one file it always did.
+  # The directories to read, git root -> scope root; the shared walk lives
+  # in `Core.Repo` (also used by the sandbox and the config loader). A
+  # non-repo scope yields `[scope_root]`, so it reads exactly the one file
+  # it always did.
   @doc false
   @spec dirs(String.t()) :: [String.t()]
-  def dirs(scope_root) do
-    scope = Path.expand(scope_root)
-
-    case git_root(scope) do
-      nil -> [scope]
-      git -> chain(git, scope)
-    end
-  end
-
-  # The nearest ancestor of `dir` (inclusive) holding a `.git` entry — a
-  # directory (normal checkout) or a file (worktree/submodule gitfile).
-  # Filesystem only, no git invocation, so it is cheap and sandbox-agnostic.
-  defp git_root(dir) do
-    cond do
-      File.exists?(Path.join(dir, ".git")) -> dir
-      Path.dirname(dir) == dir -> nil
-      true -> git_root(Path.dirname(dir))
-    end
-  end
-
-  # Every directory from `git` down to `scope`, root first. `scope` is `git`
-  # or a descendant of it (it was found by walking up from `scope`).
-  defp chain(git, scope), do: do_chain(scope, git, [])
-
-  defp do_chain(scope, git, acc) do
-    acc = [scope | acc]
-
-    if scope == git or Path.dirname(scope) == scope,
-      do: acc,
-      else: do_chain(Path.dirname(scope), git, acc)
-  end
+  def dirs(scope_root), do: CodingAgent.Core.Repo.dirs(scope_root)
 
   # One readable AGENTS.md as `[{path, text}]`, or `[]` when absent /
   # unreadable / oversized beyond the cap.

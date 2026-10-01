@@ -61,6 +61,32 @@ defmodule CodingAgent.Core.Sandbox.BwrapTest do
       assert triple_in(argv, {"--bind", git, git})
     end
 
+    test "finds .git ABOVE a scope that is a subdirectory (review scope_root)", %{root: root} do
+      # A session started in `root/pkg/sub` must still bind the repo's
+      # `.git`, or git writes die on the read-only `/` bind (EROFS).
+      init_git!(root)
+      sub = Path.join(root, "pkg/sub")
+      File.mkdir_p!(sub)
+      git = Path.join(root, ".git")
+
+      argv = Bwrap.argv(sub, {:shell, "echo hi"}, %{root: sub, git_write: true})
+
+      # the git dir (outside the scope) is bound explicitly
+      assert triple_in(argv, {"--bind", git, git})
+    end
+
+    test "no .git anywhere above leaves no git bind", %{root: root} do
+      # `root` is a fresh tmp dir with no repo up to the filesystem root
+      # (tmp dirs are not in a work tree) — so no `.git` triple.
+      argv = Bwrap.argv(root, {:shell, "echo hi"}, %{root: root})
+
+      refute Enum.any?(["--bind", "--ro-bind"], fn flag ->
+               argv
+               |> Enum.chunk_every(3, 1, :discard)
+               |> Enum.any?(fn [f, src, _] -> f == flag and Path.basename(src) == ".git" end)
+             end)
+    end
+
     test "binds the scope root read-only when root_ro is set", %{root: root} do
       argv = Bwrap.argv(root, {:shell, "echo hi"}, %{root: root, root_ro: true})
 

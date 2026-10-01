@@ -314,9 +314,23 @@ defmodule CodingAgent.Core.Sandbox.Bwrap do
 
   # Every real git directory for `root`, de-duplicated, common dir
   # included. Empty when there is no git metadata.
+  #
+  # The `.git` entry is looked up on the walk UP from `root` to the git
+  # root (`Core.Repo`), not just at `root` itself: a session started in a
+  # SUBDIRECTORY of the checkout found no `.git` here, so the writable
+  # git bind was never emitted and `git add`/`commit` (and the checkpoint
+  # index) died with EROFS on the read-only `/` bind — silently, because
+  # `ensure_repo`'s `rev-parse` reports "inside work tree" even from a
+  # subdirectory. Finding the real git dir fixes that without moving
+  # `scope_root` (which `AGENTS.md` relies on staying at the working dir).
   defp git_dirs(root) do
-    git = Path.join(root, ".git")
+    case CodingAgent.Core.Repo.root(root) do
+      nil -> []
+      git_root -> uniq_git_dirs(Path.join(git_root, ".git"))
+    end
+  end
 
+  defp uniq_git_dirs(git) do
     cond do
       # a normal checkout: `.git` is the gitdir itself
       File.dir?(git) ->
