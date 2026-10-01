@@ -25,6 +25,40 @@ Querverweise der ADRs („T4“, „B3“, „the rival-opencode list“) bezieh
 sich auf die Nummern in dieser Datei; die historische Herkunft ist dort
 im jeweiligen ADR vermerkt.
 
+## Offene Aufgaben (2026-10-01, Owner)
+
+* **TUI: volle Breite.** Der Owner kann die Tabelle nicht lesen — der
+  „reading measure“ (`@measure 100` in `lib/coding_agent/ui/tui.ex`,
+  `content_width/1 min(w, @measure)`) deckelt jede breite Ansicht
+  (Transkript, Composer, Overlays) auf ~100 Spalten und zentriert sie.
+  Wunsch: die **volle Breite** nutzen. Betrifft mehrere Stellen
+  (`content_width/1`, `min(@measure + 2, …)` in den Overlays, die
+  Composer-Split-Logik) — ein gemeinsamer Ort statt sechs Literale.
+* **Ask-Dialog: ALT/Shift+Enter im Freitext.** Im Frage-Dialog
+  („type your own“, `question_prompt.custom`) sind ALT+Enter/Shift+Enter
+  laut Keymap `:insert_newline`; der Wizard routet aber nur
+  `:enter`/`:esc`/`:backspace`/Pfeile und **verwirft** das Newline —
+  unklar, ob es dabei auch den Custom-Puffer leert (Owner-Report:
+  „löscht was ich geschrieben habe“). Reproduzieren, dann entscheiden:
+  Newline einfügen (mehrzeiliger Freitext) oder Tastenkombination
+  ignorieren, ohne den Puffer anzufassen.
+* **`.coding-agent`-Fundort entscheiden** — **erledigt (2026-10-01).**
+  Owner-Regel: `scope_root` = das aktuelle Verzeichnis, **kein Suchen**
+  aufwärts oder abwärts. `UserConfig.project_dir/1` löst die Projekt-Config
+  wieder am Scope-Root auf (der `Repo.root`-Aufruf aus `ee7343b` ist raus),
+  `ProjectMemory` liest nur `<scope_root>/AGENTS.md`, `Repo.dirs/1` ist
+  entfernt (`Repo.root/1` bleibt **nur** für den Sandbox-`.git`-Bind, der
+  den Worktree-Gitfile findet). Offen und bewusst nicht jetzt: der tote
+  Projekt-`ui.toml`-Pfad (`Keymap.load/0` liest nur global) und
+  `Prompt.git_repo?/1` (prüft nur den Scope-Root).
+* **Teil-Repo (`workdir`):** geplant, aber noch nicht gebaut — `scope_root`
+  bleibt das aktuelle Verzeichnis (Kontext), ein **explizit konfiguriertes**
+  Unterverzeichnis (`[scope] workdir` in `config.toml`) soll die Schreibgrenze
+  sein (nur Schreiben scope-beschränkt, Lesen bleibt scope-weit), mit
+  klarer Fehlermeldung außerhalb. Undo/Checkpoint bekommt damit seinen
+  Umfang; Alternative „eigenes Shadow-`.git` statt Nutzer-Repo" besprochen,
+  zurückgestellt.
+
 ## Zuerst: Live-Smoke
 
 * **`compact`-Tool: nutzt der Agent es, und wann?** Das Tool ist seit
@@ -271,7 +305,7 @@ ohne confinement. Alle sieben Slices sind gelandet:
 | T8 | Undo/Redo via Git-Checkpoint + `/undo` | **erledigt** (2026-09-29, ADR 036): Checkpoint pro Turn, `/undo` stellt Dateien wieder her |
 | T9 | `websearch` neben `webfetch` | offen (Such-API-Abhängigkeit; `webfetch` ist da) |
 | T10 | `apply_patch`, LSP, Skills, MCP — inkl. fuzzy-match-Kette für `edit` | offen; `edit` ist exakt-match-only (opencode hat 9 Fuzzy-Strategien + LSP-Diagnostik nach jedem Edit) |
-| T13 | Verschachtelte `AGENTS.md` (Monorepo) | **erledigt** (2026-10-01): `ProjectMemory` läuft von der Scope-Wurzel **aufwärts** bis zur Git-Wurzel und hängt alle `AGENTS.md` an (Wurzel zuerst, Scope zuletzt = allgemein → spezifisch); Unterordner werden **nicht** rekursiv gelesen, sondern im Abschnitt „Deeper files" erwähnt (der Agent liest sie selbst). Dateisystem-only (kein `git`-Aufruf), funktioniert unter dem read-only-Root. |
+| T13 | Verschachtelte `AGENTS.md` | **erledigt (2026-10-01), überarbeitet:** `ProjectMemory` liest **nur** `<scope_root>/AGENTS.md` — kein Aufwärts-Walk (oberhalb des Scope existiert für uns nicht). Unterordner-Dateien werden **nicht** rekursiv gelesen, sondern im Abschnitt „Deeper files" erwähnt (der Agent liest sie selbst). Eine dynamische Injektion beim Datei-Zugriff (opencode-Stil) wurde erwogen und **verworfen**: Pull über den Zeiger deckt den Bedarf, Injektion hätte ein Shell-Loch und Kosten. |
 | T14 | Truncation spült Volltext in eine abrufbare Datei | **erledigt** (2026-09-29, ADR 038): Overflow aus `Exec`/`grep`/`webfetch` landet im Scratch (als `/tmp/...` sichtbar), der Hinweis nennt den Pfad; `read_file` liest per `offset`/`limit` fensterweise auch Dateien >256 KiB |
 | T1/T2/T3/T6/T11/T12 | Framework-Prompt (ADR 024), Doom-Guard (ADR 026), Agentenfelder (ADR 024/025/029), `question` (ADR 027), Store-Flake, Provider-Prompts (ADR 024) | **erledigt** |
 
@@ -405,22 +439,14 @@ ist gefixt.
 **Offen:**
 
 * ~~**`scope_root` ungleich Git-Wurzel**~~ — **erledigt (2026-10-01).**
-  Die Ursache war breiter als der Record sagte: `mix tui` pinnt
-  `scope_root: File.cwd!()`, und ein Unterordner-Scope brach **drei**
-  Dinge — `.git` wurde nicht gefunden (Git-Schreibvorgänge und der
-  Checkpoint-Index starben mit EROFS auf dem read-only `/`-Bind; das
-  `rev-parse --is-inside-work-tree` in `ensure_repo` meldet trotzdem
-  „true", also still), die Projekt-Config `<scope_root>/.coding-agent`
-  wurde nicht gefunden, und nur `AGENTS.md` war durch T13 schon geheilt.
-  **Fix, die T13-Lektion auf alle angewandt:** neues `Core.Repo` (eine
-  Quelle der Aufwärtssuche, fs-only, kein `git`-Aufruf) — `Bwrap.git_dirs`
-  läuft damit aufwärts zum Git-Root, `UserConfig.project_dir` löst die
-  Projekt-Config am Git-Root auf. **`scope_root` bleibt bewusst das
-  Arbeitsverzeichnis** (nicht auf `--show-toplevel` normalisiert), sonst
-  verlöre T13 die Package-spezifische `AGENTS.md`. Kein Git aufwärts:
-  unverändert „kein Checkpoint / Config am Scope" (kein Fehler).
-  Tests: Bwrap bindet das `.git` über einem Unterordner; Config liest die
-  Repo-Wurzel aus einem Unterordner.
+  Ursprünglicher Fix (neues `Core.Repo`, Aufwärtssuche zu Git-Root für
+  `Bwrap.git_dirs` und `UserConfig.project_dir`) wurde am selben Tag
+  **revidiert**: Owner-Regel ist `scope_root` = aktuelles Verzeichnis,
+  **kein** Aufwärtssuchen. `UserConfig.project_dir/1` löst die Config
+  wieder am Scope-Root auf, `ProjectMemory` liest nur
+  `<scope_root>/AGENTS.md`, `Repo.dirs/1` ist weg; `Repo.root/1` bleibt
+  allein für den Sandbox-`.git`-Bind (findet auch den Worktree-Gitfile).
+  **`scope_root` bleibt bewusst das Arbeitsverzeichnis**.
 
 * **`active_tab`-Lebensdauer.** Der Zeiger wird bei Session-Wechsel neu
   gebaut und fällt überall über `active_child/1` sauber auf den Parent
