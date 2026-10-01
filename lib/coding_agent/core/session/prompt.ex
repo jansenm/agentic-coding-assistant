@@ -188,16 +188,17 @@ defmodule CodingAgent.Core.Session.Prompt do
   — the display must not show a different value than the decision uses):
   the projected context size, the window, and the two auto-summary lines.
 
-  This is visibility, not control: the soft/hard passes are unchanged.
-  The block tells the model when summarization happens so it can choose to
-  finish a step and end its turn (which triggers the soft pass), rather
-  than having it happen mid-think. When nothing is near a limit the block
-  is still sent — one constant-size line per request — so the model
-  learns the metric instead of meeting it only at the wall.
+  The automatic policy is unchanged: the soft/hard passes fire on the
+  same numbers as before, and the block tells the model when they happen
+  so it can choose to finish a step and end its turn (which triggers the
+  soft pass) rather than have it happen mid-think. When nothing is near a
+  limit the block is still sent — one constant-size line per request — so
+  the model learns the metric instead of meeting it only at the wall.
 
-  Since the `compact` tool exists (ADR 040 OQ1, answered 2026-09-30) the
-  block also names that lever: the model can summarize NOW instead of
-  only ending its turn. The lever is mentioned in the calm case too, so
+  It is not purely "visibility" any more: since the `compact` tool exists
+  (ADR 040 OQ1, answered 2026-09-30) the block also names that lever, so
+  the model can summarize NOW instead of only ending its turn. The lever
+  is mentioned in the calm case too, so
   the model knows the verb exists before it is at a wall.
   """
   @spec with_budget(ReqLLM.Context.t(), map()) :: ReqLLM.Context.t()

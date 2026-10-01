@@ -109,8 +109,11 @@ defmodule CodingAgent.Core.Session.StreamCloseTest do
 
   # A stub that sends SSE headers and one data chunk, then goes silent:
   # the timeout must fire on the IDLE gap, not only at connect (ADR 041
-  # finding 2, review N28). Fast (the timeout is 400ms), unlike a 30s
-  # premise test.
+  # finding 2, review N28). It reports the ACCEPT instant to the test, so
+  # the assertion measures the idle gap, not the cold-session wall clock
+  # (review N52: the first provider call of a cold VM blocks for seconds
+  # in the llm_db catalog load before the socket even opens, which made a
+  # wall-clock bound flaky ~1 in 3).
   defp start_stalling_stub do
     {:ok, listen} =
       :gen_tcp.listen(0, [
@@ -122,9 +125,11 @@ defmodule CodingAgent.Core.Session.StreamCloseTest do
       ])
 
     {:ok, port} = :inet.port(listen)
+    owner = self()
 
     spawn_link(fn ->
       {:ok, sock} = :gen_tcp.accept(listen)
+      send(owner, {:accepted, System.monotonic_time(:millisecond)})
       # headers + an open SSE event, then silence (no terminating blank line)
       :gen_tcp.send(sock, "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\n")
       :gen_tcp.send(sock, "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")
@@ -170,12 +175,17 @@ defmodule CodingAgent.Core.Session.StreamCloseTest do
         model: "local:test-model"
       )
 
-    started = System.monotonic_time(:millisecond)
     # the stream stalls after the first chunk: the turn fails on the idle
     # budget, well before the stub's own 30s close
     assert {:error, _} = Session.run(id, "hi")
-    elapsed = System.monotonic_time(:millisecond) - started
-    assert elapsed < 5_000
+    failed = System.monotonic_time(:millisecond)
+
+    # the idle gap is what the 400ms budget bounds; measure from ACCEPT
+    # (the cold catalog load precedes it and is not the timeout under test)
+    assert_receive {:accepted, accepted}, 5_000
+    gap = failed - accepted
+    assert gap >= 300
+    assert gap < 3_000
 
     Session.stop(id)
     :gen_tcp.close(stub.listen)

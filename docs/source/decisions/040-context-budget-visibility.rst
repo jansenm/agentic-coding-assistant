@@ -10,14 +10,17 @@ The model sees its context budget, and notes are where facts survive
    :tags: sessions, agents, prompts, compaction
 
 .. note::
-   Accepted and implemented 2026-09-30. The model is told, on every
-   request, how full its context window is and where the two automatic
-   summarization lines sit, and is given (via the todo ``notes`` field,
-   ADR 031 amendment) a durable place to put facts that must survive
-   summarization. This is VISIBILITY, not control: the soft and hard
-   passes are unchanged. It is the first half of a "let the agent manage
-   its own context" experiment; forcing more compaction on it is
-   deliberately NOT part of it.
+   Accepted and implemented 2026-09-30; decision 5 added the same day
+   after the first live run. The model is told, on every request, how
+   full its context window is and where the two automatic summarization
+   lines sit, and is given (via the todo ``notes`` field, ADR 031
+   amendment) a durable place to put facts that must survive
+   summarization. **The soft and hard passes themselves are unchanged** —
+   the original half of this record was *visibility only*, and that is
+   still true of the AUTOMATIC policy. But the experiment's second half
+   (open question 1, closed 2026-09-30) added a ``compact`` tool: the
+   model can trigger a summary itself, so the record is no longer
+   "visibility, not control" as a whole. See decision 5.
 
 Context
 -------

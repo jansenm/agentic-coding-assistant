@@ -47,7 +47,19 @@ when the context is large but the thresholds have not been crossed (or
 the owner simply wants a smaller context before a long task). It is
 refused while a turn is in flight, runs in the background like the idle
 pass, and reports "nothing to compact" when the conversation is still
-too short to split.
+too short to split. A summarize failure is reported as a failure (with
+its reason), never as "nothing to compact" — the two are different and
+the model acts differently on them (review N41). The reported
+"reclaimed" counts the stored-context shrink, not the provider's
+per-request overhead (review N42), and a stop (esc) during the summarize
+cancels it (review N43).
+
+The model can compact **itself**, too: the ``compact`` tool (ADR 040
+decision 5) summarizes the older span mid-turn, the same verb the human
+has, so a long search-heavy turn can reclaim room without ending. It
+respects the toolset a policy advertises (an agent that disables
+``compact`` cannot call it, review N45) and the same failure backoff the
+automatic passes use.
 
 2. Session state (mid-term)
 ---------------------------
