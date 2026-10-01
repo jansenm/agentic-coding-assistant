@@ -166,6 +166,16 @@ projects converged on the same fix.
   token-based split only when a single turn exceeds the budget.
 - **Summary output is capped** at ``SUMMARY_OUTPUT_TOKENS = 4_096``.
 
+  We deliberately do NOT copy this one. opencode runs compaction on a
+  separate, non-reasoning small model, so a 4096-token output budget is
+  fine there. We summarize on the SESSION's model, which may reason —
+  and ``max_tokens`` counts reasoning tokens, so over a ~300k-char span a
+  reasoning model burned the whole 4096 in thinking and returned
+  ``text: ""``, deterministically (so our empty-answer retry could not
+  recover). We instead cap what is *stored*: ``Compaction.bound_summary``
+  truncates the applied summary to 24k chars, which bounds the NEXT
+  prompt exactly as intended without a reasoning-hostile output cap.
+
 6. Auto-continue after compaction
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

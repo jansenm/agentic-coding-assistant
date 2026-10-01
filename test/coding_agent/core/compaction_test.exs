@@ -401,6 +401,16 @@ defmodule CodingAgent.Core.CompactionTest do
     assert s2.compaction_backoff == 0
   end
 
+  # Found live 2026-10-01: a reasoning model spent the whole `max_tokens`
+  # budget on thinking over a ~300k-char span and returned text: "", so
+  # compaction failed deterministically. The output cap is NOT set here;
+  # the applied summary is bounded by `Compaction.bound_summary/1` instead.
+  test "the summarizer opts set no output cap (reasoning models spend it all thinking)" do
+    opts = Compactor.summarize_opts(receive_timeout: 60_000)
+    refute Keyword.has_key?(opts, :max_tokens)
+    assert opts[:receive_timeout] == CodingAgent.Core.Config.compaction_inactivity_ms()
+  end
+
   test "compact_now is :nothing when there is nothing to summarize" do
     s = state(context: ctx(3))
     {s2, :nothing} = Compactor.compact_now(s, fn _state, _span -> flunk("must not summarize") end)

@@ -507,29 +507,32 @@ defmodule CodingAgent.Core.Session.Compactor do
   # GLM on an 80K-char context takes minutes; without an inactivity cap
   # a hung summary stalls every turn's start (found live).
   #
-  # `max_tokens` caps the summary OUTPUT (review N18). Without it a model
-  # could return a very long summary; `Compaction.apply/2` then stores it
-  # verbatim and the NEXT prompt pays for it — on a small window the
-  # summary itself becomes the overflow. opencode uses the same guard
-  # (SUMMARY_OUTPUT_TOKENS). The value is a generous ceiling, not a
-  # target: the template asks for terse bullets. It also bounds the
-  # carried-forward input, which accumulates across compactions.
-  @summary_output_tokens 4_096
-
+  # NO `max_tokens` here, on purpose — found live (2026-10-01):
+  # `max_tokens` counts the model's REASONING tokens too, so on a
+  # reasoning model (deepseek-v4.1-flash) over a ~300k-char span the whole
+  # 4096 budget went to thinking and the call returned text: "" —
+  # deterministically, so the empty-summary retry (ADR 033) could never
+  # recover and compaction kept failing (measured: mt=4096 → 20.5s,
+  # text 0B, out=4096; mt=nil → text). opencode sets
+  # SUMMARY_OUTPUT_TOKENS=4096, but it runs compaction on a SEPARATE,
+  # non-reasoning small model; we summarize on the session's model, which
+  # may reason. The output is still bounded where it MATTERS: review N18's
+  # real guard is `Compaction.bound_summary/1` (24k chars) in
+  # `Compaction.apply/2`, which caps what is STORED regardless of what the
+  # provider returns — a belt the belt, without a reasoning-hostile cap.
+  #
   # The summarizer STREAMS (`stream_text/3` + `StreamResponse.process_stream/1`,
   # not `generate_text/3`). A non-streaming call waits for the ENTIRE
-  # generation before the first byte arrives, so on a reasoning model
-  # (deepseek-v4.1-flash) the whole think+answer time counts as ONE
-  # inactivity gap against `receive_timeout` — the source of the live
+  # generation before the first byte arrives, so on a reasoning model the
+  # whole think+answer time counts as ONE inactivity gap against
+  # `receive_timeout` — the source of the earlier live
   # `compaction failed (... "timeout")` loop (measured: non-streaming with
   # a 2s bound fails at ~7s, streaming with the same 2s bound succeeds at
-  # ~5s, because each SSE chunk resets the idle timer). The turn already
-  # streams (session.ex `stream_attempt/2`); the summarizer simply matched
-  # opencode's behavior late. `max_tokens` still bounds the output.
-  defp summarize_opts(base_opts) do
-    base_opts
-    |> Keyword.put(:receive_timeout, inactivity())
-    |> Keyword.put(:max_tokens, @summary_output_tokens)
+  # ~5s, because each SSE chunk resets the idle timer).
+  @doc false
+  @spec summarize_opts(keyword()) :: keyword()
+  def summarize_opts(base_opts) do
+    Keyword.put(base_opts, :receive_timeout, inactivity())
   end
 
   defp summary_context(old_span_text, prior_summary) do
