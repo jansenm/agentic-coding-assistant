@@ -160,6 +160,38 @@ einmalige ~3–4-s-llm_db-Load lag darin → ~1/3 rot; jetzt ab dem Accept
 gemessen, 8 Seeds stabil). Commits `5559f07`, `01f0ec2`, `39cf26e`, `3534b93`,
 `5381796`, `214a000`.
 
+> **Prozessfehler, festgehalten (N57):** Diesen Record hat der Triage-Agent
+> **gelöscht** (`rm -f`) statt umbenannt — mit einem angehängten **Teil 6**
+> (N53–N56), der nie triagiert war. Er überlebte nur, weil ein Checkpoint-Blob
+> ihn hielt. Die vier Befunde sind in `review-checkpoints-adr036.md` neu
+> geschrieben und unten abgearbeitet. **Ab jetzt gilt `review-process.md`:
+> umbenennen (`review-<subject>.md.triaged`), nie löschen; die Review-Artefakte
+> bleiben liegen. Löschen ist die Entscheidung des Owners.** Commit `e2aa831`
+> ist genau der `rm`-und-`TODO.md`-Commit.
+
+**Erledigt (Review-Abarbeitung 2026-10-01, `review-checkpoints-adr036.md`,
+N53–N57):** Der verlorene Teil-6-Record, neu geschrieben und vollständig
+abgearbeitet. **Hoch:** `N53` (die Checkpoint-Kette `-p previous` hielt jeden
+getrimmten Snapshot ewig als Vorfahr, `git gc` konnte ihn nie freigeben —
+`checkpoint_depth` begrenzte Refs, nicht Objekte; gemessen 65 nur-über-Refs
+erreichbare Objekte/109 kB, 7 von 14 Refs mit >1 Commit bei Tiefe 1. Jetzt
+**Root-Commits**, kein Parent; nichts traversiert die Kette), `N54` (Refs per
+Commit benannt, kein Owner, kein Reconcile — ein Ref einer gelöschten/gekillten
+Session lebte ewig. Session-ID zurück in den Ref-Namen
+`<prefix><session-id>/<commit>` wie ADR 036 Schritt 4 es schon behauptete, plus
+`Checkpoint.reconcile/2` beim Session-Start, das Refs verwitweter Sessions
+verwirft. Bewusst konservativ: nur Refs im neuen, attribuierbaren Format sind
+Kandidaten — ein unattribuierbarer Legacy-Ref, genau die Form, die den
+verlorenen Record hielt, wird **nie** angefasst; live verifiziert: 0 von 14
+verworfen). **Mittel:** `N55` (`checkpoints_for_cleanup/1` gab `nil` sowohl für
+„keine Refs" als auch „State nicht lesbar" → stiller Leak; jetzt geloggt,
+Reconcile als Backstop), `N57` (Prozess, s.o. — `review-process.md`). **Niedrig:**
+`N56` (ADR 036 Schritt 3 begründete eine Kette, die niemand traversiert;
+`State.t()`-Doc nannte `index_backup`, das es nicht gibt). Commit `857190e`.
+Der uncommittete Prompt-Feinschliff im Review-Worktree
+(`agents/plan.md`, `prompts/{default,claude}.txt`) ist separat und bleibt dem
+Owner.
+
 ## ADR 030 — One boundary (umgesetzt 2026-09-27)
 
 Der Umbau aus `docs/source/decisions/030-one-boundary.rst`: **eine**
