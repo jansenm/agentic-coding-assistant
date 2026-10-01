@@ -449,13 +449,14 @@ defmodule CodingAgent.UI.Tui do
       # the two compaction limits (ADR 037), mirrored for the sidebar:
       # the session resolved them once at init; the render path must not
       # re-read the layered config per frame.
-      {compaction_window, compaction_soft, compaction_hard} =
+      {compaction_window, compaction_soft, compaction_hard, window_source} =
         case Session.state(effective_id) do
           {:ok, st} ->
-            {Compactor.window(st), Compactor.soft_limit(st), Compactor.hard_limit(st)}
+            {Compactor.window(st), Compactor.soft_limit(st), Compactor.hard_limit(st),
+             Map.get(st, :context_window_source)}
 
           _ ->
-            {0, 0, 0}
+            {0, 0, 0, nil}
         end
 
       initial = %{
@@ -561,6 +562,10 @@ defmodule CodingAgent.UI.Tui do
         compaction_window: compaction_window,
         compaction_soft: compaction_soft,
         compaction_hard: compaction_hard,
+        # where the window came from: a `:fallback` (uncataloged model) is
+        # marked in the sidebar, so "the compact window is too big" is
+        # visible instead of surprising
+        context_window_source: window_source,
         # picker mode fields (nil = not in picker mode; set by
         # mount_picker only)
         picker: nil,
@@ -3199,7 +3204,22 @@ defmodule CodingAgent.UI.Tui do
   # model catalog (ADR 039). The sidebar mirrors these numbers, so refresh
   # them; there is no transcript line for it (a background detail).
   def handle_info({:agent, {:context_window, window, soft, hard}}, state) do
-    {:noreply, %{state | compaction_window: window, compaction_soft: soft, compaction_hard: hard}}
+    # A re-resolve means the source may have changed too (loading -> catalog
+    # or -> fallback), so mirror it from the session rather than guessing.
+    source =
+      case Session.state(state.session_id) do
+        {:ok, st} -> Map.get(st, :context_window_source)
+        _ -> Map.get(state, :context_window_source)
+      end
+
+    {:noreply,
+     %{
+       state
+       | compaction_window: window,
+         compaction_soft: soft,
+         compaction_hard: hard,
+         context_window_source: source
+     }}
   end
 
   def handle_info({:agent, {:provider_status, :up}}, state) do
@@ -4765,13 +4785,20 @@ defmodule CodingAgent.UI.Tui do
         model_rows(Map.get(state, :model)) ++
         [{"session", String.slice(state.session_id, 0, 22)}]
 
+    # An uncataloged model's window is the 500k default: a guess. Mark the
+    # soft line so it cannot be mistaken for a verified one (the session
+    # also emits a once-per-session note; this is the always-visible cue).
+    fallback? = Map.get(state, :context_window_source) == :fallback
+    soft_suffix = if fallback?, do: " tok (assumed)", else: " tok"
+    soft_role = if fallback?, do: :warning, else: pct_role
+
     stats =
       [
         {"effort", effort_name(effort)},
         {"tokens in", {:decimal, fmt_k(Usage.input_tokens(usage)), nil}},
         {"tokens out", {:decimal, fmt_k(Usage.output_tokens(usage)), nil}},
         {"context", {:decimal, fmt_k(last_in), " (#{pct}% win)"}, pct_role},
-        {"soft at", {:decimal, fmt_k(soft), " tok"}, pct_role},
+        {"soft at", {:decimal, fmt_k(soft), soft_suffix}, soft_role},
         {"hard at", {:decimal, fmt_k(hard), " tok"}, pct_role}
       ]
 

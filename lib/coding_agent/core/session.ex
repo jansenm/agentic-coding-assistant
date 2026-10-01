@@ -562,7 +562,8 @@ defmodule CodingAgent.Core.Session do
         _ -> model
       end
 
-    {window, soft_limit, hard_limit} = Config.compaction_limits(snapshot, effective_model)
+    {{window, soft_limit, hard_limit}, window_source} =
+      Config.compaction_limits_resolved(snapshot, effective_model)
 
     unless Config.context_window_configured?(snapshot) do
       CodingAgent.Core.Providers.Catalog.subscribe()
@@ -633,6 +634,7 @@ defmodule CodingAgent.Core.Session do
        context_window: window,
        compaction_soft_limit: soft_limit,
        compaction_hard_limit: hard_limit,
+       context_window_source: window_source,
        # a driver that can answer a mid-turn question (the TUI sets this);
        # a headless driver gets the automatic wrap-up at the budget
        interactive: Keyword.get(opts, :interactive, false),
@@ -1361,16 +1363,55 @@ defmodule CodingAgent.Core.Session do
   # a context the budget thought fit — or vice versa).
   defp recompute_window(state) do
     snapshot = Config.snapshot(state.scope_root)
-    {window, soft, hard} = Config.compaction_limits(snapshot, State.effective_model(state))
+
+    {{window, soft, hard}, source} =
+      Config.compaction_limits_resolved(snapshot, State.effective_model(state))
+
+    state = maybe_warn_unverified_window(state, source, window)
 
     if {window, soft, hard} ==
          {state.context_window, state.compaction_soft_limit, state.compaction_hard_limit} do
-      state
+      %{state | context_window_source: source}
     else
       Events.publish(state.id, {:context_window, window, soft, hard})
-      %{state | context_window: window, compaction_soft_limit: soft, compaction_hard_limit: hard}
+
+      %{
+        state
+        | context_window: window,
+          compaction_soft_limit: soft,
+          compaction_hard_limit: hard,
+          context_window_source: source
+      }
     end
   end
+
+  # The window fell back to the default because the catalog is loaded but
+  # does NOT know the model (review: the owner's "the compact window is too
+  # big to compact" — `ollama_cloud:*` is uncataloged, so a 500k window and
+  # a 250k soft limit were assumed). Log ONCE per session, actionable: name
+  # the model, the assumed window and how to set the real one. A LOG, not a
+  # transcript note: the always-visible cue is the sidebar's "(assumed)"
+  # marker, and a note on every fresh uncataloged session would be noise.
+  # `:loading` is silent — it is provisional and self-heals on the
+  # catalog-ready re-resolve.
+  defp maybe_warn_unverified_window(%{window_warned: true} = state, :fallback, _window), do: state
+
+  # a test-mode session is structurally provider-free: no log noise (the
+  # suite runs many sessions against uncataloged test models)
+  defp maybe_warn_unverified_window(%{test_mode: true} = state, :fallback, _window), do: state
+
+  defp maybe_warn_unverified_window(state, :fallback, window) when is_integer(window) do
+    Logger.warning(
+      "context window for #{State.effective_model(state)} is unknown to the model " <>
+        "catalog; assuming #{div(window, 1000)}k tokens. If the model's real window is " <>
+        "smaller, set `context_window` in config.toml — otherwise compaction fires too " <>
+        "late to be useful."
+    )
+
+    %{state | window_warned: true}
+  end
+
+  defp maybe_warn_unverified_window(state, _source, _window), do: state
 
   # -- The loop ---------------------------------------------------------------
 
@@ -1385,6 +1426,14 @@ defmodule CodingAgent.Core.Session do
   # Prepare and launch the run worker. Returns the updated session state
   # with the worker booked (worker_ref/worker_from set).
   defp start_run(state, from, prompt) do
+    # Re-resolve the window on the first real turn: at init the catalog may
+    # still be warming (`:loading`), so an uncataloged model's window is only
+    # known (as `:fallback`) once loaded. This also emits the once-per-session
+    # "unverified window" note before the first request, so the model's budget
+    # block and the warning agree. Idempotent and cheap when unchanged. Skips
+    # a test-mode session: the warning is a real-provider concern, and an
+    # injected note would perturb the display the suite asserts on.
+    state = if state.test_mode, do: state, else: recompute_window(state)
     state = begin_run(state, prompt)
     runner = state.turn_runner
 

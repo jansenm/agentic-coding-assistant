@@ -6,6 +6,17 @@ defmodule CodingAgent.Core.ConfigTest do
 
   @tmp_root System.tmp_dir!() |> Path.join("cfg-#{System.unique_integer([:positive])}")
 
+  # The catalog loads in the background (~3.7s cold). A provenance test that
+  # asserts a cataloged window must wait, or it races the warm.
+  defp wait_catalog_ready(deadline \\ System.monotonic_time(:millisecond) + 10_000) do
+    if CodingAgent.Core.Providers.Catalog.ready?() or
+         System.monotonic_time(:millisecond) > deadline do
+      :ok
+    else
+      Process.sleep(20) && wait_catalog_ready(deadline)
+    end
+  end
+
   setup do
     File.rm_rf!(@tmp_root)
     File.mkdir_p!(Path.join(@tmp_root, ".coding-agent"))
@@ -218,6 +229,20 @@ defmodule CodingAgent.Core.ConfigTest do
     test "context_window honours a config.toml value over the catalog/default" do
       snapshot = %Config{config: %{"context_window" => 123_456}}
       assert Config.context_window(snapshot, "ollama:whatever") == 123_456
+    end
+
+    test "context_window_resolved names the provenance (review: visible fallback)" do
+      wait_catalog_ready()
+      # a configured window is authoritative
+      configured = %Config{config: %{"context_window" => 123_456}}
+      assert {123_456, :configured} = Config.context_window_resolved(configured, "x")
+      # a cataloged model reports its real window
+      assert {128_000, {:catalog, 128_000}} =
+               Config.context_window_resolved(%Config{config: %{}}, "openai:gpt-4o")
+
+      # an uncataloged model falls back to the default and says so
+      assert {500_000, :fallback} =
+               Config.context_window_resolved(%Config{config: %{}}, "ollama_cloud:nope")
     end
 
     test "context_window is configured? only when config.toml pins it" do

@@ -51,6 +51,9 @@ defmodule CodingAgent.Core.Session.CheckpointUndoTest do
       CodingAgent.Core.Session.Supervisor.start_session(
         id: id,
         scope_root: @root,
+        # a cataloged model: an uncataloged one would emit the "unverified
+        # window" note and shadow the checkpoint note these tests assert on
+        model: "openai:gpt-4o",
         test_mode: false,
         turn_runner: runner
       )

@@ -87,6 +87,36 @@ defmodule CodingAgent.Core.Providers.CatalogTest do
     :ok = Session.stop(id)
   end
 
+  test "an uncataloged model surfaces the assumed window once (review: visible fallback)" do
+    alias CodingAgent.Core.Session
+    import ExUnit.CaptureLog
+
+    wait_ready()
+
+    id = "window-fallback-#{System.unique_integer([:positive])}"
+
+    log =
+      capture_log(fn ->
+        {:ok, _pid} =
+          CodingAgent.Core.Session.Supervisor.start_session(id: id, model: "ollama_cloud:nope")
+
+        # the window is the default (a guess), and the source says so
+        assert {:ok, %{context_window: 500_000, context_window_source: :fallback}} =
+                 Session.state(id)
+
+        # a re-resolve (idle model switch, no provider call) warns once ...
+        :ok = Session.set_model(id, "ollama_cloud:still-nope")
+        # ... and a second uncataloged switch stays quiet
+        :ok = Session.set_model(id, "ollama_cloud:also-nope")
+        :ok = Session.stop(id)
+      end)
+
+    assert log =~ "unknown to the model catalog"
+    assert log =~ "context_window"
+    # exactly one warning (the second uncataloged switch is silent)
+    assert length(String.split(log, "unknown to the model catalog")) == 2
+  end
+
   test "a model switch re-resolves the window (ADR 037 OQ1, review N9)" do
     alias CodingAgent.Core.Session
 

@@ -287,13 +287,51 @@ defmodule CodingAgent.Core.Config do
   @spec context_window(String.t() | nil | t(), String.t() | nil) :: pos_integer()
   def context_window(scope_or_snapshot \\ nil, model \\ nil)
 
-  def context_window(%__MODULE__{} = snapshot, model) do
-    configured_window(snapshot) ||
-      catalog_window(model) ||
-      app(:context_window_tokens, @default_context_window_tokens)
-  end
+  def context_window(%__MODULE__{} = snapshot, model),
+    do: context_window_resolved(snapshot, model) |> elem(0)
 
   def context_window(scope_root, model), do: context_window(snapshot(scope_root), model)
+
+  @typedoc """
+  Where the resolved window came from:
+
+    * `:configured` — the layered ``context_window`` key (verified by the user);
+    * `{:catalog, tokens}` — llm_db's window for the model (verified);
+    * `:loading` — the catalog is still warming; the window is a GUESS the
+      session re-resolves on `{:catalog, :updated}` (provisional, expected);
+    * `:fallback` — the catalog is loaded but does NOT know the model, so the
+      window is the app-env default and is likely wrong for an uncataloged
+      cloud model (e.g. `ollama_cloud:*`), which can be far smaller (review:
+      the owner's "the compact window is too big to compact").
+  """
+  @type window_source :: :configured | {:catalog, pos_integer()} | :loading | :fallback
+
+  @doc """
+  The model's context window AND its provenance in one read (ADR 037). The
+  source lets the caller tell a verified window from the fallback: a
+  `:fallback` window on an uncataloged model is a guess worth surfacing,
+  `:loading` is provisional and self-heals.
+  """
+  @spec context_window_resolved(String.t() | nil | t(), String.t() | nil) ::
+          {pos_integer(), window_source()}
+  def context_window_resolved(scope_or_snapshot \\ nil, model \\ nil)
+
+  def context_window_resolved(%__MODULE__{} = snapshot, model) do
+    case configured_window(snapshot) do
+      n when is_integer(n) ->
+        {n, :configured}
+
+      _ ->
+        case CodingAgent.Core.Providers.Catalog.context_window(model) do
+          {:ok, tokens} -> {tokens, {:catalog, tokens}}
+          :loading -> {@default_context_window_tokens, :loading}
+          :unknown -> {@default_context_window_tokens, :fallback}
+        end
+    end
+  end
+
+  def context_window_resolved(scope_root, model),
+    do: context_window_resolved(snapshot(scope_root), model)
 
   @doc """
   Whether the window is pinned by ``config.toml``. When it is, the
@@ -303,17 +341,6 @@ defmodule CodingAgent.Core.Config do
   @spec context_window_configured?(t()) :: boolean()
   def context_window_configured?(%__MODULE__{} = snapshot),
     do: not is_nil(configured_window(snapshot))
-
-  # The catalog as a window source: {:ok, n} when loaded and known,
-  # nil while loading or unknown (the caller falls back). Never blocks.
-  defp catalog_window(nil), do: nil
-
-  defp catalog_window(model) do
-    case CodingAgent.Core.Providers.Catalog.context_window(model) do
-      {:ok, tokens} -> tokens
-      _ -> nil
-    end
-  end
 
   defp configured_window(%__MODULE__{config: config}) do
     case config["context_window"] do
@@ -344,7 +371,30 @@ defmodule CodingAgent.Core.Config do
   def compaction_limits(scope_or_snapshot \\ nil, model \\ nil)
 
   def compaction_limits(%__MODULE__{} = snapshot, model) do
-    window = context_window(snapshot, model)
+    {window, _source} = context_window_resolved(snapshot, model)
+    limits_for_window(snapshot, window)
+  end
+
+  def compaction_limits(scope_root, model), do: compaction_limits(snapshot(scope_root), model)
+
+  @doc """
+  `compaction_limits/2` together with the window's provenance, in one
+  catalog read, so the session can resolve the limits AND decide whether
+  to surface an unverified fallback window.
+  """
+  @spec compaction_limits_resolved(String.t() | nil | t(), String.t() | nil) ::
+          {{pos_integer(), pos_integer(), pos_integer()}, window_source()}
+  def compaction_limits_resolved(scope_or_snapshot \\ nil, model \\ nil)
+
+  def compaction_limits_resolved(%__MODULE__{} = snapshot, model) do
+    {window, source} = context_window_resolved(snapshot, model)
+    {limits_for_window(snapshot, window), source}
+  end
+
+  def compaction_limits_resolved(scope_root, model),
+    do: compaction_limits_resolved(snapshot(scope_root), model)
+
+  defp limits_for_window(%__MODULE__{} = snapshot, window) do
     reserve = compaction_hard_reserve_tokens(snapshot)
     floor = round(window * @hard_window_floor_ratio)
     hard = max(window - reserve, floor)
@@ -352,8 +402,6 @@ defmodule CodingAgent.Core.Config do
     soft = min(round(window * ratio), hard)
     {window, max(soft, 1), max(hard, 1)}
   end
-
-  def compaction_limits(scope_root, model), do: compaction_limits(snapshot(scope_root), model)
 
   @doc """
   How many times a provider TIMEOUT is retried before the turn fails.

@@ -88,6 +88,16 @@ hide = []
 #
 #   reasoning_effort = "high"
 
+# The model's context window in tokens (ADR 037), for the two compaction
+# limits. Resolution: this key, then the model catalog, then a 500000
+# fallback. A cloud model the catalog does not know (e.g. an ollama_cloud
+# tag) takes the 500000 fallback: the soft limit lands at 250000 tokens,
+# so compaction can fire later than the model can actually hold. When that
+# fallback is used the session says so once and the sidebar marks the soft
+# line "(assumed)"; set the real window here to fix it.
+#
+#   context_window = 200000
+
 # Session stores (ADR 020 R16). A store is the selectable place sessions
 # are kept (target: one SQLite DB holding many sessions; until that
 # engine lands, a directory of session files — the selector is the same).

@@ -114,6 +114,15 @@ defmodule CodingAgent.Core.Session.State do
     context_window: nil,
     compaction_soft_limit: nil,
     compaction_hard_limit: nil,
+    # WHERE the window came from (ADR 037): `:configured`/`{:catalog, _}`
+    # are verified, `:loading` self-heals, and `:fallback` means the model
+    # is unknown to the catalog and the window is a possibly-wrong default
+    # — surfaced once so "the compact window is too big" is visible, not
+    # silent. nil on a hand-built state.
+    context_window_source: nil,
+    # set once the "window is unverified (uncataloged model)" note has been
+    # broadcast — once per session, not per turn
+    window_warned: false,
     test_mode: false,
     # cumulative usage across the session (sidebar + token-based
     # compaction trigger); cost only when the provider prices it. The
@@ -219,6 +228,8 @@ defmodule CodingAgent.Core.Session.State do
           context_window: pos_integer() | nil,
           compaction_soft_limit: pos_integer() | nil,
           compaction_hard_limit: pos_integer() | nil,
+          context_window_source: CodingAgent.Core.Config.window_source() | nil,
+          window_warned: boolean(),
           test_mode: boolean(),
           turn_agents: [String.t() | nil],
           usage: CodingAgent.Core.Session.Usage.t(),
@@ -349,6 +360,10 @@ defmodule CodingAgent.Core.Session.State do
       context_window: nil,
       compaction_soft_limit: nil,
       compaction_hard_limit: nil,
+      context_window_source: nil,
+      # re-arm the "unverified window" note: a resumed session re-resolves
+      # at init and should speak up again if the model is still uncataloged
+      window_warned: false,
       # nested structs: heal the Elixir 1.20 missing-default trap one
       # level down (see above)
       policy: heal(state.policy, CodingAgent.Core.Permissions),
