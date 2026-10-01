@@ -3336,7 +3336,7 @@ defmodule CodingAgent.UI.Tui do
 
     subagents =
       case Map.fetch(state.subagents, child_id) do
-        {:ok, child} -> Map.put(state.subagents, child_id, %{child | finished?: true})
+        {:ok, child} -> Map.put(state.subagents, child_id, finish_child(child, outcome))
         :error -> state.subagents
       end
 
@@ -4440,6 +4440,27 @@ defmodule CodingAgent.UI.Tui do
       open_tool_id: nil,
       scroll_offset: 0
     }
+  end
+
+  # Close out a child's tab when it finishes. A child that DIED (a stream
+  # error) never emits an `llm_message`, so its last reasoning was left in
+  # `stream` as an in-flight block that never resolves: the tab ended
+  # mid-thought with no answer and no sign anything went wrong (the error
+  # note only reached the PARENT). Commit the lingering stream to the
+  # transcript and, on error, put the note INSIDE the child's own view so
+  # the tab tells its own story. An `:ok` child already emitted its
+  # `llm_message` (stream is empty), so its own commit is a no-op here.
+  defp finish_child(child, outcome) do
+    committed =
+      Map.get(child, :transcript, []) ++ persist_stream(Map.get(child, :stream, []), nil)
+
+    committed =
+      case outcome do
+        :error -> committed ++ [{:info, "· subagent ended with an error"}]
+        _ -> committed
+      end
+
+    %{child | finished?: true, transcript: committed, stream: []}
   end
 
   # Fold one relayed child event into its tab. The vocabulary is the

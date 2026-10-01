@@ -113,6 +113,68 @@ defmodule CodingAgent.UI.TuiSubagentTest do
            end)
   end
 
+  # Found live (owner): one subagent's tab ended with a bare reasoning
+  # block and no sign it had failed, while its sibling returned a report.
+  # A child that DIED (a stream error) never emits `llm_message`, so its
+  # last reasoning was stranded in `stream` (rendered as an in-flight
+  # block that never resolves) and the error note only reached the PARENT.
+  describe "a finished child's own view" do
+    setup do
+      root = Path.join(System.tmp_dir!(), "tui-child-end-#{System.unique_integer()}")
+      File.mkdir_p!(root)
+      on_exit(fn -> File.rm_rf!(root) end)
+      sid = "tui-child-end-#{System.unique_integer()}"
+
+      {:ok, _} =
+        CodingAgent.Core.Session.Supervisor.start_session(
+          id: sid,
+          scope_root: root,
+          policy: CodingAgent.Core.Permissions.load(nil, nil),
+          test_mode: true,
+          interactive: true
+        )
+
+      pid =
+        start_supervised!(
+          {Tui, [name: nil, test_mode: {120, 30}, session_id: sid, scope_root: root]}
+        )
+
+      %{pid: pid}
+    end
+
+    test "a failed child commits its reasoning AND records the error in ITS tab", %{pid: pid} do
+      agent(pid, {:subagent_started, "c1", "explore", "m"})
+      agent(pid, "c1", {:reasoning_deltas, "weighing the two options"})
+      # a stream error: the child ends without ever emitting `llm_message`
+      agent(pid, {:subagent_finished, "c1", :error})
+
+      child = sync(pid).subagents["c1"]
+
+      # the reasoning is committed (not stranded), and the error is in the
+      # CHILD's own view, not only the parent's
+      assert {:reasoning, text} = List.keyfind(child.transcript, :reasoning, 0)
+      assert String.contains?(text, "weighing the two options")
+      assert Enum.any?(child.transcript, &match?({:info, _}, &1))
+      assert child.stream == []
+      assert child.finished? == true
+    end
+
+    test "a successful child's committed answer is not duplicated", %{pid: pid} do
+      agent(pid, {:subagent_started, "c1", "explore", "m"})
+      agent(pid, "c1", {:reasoning_deltas, "thought"})
+      agent(pid, "c1", {:llm_deltas, "the answer"})
+      agent(pid, "c1", {:llm_message, "the answer"})
+      agent(pid, {:subagent_finished, "c1", :ok})
+
+      child = sync(pid).subagents["c1"]
+
+      # exactly one assistant entry, no stray reasoning duplication
+      assistant = Enum.filter(child.transcript, &match?({:assistant, _}, &1))
+      assert length(assistant) == 1
+      assert child.stream == []
+    end
+  end
+
   # ADR 018: a child's events are tagged with the child id and routed into
   # its tab buffer — NEVER the parent transcript. The tab is read-only and
   # reuses the parent render path.

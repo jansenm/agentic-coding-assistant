@@ -537,3 +537,26 @@ gaps that made the delegation invisible:
    (their tab is kept, but they are no longer "what is happening"). This
    is the panel block the earlier amendment anticipated; bounded like the
    todo block (``@subagent_cap`` 8).
+
+Amendment 2026-10-01: a failed child's tab tells its own story
+--------------------------------------------------------------
+
+Found live after the first real delegation: of two ``task`` children,
+one returned a report and the other's tab ended on a bare reasoning
+block. Cause: a child that DIES (a stream error) never emits the
+``llm_message`` that commits its stream to the transcript, so its last
+reasoning was left in ``stream`` — rendered as an in-flight block that
+would never resolve — and the ``:error`` finish only appended
+"· subagent ended with an error" to the **parent** transcript. The tab
+therefore ended mid-thought, looking like the child simply stopped, with
+the failure visible everywhere except the view that needed it.
+
+``handle_info({:subagent_finished, id, outcome})`` now closes the child
+through ``finish_child/2``: it commits the lingering stream to the
+child's own transcript (the same ``persist_stream/2`` the happy path
+uses) and, on ``:error``, appends the note to the CHILD's view as well
+as the parent's. An ``:ok`` child already emitted its ``llm_message``
+(stream empty), so its closure is a no-op — a successful child's answer
+is never duplicated. This keeps the ADR-018 invariant intact: the child
+transcript still never blends into the parent model context; only the
+human-facing tab gained the closing line.
