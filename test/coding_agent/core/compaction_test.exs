@@ -439,6 +439,65 @@ defmodule CodingAgent.Core.CompactionTest do
     assert Enum.any?(agents, &(&1.name == "compaction"))
   end
 
+  # ADR 044 caveat: a pinned compaction model must be able to HOLD the
+  # span. resolve_target/3 is pure — the caller passes the catalog result —
+  # so each case is testable without a catalog.
+  describe "resolve_target/3 (the pinned-model window guard)" do
+    @default 300_000
+
+    test "no pin: session model, default cap" do
+      assert Compactor.resolve_target("ollama:session", "ollama:session", :session) ==
+               {"ollama:session", @default}
+    end
+
+    test "a pinned model with a big window gets the default cap (never larger)" do
+      # 200k tokens -> 400k chars, clamped to the 300k default
+      assert Compactor.resolve_target("ollama:session", "openai:gpt-4o", {:ok, 200_000}) ==
+               {"openai:gpt-4o", @default}
+    end
+
+    test "a pinned model with a modest window gets a proportionally smaller span" do
+      # 16385 tokens -> ~32.7k chars (half the window in chars)
+      assert {"openai:gpt-3.5-turbo", cap} =
+               Compactor.resolve_target("ollama:session", "openai:gpt-3.5-turbo", {:ok, 16_385})
+
+      assert cap == round(16_385 * 4 * 0.5)
+      assert cap < @default
+    end
+
+    test "a KNOWN too-small pinned window falls back to the session model" do
+      # 2000 tokens -> 4000 chars < the 20k floor: not a viable summarizer
+      assert Compactor.resolve_target("ollama:session", "tiny:model", {:ok, 2_000}) ==
+               {"ollama:session", @default}
+    end
+
+    test "an UNKNOWN window trusts the pin with the default cap" do
+      assert Compactor.resolve_target("ollama:session", "ollama:cheap", :unknown) ==
+               {"ollama:cheap", @default}
+
+      assert Compactor.resolve_target("ollama:session", "ollama:cheap", :loading) ==
+               {"ollama:cheap", @default}
+    end
+  end
+
+  describe "render/2 (bounded to a cap)" do
+    test "under the cap is unchanged; over it is head+tail truncated with a marker" do
+      small = [msg("hello"), msg("world", :assistant)]
+      assert Compaction.render(small, 1_000) == Compaction.render(small)
+
+      big = [msg(String.duplicate("x", 5_000))]
+      out = Compaction.render(big, 1_000)
+      assert out =~ "summarize input truncated"
+      assert byte_size(out) < 1_500
+    end
+
+    test "never exceeds the default even when asked for more" do
+      big = [msg(String.duplicate("x", Compaction.max_input_chars() + 5_000))]
+      # asking for more than the default still clamps to the default
+      assert Compaction.render(big, 10_000_000) == Compaction.render(big)
+    end
+  end
+
   test "the agent body is a SYSTEM message; the template stays the USER request (ADR 044)" do
     agent = %CodingAgent.Core.Agent{
       name: "compaction",

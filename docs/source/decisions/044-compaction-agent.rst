@@ -87,22 +87,27 @@ Consequences
 - A user sets a cheaper compaction model with ``model:`` in
   ``.coding-agent/agents/compaction.md`` — no new config key, and the same
   file tunes the prompt. This is the ``compaction_model`` idea, subsumed.
-- **Caveat — window size.** A pinned compaction model must be able to hold
-  the whole old span (minus the bounded tail). A cheap model with a small
-  context window will fail on large sessions. The span is already bounded
-  to ``@max_summary_input_chars`` (300k chars ≈ 75k tokens), so a pinned
-  model needs roughly that much input room; this is documented, not
-  enforced (enforcing needs the catalog window, a later refinement).
+- **The pinned model's window is enforced (implemented with this record).**
+  A pinned compaction model must be able to HOLD the span, or the call
+  fails on large sessions. ``Compactor.compaction_target/1`` resolves the
+  model and the span cap together from the catalog window:
+  ``Compactor.resolve_target/3`` gives a pinned model a span capped at
+  half its window (chars = ``tokens × 4 × 0.5``, never above the 300k
+  default), and if that cap is below ``@min_viable_span_chars`` (20k) the
+  pin is DROPPED and the session model summarizes. An UNKNOWN or loading
+  window trusts the pin with the default cap — the same "unknown falls
+  back" stance the rest of the system takes. The span and the model come
+  from one call, so they cannot disagree.
 - The template's section names are load-bearing (rolling folding reads the
   prior summary); a user body cannot change them, only the priorities.
 
 Open questions
 --------------
 
-1. **Enforce the pinned model's window.** If the pinned model's context
-   window is smaller than the bounded span, the call fails. Falling back
-   to the session model (or shrinking the span) on a known-too-small
-   window is a follow-up; it needs ``Catalog``-resolved windows.
+1. **A pinned model that is too small is silently ignored.** We fall back
+   to the session model rather than warn. A transcript note ("compaction
+   model X's window is too small; using the session model") would be
+   friendlier; deferred until it bites in practice.
 2. **Per-tool/per-turn summarizer variants.** One ``compaction`` name
    today. If a need appears for different summarizers (idle vs. model-
    triggered), that is a naming/selection question, not a new mechanism.

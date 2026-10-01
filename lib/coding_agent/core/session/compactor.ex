@@ -45,6 +45,7 @@ defmodule CodingAgent.Core.Session.Compactor do
   alias CodingAgent.Core.Compaction
   alias CodingAgent.Core.Config
   alias CodingAgent.Core.Interrupt
+  alias CodingAgent.Core.Providers.Catalog
   alias CodingAgent.Core.Session.{Request, State, Usage}
   alias ReqLLM.Context
 
@@ -303,7 +304,11 @@ defmodule CodingAgent.Core.Session.Compactor do
   # the wait could ever observe it (verified: a raising summarizer takes
   # the linked caller down; the {:exit, _} clause never fires).
   defp compact(state, old, summarize_fn, kind) do
-    span = Compaction.render(old)
+    # Render bounded to the SUMMARIZER model's window (ADR 044): a pinned
+    # cheap model with a small window gets a proportionally smaller span,
+    # so it is not handed more than it can hold.
+    {_model, cap} = compaction_target(state)
+    span = Compaction.render(old, cap)
 
     # An empty rendered span means there is nothing NEW to summarize: the
     # only "old" message is the prior summary itself, which `render/1`
@@ -482,13 +487,10 @@ defmodule CodingAgent.Core.Session.Compactor do
   def summarize(state, old_span_text) do
     prior = Compaction.prior_summary(state.context)
     agent = compaction_agent(state)
+    {model, _cap} = compaction_target(state)
 
     with {:ok, model_input, base_opts} <-
-           Request.build(
-             compaction_model(state, agent),
-             state.provider_config,
-             state.scope_root
-           ),
+           Request.build(model, state.provider_config, state.scope_root),
          {:ok, stream_response} <-
            ReqLLM.stream_text(
              model_input,
@@ -525,14 +527,60 @@ defmodule CodingAgent.Core.Session.Compactor do
   end
 
   # Definition `model` wins, else the session's effective model — the same
-  # precedence ADR 017/042 use for subagents. A pinned model must be able
-  # to hold the span; ADR 044 records that caveat.
+  # precedence ADR 017/042 use for subagents.
   @doc false
   @spec compaction_model(State.t(), Agent.t() | nil) :: String.t() | nil
   def compaction_model(_state, %Agent{model: model}) when is_binary(model) and model != "",
     do: model
 
   def compaction_model(state, _agent), do: State.effective_model(state)
+
+  # The summarizer model AND the byte cap for the rendered span, resolved
+  # together (ADR 044 caveat). A pinned compaction model must be able to
+  # HOLD the span; rather than fail on a small model, the span is bounded
+  # to a fraction of that model's window. If the window is unknown we trust
+  # the model with the default cap (the same "unknown falls back" stance the
+  # rest of the system takes); if it is KNOWN and too small for a useful
+  # span, the pin is dropped and the session model summarizes instead.
+  #
+  # Fraction and floor: half the window goes to the old span, leaving room
+  # for the system body, the template, the kept tail and the output. Below
+  # `@min_viable_span_chars` a model cannot summarize usefully, so a pin
+  # that small is ignored.
+  @span_window_fraction 0.5
+  @min_viable_span_chars 20_000
+
+  @doc false
+  @spec compaction_target(State.t()) :: {String.t() | nil, pos_integer()}
+  def compaction_target(state) do
+    agent = compaction_agent(state)
+    session = State.effective_model(state)
+    pinned = compaction_model(state, agent)
+
+    window =
+      case pinned do
+        m when m == session -> :session
+        m -> Catalog.context_window(m)
+      end
+
+    resolve_target(session, pinned, window)
+  end
+
+  @doc false
+  @spec resolve_target(String.t() | nil, String.t() | nil, term()) ::
+          {String.t() | nil, pos_integer()}
+  def resolve_target(session, session, _), do: {session, Compaction.max_input_chars()}
+
+  def resolve_target(session, pinned, {:ok, tokens}) do
+    cap = round(tokens * 4 * @span_window_fraction) |> min(Compaction.max_input_chars())
+
+    if cap < @min_viable_span_chars,
+      do: {session, Compaction.max_input_chars()},
+      else: {pinned, cap}
+  end
+
+  # unknown / loading: trust the pin with the default cap
+  def resolve_target(_session, pinned, _), do: {pinned, Compaction.max_input_chars()}
 
   # GLM on an 80K-char context takes minutes; without an inactivity cap
   # a hung summary stalls every turn's start (found live).

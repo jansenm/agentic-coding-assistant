@@ -58,8 +58,13 @@ defmodule CodingAgent.Core.Compaction do
   # The summarizer input is bounded: one giant old span (measured at
   # 193 messages / ~42k tokens) became a minutes-long non-streaming
   # call. A hard cap keeps the summarize call predictable; the marker
-  # makes the truncation honest.
+  # makes the truncation honest. It is the DEFAULT cap; a caller may pass
+  # a smaller one when the summarizer model has a smaller window (ADR 044).
   @max_summary_input_chars 300_000
+
+  @doc "The default byte cap on the rendered summarize span."
+  @spec max_input_chars() :: pos_integer()
+  def max_input_chars, do: @max_summary_input_chars
 
   @doc "Minimum number of recent messages a compaction keeps verbatim."
   @spec min_keep() :: pos_integer()
@@ -328,13 +333,22 @@ defmodule CodingAgent.Core.Compaction do
   material.
   """
   @spec render(list()) :: String.t()
-  def render(msgs) do
+  def render(msgs), do: render(msgs, @max_summary_input_chars)
+
+  @doc """
+  `render/1` with an explicit byte cap. The summarizer model may have a
+  smaller window than the default cap assumes (ADR 044), so the caller
+  passes `min(default, model_window_chars)`. Never LARGER than the
+  default — a bigger model does not need a bigger span.
+  """
+  @spec render(list(), pos_integer()) :: String.t()
+  def render(msgs, max_chars) do
     rendered =
       msgs
       |> Enum.reject(&summary_message?/1)
       |> Enum.map_join("\n\n", &render_message/1)
 
-    bound_input(rendered)
+    bound_input(rendered, min(max_chars, @max_summary_input_chars))
   end
 
   @doc """
@@ -508,13 +522,13 @@ defmodule CodingAgent.Core.Compaction do
       "\n\n[... truncated for the summary: #{byte_size(text)} chars total, showing first #{max} ...]"
   end
 
-  defp bound_input(text) when byte_size(text) <= @max_summary_input_chars, do: text
+  defp bound_input(text, max) when byte_size(text) <= max, do: text
 
-  defp bound_input(text) do
+  defp bound_input(text, max) do
     # Keep the head (the older, already-summarized context is often
     # repetitive) and the tail (the most recent, most relevant facts)
     # roughly evenly; the marker makes the loss honest.
-    half = div(@max_summary_input_chars, 2)
+    half = div(max, 2)
     head = binary_part(text, 0, half)
     tail = binary_part(text, byte_size(text) - half, half)
 
