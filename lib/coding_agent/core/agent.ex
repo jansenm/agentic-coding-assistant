@@ -31,7 +31,7 @@ defmodule CodingAgent.Core.Agent do
           name: String.t(),
           description: String.t() | nil,
           prompt: String.t(),
-          mode: :primary | :subagent | :all,
+          mode: :primary | :subagent | :all | :internal,
           model: String.t() | nil,
           tools: [String.t()] | nil,
           disallowed_tools: [String.t()] | nil,
@@ -56,7 +56,7 @@ defmodule CodingAgent.Core.Agent do
             hidden: false,
             source: nil
 
-  @modes ~w(primary subagent all)
+  @modes ~w(primary subagent all internal)
 
   # Standard tool names (the agents convention: opencode/Claude Code) to
   # our canonical tool names. A definition written for another tool can
@@ -85,10 +85,11 @@ defmodule CodingAgent.Core.Agent do
   Whether the human may select this definition directly (ADR 029).
 
   True for ``:primary`` and ``:all``; false for ``:subagent``, which only
-  another agent starts via the ``task`` tool, and for ``hidden``
-  definitions, which the @ menu (and Tab) must not offer. This is the ONE
-  rule: the TUI's Tab cycle and the session's resume guard both read it,
-  so the offering surface and the resume path cannot disagree.
+  another agent starts via the ``task`` tool; for ``:internal``, which the
+  runtime drives (``compaction``); and for ``hidden`` definitions, which
+  the @ menu (and Tab) must not offer. This is the ONE rule: the TUI's Tab
+  cycle and the session's resume guard both read it, so the offering
+  surface and the resume path cannot disagree.
   """
   @spec selectable?(t()) :: boolean()
   def selectable?(%__MODULE__{mode: mode, hidden: hidden}) do
@@ -264,6 +265,7 @@ defmodule CodingAgent.Core.Agent do
   defp mode("primary"), do: :primary
   defp mode("subagent"), do: :subagent
   defp mode("all"), do: :all
+  defp mode("internal"), do: :internal
   defp mode(_), do: :all
 
   defp blank?(nil), do: true

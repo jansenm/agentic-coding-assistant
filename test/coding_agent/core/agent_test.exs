@@ -151,12 +151,26 @@ defmodule CodingAgent.Core.AgentTest do
   end
 
   describe "Agent.load/1 layering" do
-    test "shipped definitions include build, plan and explore" do
+    test "shipped definitions include build, plan, explore and compaction" do
       {:ok, agents} = Agent.load(nil)
       names = Enum.map(agents, & &1.name)
       assert "build" in names
       assert "plan" in names
       assert "explore" in names
+      assert "compaction" in names
+    end
+
+    test "compaction is an internal agent: neither selectable nor delegatable (ADR 044)" do
+      {:ok, agents} = Agent.load(nil)
+      compaction = Enum.find(agents, &(&1.name == "compaction"))
+
+      assert compaction.mode == :internal
+      # not in the @ menu / Tab cycle, and not a task target
+      refute Agent.selectable?(compaction)
+      refute compaction in CodingAgent.Core.Session.Subagent.delegatable(agents)
+      # ships model-less: it inherits the session model unless overridden
+      assert compaction.model == nil
+      assert compaction.prompt != ""
     end
 
     test "explore is a delegatable, read-only, model-less subagent (ADR 017/042)" do

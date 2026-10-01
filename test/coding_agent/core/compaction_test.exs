@@ -411,6 +411,58 @@ defmodule CodingAgent.Core.CompactionTest do
     assert opts[:receive_timeout] == CodingAgent.Core.Config.compaction_inactivity_ms()
   end
 
+  # The compaction agent (ADR 044): a user-authored `compaction` definition
+  # supplies a MODEL (cheaper worker) and a PROMPT (what to preserve). With
+  # none present, behavior is exactly as before (session model, no system
+  # message). Both seams are pure, so no provider is touched.
+  test "a compaction agent's pinned model wins; otherwise the session model (ADR 044)" do
+    s = state(model: "ollama:session", scope_root: nil)
+
+    # no definition at all -> session model
+    assert Compactor.compaction_model(s, nil) == "ollama:session"
+
+    pinned = %CodingAgent.Core.Agent{
+      name: "compaction",
+      prompt: "",
+      source: "t",
+      model: "ollama:cheap"
+    }
+
+    assert Compactor.compaction_model(s, pinned) == "ollama:cheap"
+
+    model_less = %CodingAgent.Core.Agent{name: "compaction", prompt: "", source: "t", model: nil}
+    assert Compactor.compaction_model(s, model_less) == "ollama:session"
+  end
+
+  test "the shipped compaction agent is found by name (ADR 044)" do
+    {:ok, agents} = CodingAgent.Core.Agent.load(nil)
+    assert Enum.any?(agents, &(&1.name == "compaction"))
+  end
+
+  test "the agent body is a SYSTEM message; the template stays the USER request (ADR 044)" do
+    agent = %CodingAgent.Core.Agent{
+      name: "compaction",
+      prompt: "Always preserve the ticket id.",
+      source: "t"
+    }
+
+    msgs = Compactor.summary_context("OLD SPAN", nil, agent) |> ReqLLM.Context.to_list()
+
+    assert [%ReqLLM.Message{role: :system} = sys, %ReqLLM.Message{role: :user} = user] = msgs
+    assert text_of(sys) =~ "Always preserve the ticket id."
+    # the user message is still the built-in template, not the body
+    assert text_of(user) =~ "OLD SPAN"
+  end
+
+  test "without an agent there is no system message (today's behavior)" do
+    msgs = Compactor.summary_context("OLD SPAN", nil, nil) |> ReqLLM.Context.to_list()
+    assert Enum.map(msgs, & &1.role) == [:user]
+  end
+
+  defp text_of(%ReqLLM.Message{content: content}) do
+    content |> Enum.filter(&(&1.type == :text)) |> Enum.map_join("", & &1.text)
+  end
+
   test "compact_now is :nothing when there is nothing to summarize" do
     s = state(context: ctx(3))
     {s2, :nothing} = Compactor.compact_now(s, fn _state, _span -> flunk("must not summarize") end)

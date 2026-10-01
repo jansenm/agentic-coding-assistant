@@ -265,13 +265,18 @@ user (``~/.config/coding-agent/agents/``) and project
      - Agent name. Defaults to the filename without its extension.
    * - ``mode``
      - enum
-     - ``primary``, ``subagent``, or ``all`` (default). With ``hidden``,
-       decides whether the human may select it (ADR 029).
+     - ``primary``, ``subagent``, ``all`` (default), or ``internal``.
+       ``primary``/``all`` are selectable by the human; ``subagent`` is
+       only a ``task`` target; ``internal`` is driven by the runtime (the
+       ``compaction`` agent) and appears in no picker (ADRs 029, 044).
+       With ``hidden``, decides whether the human may select it (ADR 029).
    * - ``model``
      - string
      - Pinned model for this agent's turns (ADR 017). For a ``subagent``,
        precedence is: this field, then ``subagent_model`` (ADR 042), then
-       the parent's model.
+       the parent's model. For the ``compaction`` agent (ADR 044), this
+       field then the session model. A pinned compaction model must be
+       able to hold the summarized span (~75k tokens worst case).
    * - ``tools``
      - array
      - Allow-list of tools; intersects the policy's enabled set.
