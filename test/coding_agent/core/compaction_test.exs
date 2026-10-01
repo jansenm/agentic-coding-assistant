@@ -9,6 +9,7 @@ defmodule CodingAgent.Core.CompactionTest do
   import ExUnit.CaptureLog
 
   alias CodingAgent.Core.Compaction
+  alias CodingAgent.Core.Events
   alias CodingAgent.Core.Interrupt
   alias CodingAgent.Core.Session.{Compactor, State, Usage}
 
@@ -493,6 +494,34 @@ defmodule CodingAgent.Core.CompactionTest do
     assert Enum.at(msgs, 1).role == :user
     assert s2.compaction_backoff == 0
     assert s2.compaction_warned == false
+  end
+
+  # review N46: the empty-answer retry re-entered `do_compact`, which
+  # broadcast the "compacting context…" note — so the transcript recorded
+  # the start twice. The note now lives before the retry loop.
+  test "the empty-answer retry does not duplicate the 'compacting…' note" do
+    id = "n46-#{System.unique_integer([:positive])}"
+    _ = Registry.register(CodingAgent.EventRegistry, {Events.key(), id}, nil)
+    s = state(id: id, usage: %{last_input_tokens: 136_000})
+    {:ok, counter} = Agent.start_link(fn -> 0 end)
+
+    summarizer = fn _state, _span ->
+      n = Agent.get_and_update(counter, fn n -> {n + 1, n + 1} end)
+      if n == 1, do: {:error, :empty_summary}, else: {:ok, "recovered"}
+    end
+
+    {_s2, true} = Compactor.maybe_compact(s, summarizer)
+
+    notes =
+      Enum.count(1..5, fn _ ->
+        receive do
+          {:agent, ^id, {:info, text}} -> String.contains?(text, "compacting context")
+        after
+          0 -> false
+        end
+      end)
+
+    assert notes == 1
   end
 
   test "a successful compaction resets last_input_tokens to the shrunk size" do
