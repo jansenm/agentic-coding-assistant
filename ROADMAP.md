@@ -40,8 +40,7 @@ post-milestone:
   reliability and context management (compaction) are the real
   unknowns — dogfooding is how we find out.
 - Safety: shipping the project policy file hardened from day one
-  (`.coding-agent/permissions.toml`, ADR 014; the legacy
-  `agent-permissions.toml` at the scope root is still read) — a
+  (`.coding-agent/permissions.toml`, ADR 014) — a
   confining sandbox is required (ADR 030), shell/git run
   allow-by-default inside the profile unless policy says otherwise —
   with git as the undo mechanism.

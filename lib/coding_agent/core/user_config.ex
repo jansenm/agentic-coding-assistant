@@ -55,20 +55,19 @@ defmodule CodingAgent.Core.UserConfig do
   end
 
   @doc """
-  The project config directory for a scope root: `<git_root>/.coding-agent`,
-  where `git_root` is the enclosing repository's root (`Core.Repo.root/1`).
+  The project config directory for a scope root: `<scope_root>/.coding-agent`.
 
-  A session started in a SUBDIRECTORY used `<scope_root>/.coding-agent`, so
-  a repo config at the root was not found (the same up-not-down rule that
-  fixed nested `AGENTS.md`, review T13). With no enclosing repo the scope
-  root is used unchanged, so a non-git scope behaves exactly as before.
+  The scope root is the directory the session was started in — the ONE
+  directory we look at (`.coding-agent/`, `AGENTS.md`, `.git`). We do NOT
+  search upward: a config meant for the repo root belongs with the session
+  started at the repo root. A worktree's `.git` is a file at the scope root
+  pointing elsewhere, and still resolves here.
   """
   @spec project_dir(String.t() | nil) :: String.t() | nil
   def project_dir(nil), do: nil
 
   def project_dir(scope_root) when is_binary(scope_root) do
-    root = CodingAgent.Core.Repo.root(scope_root) || Path.expand(scope_root)
-    Path.join(root, @project_dir)
+    Path.join(Path.expand(scope_root), @project_dir)
   end
 
   defp home do
@@ -177,31 +176,18 @@ defmodule CodingAgent.Core.UserConfig do
 
   # -- Permissions -------------------------------------------------------------
 
-  # project file moved into .coding-agent/ (ADR 014); the old
-  # agent-permissions.toml at the scope root is still read (after) for
-  # the transition. User layer: global permissions.toml.
+  # The project policy file is `.coding-agent/permissions.toml` (ADR 014).
+  # The pre-ADR-014 `agent-permissions.toml` is NOT read — unreleased
+  # software does not carry legacy (AGENTS.md: no backwards compatibility).
   defp load_permissions(nil) do
     CodingAgent.Core.Permissions.load(global_path("permissions"), nil)
   end
 
   defp load_permissions(scope_root) do
-    new_file = project_path(scope_root, "permissions")
-    legacy = legacy_permissions(scope_root)
-
-    CodingAgent.Core.Permissions.load(global_path("permissions"), new_file || legacy)
-  end
-
-  # The pre-ADR-014 location, `agent-permissions.toml`, read only when the
-  # new file is absent. It lived at the scope root (the old behavior);
-  # check the git root too, since `project_dir/1` moved there.
-  defp legacy_permissions(scope_root) do
-    roots = [Path.expand(scope_root) | List.wrap(CodingAgent.Core.Repo.root(scope_root))]
-
-    Enum.find(roots, &File.exists?(Path.join(&1, "agent-permissions.toml")))
-    |> case do
-      nil -> nil
-      root -> Path.join(root, "agent-permissions.toml")
-    end
+    CodingAgent.Core.Permissions.load(
+      global_path("permissions"),
+      project_path(scope_root, "permissions")
+    )
   end
 
   # -- Credentials (auth.toml, global only) --------------------------------------

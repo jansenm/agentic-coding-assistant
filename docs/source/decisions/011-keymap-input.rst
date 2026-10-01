@@ -74,8 +74,8 @@ changing the defaults:
 **The keymap is data from the first commit**: a map
 ``action => [key_event_patterns]`` with the defaults in code, overridable
 from ``~/.config/coding-agent/ui.toml`` (a separate ``[keys]`` table).
-The permission file (``agent-permissions.toml``) is security policy and
-stays separate from taste.
+The permission file (``.coding-agent/permissions.toml``) is security
+policy and stays separate from taste.
 
 Other v1 bindings follow ADR 006: ctrl-a/e/left/right/home/end cursor
 motion, ctrl-k/w/u kills, arrow-key history, pgup/pgdn (plus mouse

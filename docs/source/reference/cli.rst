@@ -86,11 +86,13 @@ Files
      - Global permission policy.
    * - ``~/.local/share/coding-agent/auth.toml``
      - Provider credentials (never read from a project).
-   * - ``<repo>/.coding-agent/*.toml``
-     - Project overrides, resolved at the repository root.
-   * - ``<repo>/.coding-agent/agents/*.md``
+   * - ``<scope_root>/.coding-agent/*.toml``
+     - Project overrides, resolved at the scope root (the directory the
+       session was started in; not searched for upward).
+   * - ``<scope_root>/.coding-agent/agents/*.md``
      - Project agent definitions.
-   * - ``<repo>/AGENTS.md``
-     - Project memory (also read from ancestors up to the repo root).
+   * - ``<scope_root>/AGENTS.md``
+     - Project memory (scope root only; subdirectory files are read on
+       demand).
    * - ``~/.local/state/coding_agent/``
      - Session store DB and ``tui.log``.

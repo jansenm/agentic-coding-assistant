@@ -104,9 +104,9 @@ code: deployment-specific discovery is a TOML declaration.
 in a repo risk accidental commits, and there is one account. Revisit
 if a real need (per-repo accounts) appears.
 
-``agent-permissions.toml`` at the scope root moves into
-``.coding-agent/permissions.toml``; the old path is still read (after
-the new one) during the transition.
+``agent-permissions.toml`` at the scope root becomes
+``.coding-agent/permissions.toml``. The old path is **not** read:
+unreleased software carries no legacy.
 
 Consumer-facing changes
 -----------------------

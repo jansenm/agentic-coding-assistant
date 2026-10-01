@@ -19,18 +19,20 @@ layers whose separation is a hard rule (see
 Files in the project
 --------------------
 
-``AGENTS.md`` (project root, optional)
+``AGENTS.md`` (scope root, optional)
     The de-facto standard instruction file (consumed as-is; we do not
     compete with it). Conventions, building commands, "never touch X".
-    Search order mirrors the tool ecosystem: ``AGENTS.md`` in the
-    working directory, then parent directories up to the repo root,
-    then ``~/.config/coding-agent/AGENTS.md`` as a user-level fallback.
-    **Slice 4c** implements the first step: a single ``AGENTS.md`` at
-    the scope root is read at session start into the system prompt
-    (64 KiB cap, truncating; missing file is normal). The parent-dir
-    walk and user-level fallback remain phase-5 work.
+    Read at the **scope root** — the directory the session was started
+    in; we do not search up or down. The convention also places
+    ``AGENTS.md`` in subdirectories, and those apply when the agent
+    works *there*, so the section tells the model they exist and to read
+    them with ``read_file`` (rather than walking down, which is
+    unbounded in a monorepo). A single ``AGENTS.md`` at the scope root
+    is read at session start into the system prompt (64 KiB cap,
+    truncating; missing file is normal). A user-level fallback
+    (``~/.config/coding-agent/AGENTS.md``) remains phase-5 work.
 
-``agent-permissions.toml`` (project root, optional)
+``.coding-agent/permissions.toml`` (scope root, optional)
     The policy layer: tool enablement and the permission table
     ``(path-pattern) → allow | ask | deny``, later role-scoped via
     ``[agents.<role>.permissions]``. May only *tighten* what the user
@@ -98,8 +100,7 @@ Layer                     Instruction       Policy / definition
 ========================= ================= ==========================
 built-in defaults         framework prompt  ADR 010 class defaults
 user home directory       fallback AGENTS   ~/.config/coding-agent/*
-project repo              AGENTS.md         agent-permissions.toml,
-                                            .agents/
+scope root                AGENTS.md         .coding-agent/
 per-agent/role            prompts refs      [agents.<role>] entries
 ========================= ================= ==========================
 

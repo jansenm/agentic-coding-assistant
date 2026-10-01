@@ -1,12 +1,13 @@
 # Slice 2b acceptance demo (deterministic core, no LLM round-trip):
 # The SAME write_file call takes two different paths, driven ONLY by
-# editing agent-permissions.toml — the ADR 010 acceptance criterion.
+# editing .coding-agent/permissions.toml — the ADR 010 acceptance criterion.
 
 demo_dir = "/tmp/opencode/demo-2b"
-policy_file = Path.join(demo_dir, "agent-permissions.toml")
+policy_file = Path.join([demo_dir, ".coding-agent", "permissions.toml"])
 
 File.rm_rf!(demo_dir)
 File.mkdir_p!(Path.join(demo_dir, "docs"))
+File.mkdir_p!(Path.dirname(policy_file))
 
 File.write!(policy_file, """
 [tools]

@@ -56,7 +56,7 @@ the error, no body.
 **5. Always-gated (ask)** — same class as `shell`: no policy path to
 allow in v1. Every fetch pauses for a decision and shows the URL in
 the approval dialog, so the user sees exactly what is being fetched.
-`agent-permissions.toml` may make it `deny`, never `allow`.
+`.coding-agent/permissions.toml` may make it `deny`, never `allow`.
 
 **6. Timeout** — 15 s connect+total, `max_retries: 0` (a fetch the
 agent retried blindly would burn tool rounds).

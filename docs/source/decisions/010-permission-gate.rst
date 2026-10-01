@@ -12,8 +12,13 @@ Permission gate and policy file format
 .. note::
    Accepted 2026-08-30 after the slice-2b acceptance demo: the same
    ``write_file`` call took allow and ask paths driven only by editing
-   ``agent-permissions.toml`` (with a session restart — policy pins at
+   the project policy file (with a session restart — policy pins at
    start). Demo: ``demo/acceptance_2b.exs``.
+
+   **Renamed by ADR 014** (2026-09-13): the file is now
+   ``.coding-agent/permissions.toml``. The pre-ADR-014 name
+   ``agent-permissions.toml`` at the scope root is **not read** — the
+   software is unreleased and carries no legacy (AGENTS.md).
 
    **Amended by ADR 030** (2026-09-27): the boundary for file reach
    moved from the BEAM path check (``Containment.check_scope!/2`` and
@@ -40,23 +45,24 @@ Requirements recap (from earlier decisions):
   (ADR 002's supply-chain threat model, applied to policy files).
 - Instructions (AGENTS.md) steer behavior *within* policy limits and
   can never change them; policy lives in its own structured format so
-  the two layers stay separable (naming: the file is called
+  the two layers stay separable (naming: the file was called
   ``agent-permissions.toml`` — not ``.agents.toml`` — precisely to
-  avoid confusion with AGENTS.md).
+  avoid confusion with AGENTS.md; renamed to
+  ``.coding-agent/permissions.toml`` by ADR 014).
 
 Decision
 --------
 
 **1. Policy format — TOML**, loaded with the already-present ``toml``
-library (zero new dependencies). One file:
-``agent-permissions.toml`` at the project root (name decided here;
-rename cost later is one path constant).
+library (zero new dependencies). One file at the project root — named
+``agent-permissions.toml`` here, since renamed to
+``.coding-agent/permissions.toml`` (ADR 014).
 
 Schema (v1, deliberately minimal):
 
 .. code-block:: toml
 
-   # agent-permissions.toml
+   # .coding-agent/permissions.toml
    [permissions.write_file]
    "docs/**"        = "allow"   # auto-approve
    "src/bank/**"    = "deny"    # never even ask
@@ -77,7 +83,7 @@ Schema (v1, deliberately minimal):
 *the more restrictive decision winning*:
 
 1. built-in defaults (see below),
-2. project file (``agent-permissions.toml``),
+2. project file (``.coding-agent/permissions.toml``),
 3. user-level overrides (``~/.config/coding-agent/permissions.toml``,
    optional, phase 4).
 

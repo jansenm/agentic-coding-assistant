@@ -321,8 +321,9 @@ defmodule CodingAgent.Core.Sandbox.Bwrap do
   # git bind was never emitted and `git add`/`commit` (and the checkpoint
   # index) died with EROFS on the read-only `/` bind — silently, because
   # `ensure_repo`'s `rev-parse` reports "inside work tree" even from a
-  # subdirectory. Finding the real git dir fixes that without moving
-  # `scope_root` (which `AGENTS.md` relies on staying at the working dir).
+  # subdirectory. A `git worktree` is the same shape and is handled by the
+  # same walk. Finding the real git dir fixes that without moving
+  # `scope_root`.
   defp git_dirs(root) do
     case CodingAgent.Core.Repo.root(root) do
       nil -> []

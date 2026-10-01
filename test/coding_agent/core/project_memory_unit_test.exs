@@ -49,8 +49,8 @@ defmodule CodingAgent.Core.ProjectMemoryTest do
     assert ProjectMemory.append("BASE", root) == "BASE"
   end
 
-  describe "nested files (monorepo, review T13)" do
-    test "walks UP to the git root and concatenates root-first", %{root: root} do
+  describe "scope-root only (no walk up or down)" do
+    test "reads ONLY the scope root's AGENTS.md, not an ancestor's", %{root: root} do
       # git root has AGENTS.md; a nested package (the scope) has its own
       File.mkdir_p!(Path.join(root, ".git"))
       File.write!(Path.join(root, "AGENTS.md"), "ROOT RULE\n")
@@ -61,37 +61,24 @@ defmodule CodingAgent.Core.ProjectMemoryTest do
 
       out = ProjectMemory.append("BASE", pkg)
 
-      assert out =~ "ROOT RULE"
+      refute out =~ "ROOT RULE"
       assert out =~ "PACKAGE RULE"
-      # root first, scope last (general -> specific)
-      assert :binary.match(out, "ROOT RULE") < :binary.match(out, "PACKAGE RULE")
       # and the model is told about deeper files it must read itself
       assert out =~ "Deeper files"
+      assert ProjectMemory.dirs(pkg) == [Path.expand(pkg)]
     end
 
-    test "a non-git scope reads exactly its own file (no walk)" do
-      outside = System.tmp_dir!() |> Path.join("pm-nogit-#{System.unique_integer()}")
-      File.mkdir_p!(outside)
-      on_exit(fn -> File.rm_rf!(outside) end)
-      File.write!(Path.join(outside, "AGENTS.md"), "ONLY MINE\n")
-
-      out = ProjectMemory.append("BASE", outside)
-      assert out =~ "ONLY MINE"
-      assert ProjectMemory.dirs(outside) == [Path.expand(outside)]
-    end
-
-    test "walks past intermediate directories with no AGENTS.md", %{root: root} do
+    test "a scope with no AGENTS.md reads nothing (no walk up)", %{root: root} do
       File.mkdir_p!(Path.join(root, ".git"))
       File.write!(Path.join(root, "AGENTS.md"), "ROOT\n")
 
       deep = Path.join([root, "a", "b", "c"])
       File.mkdir_p!(deep)
 
-      out = ProjectMemory.append("BASE", deep)
-      assert out =~ "ROOT"
+      assert ProjectMemory.load(deep) == nil
     end
 
-    test "does NOT collect subdirectories below the scope", %{root: root} do
+    test "the scope root reads its own file, not a child's", %{root: root} do
       File.mkdir_p!(Path.join(root, ".git"))
       File.write!(Path.join(root, "AGENTS.md"), "ROOT\n")
 

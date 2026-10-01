@@ -122,8 +122,8 @@ defmodule CodingAgent.Core.UserConfigTest do
   defp global_dir, do: UserConfig.global_dir()
   defp project_dir, do: UserConfig.project_dir(@tmp_root)
 
-  describe "project config follows the git root (review scope_root)" do
-    test "a subdirectory scope reads the repo-root .coding-agent" do
+  describe "project config and the no-legacy rule" do
+    test "a subdirectory scope reads ONLY its own .coding-agent (no walk up)" do
       repo = Path.join(@tmp_root, "repo")
       sub = Path.join(repo, "pkg/sub")
       File.mkdir_p!(Path.join(repo, ".git"))
@@ -135,15 +135,50 @@ defmodule CodingAgent.Core.UserConfigTest do
       model = "from-repo-root"
       """)
 
-      # scope is the SUBDIRECTORY; the config at the repo root must be read
-      assert UserConfig.project_dir(sub) == Path.join(repo, ".coding-agent")
-      assert UserConfig.load(sub).config["model"] == "from-repo-root"
+      # scope_root is the directory the session was started in — the config
+      # at the repo root is NOT read from a subdirectory.
+      assert UserConfig.project_dir(sub) == Path.join(sub, ".coding-agent")
+      refute UserConfig.load(sub).config["model"] == "from-repo-root"
+    end
+
+    test "the scope root itself reads its .coding-agent" do
+      repo = Path.join(@tmp_root, "repo-self")
+      File.mkdir_p!(Path.join(repo, ".git"))
+      File.mkdir_p!(Path.join(repo, ".coding-agent"))
+
+      File.write!(Path.join([repo, ".coding-agent", "config.toml"]), """
+      model = "from-scope-root"
+      """)
+
+      assert UserConfig.load(repo).config["model"] == "from-scope-root"
     end
 
     test "no enclosing repo: project_dir stays at the scope root" do
       plain = Path.join(@tmp_root, "plain/nested")
       File.mkdir_p!(plain)
       assert UserConfig.project_dir(plain) == Path.join(plain, ".coding-agent")
+    end
+
+    test "the pre-ADR-014 agent-permissions.toml is NOT read" do
+      # Unreleased software carries no legacy (AGENTS.md): a policy file at
+      # the old scope-root path must be ignored, not silently honoured.
+      root = Path.join(@tmp_root, "legacy")
+      File.mkdir_p!(root)
+
+      File.write!(Path.join(root, "agent-permissions.toml"), """
+      [tools]
+      enabled = ["read_file", "write_file"]
+
+      [permissions.write_file]
+      "**" = "allow"
+      """)
+
+      policy =
+        root
+        |> UserConfig.load()
+        |> Map.fetch!(:permissions)
+
+      assert CodingAgent.Core.Permissions.enabled(policy) == :default
     end
   end
 

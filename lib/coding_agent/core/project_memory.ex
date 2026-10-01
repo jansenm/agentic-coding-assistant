@@ -10,21 +10,20 @@ defmodule CodingAgent.Core.ProjectMemory do
   Kept out of the session loop (P3 factoring): the session asks for the
   section and composes; the file I/O and its failure policy live here.
 
-  ## Nested files (monorepos)
+  ## Nested files (subdirectories)
 
-  A session started in a subdirectory used to read only
-  ``<scope_root>/AGENTS.md`` and lose the repo-root conventions. Now the
-  loader walks UP from the scope root to the **git root** (the nearest
-  ancestor with a ``.git`` entry; the scope root itself when it is the
-  root, or when there is no git metadata) and concatenates every
-  ``AGENTS.md`` on that path, **root first, scope last** — general to
-  specific, so a more specific file is read as overriding the general one.
+  A session reads ONLY ``<scope_root>/AGENTS.md``. The scope root is the
+  directory the session was started in — we do not walk up to a repo
+  root; a session in a subdirectory reads that subdirectory's own file.
 
-  It does NOT collect subdirectories below the scope root: a monorepo can
-  have hundreds, most irrelevant to the work at hand, and reading them all
-  is unbounded. The section instead TELLS the model that subdirectories
-  may carry their own ``AGENTS.md`` and to read them with ``read_file``
-  when it works there (opencode does the same: it walks up, not down).
+  The ``AGENTS.md`` convention also places files in subdirectories, and
+  those apply when the agent works *there*. So the section TELLS the
+  model that subdirectories below the scope root may carry their own
+  ``AGENTS.md`` and to read them with ``read_file`` when it works there.
+  Walking down to collect them instead would be unbounded (a monorepo
+  can have hundreds, most irrelevant to the work at hand) and would
+  invert the granularity: a package's file applies in the package, not
+  at the scope root.
 
   Policy, unchanged from when this lived in `Session`:
 
@@ -68,13 +67,12 @@ defmodule CodingAgent.Core.ProjectMemory do
 
   def load(_), do: nil
 
-  # The directories to read, git root -> scope root; the shared walk lives
-  # in `Core.Repo` (also used by the sandbox and the config loader). A
-  # non-repo scope yields `[scope_root]`, so it reads exactly the one file
-  # it always did.
+  # The directories to read: the scope root alone. The scope root is where
+  # the session was started; a file in a parent (outside the scope) is not
+  # ours to read.
   @doc false
   @spec dirs(String.t()) :: [String.t()]
-  def dirs(scope_root), do: CodingAgent.Core.Repo.dirs(scope_root)
+  def dirs(scope_root), do: [Path.expand(scope_root)]
 
   # One readable AGENTS.md as `[{path, text}]`, or `[]` when absent /
   # unreadable / oversized beyond the cap.
@@ -111,9 +109,7 @@ defmodule CodingAgent.Core.ProjectMemory do
     """
     # Project memory (AGENTS.md)
 
-    Conventions and context for this project, written by the team. Files are
-    listed from the repository root down to the working directory; where
-    they conflict, a more specific file (later) wins.
+    Conventions and context for this project, written by the team.
 
     #{body}
 
@@ -125,9 +121,8 @@ defmodule CodingAgent.Core.ProjectMemory do
     """
   end
 
-  # A file's label: its path relative to the scope root. A file at the
-  # scope root is `AGENTS.md`; an ancestor is `../../AGENTS.md`; no
-  # absolute host path is leaked. Enough for the model to see where a rule
-  # comes from.
+  # A file's label: its path relative to the scope root — always `AGENTS.md`,
+  # since only that one file is read. Relative so no absolute host path is
+  # leaked into the prompt.
   defp label(path, scope_root), do: Path.relative_to(path, scope_root)
 end

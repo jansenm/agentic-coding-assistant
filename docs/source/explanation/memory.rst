@@ -188,19 +188,16 @@ editable with the same tools the agent uses — and the loader is a few
 dozen lines, because writing knowledge down as files is the whole
 point; no exotic memory system needed.
 
-**Nested files (monorepo, 2026-10-01).** A session started in a
-subdirectory must not lose the repo-root conventions. The loader now
-walks UP from the scope root to the git root — the nearest ancestor with
-a ``.git`` entry, the scope root itself when it is the root or there is
-no git metadata — and concatenates every ``AGENTS.md`` on that path,
-**root first, scope last** (general to specific). It does NOT descend
-into subdirectories: a monorepo can have hundreds, reading them all is
-unbounded and mostly irrelevant, and it inverts the granularity (a
-package's file applies when you work *there*). The section instead tells
-the model that deeper files exist and to read them with ``read_file``
-when it works there — the same up-not-down shape opencode uses. The
-walk is filesystem-only (no ``git`` invocation), so it is cheap and
-works under the read-only-root sandbox.
+**Nested files (subdirectories).** The scope root is the directory the
+session was started in, and the loader reads ONLY
+``<scope_root>/AGENTS.md`` — it does not walk up to a repo root, so a
+session in a subdirectory reads that subdirectory's own file. The
+``AGENTS.md`` convention also places files in subdirectories, where they
+apply when the agent works *there*; the section tells the model they
+exist and to read them with ``read_file``. It does NOT descend into
+subdirectories to collect them: a monorepo can have hundreds, reading
+them all is unbounded and mostly irrelevant, and it inverts the
+granularity (a package's file applies when you work *there*).
 
 Session storage principles
 --------------------------
