@@ -164,17 +164,33 @@ projects converged on the same fix.
   ``tail_turns`` for an exact turn count. ``DEFAULT_KEEP_TOKENS = 8_000``.
   The split is at **turn boundaries** (user messages), with an in-turn
   token-based split only when a single turn exceeds the budget.
-- **Summary output is capped** at ``SUMMARY_OUTPUT_TOKENS = 4_096``.
+- **Summary output is capped** at ``SUMMARY_OUTPUT_TOKENS = 4_096``
+  (as recorded from the opencode SOURCE when this page was written; the
+  compiled 1.18.34 we later inspected does not carry that name as a
+  constant, so treat the exact symbol as source-derived, not verified
+  against the binary).
 
-  We deliberately do NOT copy this one. opencode runs compaction on a
-  separate, non-reasoning small model, so a 4096-token output budget is
-  fine there. We summarize on the SESSION's model, which may reason —
-  and ``max_tokens`` counts reasoning tokens, so over a ~300k-char span a
-  reasoning model burned the whole 4096 in thinking and returned
-  ``text: ""``, deterministically (so our empty-answer retry could not
-  recover). We instead cap what is *stored*: ``Compaction.bound_summary``
-  truncates the applied summary to 24k chars, which bounds the NEXT
-  prompt exactly as intended without a reasoning-hostile output cap.
+  We deliberately do NOT copy this cap, and NOT for the reason an earlier
+  draft of this page gave. That draft claimed opencode runs compaction on
+  a separate, non-reasoning small model; **that is wrong.** opencode's
+  compaction is a *hidden agent* (``name:"compaction"``), and unless its
+  model is configured it resolves to the SESSION's model (decompiled
+  1.18.34: ``m.model ? getModel(m.model) : getModel(a.model)``; logs show
+  ``agent=compaction small=false modelID=<session model>`` — ``small_model``
+  feeds only ``agent=title``). So opencode faces the same reasoning model
+  we do.
+
+  The real reason to skip the cap: ``max_tokens`` counts REASONING tokens,
+  so over a ~300k-char span a reasoning model burned the whole budget in
+  thinking and returned ``text: ""``, deterministically (so our
+  empty-answer retry could not recover). We cap what is *stored* instead:
+  ``Compaction.bound_summary`` truncates the applied summary to 24k chars,
+  which bounds the NEXT prompt exactly as intended without a
+  reasoning-hostile output cap.
+
+  What we DID copy from opencode's shape is the hidden compaction agent —
+  see ADR 044. Ours is configurable (a model pin and a prompt body); its
+  default is model-less, so out of the box it behaves exactly as before.
 
 6. Auto-continue after compaction
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

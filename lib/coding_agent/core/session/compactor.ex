@@ -41,6 +41,7 @@ defmodule CodingAgent.Core.Session.Compactor do
   compaction must not resurrect the fat context.
   """
 
+  alias CodingAgent.Core.Agent
   alias CodingAgent.Core.Compaction
   alias CodingAgent.Core.Config
   alias CodingAgent.Core.Interrupt
@@ -480,13 +481,18 @@ defmodule CodingAgent.Core.Session.Compactor do
   @spec summarize(State.t(), String.t()) :: {:ok, String.t()} | {:error, term()}
   def summarize(state, old_span_text) do
     prior = Compaction.prior_summary(state.context)
+    agent = compaction_agent(state)
 
     with {:ok, model_input, base_opts} <-
-           Request.build(State.effective_model(state), state.provider_config, state.scope_root),
+           Request.build(
+             compaction_model(state, agent),
+             state.provider_config,
+             state.scope_root
+           ),
          {:ok, stream_response} <-
            ReqLLM.stream_text(
              model_input,
-             summary_context(old_span_text, prior),
+             summary_context(old_span_text, prior, agent),
              summarize_opts(base_opts)
            ),
          {:ok, response} <- ReqLLM.StreamResponse.process_stream(stream_response) do
@@ -504,6 +510,30 @@ defmodule CodingAgent.Core.Session.Compactor do
     kind, reason -> {:error, {kind, reason}}
   end
 
+  # The summarizer runs as a named agent (`compaction`, ADR 044), so a user
+  # can give it a MODEL (a cheaper worker) and a PROMPT (what this repo's
+  # summaries must preserve) as one file, with no new config key. `nil`
+  # when no such definition exists: the session's model and the built-in
+  # template, exactly today's behavior.
+  @doc false
+  @spec compaction_agent(State.t()) :: Agent.t() | nil
+  def compaction_agent(%State{scope_root: root}) do
+    case Config.agents(root) do
+      {:ok, definitions} -> Enum.find(definitions, &(&1.name == "compaction"))
+      _ -> nil
+    end
+  end
+
+  # Definition `model` wins, else the session's effective model — the same
+  # precedence ADR 017/042 use for subagents. A pinned model must be able
+  # to hold the span; ADR 044 records that caveat.
+  @doc false
+  @spec compaction_model(State.t(), Agent.t() | nil) :: String.t() | nil
+  def compaction_model(_state, %Agent{model: model}) when is_binary(model) and model != "",
+    do: model
+
+  def compaction_model(state, _agent), do: State.effective_model(state)
+
   # GLM on an 80K-char context takes minutes; without an inactivity cap
   # a hung summary stalls every turn's start (found live).
   #
@@ -513,11 +543,12 @@ defmodule CodingAgent.Core.Session.Compactor do
   # 4096 budget went to thinking and the call returned text: "" —
   # deterministically, so the empty-summary retry (ADR 033) could never
   # recover and compaction kept failing (measured: mt=4096 → 20.5s,
-  # text 0B, out=4096; mt=nil → text). opencode sets
-  # SUMMARY_OUTPUT_TOKENS=4096, but it runs compaction on a SEPARATE,
-  # non-reasoning small model; we summarize on the session's model, which
-  # may reason. The output is still bounded where it MATTERS: review N18's
-  # real guard is `Compaction.bound_summary/1` (24k chars) in
+  # text 0B, out=4096; mt=nil → text). opencode's source caps at
+  # SUMMARY_OUTPUT_TOKENS=4096 and its compaction agent defaults to the
+  # SESSION model too (decompiled 1.18.34; `small_model` feeds only title
+  # generation), so the cap is reasoning-hostile for opencode as well — we
+  # simply do not copy it. The output is still bounded where it MATTERS:
+  # review N18's real guard is `Compaction.bound_summary/1` (24k chars) in
   # `Compaction.apply/2`, which caps what is STORED regardless of what the
   # provider returns — a belt the belt, without a reasoning-hostile cap.
   #
@@ -535,13 +566,28 @@ defmodule CodingAgent.Core.Session.Compactor do
     Keyword.put(base_opts, :receive_timeout, inactivity())
   end
 
-  defp summary_context(old_span_text, prior_summary) do
-    # No system message: the summarizer is a one-shot text transform, and
-    # the instruction is the request. The request TEXT (template +
-    # rolling-summary rules) is built by `Compaction.summary_prompt/2` —
-    # pure, and the place that wording is testable without a provider.
-    Context.new()
-    |> Context.append(
+  # The request TEXT (template + rolling-summary rules) is built by
+  # `Compaction.summary_prompt/2` — pure, and the place that wording is
+  # testable without a provider. The agent's body, when a `compaction`
+  # definition exists, becomes the SYSTEM message: "what this repo's
+  # summaries must preserve". It ADDS to the template rather than
+  # replacing it (ADR 044), so a user cannot break the section layout the
+  # rolling summary depends on — the system message sets priorities, the
+  # user message keeps the shape.
+  @doc false
+  @spec summary_context(String.t(), String.t() | nil, Agent.t() | nil) :: ReqLLM.Context.t()
+  def summary_context(old_span_text, prior_summary, agent) do
+    context =
+      case agent do
+        %Agent{prompt: prompt} when is_binary(prompt) and prompt != "" ->
+          Context.new() |> Context.append(ReqLLM.Context.system(prompt))
+
+        _ ->
+          Context.new()
+      end
+
+    Context.append(
+      context,
       ReqLLM.Context.user(Compaction.summary_prompt(old_span_text, prior_summary))
     )
   end
