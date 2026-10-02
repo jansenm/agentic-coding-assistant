@@ -3134,12 +3134,23 @@ defmodule CodingAgent.UI.Tui do
   # :interrupted carries the pending calls as detail — this is how the
   # TUI learns WHAT to render in the approval dialog (a live interrupt
   # during a run; attaching mid-session pulls state on mount instead).
+  #
+  # A new park clears `deciding?`: a park is never "mid-flight". The live
+  # decide path (`Session.decide/2` -> `start_decide/3`) emits NO status
+  # broadcast, so when the decide worker lands on the NEXT gated call
+  # without ever broadcasting a non-:interrupted status, the optimistic
+  # `deciding?: true` set by the key press would survive into the new
+  # pause and `dialog_widgets/2` would render nothing — the dialog stayed
+  # closed ("approval needed" in the band) until the app was restarted.
+  # Only the generic (status != :interrupted) handler clears it otherwise,
+  # and that broadcast never comes on this path.
   def handle_info({:agent, {:status_changed, :interrupted, pending}}, state) do
     {:noreply,
      %{
        end_tool(state)
        | status: :interrupted,
          pending: pending,
+         deciding?: false,
          stop_confirm?: false
      }}
   end
