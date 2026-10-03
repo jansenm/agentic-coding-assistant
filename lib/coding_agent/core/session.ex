@@ -2673,6 +2673,7 @@ defmodule CodingAgent.Core.Session do
       context = Prompt.with_environment(context, model, state.scope_root)
       context = Prompt.with_todos(context, state.todos)
       context = Prompt.with_budget(context, budget_info(state))
+      context = Prompt.with_capabilities(context, capability_info(state))
       {:ok, model_input, opts, context}
     end
   end
@@ -2693,6 +2694,31 @@ defmodule CodingAgent.Core.Session do
       # the number shown and the number enforced cannot drift (review N66).
       rounds: state.tool_rounds,
       max_rounds: tool_budget(state)
+    }
+  end
+
+  # What this session CANNOT do, read from the SAME state the tool
+  # assembly and the gate use: the difference between the full registry
+  # and the tools `wire_request/2` actually exposes (`ToolRunner.tools/2`
+  # narrowed by the policy and the agent definition), plus the shell
+  # root mode. No second policy read — the block is derived, so the
+  # statement and the enforcement cannot drift (the budget-block rule).
+  defp capability_info(%State{} = state) do
+    scope = tool_scope(state)
+
+    full_names =
+      scope
+      |> CodingAgent.Core.Tools.all()
+      |> Enum.map(& &1.name)
+
+    exposed_names =
+      state.policy
+      |> ToolRunner.tools(scope)
+      |> Enum.map(& &1.name)
+
+    %{
+      missing: Enum.sort(full_names -- exposed_names),
+      shell_mode: Permissions.shell_mode(state.policy)
     }
   end
 

@@ -23,6 +23,12 @@ defmodule CodingAgent.Core.Session.Prompt do
       is and where the two auto-summary lines sit, rebuilt per call for
       the same reason. Visibility only: it does not change when
       summarization happens;
+    * the **capability block** (`with_capabilities/2`) — what this
+      session may NOT do: the tools the policy/agent removed from the
+      registry and whether the shell root is read-only. The tool list
+      can express "not present" but not "absent because forbidden" and
+      not a filesystem bound; the block states both, so the model says
+      what it lacks instead of spending calls discovering it.
     * the model selection that chose layer 1. A model switch recomposes
       the prefix (see `Session`), so the framework prompt follows the
       model the next turn will actually use.
@@ -209,6 +215,78 @@ defmodule CodingAgent.Core.Session.Prompt do
   end
 
   def with_budget(context, _), do: context
+
+  @doc """
+  Appends the capability block to the system message of `context`,
+  returning a context for ONE call — the same per-call channel as the
+  environment and budget blocks (ADR 024), rebuilt from live policy
+  state so it is always current.
+
+  It states what this session CANNOT do, ahead of any attempt:
+
+    * the tools that are not in the request's tool set at all
+      (`edit`, `write_file`, `git` under the plan agent) — a call to
+      them fails with "unknown tool"; the model otherwise learns this
+      by spending a round on the attempt;
+    * a read-only shell root (`shell = "read_only"`) — the one
+      capability the tool list can never express, because `shell` IS
+      present and only the filesystem bound is narrower. Builds, tests
+      and any write inside the tree fail with a read-only filesystem
+      error.
+
+  Nothing to say means no block: a fully equipped read-write session
+  sends an unchanged request, exactly like an empty todo list.
+
+  The block is a COST statement, not a security boundary — the gate and
+  the sandbox enforce; this only tells the model the shape of the
+  session before it pays for discovering it.
+  """
+  @spec with_capabilities(ReqLLM.Context.t(), %{missing: [String.t()], shell_mode: atom()}) ::
+          ReqLLM.Context.t()
+  def with_capabilities(context, %{missing: missing, shell_mode: shell_mode}) do
+    case capabilities_block(missing, shell_mode) do
+      nil -> context
+      block -> append_system_block(context, block)
+    end
+  end
+
+  def with_capabilities(context, _), do: context
+
+  # The block text, or nil when the session has full capabilities. The
+  # wording mirrors what the failures look like ("unknown tool", "read-only
+  # filesystem"), so a call that slips through anyway is recognisable as
+  # the stated limit and not a new problem.
+  defp capabilities_block([], :rw), do: nil
+
+  defp capabilities_block(missing, shell_mode) do
+    tool_clause =
+      case missing do
+        [] ->
+          nil
+
+        names ->
+          "you do not have the #{Enum.join(names, ", ")} tool(s) " <>
+            "(calls to them fail with \"unknown tool\")"
+      end
+
+    shell_clause =
+      case shell_mode do
+        :ro ->
+          "the shell runs with the scope root READ-ONLY: builds, tests and any " <>
+            "command that writes inside the tree fail with a read-only filesystem " <>
+            "error — do not retry them"
+
+        _ ->
+          nil
+      end
+
+    clauses = Enum.reject([tool_clause, shell_clause], &is_nil/1)
+
+    "Session capabilities: " <>
+      Enum.join(clauses, "; ") <>
+      ". Say what you would change and hand the exact edits to the human or " <>
+      "a build agent instead."
+  end
 
   # The budget block text. `used` is the projected tokens (provider count or
   # chars/4, whichever is larger — the same value the compaction decision

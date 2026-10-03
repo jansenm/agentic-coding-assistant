@@ -292,6 +292,38 @@ defmodule CodingAgent.Core.Session.AgentWiringTest do
     end
   end
 
+  describe "wire_request/1 capability block (P1)" do
+    test "a plan session's wire context states the missing tools and the read-only shell" do
+      start("wire-cap-plan", agent: "plan")
+      {:ok, s} = Session.state("wire-cap-plan")
+      {:ok, _input, _opts, wire_context} = Session.wire_request(s)
+
+      wire_system = wire_context |> ReqLLM.Context.to_list() |> hd()
+      text = system_text(wire_system)
+
+      assert text =~ "Session capabilities:"
+      # plan.md's disallowedTools, named ahead of any attempt (the order
+      # is the sorted registry, so match the names individually)
+      assert text =~ "edit"
+      assert text =~ "write_file"
+      assert text =~ "git"
+      # permission.shell = read_only: the capability the tool list cannot express
+      assert text =~ "READ-ONLY"
+      # the stored context is untouched (the per-call contract, ADR 024)
+      refute system_text_of(s) =~ "Session capabilities:"
+    end
+
+    test "a default build session sends no capability block" do
+      start("wire-cap-build", [])
+      {:ok, s} = Session.state("wire-cap-build")
+
+      {:ok, _input, _opts, wire_context} = Session.wire_request(s)
+
+      wire_system = wire_context |> ReqLLM.Context.to_list() |> hd()
+      refute system_text(wire_system) =~ "Session capabilities:"
+    end
+  end
+
   defp system_text_of(state) do
     state.context
     |> ReqLLM.Context.to_list()

@@ -198,6 +198,58 @@ defmodule CodingAgent.Core.Session.PromptTest do
     end
   end
 
+  describe "with_capabilities/2" do
+    defp base, do: ReqLLM.Context.new() |> ReqLLM.Context.append(ReqLLM.Context.system("BASE"))
+
+    defp system_text(context) do
+      [%ReqLLM.Message{role: :system} = sys | _] = ReqLLM.Context.to_list(context)
+      Enum.map_join(sys.content, "", &(&1.text || ""))
+    end
+
+    test "a fully equipped read-write session sends NO block" do
+      assert Prompt.with_capabilities(base(), %{missing: [], shell_mode: :rw}) == base()
+    end
+
+    test "names the tools the session does not have" do
+      text =
+        Prompt.with_capabilities(base(), %{
+          missing: ["edit", "write_file", "git"],
+          shell_mode: :rw
+        })
+        |> system_text()
+
+      assert text =~ "Session capabilities:"
+      assert text =~ "edit, write_file, git"
+      assert text =~ "unknown tool"
+      refute text =~ "READ-ONLY"
+    end
+
+    test "a read-only shell is stated even when every tool is present" do
+      text =
+        Prompt.with_capabilities(base(), %{missing: [], shell_mode: :ro})
+        |> system_text()
+
+      assert text =~ "READ-ONLY"
+      assert text =~ "read-only filesystem"
+      refute text =~ "unknown tool"
+    end
+
+    test "both clauses combine into one block" do
+      text =
+        Prompt.with_capabilities(base(), %{missing: ["edit"], shell_mode: :ro})
+        |> system_text()
+
+      assert text =~ "edit"
+      assert text =~ "READ-ONLY"
+    end
+
+    test "is a no-op on a context with no system message" do
+      context = ReqLLM.Context.new() |> ReqLLM.Context.append(ReqLLM.Context.user("hi"))
+
+      assert Prompt.with_capabilities(context, %{missing: ["edit"], shell_mode: :ro}) == context
+    end
+  end
+
   describe "with_budget/2" do
     defp system_text(context) do
       [%ReqLLM.Message{role: :system} = sys | _] = ReqLLM.Context.to_list(context)
