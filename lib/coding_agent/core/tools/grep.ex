@@ -76,8 +76,9 @@ defmodule CodingAgent.Core.Tools.Grep do
           "expression. Returns at most #{@max_results} matches " <>
           "as \"path:line: line text\". Skip binary files; ignores standard " <>
           "build/vendor directories. Use glob first to narrow files if needed. " <>
-          "A directory search skips files larger than 1 MiB; name the file " <>
-          "with `path` to search it regardless of size.",
+          "A directory search skips files larger than 1 MiB and NAMES them in " <>
+          "the result (\"skipped: ...\"), so a bare \"no matches\" never hides an " <>
+          "unsearched file; name one with `path` to search it in full.",
       parameter_schema: [
         pattern: [
           type: :string,

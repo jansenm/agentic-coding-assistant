@@ -8,11 +8,11 @@ real process, this file is replaced by it.
 
 ## Roles
 
-| Role | Who | Writes to |
-|---|---|---|
+| Role             | Who                                   | Writes to                          |
+|------------------|---------------------------------------|------------------------------------|
 | **Review agent** | the agent that reviews a commit range | the record, in the review worktree |
-| **Triage agent** | the agent that works the findings off | `TODO.md` in the main worktree |
-| **Owner** | the human | decides scope; commits |
+| **Triage agent** | the agent that works the findings off | `TODO.md` in the main worktree     |
+| **Owner**        | the human                             | decides scope; commits             |
 
 The review worktree is `agentic-coding-assistant-mjansen`, the main worktree is
 `agentic-coding-assistant`. The triage agent reads the record across worktrees,
