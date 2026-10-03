@@ -36,13 +36,18 @@ defmodule CodingAgent.Core.Tools.Grep do
 
   ## The size cap
 
-  `rg` is passed `--max-filesize 1M`: a directory walk SKIPS any file
+  `rg` is passed `--max-filesize 1M`: a directory walk skips any file
   larger than 1 MiB, so a big generated file or log is not searched by
   default (review N3). `rg` applies this cap only during traversal, not to
   an explicitly named target — so `path: "big.txt"` on a single file
-  searches it regardless of size; only the directory-walk case hides it.
+  searches it regardless of size; only the directory-walk case skips it.
   The tool description states this so the model can name the file when it
   expects large content.
+
+  The skipped files are LISTED in the result (`skipped: N file(s) over
+  1 MiB — name one with \`path\``). A silent skip is an empty answer that
+  looks like "no match": found live, the only hit of a repo-wide search
+  sat in a 1.4 MB file, and the tool reported nothing at all.
   """
 
   alias CodingAgent.Core.Containment
@@ -53,6 +58,10 @@ defmodule CodingAgent.Core.Tools.Grep do
 
   @max_results 200
   @max_line_length 500
+  # The directory-walk size cap (`rg --max-filesize`). Files above it are
+  # skipped by the walk and NAMED in the result (see `oversized_files/2`):
+  # a skipped file must never be an invisible empty answer.
+  @max_file_bytes 1024 * 1024
 
   # rg runs through the one executor (Exec + Sandbox), so the process is
   # confined like shell/git are.
@@ -273,7 +282,10 @@ defmodule CodingAgent.Core.Tools.Grep do
       |> Enum.filter(&keep_match?(&1, names))
       |> Enum.sort()
 
-    format_results(results, scope)
+    case format_results(results, scope) do
+      {:ok, body} ->
+        {:ok, body <> skipped_note(root, path, glob)}
+    end
   end
 
   # One match survives when the caller's glob accepts its path (the same
@@ -285,6 +297,67 @@ defmodule CodingAgent.Core.Tools.Grep do
 
   defp glob_accepts?(nil, _rel), do: true
   defp glob_accepts?(glob, rel), do: Glob.file_match?(glob, rel, Path.basename(rel))
+
+  # Name the files the walk SKIPPED because they exceed @max_file_bytes.
+  #
+  # rg's `--max-filesize` is silent by design, and a silent skip turns
+  # into an empty answer that reads as "no match" — found live: the only
+  # hit of a repo-wide search sat in a 1.4 MB file, and the tool said
+  # nothing at all. The model can name one with `path` to search it
+  # (rg's cap applies only to the walk, not to a named target, so the
+  # re-run searches it in full). The walk stays bounded; only the
+  # report grows.
+  defp skipped_note(root, path, glob) do
+    case oversized_files(root, path, glob) do
+      [] ->
+        ""
+
+      files ->
+        "\n[skipped: #{length(files)} file(s) over 1 MiB — name one with `path`: #{Enum.join(files, ", ")}]"
+    end
+  end
+
+  # The files the walk would skip. An explicitly NAMED target is not a
+  # walk, so rg searches it whatever its size — no note then. rg's own
+  # `--no-ignore`/`--hidden` are reflected in `--hidden` here; the
+  # skip-dirs keep the excluded trees out of the count.
+  defp oversized_files(root, path, glob) do
+    case External.probe(:fd) do
+      {:ok, fd} -> fd_oversized(fd, root, path, glob)
+      :error -> []
+    end
+  end
+
+  defp fd_oversized(fd, root, path, glob) do
+    abs = abs_path(%{root: root}, path)
+
+    if File.regular?(abs) do
+      []
+    else
+      # fd prunes by name, not by rg's `!**/dir/**` glob: the same
+      # `External.skip_dirs()` list, expressed the way fd understands it
+      # (rg's form made fd treat each pattern as a path — `[fd error]:
+      # Search path '!**/_build/**' is not a directory`).
+      args =
+        ["--type", "f", "--size", "+#{@max_file_bytes}b", "--hidden"] ++
+          Enum.flat_map(External.skip_dirs(), fn dir -> ["--exclude", dir] end) ++ ["."]
+
+      profile = Tools.profile(%{root: root}) |> Map.put(:root, root)
+
+      case Exec.run({:exec, fd, args}, abs, 30, profile, truncate: false) do
+        {:ok, out, 0} ->
+          out
+          |> String.split("\n", trim: true)
+          |> Enum.map(&String.trim_leading(&1, "./"))
+          |> Enum.filter(&keep_match?({&1, 0, ""}, [glob, path]))
+          |> Enum.sort()
+          |> Enum.take(10)
+
+        _ ->
+          []
+      end
+    end
+  end
 
   # rg's `--null` output is one record per match, `path\0lineno:text`,
   # records separated by `\n` (the matched text is a single line, so a

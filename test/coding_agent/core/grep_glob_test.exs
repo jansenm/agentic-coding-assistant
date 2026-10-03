@@ -118,9 +118,12 @@ defmodule CodingAgent.Core.Tools.GrepGlobTest do
       big = Path.join(@root, "big.log")
       File.write!(big, String.duplicate("filler line here\n", 80_000) <> "needle big\n")
 
-      # directory walk: hidden by the size cap
+      # directory walk: skipped by the size cap, and NAMED in the answer (a
+      # silent skip reads as "no match" — the live finding)
       {:ok, dir_out} = ReqLLM.Tool.execute(grep_tool(scope), %{"pattern" => "needle"})
-      refute dir_out =~ "big.log"
+      refute dir_out =~ "big.log:"
+      assert dir_out =~ "skipped: 1 file(s) over 1 MiB"
+      assert dir_out =~ "big.log"
 
       # explicitly named: rg applies --max-filesize only to traversal
       {:ok, named} =

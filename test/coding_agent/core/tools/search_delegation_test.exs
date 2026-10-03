@@ -357,6 +357,40 @@ defmodule CodingAgent.Core.Tools.SearchDelegationTest do
     end
   end
 
+  # The cap is reported, not silent: a walk that SKIPPED an oversized
+  # file says so and names it, so "no match" can be told apart from "not
+  # searched". Found live: the only hit of a repo-wide search sat in a
+  # 1.4 MB file and the tool answered nothing at all.
+  describe "oversized files are named, not silently skipped" do
+    test "a big file above the walk cap is reported", %{scope: s} do
+      big = Path.join(s.root, "big/generated.ex")
+      File.mkdir_p!(Path.dirname(big))
+      File.write!(big, "needle\n" <> String.duplicate("x", 1_100_000))
+
+      out = tool_answer(grep(s), %{"pattern" => "needle"})
+
+      # rg's walk skipped it, and the answer says which file it was
+      refute out =~ "big/generated.ex:1"
+      assert out =~ "skipped: 1 file(s) over 1 MiB"
+      assert out =~ "big/generated.ex"
+
+      # naming it with `path` searches it in full (the cap applies to the
+      # walk, not to a named target) and no longer reports a skip
+      named = tool_answer(grep(s), %{"pattern" => "needle", "path" => "big/generated.ex"})
+
+      assert named =~ "big/generated.ex:1:needle"
+      refute named =~ "skipped:"
+
+      File.rm_rf!(Path.join(s.root, "big"))
+    end
+
+    test "no note when nothing was skipped", %{scope: s} do
+      out = tool_answer(grep(s), %{"pattern" => "needle"})
+
+      refute out =~ "skipped:"
+    end
+  end
+
   describe "build/vendor trees are pruned at any depth" do
     test "glob", %{scope: s} do
       for pattern <- ["**/*.ex", "**/*", "*.txt", "**/*.txt", "src/**/*"] do
