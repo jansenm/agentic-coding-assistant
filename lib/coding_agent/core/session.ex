@@ -2718,8 +2718,50 @@ defmodule CodingAgent.Core.Session do
 
     %{
       missing: Enum.sort(full_names -- exposed_names),
-      shell_mode: Permissions.shell_mode(state.policy)
+      shell_mode: Permissions.shell_mode(state.policy),
+      gate: gate_decisions(state)
     }
+  end
+
+  @doc false
+  # The shape `capability_info/1` sends, computed THROUGH the gate's own
+  # decision path: every exposed tool is asked once with the same
+  # `Gate.decision/4` a real call would take, with arguments that carry
+  # no escalation and no path (the block is per-session, not per-call).
+  # Not a second policy read — the same read, through the same function,
+  # so the block and the gate cannot disagree (review of 5be986d: the
+  # tool list proves presence, never the DECISION; `[permissions.git]
+  # "*" = "ask"` would otherwise be invisible to the model until the
+  # first park).
+  @spec gate_decisions(State.t()) :: %{String.t() => Permissions.decision()}
+  def gate_decisions(%State{} = state) do
+    scope = tool_scope(state)
+    intercepted = intercepted_tools()
+
+    for tool <- state.policy |> ToolRunner.tools(scope) |> Enum.map(& &1.name),
+        tool not in intercepted,
+        into: %{} do
+      {tool, Gate.decision(state.policy, state.scope_root, tool, %{})}
+    end
+  end
+
+  # Tools the session answers ITSELF, before the gate ever sees them:
+  # `question` (the wizard), `todowrite` (state only), `compact` (state
+  # only) and `task` (a child session runs). They are listed as `:ask` by
+  # `Permissions.default_for/1` (they are not in the read-only allow
+  # class), but no human prompt ever appears for them — so a block that
+  # told the model "these require approval" would be wrong about all
+  # four. Excluded by name here, at the one place the block reads the
+  # gate's decisions; the four call sites (`question_calls/1`,
+  # `todo_calls/1`, `compact_calls/2`, `task_calls/1`) remain the
+  # enforcement, and they are checked before `Gate.classify/4`.
+  defp intercepted_tools do
+    [
+      Question.name(),
+      CodingAgent.Core.Tools.TodoWrite.name(),
+      CodingAgent.Core.Tools.Compact.name(),
+      CodingAgent.Core.Tools.Task.name()
+    ]
   end
 
   # One provider call, bounded by the configured retry policy. A transient

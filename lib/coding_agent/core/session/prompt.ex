@@ -234,17 +234,28 @@ defmodule CodingAgent.Core.Session.Prompt do
       and any write inside the tree fail with a read-only filesystem
       error.
 
+  The `gate` map (from `Session.gate_decisions/1`) additionally names
+  the exposed tools whose policy decision is `:ask` — derived THROUGH
+  the gate's own `Gate.decision/4`, so the statement and the gate can
+  never disagree. The framing is deliberate: approval is the mechanism
+  that keeps the human in control, and the cost is one keystroke — not
+  a refusal, and not a reason to avoid the call.
+
   Nothing to say means no block: a fully equipped read-write session
-  sends an unchanged request, exactly like an empty todo list.
+  with no ask-policies sends an unchanged request, exactly like an empty
+  todo list.
 
   The block is a COST statement, not a security boundary — the gate and
   the sandbox enforce; this only tells the model the shape of the
   session before it pays for discovering it.
   """
-  @spec with_capabilities(ReqLLM.Context.t(), %{missing: [String.t()], shell_mode: atom()}) ::
-          ReqLLM.Context.t()
-  def with_capabilities(context, %{missing: missing, shell_mode: shell_mode}) do
-    case capabilities_block(missing, shell_mode) do
+  @spec with_capabilities(ReqLLM.Context.t(), %{
+          missing: [String.t()],
+          shell_mode: atom(),
+          gate: %{String.t() => atom()} | nil
+        }) :: ReqLLM.Context.t()
+  def with_capabilities(context, %{missing: missing, shell_mode: shell_mode} = info) do
+    case capabilities_block(missing, shell_mode, Map.get(info, :gate)) do
       nil -> context
       block -> append_system_block(context, block)
     end
@@ -252,13 +263,19 @@ defmodule CodingAgent.Core.Session.Prompt do
 
   def with_capabilities(context, _), do: context
 
-  # The block text, or nil when the session has full capabilities. The
-  # wording mirrors what the failures look like ("unknown tool", "read-only
-  # filesystem"), so a call that slips through anyway is recognisable as
-  # the stated limit and not a new problem.
-  defp capabilities_block([], :rw), do: nil
+  # The block text, or nil when there is nothing to state: full
+  # capabilities, read-write shell, and no exposed tool whose decision
+  # is `:ask`. The wording mirrors what the failures look like ("unknown
+  # tool", "read-only filesystem"), so a call that slips through anyway
+  # is recognisable as the stated limit and not a new problem.
+  defp capabilities_block([], :rw, gate) do
+    case ask_block(gate) do
+      nil -> nil
+      ask -> "Session capabilities: #{ask}."
+    end
+  end
 
-  defp capabilities_block(missing, shell_mode) do
+  defp capabilities_block(missing, shell_mode, gate) do
     tool_clause =
       case missing do
         [] ->
@@ -282,11 +299,45 @@ defmodule CodingAgent.Core.Session.Prompt do
 
     clauses = Enum.reject([tool_clause, shell_clause], &is_nil/1)
 
-    "Session capabilities: " <>
-      Enum.join(clauses, "; ") <>
-      ". Say what you would change and hand the exact edits to the human or " <>
-      "a build agent instead."
+    base =
+      "Session capabilities: " <>
+        Enum.join(clauses, "; ") <> "."
+
+    case ask_block(gate) do
+      nil ->
+        base <>
+          " Say what you would change and hand the exact edits to the human or " <>
+          "a build agent instead."
+
+      ask ->
+        base <> " " <> ask
+    end
   end
+
+  # The ask clause. A SEPARATE sentence with its own framing: approval is
+  # the mechanism that keeps the human in control, not a deficit — the
+  # cost is one keystroke, and the call should be MADE when the step is
+  # worth it. Derived from `Session.gate_decisions/1` (the gate's own
+  # `decision/4` per exposed tool), so this text and the next gate
+  # decision cannot disagree.
+  defp ask_block(gate) when is_map(gate) do
+    asked =
+      gate
+      |> Enum.filter(fn {_tool, d} -> d == :ask end)
+      |> Enum.map(&elem(&1, 0))
+      |> Enum.sort()
+
+    case asked do
+      [] ->
+        nil
+
+      names ->
+        "#{Enum.join(names, ", ")} require the human's approval when you call " <>
+          "them (one keystroke, not a refusal) — use them when the step is worth it"
+    end
+  end
+
+  defp ask_block(_), do: nil
 
   # The budget block text. `used` is the projected tokens (provider count or
   # chars/4, whichever is larger — the same value the compaction decision

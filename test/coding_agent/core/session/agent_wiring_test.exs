@@ -313,14 +313,46 @@ defmodule CodingAgent.Core.Session.AgentWiringTest do
       refute system_text_of(s) =~ "Session capabilities:"
     end
 
-    test "a default build session sends no capability block" do
+    test "a default build session states the ask-tool it really has (webfetch)" do
       start("wire-cap-build", [])
       {:ok, s} = Session.state("wire-cap-build")
 
-      {:ok, _input, _opts, wire_context} = Session.wire_request(s)
+      # webfetch is ask-by-policy in the shipped defaults, and the block is
+      # derived from the gate's own decision, so a stock session states it
+      assert Session.gate_decisions(s)["webfetch"] == :ask
 
-      wire_system = wire_context |> ReqLLM.Context.to_list() |> hd()
-      refute system_text(wire_system) =~ "Session capabilities:"
+      {:ok, _input, _opts, wire_context} = Session.wire_request(s)
+      text = wire_context |> ReqLLM.Context.to_list() |> hd() |> system_text()
+
+      assert text =~ "Session capabilities:"
+      assert text =~ "webfetch"
+      assert text =~ "require the human's approval"
+      # a deficit clause would be wrong here: build has every tool
+      refute text =~ "unknown tool"
+      refute text =~ "READ-ONLY"
+    end
+
+    test "a policy entry that asks reaches the block through the gate's decision path" do
+      File.mkdir_p!(Path.join(@tmp_root, ".coding-agent"))
+
+      File.write!(
+        Path.join(@tmp_root, ".coding-agent/permissions.toml"),
+        "[permissions.git]\n\"*\" = \"ask\"\n"
+      )
+
+      on_exit(fn -> File.rm_rf!(Path.join(@tmp_root, ".coding-agent")) end)
+
+      start("wire-cap-ask", [])
+      {:ok, s} = Session.state("wire-cap-ask")
+
+      # the same call a real git call would take, through the same function
+      assert Session.gate_decisions(s)["git"] == :ask
+
+      {:ok, _input, _opts, wire_context} = Session.wire_request(s)
+      text = wire_context |> ReqLLM.Context.to_list() |> hd() |> system_text()
+
+      assert text =~ "git"
+      assert text =~ "require the human's approval"
     end
   end
 

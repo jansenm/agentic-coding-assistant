@@ -206,7 +206,15 @@ defmodule CodingAgent.Core.Session.PromptTest do
       Enum.map_join(sys.content, "", &(&1.text || ""))
     end
 
-    test "a fully equipped read-write session sends NO block" do
+    test "a fully equipped read-write session with no ask-policy sends NO block" do
+      assert Prompt.with_capabilities(base(), %{
+               missing: [],
+               shell_mode: :rw,
+               gate: %{"git" => :allow, "shell" => :allow}
+             }) == base()
+    end
+
+    test "no gate map at all keeps the earlier no-deficit behaviour" do
       assert Prompt.with_capabilities(base(), %{missing: [], shell_mode: :rw}) == base()
     end
 
@@ -241,6 +249,49 @@ defmodule CodingAgent.Core.Session.PromptTest do
 
       assert text =~ "edit"
       assert text =~ "READ-ONLY"
+    end
+
+    test "an ask-policy is stated with no deficit at all" do
+      # the `gate` map comes from the gate's own decision path; a fully
+      # equipped, read-write session can still have a tool that asks
+      text =
+        Prompt.with_capabilities(base(), %{
+          missing: [],
+          shell_mode: :rw,
+          gate: %{"git" => :ask, "shell" => :allow}
+        })
+        |> system_text()
+
+      assert text =~ "Session capabilities:"
+      assert text =~ "git require the human's approval"
+      # framed as a cost (one keystroke), NOT as a refusal or a reason to
+      # avoid the call
+      assert text =~ "not a refusal"
+      assert text =~ "when the step is worth it"
+      refute text =~ "unknown tool"
+      refute text =~ "READ-ONLY"
+    end
+
+    test "the ask clause joins the deficit clauses" do
+      text =
+        Prompt.with_capabilities(base(), %{
+          missing: ["edit", "write_file"],
+          shell_mode: :ro,
+          gate: %{"webfetch" => :ask}
+        })
+        |> system_text()
+
+      assert text =~ "edit, write_file"
+      assert text =~ "READ-ONLY"
+      assert text =~ "webfetch require the human's approval"
+    end
+
+    test "no ask in the gate map means no block (nothing to say)" do
+      assert Prompt.with_capabilities(base(), %{
+               missing: [],
+               shell_mode: :rw,
+               gate: %{"git" => :allow, "shell" => :allow}
+             }) == base()
     end
 
     test "is a no-op on a context with no system message" do
