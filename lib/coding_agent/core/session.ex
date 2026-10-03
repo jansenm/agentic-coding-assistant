@@ -518,10 +518,26 @@ defmodule CodingAgent.Core.Session do
     # was already decided — auto-executed, blacklist/policy-denied) come
     # back so `decide/2` can finish the exchange. Dropping them used to
     # silently discard work the user then had to redo.
-    status = Keyword.get(opts, :status, :idle)
-    pending_tool_calls = Keyword.get(opts, :pending_tool_calls, [])
-    pending_round_calls = Keyword.get(opts, :pending_round_calls, [])
-    pending_round_results = Keyword.get(opts, :pending_round_results, [])
+    #
+    # Status and round agree BY CONSTRUCTION: a round is held exactly
+    # while the session is parked at :interrupted, and a state that says
+    # otherwise is not a pause to re-offer but a corrupt one (found live:
+    # `:idle` + a held webfetch round, which the UI showed as a session
+    # with no prompt and no running turn). Drop the hold and let the
+    # consequence be visible — the model reads the call as unanswered on
+    # its next turn — rather than parking the session behind a dialog
+    # nobody can reach.
+    {status, pending_tool_calls, pending_round_calls, pending_round_results} =
+      if Keyword.get(opts, :status, :idle) == :interrupted do
+        {
+          :interrupted,
+          Keyword.get(opts, :pending_tool_calls, []),
+          Keyword.get(opts, :pending_round_calls, []),
+          Keyword.get(opts, :pending_round_results, [])
+        }
+      else
+        {:idle, [], [], []}
+      end
 
     # The system prompt is framework + project memory (4c, AGENTS.md) +
     # the agent definition's prompt (ADR 017), composed by Session.Prompt.
@@ -2875,6 +2891,13 @@ defmodule CodingAgent.Core.Session do
   end
 
   @doc false
+  # Test-only handle on the failed-turn path, so a test can drive the
+  # "a turn ended without consuming its held round" state without a
+  # provider. Not part of the driver contract.
+  @spec debug_fail_turn(State.t(), term()) :: State.t()
+  def debug_fail_turn(state, reason), do: fail_turn(state, reason)
+
+  @doc false
   def consume_stream(events, session_id) do
     partial_key = {__MODULE__, :partial, session_id}
     Process.put(partial_key, "")
@@ -3175,10 +3198,35 @@ defmodule CodingAgent.Core.Session do
     # the turn is over in every branch from here — drop any stale
     # user-interrupt flag so the NEXT turn starts clean
     drop_interrupt(state)
-    state = %{state | status: :error, last_error: reason}
+    state = %{state | status: :error, last_error: reason} |> drop_held_round()
     broadcast(state, {:status_changed, :error, reason})
     persist(state)
     state
+  end
+
+  # A finished turn holds no round. `complete_turn` already clears the
+  # hold through `complete_round`, but a turn can also end WITHOUT one —
+  # the commit in `finish_round` aborts (a context that refuses the
+  # exchange) and returns the state with `pending_round_*` still set, and
+  # `fail_turn` sets :error over the same state. Either left a session
+  # that Claims to be idle/error while holding a round: the UI has no
+  # prompt to draw (there is no pause), no turn to run, and no way back —
+  # found live on a session that sat as `:idle` with an unanswered
+  # webfetch round since 14:59, invisible until a restart, and dead after
+  # that because the turn that would have consumed the round was gone.
+  #
+  # The dropped calls are answered by the MODEL, not by us: the next turn
+  # reads the exchange as unanswered and can redo the call. Nothing is
+  # silently lost, which is why this clears instead of parking.
+  defp drop_held_round(%{pending_round_calls: []} = state), do: state
+
+  defp drop_held_round(state) do
+    Logger.warning(
+      "session #{state.id} ended a turn holding #{length(state.pending_round_calls)} " <>
+        "undecided call(s); dropping the held round"
+    )
+
+    %{state | pending_tool_calls: [], pending_round_calls: [], pending_round_results: []}
   end
 
   # turn-end cleanup: the stop flag is per-turn, never carries over

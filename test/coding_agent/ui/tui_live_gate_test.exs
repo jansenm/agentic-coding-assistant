@@ -115,15 +115,16 @@ defmodule CodingAgent.UI.TuiLiveGateTest do
     # still cding when the test's on_exit removes the scope root
     wait_until(fn -> File.exists?(Path.join(root, "a.txt")) end)
 
-    # the decide reply is a no-op; then the worker parks on the NEXT gated
-    # call with NO non-:interrupted status broadcast in between
-    send(pid, {:__decided__, {:ok, :running}})
+    # The decide path emits no status broadcast, so the park on the NEXT
+    # gated call arrives as the only event — no non-:interrupted status in
+    # between. The dialog must re-open: `deciding?` is cleared by the park
+    # and the calls come from the broadcast.
     send(pid, {:agent, {:status_changed, :interrupted, [call2]}})
 
     wait_until(fn -> sync(pid).pending == [call2] end)
 
     state = sync(pid)
-    assert state.status == :interrupted
+    assert state.pending == [call2]
     refute state.deciding?, "deciding? stuck true after a decide led into a new pause"
   end
 end

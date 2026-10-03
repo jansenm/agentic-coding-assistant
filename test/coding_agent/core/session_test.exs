@@ -345,4 +345,118 @@ defmodule CodingAgent.Core.SessionTest do
                {:error, :not_found}
     end
   end
+
+  # Found live (2026-10-03): a session saved as `:idle` while still holding
+  # an unanswered `webfetch` round. The turn that would have consumed the
+  # round was gone, so the calls were unreachable — no prompt to draw (an
+  # idle session is not parked) and no error to explain it. The dialog
+  # "flickered into view, then disappeared" and the app had to be
+  # restarted before it showed up again. Two guards, one invariant: what
+  # the status says and what the round holds agree.
+  describe "a held round and the session status" do
+    setup do
+      root = Path.join(System.tmp_dir!(), "held-round-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(root)
+      on_exit(fn -> File.rm_rf!(root) end)
+
+      toml_path = Path.join(root, "permissions.toml")
+
+      File.write!(toml_path, """
+      [permissions.write_file]
+      "*" = "ask"
+      """)
+
+      {:ok, root: root, policy: CodingAgent.Core.Permissions.load(nil, toml_path)}
+    end
+
+    test "a failing round commit clears the hold instead of leaving it stranded", %{
+      root: root,
+      policy: policy
+    } do
+      sid = "held-#{System.unique_integer([:positive])}"
+
+      {:ok, pid} =
+        CodingAgent.Core.Session.Supervisor.start_session(
+          id: sid,
+          scope_root: root,
+          policy: policy,
+          test_mode: true
+        )
+
+      on_exit(fn -> if Process.alive?(pid), do: Session.stop(sid) end)
+
+      :ok =
+        Session.debug_gate(sid, [
+          %{id: "c1", name: "write_file", arguments: %{"path" => "x.txt", "content" => "hi"}}
+        ])
+
+      {:ok, parked} = Session.state(sid)
+      assert parked.status == :interrupted
+      assert length(parked.pending_tool_calls) == 1
+
+      # the round's commit fails: a context whose first message is a plain
+      # user message cannot take a tool exchange (the failing branch of
+      # `complete_round`, which broadcasts NOTHING — the state a failing
+      # tool call leaves behind). The turn then ends idle over that state.
+      broken = %{parked | context: ReqLLM.Context.new([ReqLLM.Context.user("orphan")])}
+      ended = Session.debug_fail_turn(broken, :tool_commit_failed)
+
+      assert ended.status == :error
+      assert ended.pending_tool_calls == []
+      assert ended.pending_round_calls == []
+      assert ended.pending_round_results == []
+    end
+
+    test "an idle snapshot holding a round resumes with the hold dropped", %{root: root} do
+      id = "idle-held-#{System.unique_integer([:positive])}"
+      call = %{id: "c1", name: "webfetch", arguments: %{"url" => "http://example.com/"}}
+
+      snapshot = %State{
+        id: id,
+        context: ReqLLM.Context.new(),
+        model: "openai:gpt-4o",
+        status: :idle,
+        scope_root: root,
+        pending_tool_calls: [call],
+        pending_round_calls: [call],
+        pending_round_results: []
+      }
+
+      {:ok, _pid} =
+        CodingAgent.Core.Session.Supervisor.start_session(Session.resume_opts(snapshot))
+
+      on_exit(fn -> Session.stop(id) end)
+
+      {:ok, state} = Session.state(id)
+      assert state.status == :idle
+      assert state.pending_tool_calls == []
+      assert state.pending_round_calls == []
+    end
+
+    test "a parked snapshot resumes PARKED, with its round intact", %{root: root} do
+      id = "parked-#{System.unique_integer([:positive])}"
+      call = %{id: "c1", name: "webfetch", arguments: %{"url" => "http://example.com/"}}
+
+      snapshot = %State{
+        id: id,
+        context: ReqLLM.Context.new(),
+        model: "openai:gpt-4o",
+        status: :interrupted,
+        scope_root: root,
+        pending_tool_calls: [call],
+        pending_round_calls: [call],
+        pending_round_results: []
+      }
+
+      {:ok, _pid} =
+        CodingAgent.Core.Session.Supervisor.start_session(Session.resume_opts(snapshot))
+
+      on_exit(fn -> Session.stop(id) end)
+
+      {:ok, state} = Session.state(id)
+      assert state.status == :interrupted
+      assert state.pending_tool_calls == [call]
+      assert state.pending_round_calls == [call]
+    end
+  end
 end

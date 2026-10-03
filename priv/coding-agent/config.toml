@@ -26,9 +26,14 @@ base_url = "http://localhost:11434/v1"
 discover = "ollama"
 
 [providers.ollama_cloud]
-provider = "openai"
 base_url = "https://ollama.com/v1"
-backend = "ollama"
+provider = "openai"
+discover = "openai"
+backend  = "ollama"
+
+[providers.hostyourai]
+base_url = "https://hostyourai.com/api/v1"
+provider = "openai"
 discover = "openai"
 
 # Deployment-specific proxies (base_url is per installation) ship as
@@ -57,14 +62,14 @@ discover = "openai"
 
 [sandbox]
 rw = [
-  "~/.cache",
-  "~/.hex",
-  "~/.mix",
-  "~/.m2",
-  "~/.gradle",
-  "~/.cargo",
-  "~/.npm",
-  "~/.config/git",
+    "~/.cache",
+    "~/.hex",
+    "~/.mix",
+    "~/.m2",
+    "~/.gradle",
+    "~/.cargo",
+    "~/.npm",
+    "~/.config/git",
 ]
 ro = []
 hide = []
