@@ -54,6 +54,38 @@ defmodule CodingAgent.Core.Session.GateTest do
       assert Gate.decision(policy, @tmp_root, "write_file", %{"path" => "config/a.ex"}) == :ask
       assert Gate.decision(policy, @tmp_root, "write_file", %{"path" => "lib/a.ex"}) == :allow
     end
+
+    test "a two-path call is denied when EITHER end matches (move_file)" do
+      path = Path.join(@tmp_root, "move-deny.toml")
+      File.write!(path, "[permissions.move_file]\n\"lib/**\" = \"deny\"\n")
+      policy = Permissions.load(nil, path)
+
+      # `to` inside lib/ is denied even though `from` is not — without
+      # evaluating both, the lookup would see no `path` and fall back to :allow
+      assert Gate.decision(policy, @tmp_root, "move_file", %{
+               "from" => "scratch/a.ex",
+               "to" => "lib/a.ex"
+             }) == :deny
+
+      assert Gate.decision(policy, @tmp_root, "move_file", %{
+               "from" => "lib/a.ex",
+               "to" => "scratch/b.ex"
+             }) == :deny
+
+      assert Gate.decision(policy, @tmp_root, "move_file", %{
+               "from" => "scratch/a.ex",
+               "to" => "scratch/b.ex"
+             }) == :allow
+    end
+
+    test "delete_file and move_file are allow-by-class under confinement (ADR 045)" do
+      assert Gate.decision(policy(), @tmp_root, "delete_file", %{"path" => "a.txt"}) == :allow
+
+      assert Gate.decision(policy(), @tmp_root, "move_file", %{
+               "from" => "a.txt",
+               "to" => "b.txt"
+             }) == :allow
+    end
   end
 
   describe "classify/4" do

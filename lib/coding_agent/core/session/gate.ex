@@ -86,9 +86,16 @@ defmodule CodingAgent.Core.Session.Gate do
   @spec decision(Permissions.t(), String.t() | nil, String.t(), term()) :: Permissions.decision()
   def decision(policy, scope_root, name, args) do
     tool = tool_name(name)
-    rel_path = call_rel_path(scope_root, args)
+    fallback = fallback_for(tool, args)
 
-    Permissions.effective(policy, tool, rel_path, fallback: fallback_for(tool, args))
+    # A call may name more than one path (move_file: `from` and `to`).
+    # Every one is evaluated and the MOST RESTRICTIVE wins — otherwise a
+    # `[permissions.move_file] "lib/**" = "deny"` would not match (the
+    # lookup reads only `path`) and the fallback would allow the call.
+    scope_root
+    |> call_rel_paths(args)
+    |> Enum.map(&Permissions.effective(policy, tool, &1, fallback: fallback))
+    |> Enum.reduce(&Permissions.most_restrictive/2)
   end
 
   @doc "The result for an explicit-policy-denied call."
@@ -127,40 +134,46 @@ defmodule CodingAgent.Core.Session.Gate do
 
   def unanswerable_escalation?(_name, _args), do: false
 
-  # The policy matches against the tool's path argument, relative to the
-  # scope root. The gate consults the call's OWN arguments — this is the
-  # security boundary, so the path always comes from the call itself.
+  # The path argument(s) a call exposes to the policy, relative to the
+  # scope root. Most calls name one (`path`); `move_file` names two
+  # (`from`, `to`) and both must reach the policy. A call with no path
+  # yields `[""]`, so the lookup stays exactly as it was for every other
+  # tool.
   #
-  # This is TEXTUAL (Path.expand, no filesystem); the tools resolve
-  # PHYSICALLY (symlinks followed) via Containment. Net effect is safe:
-  # an allow pattern can never be BYPASSED by a symlink, because
+  # The matching is TEXTUAL (Path.expand, no filesystem); the tools
+  # resolve PHYSICALLY (symlinks followed) via Containment. Net effect is
+  # safe: an allow pattern can never be BYPASSED by a symlink, because
   # execution still rejects a physically-escaping path — but it means an
   # allow-pattern is not a capability. A "tmp/** = allow" pattern next
   # to a symlink tmp -> /etc matches the CALL and then fails at
   # execution with "path escapes the session scope".
   @doc false
-  def call_rel_path(scope_root, args) when is_map(args) do
-    path = Map.get(args, "path") || Map.get(args, :path)
-
-    case path do
-      p when is_binary(p) ->
-        root = Path.expand(scope_root || File.cwd!())
-        expanded = Path.expand(p, root)
-
-        if String.starts_with?(expanded <> "/", root <> "/") do
-          Path.relative_to(expanded, root)
-        else
-          # absolute path outside scope: policy matches the raw path; the
-          # tool itself will reject execution anyway
-          p
-        end
-
-      _ ->
-        ""
+  def call_rel_paths(scope_root, args) when is_map(args) do
+    [arg_path(args, "path"), arg_path(args, "from"), arg_path(args, "to")]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map(&rel_path(scope_root, &1))
+    |> case do
+      [] -> [""]
+      paths -> Enum.uniq(paths)
     end
   end
 
-  def call_rel_path(_scope_root, _args), do: ""
+  def call_rel_paths(_scope_root, _args), do: [""]
+
+  defp arg_path(args, key), do: Map.get(args, key) || Map.get(args, String.to_atom(key))
+
+  defp rel_path(scope_root, path) do
+    root = Path.expand(scope_root || File.cwd!())
+    expanded = Path.expand(path, root)
+
+    if String.starts_with?(expanded <> "/", root <> "/") do
+      Path.relative_to(expanded, root)
+    else
+      # absolute path outside scope: policy matches the raw path; the
+      # tool itself will reject execution anyway
+      path
+    end
+  end
 
   # The confinement fallback (ADR 030). A session only exists when a
   # confining sandbox is active (`Session.init/1`), so `shell`/`git` are

@@ -182,6 +182,8 @@ defmodule CodingAgent.Core.AgentTest do
       assert explore.model == nil
       assert "edit" in explore.disallowed_tools
       assert "write_file" in explore.disallowed_tools
+      assert "delete_file" in explore.disallowed_tools
+      assert "move_file" in explore.disallowed_tools
       assert "git" in explore.disallowed_tools
       assert explore.permission["shell"] == "read_only"
     end
@@ -265,6 +267,11 @@ defmodule CodingAgent.Core.AgentTest do
       assert Agent.canonical_tool("read") == "read_file"
       assert Agent.canonical_tool("write") == "write_file"
       assert Agent.canonical_tool("list") == "list_dir"
+      assert Agent.canonical_tool("delete") == "delete_file"
+      assert Agent.canonical_tool("rm") == "delete_file"
+      assert Agent.canonical_tool("move") == "move_file"
+      assert Agent.canonical_tool("mv") == "move_file"
+      assert Agent.canonical_tool("rename") == "move_file"
     end
 
     test "passes unknown names through" do

@@ -12,11 +12,13 @@ defmodule CodingAgent.Core.Tools.FileToolsTest do
   alias CodingAgent.Core.Tools
 
   setup do
-    root = Path.join(System.tmp_dir!(), "agent-tools-#{System.unique_integer()}")
+    root = Path.join(System.tmp_dir!(), "agent-tools-#{System.unique_integer([:positive])}")
     File.mkdir_p!(Path.join(root, "sub"))
+    on_exit(fn -> File.rm_rf!(root) end)
     File.write!(Path.join(root, "top.txt"), "top level")
     File.write!(Path.join(root, "nested.txt"), "nested content")
     File.write!(Path.join(root, "big.bin"), String.duplicate("x", 300 * 1024))
+    File.ln_s!(Path.join(root, "top.txt"), Path.join(root, "link.txt"))
 
     %{scope: %{root: root}}
   end
@@ -241,6 +243,118 @@ defmodule CodingAgent.Core.Tools.FileToolsTest do
         })
 
       assert msg =~ "no such file"
+    end
+  end
+
+  describe "delete_file (confined rm)" do
+    test "deletes a file", %{scope: scope} do
+      tool = find_tool("delete_file", scope)
+      {:ok, msg} = ReqLLM.Tool.execute(tool, %{"path" => "top.txt"})
+      assert msg =~ "deleted top.txt"
+      refute File.exists?(Path.join(scope.root, "top.txt"))
+    end
+
+    test "a directory without dir/recursive is rm's own error, not a silent success", %{
+      scope: scope
+    } do
+      tool = find_tool("delete_file", scope)
+      File.mkdir_p!(Path.join(scope.root, "empty-dir"))
+
+      {:error, msg} = ReqLLM.Tool.execute(tool, %{"path" => "empty-dir"})
+      assert msg =~ "Is a directory"
+      assert File.dir?(Path.join(scope.root, "empty-dir"))
+    end
+
+    test "dir: true removes an empty directory", %{scope: scope} do
+      tool = find_tool("delete_file", scope)
+      File.mkdir_p!(Path.join(scope.root, "empty-dir"))
+
+      {:ok, _} = ReqLLM.Tool.execute(tool, %{"path" => "empty-dir", "dir" => true})
+      refute File.exists?(Path.join(scope.root, "empty-dir"))
+    end
+
+    test "a non-empty directory needs recursive: true", %{scope: scope} do
+      tool = find_tool("delete_file", scope)
+      File.mkdir_p!(Path.join(scope.root, "full-dir"))
+      File.write!(Path.join(scope.root, "full-dir/f.txt"), "x")
+
+      {:error, msg} = ReqLLM.Tool.execute(tool, %{"path" => "full-dir", "dir" => true})
+      assert msg =~ "Directory not empty"
+
+      {:ok, _} =
+        ReqLLM.Tool.execute(tool, %{"path" => "full-dir", "dir" => true, "recursive" => true})
+
+      refute File.exists?(Path.join(scope.root, "full-dir"))
+    end
+
+    test "a symlink is removed as the link, never its target", %{scope: scope} do
+      tool = find_tool("delete_file", scope)
+      {:ok, _} = ReqLLM.Tool.execute(tool, %{"path" => "link.txt"})
+      refute File.exists?(Path.join(scope.root, "link.txt"))
+      assert File.read!(Path.join(scope.root, "top.txt")) == "top level"
+    end
+
+    test "a missing path is rm's error, not a silent success", %{scope: scope} do
+      tool = find_tool("delete_file", scope)
+      {:error, msg} = ReqLLM.Tool.execute(tool, %{"path" => "gone.txt"})
+      assert msg =~ "No such file"
+    end
+  end
+
+  describe "move_file (confined mv)" do
+    test "renames a path", %{scope: scope} do
+      tool = find_tool("move_file", scope)
+      {:ok, msg} = ReqLLM.Tool.execute(tool, %{"from" => "top.txt", "to" => "renamed.txt"})
+
+      assert msg =~ "moved top.txt to renamed.txt"
+      refute File.exists?(Path.join(scope.root, "top.txt"))
+      assert File.read!(Path.join(scope.root, "renamed.txt")) == "top level"
+    end
+
+    test "an existing destination refuses and names force", %{scope: scope} do
+      tool = find_tool("move_file", scope)
+      File.write!(Path.join(scope.root, "dest.txt"), "keep")
+
+      {:error, msg} = ReqLLM.Tool.execute(tool, %{"from" => "top.txt", "to" => "dest.txt"})
+      assert msg =~ "already exists"
+      assert msg =~ "force"
+      # neither side changed
+      assert File.read!(Path.join(scope.root, "dest.txt")) == "keep"
+      assert File.exists?(Path.join(scope.root, "top.txt"))
+    end
+
+    test "force: true overwrites the destination", %{scope: scope} do
+      tool = find_tool("move_file", scope)
+      File.write!(Path.join(scope.root, "dest.txt"), "old")
+
+      {:ok, _} =
+        ReqLLM.Tool.execute(tool, %{"from" => "top.txt", "to" => "dest.txt", "force" => true})
+
+      assert File.read!(Path.join(scope.root, "dest.txt")) == "top level"
+      refute File.exists?(Path.join(scope.root, "top.txt"))
+    end
+
+    test "to is the exact path (-T), never a directory to move into", %{scope: scope} do
+      tool = find_tool("move_file", scope)
+
+      # `mv -- top.txt sub` would put the file at sub/top.txt; -T refuses
+      # (or renames), it never moves INTO sub.
+      {:error, _msg} = ReqLLM.Tool.execute(tool, %{"from" => "top.txt", "to" => "sub"})
+      assert File.exists?(Path.join(scope.root, "top.txt"))
+      refute File.exists?(Path.join(scope.root, "sub/top.txt"))
+    end
+
+    test "a symlink moves as the link, never its target", %{scope: scope} do
+      tool = find_tool("move_file", scope)
+      {:ok, _} = ReqLLM.Tool.execute(tool, %{"from" => "link.txt", "to" => "moved-link"})
+      assert File.lstat!(Path.join(scope.root, "moved-link")).type == :symlink
+      assert File.read!(Path.join(scope.root, "top.txt")) == "top level"
+    end
+
+    test "a missing source is mv's error", %{scope: scope} do
+      tool = find_tool("move_file", scope)
+      {:error, msg} = ReqLLM.Tool.execute(tool, %{"from" => "gone.txt", "to" => "x.txt"})
+      assert msg =~ "No such file" or msg =~ "cannot stat"
     end
   end
 

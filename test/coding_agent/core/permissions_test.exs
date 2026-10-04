@@ -31,6 +31,10 @@ defmodule CodingAgent.Core.PermissionsTest do
       # allow-by-class (contained, VCS-reviewable)
       assert Permissions.default_for("edit") == :allow
       assert Permissions.default_for("write_file") == :allow
+      # ADR 045: delete_file and move_file are confined rm/mv; shell can
+      # already do both in the scope, so denying them here would be theatre
+      assert Permissions.default_for("delete_file") == :allow
+      assert Permissions.default_for("move_file") == :allow
       assert Permissions.default_for("webfetch") == :ask
     end
 

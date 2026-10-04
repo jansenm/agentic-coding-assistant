@@ -163,6 +163,47 @@ defmodule CodingAgent.Core.Sandbox.FileToolsConfinementTest do
     end
   end
 
+  describe "delete_file and move_file are confined rm/mv (ADR 045)" do
+    test "a file deletes and a rename moves", %{skip: skip} do
+      if skip do
+        :ok
+      else
+        root = ctx_root()
+        File.write!(Path.join(root, "a.txt"), "content")
+
+        delete = tool("delete_file", scope(root))
+        assert {:ok, _} = ReqLLM.Tool.execute(delete, %{"path" => "a.txt"})
+        refute File.exists?(Path.join(root, "a.txt"))
+
+        File.write!(Path.join(root, "b.txt"), "content")
+        move = tool("move_file", scope(root))
+        assert {:ok, _} = ReqLLM.Tool.execute(move, %{"from" => "b.txt", "to" => "c.txt"})
+        assert File.read!(Path.join(root, "c.txt")) == "content"
+      end
+    end
+
+    test "under a read-only root (root_ro) both fail with EROFS", %{skip: skip} do
+      if skip do
+        :ok
+      else
+        root = ctx_root()
+        File.write!(Path.join(root, "a.txt"), "content")
+
+        scoped = Map.put(scope(root), :shell_mode, :ro)
+
+        delete = tool("delete_file", scoped)
+        {:error, dmsg} = ReqLLM.Tool.execute(delete, %{"path" => "a.txt"})
+        assert dmsg =~ "Read-only" or dmsg =~ "read-only"
+        assert File.exists?(Path.join(root, "a.txt"))
+
+        move = tool("move_file", scoped)
+        {:error, mmsg} = ReqLLM.Tool.execute(move, %{"from" => "a.txt", "to" => "z.txt"})
+        assert mmsg =~ "Read-only" or mmsg =~ "read-only"
+        refute File.exists?(Path.join(root, "z.txt"))
+      end
+    end
+  end
+
   defp ctx_root do
     root = Path.join(@tmp_root, "scope-#{System.unique_integer([:positive])}")
     File.mkdir_p!(root)

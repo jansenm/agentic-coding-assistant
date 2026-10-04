@@ -2,7 +2,7 @@
 name: plan
 description: Read-only planning agent. Analyses, investigates and proposes; cannot modify anything.
 mode: primary
-disallowedTools: edit, write_file, git
+disallowedTools: edit, write_file, delete_file, move_file, git
 permission:
   shell: read_only
 ---

@@ -2,7 +2,7 @@
 name: explore
 description: Read-only search agent. Finds where things are defined and used, and answers with file:line evidence.
 mode: subagent
-disallowedTools: edit, write_file, git
+disallowedTools: edit, write_file, delete_file, move_file, git
 permission:
   shell: read_only
 ---

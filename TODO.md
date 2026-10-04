@@ -80,7 +80,8 @@ ADR vermerkt.
 | # | Punkt | Stand |
 | --- | --- | --- |
 | T9 | `websearch` neben `webfetch` | offen (Such-API-Abhängigkeit; `webfetch` ist da) |
-| T10 | `apply_patch`, LSP, Skills, MCP — inkl. fuzzy-match-Kette für `edit` | offen; `edit` ist exakt-match-only (opencode hat 9 Fuzzy-Strategien + LSP-Diagnostik nach jedem Edit) |
+| T10 | `patch_file` (mehrere exakte Ersetzungen in einem Call, **atomar**), danach Fuzzy-Match-Kette für `edit`/`patch_file` und LSP-Diagnostik | offen; hieß früher `apply_patch`. `edit` ist exakt-match-only (opencode hat 9 Fuzzy-Strategien + LSP-Diagnostik nach jedem Edit) |
+| T15 | `copy_file` / Kopieren | zurückgestellt — bisher nie gebraucht (nur rename). Wenn doch: evtl. `rsync` statt `cp`; `rsync` ist aber nicht POSIX-garantiert, `cp` schon (ADR 045, Non-Goal) |
 
 Erledigt und damit raus: T1–T8, T11–T14 (Commits und ADRs 024–044).
 

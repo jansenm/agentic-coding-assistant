@@ -1,10 +1,10 @@
 defmodule CodingAgent.Core.Tools.FileExec do
   @moduledoc """
   The confined file-operation executor for the native file tools (ADR
-  030): `read_file`, `write_file`, `edit` and `list_dir` run their
-  operation as a CHILD PROCESS under the session's sandbox profile,
-  exactly as `shell`/`git` do. The BEAM performs no scope-relevant
-  filesystem access itself.
+  030): `read_file`, `write_file`, `edit`, `list_dir`, `delete_file` and
+  `move_file` run their operation as a CHILD PROCESS under the session's
+  sandbox profile, exactly as `shell`/`git` do. The BEAM performs no
+  scope-relevant filesystem access itself.
 
   One boundary: the bwrap profile. `hide`ed paths read as their empty
   image, `ro`-bound paths fail with `EROFS`, and the scope root's
@@ -12,9 +12,9 @@ defmodule CodingAgent.Core.Tools.FileExec do
   no second predicate to keep in sync (`Tools.in_scope?/2` degrades to a
   discovery helper).
 
-  The operation is a small, fixed program per tool (`cat`, `tee`, `ls`);
-  the PATH is passed as an argument, never interpolated into the script,
-  so a quote in a filename cannot escape the command. `Exec.run/5`
+  The operation is a small, fixed program per tool (`cat`, `tee`, `ls`,
+  `rm`, `mv`, `sed`); the PATH is passed as an argument, never interpolated
+  into the script, so a quote in a filename cannot escape the command. `Exec.run/5`
   carries the profile and, for writes, the payload on stdin (see
   `{:stdin, ...}` in `CodingAgent.Core.Sandbox`).
 
@@ -35,6 +35,8 @@ defmodule CodingAgent.Core.Tools.FileExec do
   @tee "tee"
   @ls "ls"
   @sed "sed"
+  @rm "rm"
+  @mv "mv"
 
   @doc """
   Reads a file through a confined `cat`. Returns `{:ok, contents}` or
@@ -104,6 +106,95 @@ defmodule CodingAgent.Core.Tools.FileExec do
       {:error, reason} ->
         {:error, "cannot write #{path}: #{inspect(reason)}"}
     end
+  end
+
+  @doc """
+  Removes a path through a confined `rm` (`delete_file`).
+
+  The flags are the tool's own, in the tool's spelling: `-r` when
+  `recursive`, `-d` when `dir`. `-d` is what lets `rm` remove an empty
+  directory or any symlink (the link itself — `rm` never dereferences);
+  a file needs neither flag. Without the matching flag `rm` reports its
+  own reason ("Is a directory", "Directory not empty") rather than
+  silently succeeding, which is exactly the signal we want.
+
+  `--` terminates option parsing, so a path that starts with `-` is a
+  filename.
+  """
+  @spec remove(Tools.scope(), String.t(), keyword(), pos_integer()) ::
+          {:ok, String.t()} | {:error, String.t()}
+  def remove(scope, path, opts, secs) do
+    profile = Tools.profile(scope)
+    argv = rm_flags(opts) ++ ["--", path]
+
+    case Exec.run({:exec, @rm, argv}, cwd(scope), secs, profile) do
+      {:ok, _output, 0} ->
+        {:ok, path}
+
+      {:ok, output, _code} ->
+        {:error, failure(output, path)}
+
+      {:timeout, _partial} ->
+        {:error, "timed out deleting #{path}"}
+
+      {:stopped, _partial} ->
+        {:error, "stopped by the user while deleting #{path}"}
+
+      {:sandbox_error, reason} ->
+        {:error, "cannot delete #{path} under the sandbox: #{inspect(reason)}"}
+
+      {:error, reason} ->
+        {:error, "cannot delete #{path}: #{inspect(reason)}"}
+    end
+  end
+
+  # The tool's own flags, in the long spelling the parameters are named
+  # after. `--recursive` removes a non-empty directory; `--dir` removes an
+  # empty one (or a symlink) — a plain file needs neither.
+  defp rm_flags(opts) do
+    recursive = if Keyword.get(opts, :recursive, false), do: ["--recursive"], else: []
+    dir = if Keyword.get(opts, :dir, false), do: ["--dir"], else: []
+    recursive ++ dir
+  end
+
+  @doc """
+  Moves or renames a path through a confined `mv` (`move_file`).
+
+  `-T` is always on: the destination is the exact new path, never a
+  directory to move into (`mv -- a b` with an existing directory `b`
+  would otherwise put the source at `b/a`). By default `--no-clobber`
+  makes an existing destination a no-op; `force: true` switches to `-f`
+  and overwrites. A symlink moves as a link — `mv` never dereferences.
+  """
+  @spec move(Tools.scope(), String.t(), String.t(), keyword(), pos_integer()) ::
+          {:ok, String.t()} | {:error, String.t()}
+  def move(scope, from, to, opts, secs) do
+    profile = Tools.profile(scope)
+    argv = ["-T"] ++ clobber_flags(opts) ++ ["--", from, to]
+
+    case Exec.run({:exec, @mv, argv}, cwd(scope), secs, profile) do
+      {:ok, _output, 0} ->
+        {:ok, to}
+
+      {:ok, output, _code} ->
+        {:error, failure(output, from)}
+
+      {:timeout, _partial} ->
+        {:error, "timed out moving #{from}"}
+
+      {:stopped, _partial} ->
+        {:error, "stopped by the user while moving #{from}"}
+
+      {:sandbox_error, reason} ->
+        {:error, "cannot move #{from} under the sandbox: #{inspect(reason)}"}
+
+      {:error, reason} ->
+        {:error, "cannot move #{from}: #{inspect(reason)}"}
+    end
+  end
+
+  defp clobber_flags(opts) do
+    if Keyword.get(opts, :force, false), do: ["-f"], else: ["--no-clobber"]
   end
 
   @doc """
