@@ -269,7 +269,7 @@ What is deliberately NOT here: the **subagent tab** (a key binding that
 subscribes to the child id and paints its transcript), the two-slot
 header's tab bar, and the model-precedence open question (definition
 ``model`` wins over the session model, per ``State.effective_model/1`` —
-a deliberate first choice, revisitable). Recorded in ``TODO.md``.
+a deliberate first choice, revisitable).
 
 **Known limitation (recorded, not hidden): esc does not stop a running
 child.** The parent's turn worker blocks on the child's ``Session.run/2``
@@ -508,10 +508,11 @@ content row, the model is split, and both disappear with the panel when
 the tab adds a bounded tab bar above the transcript (shipped with the
 subagent-tab amendment, ``@tab_bar_cap`` 5) and may yet add rows in this
 panel — the layout here was chosen so a later block can be appended
-without re-cutting the three that exist. TODO.md's O5 (the empty rows)
-and this heading are deliberately independent of the tab work: neither
-reads the ``subagents`` map; the shipped tab bar took the row above the
-transcript and did not touch this panel.
+without re-cutting the three that exist. The empty rows below the blocks
+(a TODO.md O-number then) are deliberately independent of the tab work
+and were left as-is by owner decision: neither reads the ``subagents``
+map; the shipped tab bar took the row above the transcript and did not
+touch this panel.
 
 Amendment 2026-09-30: the band follows the view; tabs move to the composer; subagents in the panel
 --------------------------------------------------------------------------------------------------

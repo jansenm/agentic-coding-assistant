@@ -235,8 +235,7 @@ fragment appended to a user message changes with the message. The
 message-fragment approach has another — the mode instruction sits
 immediately next to the request it governs, and switching modes does
 not rewrite (and thus uncache) the whole system prefix. We are on the
-system-array side; whether plan should be, too, is open. See
-``TODO.md`` T12/T13 for the related prompt gaps.
+system-array side; whether plan should be, too, is open.
 
 Still open (subagent slice)
 
