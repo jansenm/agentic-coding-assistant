@@ -6,55 +6,62 @@ product" are currently the same activity, and this file only records the
 convention that grew out of that — enough to stop losing work. When there is a
 real process, this file is replaced by it.
 
+## Consolidated 2026-10-04: there is ONE review file now
+
+A record per run meant that "what is still open" was a search across six
+files, with the closed ones kept as `.triaged` archives beside them even
+though the commits are the record. Open findings from every record (and the
+harness-feedback points) now live in **`review.md`**, one entry per finding,
+anchored to symbol + commit. Closed findings are deleted from it; a short
+table at the foot maps an old `N…`/`P…` to its fixing commit so a cited
+number still resolves.
+
+Rules that survive:
+
+* A finding has a **number** (`N…`, ascending, never reused) or a feedback
+  point (`P…`).
+* Anchor to **symbol + commit**, never a line number.
+* **Do not `rm` a finding while it is open.** Closing one — moving it to the
+  commit table — is the owner's call (same as any deletion).
+* A record that is fully worked off is **deleted**, not renamed: its fixes
+  are commits, and `review.md`'s table names them. (The old
+  `review-<subject>.md.triaged` convention is retired; it produced two files
+  whose own `## Closed by` line named a commit that did not exist — see
+  N70.)
+
+
 ## Roles
 
 | Role             | Who                                   | Writes to                          |
 |------------------|---------------------------------------|------------------------------------|
-| **Review agent** | the agent that reviews a commit range | the record, in the review worktree |
-| **Triage agent** | the agent that works the findings off | `TODO.md` in the main worktree     |
-| **Owner**        | the human                             | decides scope; commits             |
+| **Review agent** | the agent that reviews a commit range | `review.md`, in the review worktree |
+| **Triage agent** | the agent that works the findings off | `review.md` (close) + `TODO.md`    |
+| **Owner**        | the human                             | decides scope; commits; deletes    |
 
 The review worktree is `agentic-coding-assistant-mjansen`, the main worktree is
-`agentic-coding-assistant`. The triage agent reads the record across worktrees,
-and it commits — the review agent never does.
+`agentic-coding-assistant`. The triage agent reads `review.md`, works the
+findings off, and commits — the review agent never does.
 
 ## The record
 
-- Name: `review-<subject>.md`, in the review worktree, **untracked** (the owner
-  commits code changes, not review artefacts).
-- Findings are numbered `N1, N2, …`, ascending, **never reused**. A range that is
-  reviewed twice keeps counting up; it does not restart.
+- **One file: `review.md`**, in the review worktree, **untracked** (the owner
+  commits code changes, not review artefacts). One place for everything open.
+- Findings are numbered `N1, N2, …`, ascending, **never reused**. A new review
+  continues the count; it does not restart.
 - Anchor every finding to a **symbol plus the commit that introduced it** — never
   to a line number, which is void after the next rebase.
-- The record is a handover artefact, not scratch space. Deleting it destroys the
-  only durable copy of the findings.
+- **Deleted when closed**, not archived. A short table at the foot of
+  `review.md` maps the number to its fixing commit, so a cited `N…` still
+  resolves.
 
-## Handover: rename, do not delete
+## Closing a finding
 
-When the triage agent has worked a record off:
-
-1. **Read** the record. If the file is not what it expects (grown since the read,
-   partial, unreadable), say so instead of proceeding.
-2. **Triage**: work the findings off against the current branch.
-3. **Record the triage in `TODO.md`** — an entry naming the record file and the
-   finding numbers, with the commit that addressed each.
-4. **Append a closing line to the record** before renaming it: a short
-   `## Closed by` section naming the commit(s) that addressed each finding, so
-   the record stands on its own. Without it a `.triaged` record can still say
-   "…are still open" (observed: `review-checkpoints-adr036.md` ended with the
-   four lost findings marked open while `857190e` had fixed them — only the
-   `TODO.md` entry carried the commit).
-5. **Rename the file in place**: `review-<subject>.md` → `review-<subject>.md.triaged`.
-   The record stays readable; `ls review*` shows what has been worked off
-   (`.md.triaged`) and what has not (`.md`).
-6. **Leave it there.** If a record needs to go, that is the owner's decision, not
-   a side effect of triaging.
-
-Rules that follow from that:
-
-- **Partial triage keeps the plain name.** If some findings are still open, the
-  file stays `review-<subject>.md` and the `TODO.md` entry names the open numbers.
-  A `.triaged` suffix means "no finding in this file is still open".
+1. **Work it off** against the current branch.
+2. **Move it to the commit table** in `review.md` — one row, `N…` → commit.
+3. **Note the fix in the commit message** (the commit is the durable record; the
+   table is only an index).
+4. **Do not `rm` an open finding.** Closing one is a deletion, and deletions are
+   the owner's call — same as any other file.
 
 ## Evidence must be reproducible, not narrated
 
@@ -67,9 +74,9 @@ record the fail rate, the seeds and the tree, or the claim decays into
 a repeated suite run was prose). This is also why a finding MUST NOT anchor to
 a line number: the command is the anchor, the line number is void after the
 next rebase.
-- **Never `rm` a record.** If in doubt, ask the owner.
-- **Do not move a record out of the review worktree.** A copy in the main
-  worktree is a second unversioned file that drifts; read it where it is.
+- **Never `rm` an open finding.** If in doubt, ask the owner.
+- **`review.md` stays in the review worktree.** A copy in the main worktree is a
+  second unversioned file that drifts; read and write it where it is.
 
 ## Why this exists (the evidence)
 
@@ -97,7 +104,8 @@ deleted the working copy. Two differences from today: it was deleted *on purpose
 after the content was in history*, and the findings had first been moved into
 `TODO.md`. Both parts are the convention this file now spells out.
 
-The four lost findings are written up in
+The four lost findings were written up in the old
 `review-checkpoints-adr036.md.triaged` (N53–N57); all five, plus the process
-failure itself, were fixed at `857190e` and recorded as closed in that file's
-`## Closed by` section and in `TODO.md`.
+failure itself, were fixed at `857190e`. That record is now folded into
+`review.md`'s closed table — its content is in `857190e`, and keeping the file
+beside the single open list was the duplication this consolidation removed.

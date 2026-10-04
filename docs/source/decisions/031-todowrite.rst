@@ -134,40 +134,44 @@ unchanged. Notes are kept as-is (not flattened to one line, unlike
 ``content``) — they never reach the sidebar's row math, so line breaks
 are useful structure.
 
-**7. The list carries its own upkeep rule (amendment, 2026-10-04).** The
-tool description already says to mark items done promptly and to clear the
-list, but a description is read once, at the tool call — and the live
-failure is a list that was written once and then ignored:
+**7. The list carries its own upkeep rule (amendment, 2026-10-04; revised
+the same day by review N80).** The owner observed the failure directly: a
+plan is set at the start of a task, updated once or twice, and the final
+change lands without the list being closed. The sidebar keeps showing a
+finished task, and the human cannot trust it — the panel that exists to
+answer "how far along is this" ends up answering with a lie of omission.
 
-  - the owner observed the shape directly: a plan is set at the start of a
-    task, updated once or twice, and the final change lands without the
-    list being closed. The sidebar keeps showing a finished task, and the
-    human cannot trust it — the panel that exists to answer "how far along
-    is this" ends up answering with a lie of omission.
-  - the last sentence is the one *neither* the tool description nor the
-    framework prompt says: a finished list must be CLEARED (``[]``), not
-    left standing. The description says ``[]`` clears, never that clearing
-    is expected at the end.
+The first cut put the *whole* rule in two places — the injected block and a
+new "Tracking multi-step work" section in both framework prompts — on the
+theory that the framework prompt is the cached stable prefix, so the
+section is cheap. Review **N80** showed that argument did not hold:
 
-Two channels carry it, for the two different reasons:
+  - the two channels carried the *same three sentences*; the framework
+    section was not new information, it was a copy. (N83: the prose called
+    it "when to use the tool at all", which it was not — it was the upkeep
+    rule again.)
+  - nothing in this codebase configures provider prompt caching
+    (``grep -rn cache_control lib`` → nothing), so the "cached prefix" half
+    of the price argument was conditional and not realized. Both channels
+    cost per request (measured: section 84–90 tokens, block footer 44).
 
-  - **``Prompt.todos_block/1`` appends the rule to the block itself** (only
-    when a list exists, so a session that never plans gains no chrome). This
-    is the load-bearing one: it sits where the stale list is visible and
-    rides every request. Same principle as the capability block (ADR 024
-    follow-up) — restating what another surface already implies is correct
-    when the cost of not doing it is a wrong human-facing panel. Cost: ~50
-    tokens, and only in sessions with a list.
-  - **both framework prompts gain a short "Tracking multi-step work"
-    section.** This is the general best practice (when to use the tool at
-    all), deliberately cheap: the framework prompt is the *stable prefix*,
-    so a provider that caches prefixes pays it once, not per request. The
-    block footer is not cached (the list changes), which is why the rule
-    there is one paragraph and the section here is three lines.
+The revision keeps **one** channel and **one** sentence. The framework
+prompts carry only *when* to use the tool ("for work that spans several
+steps, use ``todowrite``; the list is re-sent, do not restate it") — the
+general practice, which the tool description does not state as a habit. The
+block footer carries only the one instruction that has no other home:
 
-This does not add a state field: the rule is static text, and whether it
-appears is derived from whether the list is non-empty — the same
-condition that decides the block itself.
+    Keep it current: when the task is finished, send `[]` — a stale plan
+    misleads the human watching it.
+
+Neither repeats the other, and neither repeats the tool description's "mark
+an item ``completed`` as soon as it is done / not in a batch at the end"
+(that rule stays where the decision is made — the description). This is the
+narrower, cheaper shape the owner's observation actually needed: the
+*footnote at the live list* is the one thing the description cannot be.
+
+This does not add a state field: whether the footer appears is derived from
+whether the list is non-empty — the same condition that decides the block.
 
 Consequences
 ------------

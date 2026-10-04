@@ -109,8 +109,7 @@ defmodule CodingAgent.Core.Session.PromptTest do
         prompt = Prompt.framework(model)
 
         assert prompt =~ "Tracking multi-step work"
-        assert prompt =~ "send `[]`"
-        assert prompt =~ "not in a batch at the end"
+        assert prompt =~ "use `todowrite`"
       end
     end
 
@@ -271,11 +270,12 @@ defmodule CodingAgent.Core.Session.PromptTest do
     test "the upkeep rule rides the block, and says to clear a finished list" do
       block = Prompt.todos_block([%{"content" => "A", "status" => "pending"}])
 
-      # the two failure modes the owner observed: a late "completed" mark,
-      # and a plan that outlives the task
-      assert block =~ "as soon as it is done, not in a batch at the end"
+      # the ONE instruction the tool description has no home for; the other
+      # rules ("mark done promptly") live in the description, so the block
+      # does NOT repeat them (review N80)
       assert block =~ "send `[]`"
       assert block =~ "a stale plan misleads the human"
+      refute block =~ "not in a batch at the end"
     end
 
     test "no list means no block at all, so a session that never plans gains no chrome" do

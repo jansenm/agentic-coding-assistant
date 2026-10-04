@@ -29,3 +29,6 @@ __pycache__/
 .venv
 
 
+
+# review.md: the single open-findings list (untracked artefact, like the old review records)
+/review.md

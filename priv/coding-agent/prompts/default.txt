@@ -56,12 +56,8 @@ request), ask a short question instead of guessing.
   your approach or ask.
 
 # Tracking multi-step work
-- For work that spans several steps, keep a todo list with `todowrite`. The
-  current list is re-sent to you on every request; it is not something you
-  need to restate.
-- Mark an item `completed` as soon as it is done, not in a batch at the end.
-- When the task is finished, send `[]` — a stale plan misleads the human
-  watching it.
+- For work that spans several steps, use `todowrite` to track it. The current
+  list is re-sent to you on every request; do not restate it.
 
 # Context budget
 - Every request includes a "Context budget" line: how full the window

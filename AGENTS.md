@@ -39,5 +39,7 @@ Name what you expected, what you got, and what you would change. Keep it to
 the interface you are working *through*; judging the code itself is a review
 task, not a side note.
 
-Review records and how they are handed over are described in
-`review-process.md`.
+Review findings and harness feedback both live in **`review.md`** — the one
+list of what is open (see `review-process.md` for the convention). Say it in
+your answer, and add a numbered entry there (or the owner will, if it came
+up in conversation).

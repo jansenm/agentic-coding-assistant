@@ -13,6 +13,14 @@ Review-Records (`review.md`, `review-2026-09-28.md`) sind aus dem
 Abschnitt „Review-Befunde“. Der Merge `dev/mjansen` landete als `ca6f734`
 (Sidebar-Blöcke, Decimal-Alignment, Review-Record).
 
+**Aufgeräumt (2026-10-04):** Review-Befunde und Harness-Feedback stehen
+jetzt **zusammen in `review.md`** (eine Liste für alles Offene; Geschlossenes
+fällt raus, eine kurze Tabelle am Fuß nennt den Fix-Commit). Die früheren
+`review-*.md`/`.triaged`-Records und `harness-feedback.md` sind darin
+aufgegangen. **Diese Datei ist wieder, was der Titel sagt: Features.** Die
+Review-Abschnitte unten bleiben vorerst als Historie stehen; neue Befunde
+gehören nach `review.md`, nicht hierher.
+
 Der **große Plan** steht in `ROADMAP.md` (Phasen, Produktthese,
 „Later“-Ideen, Ground Rules). **Entscheidungen** stehen in den ADRs
 (`docs/source/decisions/`). Diese Datei ist der kurzfristige Backlog: die
