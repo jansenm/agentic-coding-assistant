@@ -14,7 +14,10 @@ The todowrite tool: a durable plan the model keeps visible
    "rival opencode" list. Adds a ``todowrite`` tool: the model maintains
    a session-scoped todo list, the session owns the state and injects the
    current list into every request, and the TUI renders it as a fourth
-   sidebar block. The plan agent finally has a durable artifact.
+   sidebar block. The plan agent finally has a durable artifact. Two
+   amendments: decision 6 added agent-private ``notes`` (2026-09-30), and
+   decision 7 made the list carry its own upkeep rule, in the injected
+   block and in both framework prompts (2026-10-04).
 
 Context
 -------
@@ -130,6 +133,41 @@ ratio of roughly eight max-length notes, so the block's ceiling is
 unchanged. Notes are kept as-is (not flattened to one line, unlike
 ``content``) — they never reach the sidebar's row math, so line breaks
 are useful structure.
+
+**7. The list carries its own upkeep rule (amendment, 2026-10-04).** The
+tool description already says to mark items done promptly and to clear the
+list, but a description is read once, at the tool call — and the live
+failure is a list that was written once and then ignored:
+
+  - the owner observed the shape directly: a plan is set at the start of a
+    task, updated once or twice, and the final change lands without the
+    list being closed. The sidebar keeps showing a finished task, and the
+    human cannot trust it — the panel that exists to answer "how far along
+    is this" ends up answering with a lie of omission.
+  - the last sentence is the one *neither* the tool description nor the
+    framework prompt says: a finished list must be CLEARED (``[]``), not
+    left standing. The description says ``[]`` clears, never that clearing
+    is expected at the end.
+
+Two channels carry it, for the two different reasons:
+
+  - **``Prompt.todos_block/1`` appends the rule to the block itself** (only
+    when a list exists, so a session that never plans gains no chrome). This
+    is the load-bearing one: it sits where the stale list is visible and
+    rides every request. Same principle as the capability block (ADR 024
+    follow-up) — restating what another surface already implies is correct
+    when the cost of not doing it is a wrong human-facing panel. Cost: ~50
+    tokens, and only in sessions with a list.
+  - **both framework prompts gain a short "Tracking multi-step work"
+    section.** This is the general best practice (when to use the tool at
+    all), deliberately cheap: the framework prompt is the *stable prefix*,
+    so a provider that caches prefixes pays it once, not per request. The
+    block footer is not cached (the list changes), which is why the rule
+    there is one paragraph and the section here is three lines.
+
+This does not add a state field: the rule is static text, and whether it
+appears is derived from whether the list is non-empty — the same
+condition that decides the block itself.
 
 Consequences
 ------------

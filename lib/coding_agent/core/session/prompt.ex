@@ -398,6 +398,24 @@ defmodule CodingAgent.Core.Session.Prompt do
   defp k(n) when n >= 1_000, do: "#{div(n, 1_000)}k"
   defp k(n), do: to_string(n)
 
+  # The upkeep rule, ON THE BLOCK ITSELF and only when a list exists. Same
+  # reason the capability block restates what the tool set implies: the
+  # tool description already says it, but a description is read once and
+  # this list is what the model has to keep honest. The failure it targets
+  # is concrete (owner observation): a plan written at the start is
+  # updated once or twice, then the final change lands without the list
+  # being closed — the sidebar keeps showing a finished task and the human
+  # cannot trust it. The last sentence is the one neither the tool
+  # description nor the framework prompt says: a finished list must be
+  # CLEARED, not left standing.
+  #
+  # Cost: it rides every request that has a list (the block is not part of
+  # the cached prefix, unlike the framework prompt), so it is one short
+  # paragraph, not a section.
+  @todo_upkeep "\n\nKeep it current: mark an item `completed` as soon as it is " <>
+                 "done, not in a batch at the end. When the task is finished, send `[]` " <>
+                 "— a stale plan misleads the human watching it."
+
   # The todo block for the system prompt, or nil when there is no list.
   # Plain `[status] content` lines: the sidebar owns glyphs and color.
   @spec todos_block([map()]) :: String.t() | nil
@@ -412,7 +430,7 @@ defmodule CodingAgent.Core.Session.Prompt do
       end)
 
     "Current todo list (maintained with `todowrite`; send the complete list to update):\n" <>
-      items
+      items <> @todo_upkeep
   end
 
   def todos_block(_), do: nil

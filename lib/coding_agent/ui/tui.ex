@@ -2912,55 +2912,6 @@ defmodule CodingAgent.UI.Tui do
 
   def handle_info({:__file_list__, _ref, _result}, state), do: {:noreply, state}
 
-  # A session state that still holds an undecided round is parked BY
-  # CONSTRUCTION, whatever its `status` says (see Session.init: the two
-  # are kept in agreement, and a resumed state cannot be idle WITH a held
-  # round). A dialog the human can answer must never be drawn as an empty
-  # transcript — that is the "briefly flickered into view, then gone"
-  # report, and it is the reason this reads the calls rather than the
-  # status.
-  defp resync_dialog(state) do
-    case live_pending_calls(state.session_id) do
-      [] ->
-        %{state | pending: [], deciding?: false}
-
-      calls ->
-        %{state | pending: calls, deciding?: false}
-    end
-  end
-
-  # The calls the session is parked on, read from the session (never the
-  # reply). `nil` when the session cannot be read at all: a dead bridge is
-  # no authority over the dialog, so the optimistic close stands.
-  defp live_pending_calls(session_id) do
-    try do
-      case Session.state(session_id) do
-        {:ok, session_state} -> session_state.pending_tool_calls
-        _ -> nil
-      end
-    catch
-      :exit, _ -> nil
-    end
-  end
-
-  # The approval reply landed. Neither "apply it" nor "ignore it": the
-  # reply says nothing about whether the session is STILL parked, so read
-  # the session and make the dialog agree with it (see `resync_dialog/1`).
-  #
-  # Both alternatives were bugs. Taking the reply's status as the truth
-  # overwrote fresher state when a late reply raced a new pause (the
-  # question-wizard race, review §1.1) and re-closed a dialog a broadcast
-  # had just opened. Ignoring it — which replaced the first bug — left the
-  # optimistic close from the `y` key press standing over a session that
-  # could still be holding calls: a decide that fails in the worker
-  # broadcasts nothing (its status change is refused), so nothing else
-  # ever put the calls back on screen. The dialog was gone, the only key
-  # that could answer those calls was gone with it, and the app had to be
-  # restarted to see them again.
-  def handle_info({:__decided__, {:ok, _status}}, state) do
-    {:noreply, resync_dialog(state)}
-  end
-
   # The budget reply landed (ADR 025). The session's broadcasts are
   # authoritative and have already moved the UI (`:running` cleared the
   # prompt; a fresh `:budget_reached` may have opened the NEXT one), so
@@ -3002,26 +2953,6 @@ defmodule CodingAgent.UI.Tui do
   def handle_info({:__question_answered__, {:error, reason}}, state) do
     state = note_failure(resync_prompt(state, :question), "answer failed", reason)
     {:noreply, state}
-  end
-
-  # the session is no longer waiting (its parked calls resolved or were
-  # dropped elsewhere): the dialog is stale, clear it
-  def handle_info({:__decided__, {:error, {:not_interrupted, status}}}, state) do
-    # A refusal that carries no matching state: either the reply lands in
-    # a UI that already moved on, or it belongs to an older shape. The
-    # session is the authority for the dialog, so ask IT (resync_dialog)
-    # rather than apply the reply's status: a decide that was refused in
-    # favour of a FRESH park (the accepted-calls race in `resolve_decisions`)
-    # must leave that park's dialog standing, and only the session knows.
-    {:noreply, %{resync_dialog(state) | status: status}}
-  end
-
-  def handle_info({:__decided__, {:error, reason}}, state) do
-    # a non-status refusal (a hand-built message in a test, a decode
-    # path): same treatment — re-open the dialog with a visible note
-    # instead of losing the user's y/n.
-    state = note_failure(resync_dialog(state), "decision failed", reason)
-    {:noreply, %{state | stop_confirm?: false}}
   end
 
   # Events arrive TAGGED with their source session id (ADR 018). The TUI
@@ -3516,7 +3447,81 @@ defmodule CodingAgent.UI.Tui do
     {:noreply, %{state | spin: Map.get(state, :spin, 0) + 1}}
   end
 
+  # The approval reply landed. Neither "apply it" nor "ignore it": the
+  # reply says nothing about whether the session is STILL parked, so read
+  # the session and make the dialog agree with it (see `resync_dialog/1`).
+  #
+  # Both alternatives were bugs. Taking the reply's status as the truth
+  # overwrote fresher state when a late reply raced a new pause (the
+  # question-wizard race, review §1.1) and re-closed a dialog a broadcast
+  # had just opened. Ignoring it — which replaced the first bug — left the
+  # optimistic close from the `y` key press standing over a session that
+  # could still be holding calls: a decide that fails in the worker
+  # broadcasts nothing (its status change is refused), so nothing else
+  # ever put the calls back on screen. The dialog was gone, the only key
+  # that could answer those calls was gone with it, and the app had to be
+  # restarted to see them again.
+  def handle_info({:__decided__, {:ok, _status}}, state) do
+    {:noreply, resync_dialog(state)}
+  end
+
+  # The session is no longer waiting (its parked calls resolved or were
+  # dropped elsewhere): the dialog is stale, clear it.
+  def handle_info({:__decided__, {:error, {:not_interrupted, status}}}, state) do
+    # A refusal that carries no matching state: either the reply lands in
+    # a UI that already moved on, or it belongs to an older shape. The
+    # session is the authority for the dialog, so ask IT (resync_dialog)
+    # rather than apply the reply's status: a decide that was refused in
+    # favour of a FRESH park (the accepted-calls race in `resolve_decisions`)
+    # must leave that park's dialog standing, and only the session knows.
+    {:noreply, %{resync_dialog(state) | status: status}}
+  end
+
+  def handle_info({:__decided__, {:error, reason}}, state) do
+    # A non-status refusal (a hand-built message in a test, a decode
+    # path): same treatment — re-open the dialog with a visible note
+    # instead of losing the user's y/n.
+    state = note_failure(resync_dialog(state), "decision failed", reason)
+    {:noreply, %{state | stop_confirm?: false}}
+  end
+
+  # The catch-all MUST stay last: it matches any message, so any clause
+  # after it would be unreachable. That is also why `handle_info/2` is one
+  # contiguous block — a private helper between two clauses triggers the
+  # "clauses with the same name and arity should be grouped together"
+  # warning, so the helpers the reply clauses call live below this block.
   def handle_info(_msg, state), do: {:noreply, state}
+
+  # A session state that still holds an undecided round is parked BY
+  # CONSTRUCTION, whatever its `status` says (see Session.init: the two
+  # are kept in agreement, and a resumed state cannot be idle WITH a held
+  # round). A dialog the human can answer must never be drawn as an empty
+  # transcript — that is the "briefly flickered into view, then gone"
+  # report, and it is the reason this reads the calls rather than the
+  # status.
+  defp resync_dialog(state) do
+    case live_pending_calls(state.session_id) do
+      [] ->
+        %{state | pending: [], deciding?: false}
+
+      calls ->
+        %{state | pending: calls, deciding?: false}
+    end
+  end
+
+  # The calls the session is parked on, read from the session (never the
+  # reply). `nil` when the session cannot be read at all: a dead bridge is
+  # no authority over the dialog, so the optimistic close stands.
+  defp live_pending_calls(session_id) do
+    try do
+      case Session.state(session_id) do
+        {:ok, session_state} -> session_state.pending_tool_calls
+        _ -> nil
+      end
+    catch
+      :exit, _ -> nil
+    end
+  end
 
   # Re-read the session after a failed answer/decision and re-open the
   # pause's prompt when it is still parked (the refusal can race a FRESH
