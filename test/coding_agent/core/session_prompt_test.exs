@@ -15,6 +15,16 @@ defmodule CodingAgent.Core.Session.PromptTest do
     %{root: root}
   end
 
+  # The system message's text of a per-call context. ONE helper: it was
+  # defined inside two `describe` blocks, which made the second definition
+  # unreachable (the block compiler warns about it).
+  defp system_text(context) do
+    [%ReqLLM.Message{role: :system} = sys | _] = ReqLLM.Context.to_list(context)
+    Enum.map_join(sys.content, "", &(&1.text || ""))
+  end
+
+  defp base, do: ReqLLM.Context.new() |> ReqLLM.Context.append(ReqLLM.Context.system("BASE"))
+
   test "base/2 is framework + project memory, in that order", %{root: root} do
     File.write!(Path.join(root, "AGENTS.md"), "PROJECT-RULE")
 
@@ -91,6 +101,16 @@ defmodule CodingAgent.Core.Session.PromptTest do
         # our canonical tool names, not opencode's (read/bash/write/...)
         assert prompt =~ "read_file"
         assert prompt =~ "write_file"
+      end
+    end
+
+    test "both families carry the multi-step tracking rule (ADR 031 amendment)" do
+      for model <- ["ollama:qwen3", "anthropic:claude-sonnet-4"] do
+        prompt = Prompt.framework(model)
+
+        assert prompt =~ "Tracking multi-step work"
+        assert prompt =~ "send `[]`"
+        assert prompt =~ "not in a batch at the end"
       end
     end
 
@@ -196,16 +216,23 @@ defmodule CodingAgent.Core.Session.PromptTest do
       block = Prompt.todos_block([%{"content" => "A", "status" => "pending"}])
       refute block =~ "\n    "
     end
+
+    test "the upkeep rule rides the block, and says to clear a finished list" do
+      block = Prompt.todos_block([%{"content" => "A", "status" => "pending"}])
+
+      # the two failure modes the owner observed: a late "completed" mark,
+      # and a plan that outlives the task
+      assert block =~ "as soon as it is done, not in a batch at the end"
+      assert block =~ "send `[]`"
+      assert block =~ "a stale plan misleads the human"
+    end
+
+    test "no list means no block at all, so a session that never plans gains no chrome" do
+      assert Prompt.todos_block([]) == nil
+    end
   end
 
   describe "with_capabilities/2" do
-    defp base, do: ReqLLM.Context.new() |> ReqLLM.Context.append(ReqLLM.Context.system("BASE"))
-
-    defp system_text(context) do
-      [%ReqLLM.Message{role: :system} = sys | _] = ReqLLM.Context.to_list(context)
-      Enum.map_join(sys.content, "", &(&1.text || ""))
-    end
-
     test "a fully equipped read-write session with no ask-policy sends NO block" do
       assert Prompt.with_capabilities(base(), %{
                missing: [],
@@ -302,13 +329,6 @@ defmodule CodingAgent.Core.Session.PromptTest do
   end
 
   describe "with_budget/2" do
-    defp system_text(context) do
-      [%ReqLLM.Message{role: :system} = sys | _] = ReqLLM.Context.to_list(context)
-      Enum.map_join(sys.content, "", &(&1.text || ""))
-    end
-
-    defp base, do: ReqLLM.Context.new() |> ReqLLM.Context.append(ReqLLM.Context.system("BASE"))
-
     test "states the usage, the window, and both limits" do
       text =
         Prompt.with_budget(base(), %{used: 350_000, window: 500_000, soft: 250_000, hard: 436_000})
