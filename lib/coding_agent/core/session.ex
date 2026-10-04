@@ -2670,12 +2670,27 @@ defmodule CodingAgent.Core.Session do
         |> put_temperature(state.agent)
         |> put_reasoning_effort(state.reasoning_effort)
 
-      context = Prompt.with_environment(context, model, state.scope_root)
+      context = Prompt.with_environment(context, model, state.scope_root, environment_opts(state))
       context = Prompt.with_todos(context, state.todos)
       context = Prompt.with_budget(context, budget_info(state))
       context = Prompt.with_capabilities(context, capability_info(state))
       {:ok, model_input, opts, context}
     end
+  end
+
+  # The per-session facts the environment block names that the model
+  # cannot infer from the tree (harness feedback P2): which AGENT it runs
+  # as, and which session STORE is active. Read straight from the state
+  # this request is built from, so the block and the session cannot
+  # disagree. The git branch/worktree rows are derived in `Prompt` from
+  # the scope root alone.
+  defp environment_opts(%State{} = state) do
+    [agent: state.agent, store: Config.store_path()]
+  catch
+    # store_path can raise when a pinned store cannot be resolved (a dead
+    # ambient selector). The environment block must never fail a request
+    # over a missing informational row.
+    :error, _ -> [agent: state.agent]
   end
 
   # The numbers the budget block shows the model: the projected context

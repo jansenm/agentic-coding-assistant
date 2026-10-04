@@ -108,20 +108,48 @@ defmodule CodingAgent.Core.Session.Prompt do
   directory, the harness it is running in, platform, date. Appended to the
   system message ON THE WIRE only — never persisted, because it changes
   every call.
+
+  The block also names the SESSION the model cannot infer from the tree:
+
+    * the git branch and whether the scope root is a linked WORKTREE
+      (``git worktree list`` is otherwise a tool round just to learn
+      "which checkout am I in");
+    * the agent mode (``plan`` = read-only, ``build`` = read-write) and the
+      shell root mode — the same ``Shell root`` fact the capability block
+      states for a read-only root;
+    * the session store in use (checkpoint refs are store-namespaced).
+
+  ``opts`` carries the per-session facts the composition already resolved:
+  ``:agent`` (mode), ``:shell_mode`` (policy) and ``:store`` (the pinned
+  store path). All optional: a pure string-level call (a test, an older
+  caller) emits the same block as before, so this stays a pure prompt
+  function.
   """
-  @spec environment(String.t() | nil, String.t() | nil) :: String.t()
-  def environment(model, scope_root) do
+  @spec environment(String.t() | nil, String.t() | nil, keyword()) :: String.t()
+  def environment(model, scope_root, opts \\ []) do
     dir = scope_root || File.cwd!()
+
+    lines =
+      [
+        {"Model", model || "unknown"},
+        {"Working directory", dir},
+        {"Is directory a git repo", if(git_repo?(dir), do: "yes", else: "no")}
+      ] ++
+        git_lines(dir) ++
+        agent_lines(opts) ++
+        [{"Platform", platform()}] ++
+        store_lines(opts) ++
+        [
+          {"Today's date", "#{Date.utc_today()}"},
+          {"Harness", harness()}
+        ]
+
+    body = Enum.map_join(lines, "\n", fn {label, value} -> "  #{label}: #{value}" end)
 
     """
     Here is some useful information about the environment you are running in:
     <env>
-      Model: #{model || "unknown"}
-      Working directory: #{dir}
-      Is directory a git repo: #{if git_repo?(dir), do: "yes", else: "no"}
-      Platform: #{platform()}
-      Today's date: #{Date.utc_today()}
-      Harness: #{harness()}
+    #{body}
     </env>\
     """
   end
@@ -161,10 +189,10 @@ defmodule CodingAgent.Core.Session.Prompt do
   returning a context for ONE call. The stored context is untouched: the
   block is rebuilt per call so its date and model are current (ADR 024).
   """
-  @spec with_environment(ReqLLM.Context.t(), String.t() | nil, String.t() | nil) ::
+  @spec with_environment(ReqLLM.Context.t(), String.t() | nil, String.t() | nil, keyword()) ::
           ReqLLM.Context.t()
-  def with_environment(context, model, scope_root) do
-    append_system_block(context, environment(model, scope_root))
+  def with_environment(context, model, scope_root, opts \\ []) do
+    append_system_block(context, environment(model, scope_root, opts))
   end
 
   @doc """
@@ -504,6 +532,95 @@ defmodule CodingAgent.Core.Session.Prompt do
     # A cheap filesystem check: a `.git` entry (dir for a checkout, file
     # for a worktree) at the scope root. We do not shell out to git.
     File.exists?(Path.join(dir, ".git"))
+  end
+
+  # -- environment-block fields the session supplies (P2) -------------------
+
+  # The branch and worktree line: "which checkout am I in". A linked
+  # worktree's `.git` is a FILE pointing at the main repository's
+  # `<gitdir>/worktrees/<name>` — reading it is a file read, not a `git`
+  # call, which keeps this block cheap. The branch comes from the
+  # worktree's own HEAD ("<gitdir>/HEAD"). A detached HEAD shows the short
+  # hash. A plain checkout shows its branch and no worktree suffix.
+  defp git_lines(dir) do
+    cond do
+      not git_repo?(dir) ->
+        []
+
+      worktree_gitdir(dir) ->
+        case worktree_head(worktree_gitdir(dir)) do
+          nil -> [{"Git", "linked worktree (detached)"}]
+          head -> [{"Git", "linked worktree, #{head}"}]
+        end
+
+      true ->
+        case branch_head(Path.join(dir, ".git/HEAD")) do
+          nil -> []
+          head -> [{"Git", "branch #{head}"}]
+        end
+    end
+  end
+
+  # A linked worktree: `.git` is a FILE whose first line is
+  # `gitdir: <main-repo>/.git/worktrees/<name>`. nil for a main checkout.
+  defp worktree_gitdir(dir) do
+    case File.read(Path.join(dir, ".git")) do
+      {:ok, "gitdir: " <> path} -> path |> String.trim() |> resolve_gitdir(dir)
+      _ -> nil
+    end
+  end
+
+  # The pointer may be relative to the worktree dir (git writes absolute
+  # paths for `git worktree add`, but a moved directory can leave it
+  # relative). An absolute path is used as-is.
+  defp resolve_gitdir(path, dir) do
+    if Path.type(path) == :absolute, do: path, else: Path.expand(path, dir)
+  end
+
+  defp worktree_head(gitdir), do: branch_head(Path.join(gitdir, "HEAD"))
+
+  # "ref: refs/heads/<branch>" -> the branch; a detached HEAD (a raw hash)
+  # -> the short hash; anything unreadable -> nil.
+  defp branch_head(head_path) do
+    case File.read(head_path) do
+      {:ok, "ref: refs/heads/" <> branch} ->
+        branch |> String.trim()
+
+      {:ok, hash} ->
+        hash |> String.trim() |> String.slice(0, 7)
+
+      _ ->
+        nil
+    end
+  end
+
+  # The agent row: WHICH agent this session runs as. The name is the mode,
+  # because the definition carries the read-only/write split (plan vs
+  # build) and the capability block states the resulting tools and shell
+  # root authoritatively — so this row names the actor, it does not
+  # re-derive the capability. A subagent says so (it was not started by
+  # the human). No row for a session with no definition.
+  defp agent_lines(opts) do
+    case Keyword.get(opts, :agent) do
+      %{name: name, mode: :subagent} when is_binary(name) ->
+        [{"Agent", "#{name} (subagent)"}]
+
+      %{name: name} when is_binary(name) ->
+        [{"Agent", name}]
+
+      _ ->
+        []
+    end
+  end
+
+  # The store row: WHICH session database (checkpoint refs are
+  # store-namespaced, so history questions are answered against this one).
+  # Only when the session supplies it.
+  defp store_lines(opts) do
+    case Keyword.get(opts, :store) do
+      store when is_binary(store) and store != "" -> [{"Store", store}]
+      _ -> []
+    end
   end
 
   # The harness line for the environment block. Named so the model knows

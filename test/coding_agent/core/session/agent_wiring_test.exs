@@ -236,6 +236,31 @@ defmodule CodingAgent.Core.Session.AgentWiringTest do
       refute system_text_of(s) =~ "<env>"
     end
 
+    test "the block names the agent and the store the session is using (P2)" do
+      start("wire-env-agent", model: "ollama:qwen3", agent: "build")
+      {:ok, s} = Session.state("wire-env-agent")
+
+      {:ok, _input, _opts, ctx} = Session.wire_request(s)
+      text = ctx |> ReqLLM.Context.to_list() |> hd() |> system_text()
+
+      # the agent row is the session's own definition, not a re-derivation
+      assert text =~ "Agent: build"
+      # the store row names the real active database (checkpoint refs are
+      # store-namespaced, so history is read against THIS one)
+      assert text =~ "Store: #{CodingAgent.Core.Config.store_path()}"
+    end
+
+    test "a read-only plan session says its agent name in the environment block" do
+      start("wire-env-plan", model: "ollama:qwen3", agent: "plan")
+      {:ok, s} = Session.state("wire-env-plan")
+
+      {:ok, _input, _opts, ctx} = Session.wire_request(s)
+      text = ctx |> ReqLLM.Context.to_list() |> hd() |> system_text()
+
+      assert s.agent.name == "plan"
+      assert text =~ "Agent: plan"
+    end
+
     test "a per-agent temperature rides the request opts" do
       start("wire-temp", model: "ollama:qwen3")
 

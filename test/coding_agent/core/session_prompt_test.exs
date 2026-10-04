@@ -167,6 +167,57 @@ defmodule CodingAgent.Core.Session.PromptTest do
       File.mkdir_p!(Path.join(root, ".git"))
       assert Prompt.environment("m", root) =~ "Is directory a git repo: yes"
     end
+
+    test "a linked worktree names the branch from its gitdir pointer", %{root: root} do
+      # .git is a FILE pointing at the main repo's worktrees/<name>; that
+      # dir's HEAD names the branch. No `git` call — two file reads.
+      gitdir = Path.join([root, "main", ".git", "worktrees", "wt"])
+      File.mkdir_p!(gitdir)
+      File.write!(Path.join(gitdir, "HEAD"), "ref: refs/heads/dev/mjansen\n")
+      File.write!(Path.join(root, ".git"), "gitdir: #{gitdir}\n")
+
+      block = Prompt.environment("m", root)
+      assert block =~ "Git: linked worktree, dev/mjansen"
+    end
+
+    test "a plain checkout names its branch and no worktree", %{root: root} do
+      gitdir = Path.join(root, ".git")
+      File.mkdir_p!(gitdir)
+      File.write!(Path.join(gitdir, "HEAD"), "ref: refs/heads/devel\n")
+
+      block = Prompt.environment("m", root)
+      assert block =~ "Git: branch devel"
+      refute block =~ "linked worktree"
+    end
+
+    test "a detached HEAD shows the short hash, not a branch name", %{root: root} do
+      gitdir = Path.join(root, ".git")
+      File.mkdir_p!(gitdir)
+      File.write!(Path.join(gitdir, "HEAD"), "65c2434deadbeef0123456789abcdef01234567\n")
+
+      block = Prompt.environment("m", root)
+      assert block =~ "Git: branch 65c2434"
+    end
+
+    test "a non-repo has no Git row at all", %{root: root} do
+      refute Prompt.environment("m", root) =~ "Git:"
+    end
+
+    test "opts name the agent and the store" do
+      block =
+        Prompt.environment("m", "/tmp", agent: %{name: "plan"}, store: "/tmp/store.db")
+
+      assert block =~ "Agent: plan"
+      assert block =~ "Store: /tmp/store.db"
+    end
+
+    test "a subagent is marked as such, and a missing agent or store adds no row" do
+      block = Prompt.environment("m", "/tmp", agent: %{name: "explore", mode: :subagent})
+      assert block =~ "Agent: explore (subagent)"
+
+      refute Prompt.environment("m", "/tmp") =~ "Agent:"
+      refute Prompt.environment("m", "/tmp") =~ "Store:"
+    end
   end
 
   describe "with_environment/3" do

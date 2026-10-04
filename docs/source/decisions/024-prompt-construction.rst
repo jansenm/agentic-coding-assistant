@@ -102,6 +102,37 @@ a tool round.
    the app is ``:coding_agent``, and ``mix.exs`` carries no product name.
    When it gets one, ``Prompt.harness/0`` is the single place to change it.
 
+.. note::
+   **Amendment 2026-10-04 — the block names the session (harness feedback
+   P2).** The block gained four rows for facts the model cannot infer from
+   the tree, each one a tool round the agent was otherwise spending:
+
+   * ``Git:`` — the branch, and whether the scope root is a linked
+     **worktree**. Read from the filesystem, not from ``git``: a linked
+     worktree's ``.git`` is a *file* of the form
+     ``gitdir: <main>/.git/worktrees/<name>``, whose ``HEAD`` names the
+     branch. Two file reads replace ``git worktree list``.
+   * ``Agent:`` — the definition's **name** (``plan``, ``build``, a
+     subagent). The name is the mode, because the definition carries the
+     read-only/write split; the block does *not* re-derive the capability.
+     The capability block (ADR 024 follow-up) already states the resulting
+     tools and shell root authoritatively, so repeating that here would be
+     the same fact twice — and could drift the moment the two are computed
+     differently.
+   * ``Store:`` — the active session database. Checkpoint refs are
+     store-namespaced, so "did this file ever get committed" is only
+     answerable against the right store.
+
+   ``environment/3`` and ``with_environment/4`` take these as an **opts**
+   keyword (``:agent``, ``:store``); ``Session`` fills them from the state
+   the request is built from. A caller that passes none (a pure
+   string-level test) gets exactly the old block, so the extension is
+   additive and ``Prompt`` stays a pure prompt function.
+
+   Why the environment block and not the capability block: these are
+   *session identity*, which is what ``<env>`` is for; the capability block
+   states what the session may *do*. Both ride every request.
+
 Decision
 --------
 
