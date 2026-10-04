@@ -94,6 +94,31 @@ defmodule CodingAgent.Core.Sandbox.FileToolsConfinementTest do
         refute msg =~ "TOPSECRET"
       end
     end
+
+    test "a hidden path cannot be deleted or moved (ADR 045)", %{skip: skip} do
+      if skip do
+        :ok
+      else
+        root = ctx_root()
+        secret = Path.join(root, "secret.txt")
+        File.write!(secret, "TOPSECRET")
+
+        scoped = scope(root, hide: [secret])
+
+        # `/dev/null` is bound over the file, so `rm`/`mv` fail with EBUSY
+        # (the mount point cannot be unlinked) — measured under real bwrap.
+        # The host file is untouched either way; that is the point.
+        delete = tool("delete_file", scoped)
+        {:error, dmsg} = ReqLLM.Tool.execute(delete, %{"path" => "secret.txt"})
+        assert dmsg =~ "busy" or dmsg =~ "Read-only"
+        assert File.read!(secret) == "TOPSECRET"
+
+        move = tool("move_file", scoped)
+        {:error, mmsg} = ReqLLM.Tool.execute(move, %{"from" => "secret.txt", "to" => "moved.txt"})
+        assert mmsg =~ "busy" or mmsg =~ "Read-only"
+        refute File.exists?(Path.join(root, "moved.txt"))
+      end
+    end
   end
 
   describe "read-only binds (ro)" do
