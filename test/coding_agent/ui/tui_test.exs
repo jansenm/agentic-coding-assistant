@@ -79,6 +79,20 @@ defmodule CodingAgent.UI.TuiTest do
       assert pid in Enum.map(subscribers, fn {p, _} -> p end)
     end
 
+    test "a test-mode TUI starts its session in test_mode too" do
+      # The TUI's `test_mode` option IS its test flag (`test_session?/1`),
+      # but it used to stop at the view: the session Core started was a
+      # live one. The suite noticed as noise (the uncataloged-model
+      # warning fired in every ui test once the catalog was warm), but the
+      # real stake is the guard: a test-mode session is structurally
+      # provider-free. Pin the propagation.
+      {:ok, pid} = Tui.start_link(name: nil, test_mode: {80, 10}, scope_root: File.cwd!())
+
+      sid = sync(pid).session_id
+      assert {:ok, state} = CodingAgent.Core.Session.state(sid)
+      assert state.test_mode
+    end
+
     test "broadcast events reach the TUI and update state" do
       {:ok, pid} = Tui.start_link(name: nil, test_mode: {80, 10}, scope_root: File.cwd!())
 

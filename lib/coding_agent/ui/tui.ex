@@ -155,7 +155,7 @@ defmodule CodingAgent.UI.Tui do
     # test_mode skips the picker: tests seed sessions in a shared
     # store dir and expect direct attachment. Opt-in :picker forces
     # it for the picker's own tests.
-    test_mode? = Keyword.get(opts, :test_mode) != nil
+    test_mode? = test_session?(opts)
     force_picker? = Keyword.get(opts, :picker, false)
 
     if Keyword.get(opts, :resume_id) == nil and (force_picker? or not test_mode?) do
@@ -287,7 +287,7 @@ defmodule CodingAgent.UI.Tui do
       open_tool_id: nil,
       provider_down?: false,
       test_pid: Keyword.get(opts, :test_pid),
-      test_mode?: Keyword.get(opts, :test_mode) != nil,
+      test_mode?: test_session?(opts),
       picker: sessions,
       picker_index: 0,
       picker_opts: opts,
@@ -549,7 +549,7 @@ defmodule CodingAgent.UI.Tui do
         open_tool_id: nil,
         provider_down?: false,
         test_pid: Keyword.get(opts, :test_pid),
-        test_mode?: Keyword.get(opts, :test_mode) != nil,
+        test_mode?: test_session?(opts),
         # loaded ONCE here, not per keypress (file I/O + TOML parse in
         # the input hot path was the crash vector for a broken live
         # config). Reload points: session switch, picker actions —
@@ -624,8 +624,8 @@ defmodule CodingAgent.UI.Tui do
   #
   # A refused start (ADR 030: no confining sandbox) is not a crash: it
   # comes back as `{:error, reason}` and the caller decides what to show.
-  defp start_resumed({:ok, state}, _id, _opts, _resume_id) do
-    case Session.resume(state, interactive: true) do
+  defp start_resumed({:ok, state}, _id, opts, _resume_id) do
+    case Session.resume(state, interactive: true, test_mode: test_session?(opts)) do
       {:ok, pid} -> {:ok, pid, state, nil}
       {:error, reason} -> {:error, start_refusal(reason)}
     end
@@ -654,13 +654,33 @@ defmodule CodingAgent.UI.Tui do
                # the TUI can answer a mid-turn question: at the round
                # budget the session ASKS continue/stop (ADR 025) instead
                # of auto-summarizing
-               interactive: true
+               interactive: true,
+               # The TUI's OWN test_mode (the ExRatatui virtual terminal
+               # size) also makes the SESSION it starts a test session:
+               # the option is the same one this module reads as
+               # `test_mode?`, so the two must not disagree. Without it a
+               # test-mode TUI ran a LIVE session — the suite's sessions
+               # are structurally provider-free, but only by the
+               # `run_prompt` guard, and the session itself emitted the
+               # uncataloged-model warning once per mount (149 in
+               # test/coding_agent/ui/). Passing a boolean: the session
+               # guard pattern-matches `%{test_mode: true}`, and the
+               # session's own test_mode is a boolean, not the size tuple.
+               test_mode: test_session?(opts)
              ) do
           {:ok, pid} -> {:ok, pid, nil, notice}
           {:error, reason} -> {:error, start_refusal(reason)}
         end
     end
   end
+
+  # The TUI's test flag, read the same way at every site: the `test_mode`
+  # OPTION carries the ExRatatui virtual terminal size, and its PRESENCE —
+  # not its shape — is the flag. One reader, so the picker, the state key
+  # and the session this module starts can never disagree about whether
+  # this is a test run. Named for the SESSION it decides about, because
+  # "test_mode" already means the virtual terminal here.
+  defp test_session?(opts), do: Keyword.get(opts, :test_mode) != nil
 
   # Session start refused (ADR 030) or failed for another reason: surface
   # the message the core gave, never a raw exception tuple.
