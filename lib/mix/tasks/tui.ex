@@ -130,17 +130,65 @@ defmodule Mix.Tasks.Tui do
   defmodule Handler do
     @moduledoc false
 
+    # `msg` is NEVER a bare binary: OTP hands a handler one of
+    # `{:string, chardata}`, `{format, args}` or `{:report, term}`. The old
+    # `is_binary/1` guard matched none of them, so every event went through
+    # `~p` — and `~p` renders a binary as text only while every byte is
+    # printable-latin1. A single UTF-8 continuation byte (128..191) flips it
+    # to a comma-separated byte list: the context warning's em dash
+    # (226,128,148) turned one line into nineteen. Dispatch on the shapes
+    # that exist and render text as text.
+    #
+    # Two promises this keeps. One PHYSICAL line per event: `~p` also wraps
+    # at a fixed column, and a message may carry newlines of its own — both
+    # are escaped. And it never raises: OTP REMOVES a raising handler
+    # (`removed_failing_handler`), after which the TUI logs nowhere at all.
     def log(event, %{config: %{file: file}}) do
-      # ~p on the message: logger msg may be chardata with embedded
-      # atoms/terms — ~ts would crash on atoms, ~p prints anything
-      line =
-        case event[:msg] do
-          m when is_binary(m) -> :io_lib.format("~ts [~p] ~ts~n", [ts(), event[:level], m])
-          m -> :io_lib.format("~ts [~p] ~p~n", [ts(), event[:level], m])
-        end
+      File.write(file, [ts(), " [", level(event[:level]), "] ", message(event[:msg]), "\n"], [
+        :append
+      ])
 
-      File.write(file, line, [:append])
+      :ok
+    rescue
+      e ->
+        File.write(
+          file,
+          "#{ts()} [error] tui log handler failed: #{Exception.message(e)}\n",
+          [:append]
+        )
+
+        :ok
     end
+
+    defp message(msg) do
+      case msg do
+        {:string, text} -> text(text)
+        {format, args} when is_list(args) -> text(:io_lib.format(format, args))
+        other -> inspect(other, limit: :infinity, printable_limit: :infinity)
+      end
+    rescue
+      # a malformed format string must not cost the event
+      _ -> inspect(msg, limit: :infinity, printable_limit: :infinity)
+    end
+
+    # chardata — a binary, a charlist or arbitrarily nested — to one UTF-8
+    # binary. `characters_to_binary/1` returns the part it could convert for
+    # invalid UTF-8; render that remainder as a byte string rather than
+    # dropping the event.
+    defp text(chardata) do
+      case :unicode.characters_to_binary(chardata) do
+        bin when is_binary(bin) -> one_line(bin)
+        {_error, _converted, rest} -> inspect(rest)
+      end
+    end
+
+    defp one_line(bin) do
+      bin
+      |> :binary.replace("\r", "\\r", [:global])
+      |> :binary.replace("\n", "\\n", [:global])
+    end
+
+    defp level(level), do: to_string(level)
 
     defp ts, do: Calendar.strftime(NaiveDateTime.local_now(), "%H:%M:%S")
   end
