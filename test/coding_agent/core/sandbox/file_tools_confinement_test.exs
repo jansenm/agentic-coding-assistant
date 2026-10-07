@@ -186,6 +186,28 @@ defmodule CodingAgent.Core.Sandbox.FileToolsConfinementTest do
         refute File.exists?(Path.join(root, "new.txt"))
       end
     end
+
+    test "parents: true runs its mkdir under the same profile (EROFS on root_ro)", %{skip: skip} do
+      if skip do
+        :ok
+      else
+        root = ctx_root()
+        scoped = Map.put(scope(root), :shell_mode, :ro)
+        write = tool("write_file", scoped)
+
+        {:error, msg} =
+          ReqLLM.Tool.execute(write, %{
+            "path" => "new-dir/new.txt",
+            "content" => "x",
+            "parents" => true
+          })
+
+        # the confined mkdir is what failed, on the same read-only bind as
+        # the write would have — one boundary, not two
+        assert msg =~ "Read-only" or msg =~ "read-only"
+        refute File.exists?(Path.join(root, "new-dir"))
+      end
+    end
   end
 
   describe "delete_file and move_file are confined rm/mv (ADR 045)" do

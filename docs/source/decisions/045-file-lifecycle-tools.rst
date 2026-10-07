@@ -134,3 +134,8 @@ Open questions
 3. **Move across filesystems.** ``mv`` falls back to copy+unlink, which
    for a large tree is slow and non-atomic. Not addressed; the scratch,
    the scope and the mounts are normally one filesystem.
+4. **``write_file parents`` vs. a ``mkdir`` tool.** The flag was added
+   because a write into a missing directory is the common case and the
+   bare ``tee`` message named neither the cause nor the fix. A full
+   ``mkdir`` tool is still absent; add it when creating an EMPTY
+   directory (with no file to put in it) is actually needed.

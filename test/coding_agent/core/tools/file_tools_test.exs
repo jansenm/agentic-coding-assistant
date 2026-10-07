@@ -157,8 +157,45 @@ defmodule CodingAgent.Core.Tools.FileToolsTest do
 
     test "reports a missing directory rather than raising", %{scope: scope} do
       tool = find_tool("write_file", scope)
-      {:error, msg} = ReqLLM.Tool.execute(tool, %{"path" => "no/such/dir.txt", "content" => "x"})
+
+      {:error, msg} =
+        ReqLLM.Tool.execute(tool, %{"path" => "no/such/dir.txt", "content" => "x"})
+
       assert msg =~ "no/such/dir.txt"
+      # and it names the way out rather than leaving the bare tee message
+      assert msg =~ "does not exist"
+      assert msg =~ "parents"
+    end
+
+    test "parents: true creates the missing chain", %{scope: scope} do
+      tool = find_tool("write_file", scope)
+
+      {:ok, _} =
+        ReqLLM.Tool.execute(tool, %{
+          "path" => "deep/a/b.txt",
+          "content" => "made",
+          "parents" => true
+        })
+
+      assert File.read!(Path.join(scope.root, "deep/a/b.txt")) == "made"
+    end
+
+    test "parents: true is a no-op when the directory already exists", %{scope: scope} do
+      tool = find_tool("write_file", scope)
+
+      {:ok, _} =
+        ReqLLM.Tool.execute(tool, %{"path" => "sub/ok.txt", "content" => "x", "parents" => true})
+
+      assert File.read!(Path.join(scope.root, "sub/ok.txt")) == "x"
+    end
+
+    test "parents: true on a path whose parent is a FILE fails loudly", %{scope: scope} do
+      tool = find_tool("write_file", scope)
+
+      {:error, msg} =
+        ReqLLM.Tool.execute(tool, %{"path" => "top.txt/x", "content" => "x", "parents" => true})
+
+      assert msg =~ "File exists"
     end
   end
 

@@ -13,9 +13,10 @@ defmodule CodingAgent.Core.Tools.FileExec do
   discovery helper).
 
   The operation is a small, fixed program per tool (`cat`, `tee`, `ls`,
-  `rm`, `mv`, `sed`); the PATH is passed as an argument, never interpolated
-  into the script, so a quote in a filename cannot escape the command. `Exec.run/5`
-  carries the profile and, for writes, the payload on stdin (see
+  `rm`, `mv`, `mkdir`, `sed`); the PATH is passed as an argument, never
+  interpolated into the script, so a quote in a filename cannot escape the
+  command. `Exec.run/5` carries the profile and, for writes, the payload on
+  stdin (see
   `{:stdin, ...}` in `CodingAgent.Core.Sandbox`).
 
   A relative path is resolved against the sandbox's working directory
@@ -37,6 +38,7 @@ defmodule CodingAgent.Core.Tools.FileExec do
   @sed "sed"
   @rm "rm"
   @mv "mv"
+  @mkdir "mkdir"
 
   @doc """
   Reads a file through a confined `cat`. Returns `{:ok, contents}` or
@@ -105,6 +107,42 @@ defmodule CodingAgent.Core.Tools.FileExec do
 
       {:error, reason} ->
         {:error, "cannot write #{path}: #{inspect(reason)}"}
+    end
+  end
+
+  @doc """
+  Creates a directory through a confined `mkdir` (`write_file`'s
+  `parents`).
+
+  `--parents` is always on: it creates the whole chain and does not mind
+  an existing directory (measured: exit 0), while a FILE in the way still
+  fails with `File exists`. The one caller is `write_file` creating the
+  parent of the file it is about to write, so there is no unpinned
+  variant to offer.
+  """
+  @spec mkdir(Tools.scope(), String.t(), pos_integer()) ::
+          {:ok, String.t()} | {:error, String.t()}
+  def mkdir(scope, path, secs) do
+    profile = Tools.profile(scope)
+
+    case Exec.run({:exec, @mkdir, ["--parents", "--", path]}, cwd(scope), secs, profile) do
+      {:ok, _output, 0} ->
+        {:ok, path}
+
+      {:ok, output, _code} ->
+        {:error, failure(output, path)}
+
+      {:timeout, _partial} ->
+        {:error, "timed out creating #{path}"}
+
+      {:stopped, _partial} ->
+        {:error, "stopped by the user while creating #{path}"}
+
+      {:sandbox_error, reason} ->
+        {:error, "cannot create #{path} under the sandbox: #{inspect(reason)}"}
+
+      {:error, reason} ->
+        {:error, "cannot create #{path}: #{inspect(reason)}"}
     end
   end
 

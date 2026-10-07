@@ -64,8 +64,9 @@ confined, so ``shell``/``git`` are allowed by default; a stated escalation
    * - Tool
      - What it does
    * - ``write_file``
-     - Create or overwrite a file. Auto-approved unless a permissions file
-       tightens it.
+     - Create or overwrite a file. The parent directory must exist; pass
+       ``parents: true`` to create it (a confined ``mkdir --parents``).
+       Auto-approved unless a permissions file tightens it.
    * - ``edit``
      - Replace an exact string in a file; the match must be unique.
    * - ``delete_file``
