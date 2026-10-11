@@ -20,9 +20,18 @@ defmodule CodingAgent.UI.Styles do
   Rules this module encodes (see `CodingAgent.UI.Palette`):
 
   - One meaning per role; call sites name the role (and surface).
-  - All borders `:rounded`; the border color is chosen by role
-    (`:accent` for focused/input, `:muted` for passive panels,
-    `:warning` for the approval gate).
+  - A border marks one of two things and nothing else: a **modality**
+    (an overlay that takes your input away — the gate, the budget, the
+    doom prompt, the question wizard, the menu/picker popups) or a
+    **one-line separation** (the plain `[:bottom]` rule under a
+    transcript message). Anything else is separated by role colour and
+    indent. All border types are `:rounded` except those two cases, and
+    the colour is chosen by role (`:accent` for focused/input, `:muted`
+    for passive panels, `:warning` for the approval gate).
+  - The transcript has NO frame: a scrolling entry cannot keep an
+    outline (the top edge would re-anchor as the content moves under
+    it). A message is marked by its role colour, one labelled rule and
+    the indent of its body.
   - Identity (agent, model) always uses a badge.
   - Label/value rows always come from `definition_list/1`.
 
@@ -317,8 +326,13 @@ defmodule CodingAgent.UI.Styles do
 
   @doc """
   A titled panel `%Block{}`. Owns border type/color/placement so the
-  transcript boxes, the sidebar and the dialogs stop each picking their
-  own. `:titles` may carry `%Block.Title{}` for extra positions.
+  dialogs and the transcript rules stop each picking their own. `:titles`
+  may carry `%Block.Title{}` for extra positions.
+
+  `:borders` defaults to `[:all]` because the modal overlays (which are
+  the reason a `%Block` exists at all) want a full frame; a caller that
+  wants the one-line separator passes `[:bottom]` and gets a rule whose
+  title paints inline on it (see `CodingAgent.UI.TranscriptView.rule/1`).
 
   Options:
 
@@ -370,10 +384,11 @@ defmodule CodingAgent.UI.Styles do
   A panel heading: one line in the `:emphasis` role (stated white, bold).
 
   The heading a panel carries as its FIRST body line. It is deliberately
-  not a `Block` title: a title on a one-sided border (`borders: [:right]`)
-  paints as bare text one cell in from the edge, which reads as neither a
-  heading nor content ("hängt da einfach so rum"). A body line is flush
-  with the panel's own content and cannot be mistaken for chrome.
+  not a `Block` title: a title paints ON a border row, so it is chrome by
+  construction; a heading that should be flush with the panel's own
+  content column is a body line. That is also why the transcript's rule
+  carries its label as a TITLE (it belongs on the rule) while the sidebar
+  heading is a LINE (it belongs in the panel).
   """
   @spec heading(String.t(), surface()) :: Text.Line.t()
   def heading(text, surface \\ :base) do

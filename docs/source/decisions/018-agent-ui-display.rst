@@ -563,3 +563,74 @@ as the parent's. An ``:ok`` child already emitted its ``llm_message``
 is never duplicated. This keeps the ADR-018 invariant intact: the child
 transcript still never blends into the parent model context; only the
 human-facing tab gained the closing line.
+
+Amendment 2026-10-11: the tab strip joins the composer; the transcript loses its frames
+---------------------------------------------------------------------------------------
+
+Two owner decisions, both about what carries MEANING in the layout.
+
+**1. The tab strip is part of the composer panel.** The 2026-09-30
+amendment moved the strip from above the transcript to "directly above
+the composer" and kept it a separate layout row. Measured at 100x30 with
+one child: the strip's ``[primary]`` began in column 37 while the field
+and the meta row began in column 38 — the strip alone sat flush on the
+pane edge, because only the composer's own rect went through
+``Composer.inset/1``. The owner's ruling: everything in the bottom box
+answers one question (*how do I plan the next move* — which view, which
+agent, which model, which mode), so it is ONE information unit and gets
+ONE padding. The strip is now a segment of the composer's inner rect
+(``Composer.split/2``) and its row is counted by ``Composer.height/1``,
+so ``layout_overhead/1`` no longer carries a separate ``tab_h``. The
+strip's position is unchanged; only its ownership is.
+
+**2. The transcript's frames are gone.** The user message and the
+assistant answer no longer carry a ``[:all]`` border, the expanded tool
+output no longer carries one either, and the sidebar's ``[:right]`` rule
+is gone. What replaces them:
+
+* **One labelled rule per message.** A ``Block`` border paints its title
+  ON the border row it occupies (verified against the drawn buffer), so
+  ``borders: [:bottom]`` with a ``:bottom``-positioned, right-aligned
+  title IS an HTML ``<hr>`` with the signature at its end —
+  ``──────────────── you → build``. Rendered with ``border_type:
+  :plain``: a rounded or dotted rule reads as a box edge, and there is
+  no box.
+* **Role colour, one marker, indent.** The body text is the stated
+  white, reasoning is grey italic, the tool header keeps its ``▾`` and
+  the output is indented two cells. That is what distinguishes the
+  blocks; the palette was built for exactly this (``UI.Palette``).
+* **The open tool box became a header and an indented body.**
+
+Why the frames had to go, in one sentence: a framed entry that SCROLLS
+must be re-anchored, because a full outline paints on the rect's edges —
+as the entry's top rows leave the pane, the top border has nowhere to
+live and either repaints at the pane top forever or is stripped by hand.
+That arithmetic (``border_rows/1`` + ``window_border/2``) existed only
+for the transcript, broke repeatedly ("empty lines at the end of the
+block", "the box kept repainting while its content scrolled away"), and
+is deleted. A one-sided rule has nothing to re-anchor: it is one row and
+scrolls away with its message.
+
+**The rule this leaves behind: a frame marks a MODALITY or a one-line
+separation, nothing else.** Every remaining border is either a modal
+overlay (menu, commands, files, picker, approval, budget, doom,
+question — all painted last, over ``%Clear{}``, and none of them
+scrolls) or the transcript's one-row rule. The gate's ``:double`` frame
+stays as the "you are blocked, your keys go here" signifier. This is
+recorded as a rule in ``UI.Styles``.
+
+**Air.** ``@air`` drops from 3 to 1 for every block, the user message
+included. The user's 0-air exception existed only to make the BOXED user
+message stand out by contrast; without boxes the exception lost its
+reason, so the gap is one number again (two consecutive tool calls were
+4 rows apart).
+
+Acceptance: ``transcript_view_test.exs`` (the heights: info 2, user 3 =
+content + rule + air, assistant with wrapping, collapsed tool 2, open
+tool 5), ``composer_test.exs`` (the strip is the panel's first row at
+the field's x/width; no strip, no widget and no row),
+``tui_visual_test.exs`` (the expanded tool is a header plus an indented
+body and no ``tool output`` frame; no rule glyph anywhere in the
+sidebar), ``tui_cells_test.exs`` (the typed text is still the stated
+white on the chrome fill), ``tui_agent_test.exs`` (the setup row is the
+input rect's last row and carries no status).

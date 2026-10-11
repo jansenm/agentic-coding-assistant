@@ -100,18 +100,16 @@ defmodule CodingAgent.UI.TuiAgentTest do
     refute buffer =~ "next:"
   end
 
-  # Regression (review A): the agent-box footer belongs on the
-  # BOTTOM-RIGHT border. The substring assertions above are
-  # position-blind and did not catch it moving to the top-left when
-  # agent_block/2 started delegating to Styles.panel/1.
+  # Regression (review A): the setup identity must sit on the input
+  # rect's LAST row (the substring assertions above are position-blind
+  # and did not catch it moving to the top-left when the footer was a
+  # Block title).
   #
-  # The composer has no frame any more (it is a filled field), so the
-  # "bottom border" is now the field's LAST row, carrying the setup
-  # identity ("agent · model") and nothing else: the status has moved
-  # OFF this row, up into the live band above the field. The regression
-  # this guards is unchanged — the identity line must be at the BOTTOM
-  # of the input rect, not stacked above the text.
-  test "the input footer sits on the field's last row and carries no status" do
+  # The composer has no frame and no border at all now: it is a filled
+  # field whose bottom row carries the setup identity ("agent · model")
+  # and nothing else. The status has moved OFF this row, up into the
+  # live band above the field.
+  test "the input's setup row is the field's last row and carries no status" do
     pid = start_app(agent: "build")
     rows = buffer(pid)
 
@@ -138,15 +136,14 @@ defmodule CodingAgent.UI.TuiAgentTest do
     assert {_band_text, band_idx} = band_row
     assert band_idx < idx
 
-    # six rows apart: the band's own bottom padding, the air row between
-    # the band and the field, then the field's rows above its meta line
-    # (top padding, the textarea line, the meta gap)
+    # six rows apart: the band's own bottom padding, the air row, the
+    # field's top padding, the textarea line, the blank gap row — then
+    # the meta line
     assert idx - band_idx == 6
 
-    # and the identity row is BELOW everything else in the input rect:
-    # the row above it carries no identity and no typed text
-    refute String.contains?(rows |> Enum.at(idx - 1), "build · model")
-    refute String.contains?(rows |> Enum.at(idx + 1), "build · model")
+    # the setup row is the input rect's LAST row: the padding ring's
+    # bottom row is below it and paints nothing
+    assert rows |> Enum.drop(idx + 1) |> Enum.all?(&(String.trim(&1) == ""))
   end
 
   # B4: the status panel answers "which agent handles what I type, and

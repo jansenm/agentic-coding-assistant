@@ -8,6 +8,24 @@ defmodule CodingAgent.UI.TranscriptView do
 
   Pure and unit-tested; UI.Tui renders the returned window.
 
+  ## Inline labels, not frames
+
+  A `Block` border paints its title ON the border row it occupies
+  (verified against the drawn buffer, 2026-10-11), so a single `:bottom`
+  rule with a `:bottom`, right-aligned title IS an HTML `<hr>` with a
+  label at its end — for free, with the dep's own clipping. That is what
+  the transcript uses: a user message and the answer before it are
+  separated by one plain rule carrying the message's signature
+  (`you → build`, `build`). What marks a block as *what* it is stays the
+  role colour (`:text` stated white vs `:reasoning` grey italic), the
+  label, and the indent — never an outline.
+
+  A full outline on a scrolling entry has to be re-anchored as it moves
+  (its top edge would repaint forever while the content scrolls out from
+  under it), and that arithmetic is what broke. A one-sided rule has no
+  side columns and nothing to re-anchor: when it scrolls out, it is
+  simply gone.
+
   ## Why measured-by-render (the newline-bug lesson)
 
   The reasoning box once grew one phantom blank row per streamed line
@@ -45,10 +63,18 @@ defmodule CodingAgent.UI.TranscriptView do
   alias CodingAgent.UI.Styles
   alias ExRatatui.Text
 
-  # empty rows after every NON-user block (answers, tools, info,
-  # reasoning): the user frame stands out BY contrast — everything
-  # around it breathes more than it does
-  @air 3
+  # ONE blank row after every block — the user message included. It was 3
+  # after every non-user block, with the user's 0 as an exception: that
+  # exception existed to make the BOXED user message stand out by
+  # contrast. The frames are gone, so the exception lost its reason and
+  # the gap is one number again.
+  @air 1
+
+  # The separator rows a ruled block carries: one `:bottom` rule. Counted
+  # arithmetically because a border paints on its RECT's last row, not on
+  # the row after the content — probing it in an oversized rect measures
+  # the rect (verified: +401).
+  @rule 1
 
   @typedoc "A transcript entry (shape mirrors UI.Tui state)."
   @type entry ::
@@ -61,22 +87,18 @@ defmodule CodingAgent.UI.TranscriptView do
   @spec height(entry(), pos_integer(), open_id()) :: pos_integer()
   def height(entry, width, open_id) do
     case normalize(entry) do
-      # The shared agent box (user frame, assistant box) paints its
-      # border glyphs across the whole probe rect, so the content must
-      # be probed BARE (no block) and the shared chrome added
-      # arithmetically. The box has no padding: 2 border rows only.
+      # The ruled blocks. The RULE row is added, not probed: a `:bottom`
+      # border paints on its rect's last row, so a probe with an
+      # oversized rect would measure the probe, not the message
+      # (measured: +401). It is exactly one row, always, and with no
+      # padding a one-sided rule leaves the content at the full width —
+      # so the bare content is what gets probed.
       {:user, text, _agent} ->
-        inner_width = max(width - 2, 10)
-        painted_height(%ExRatatui.Widgets.Paragraph{text: text}, inner_width) + 2
+        painted_height(%ExRatatui.Widgets.Paragraph{text: text}, width) + @rule + @air
 
-      # Same shared box + @air after the answer block.
       {:assistant, text, _agent} ->
-        inner_width = max(width - 2, 10)
-
-        content =
-          painted_height(%ExRatatui.Widgets.Markdown{content: text, wrap: true}, inner_width)
-
-        content + 2 + @air
+        content = painted_height(%ExRatatui.Widgets.Markdown{content: text, wrap: true}, width)
+        content + @rule + @air
 
       # The boxless widgets (reasoning, info, collapsed/expanded tools):
       # probe the exact drawn widget; per-widget chrome already in it.
@@ -120,13 +142,12 @@ defmodule CodingAgent.UI.TranscriptView do
 
   defp widget_for({:tool, id, name, content}, _width, open_id) do
     if id == open_id do
-      # the open tool box paints border glyphs across its whole rect
-      # (same as the user frame) — probe the CONTENT and add the
-      # border rows arithmetically
+      # open: a header row plus the output, indented. No block — the
+      # header is the frame's whole job and the indent carries the rest.
       {%ExRatatui.Widgets.Paragraph{
-         text: "▾ #{name}\n" <> content,
+         text: "▾ #{name}\n" <> indent(content),
          style: Styles.role(:muted)
-       }, 2}
+       }, 0}
     else
       # collapsed: Tui paints a bare one-line header (no block)
       {%ExRatatui.Widgets.Paragraph{
@@ -135,6 +156,14 @@ defmodule CodingAgent.UI.TranscriptView do
        }, 0}
     end
   end
+
+  # two cells of indent: what the frame's side columns used to say
+  # ("this is the tool's output"), stated once instead of per row. Public:
+  # the painter in Tui builds the same string the probe measures
+  # (measure = paint) — one definition of the indent.
+  @doc "Indent every line of a tool's output by two cells."
+  @spec indent(String.t()) :: String.t()
+  def indent(content), do: "  " <> String.replace(content, "\n", "\n  ")
 
   # The footer for an agent-carrying entry: `agent` is the name or nil
   # (no agent). Shared by the assistant box (this module's footers) and
@@ -263,29 +292,29 @@ defmodule CodingAgent.UI.TranscriptView do
     measure(rest, acc + h, [{entry, acc, h} | measured], width, open_id, target)
   end
 
-  # -- shared "agent box" ------------------------------------------------------
+  # -- the separator rule ------------------------------------------------------
 
   @doc """
-  ONE bordered frame used by the input box, each user message and each
-  assistant reply (user feedback: reuse the layout, never three copies).
-  The title sits on the BOTTOM-RIGHT border carrying the footer
-  ("plan · model", "you → plan"). Measuring and painting both build this
-  from this single function, so the layout can never drift.
+  The one separator: a plain rule under a message, carrying that
+  message's signature at its right end (`you → build`, `build`).
+
+  One `:bottom` border whose `:bottom`-positioned title paints on the
+  same row is an `<hr>` with an inline label (verified against the drawn
+  buffer). `border_type: :plain` — a dotted or rounded rule reads as a
+  box edge, and there is no box. `title_style: nil` lets the footer line
+  carry its own per-span role styles (a `Block` title_style would
+  override them).
+
+  `nil` gives the rule bare (the height probe builds it that way: the
+  label cannot change the row count).
   """
-  @spec agent_block(ExRatatui.Text.Line.t(), ExRatatui.Style.t()) :: ExRatatui.Widgets.Block.t()
-  # The footer sits on the BOTTOM-RIGHT border: it reads as the message's
-  # signature, not its heading. `title_style: nil` lets the footer line
-  # carry its own per-span role styles (a Block title_style would
-  # override them). `extra_titles` (e.g. the status on the input box's
-  # top-right) are additional `%Block.Title{}` entries.
-  def agent_block(footer, border_style, extra_titles \\ []) do
+  @spec rule(ExRatatui.Text.Line.t() | nil) :: ExRatatui.Widgets.Block.t()
+  def rule(footer) do
     Styles.panel(
-      borders: [:all],
+      borders: [:bottom],
+      border_type: :plain,
       title: footer,
-      titles: extra_titles,
       title_style: nil,
-      border: nil,
-      border_style: border_style,
       title_position: :bottom,
       title_alignment: :right
     )

@@ -49,7 +49,7 @@ defmodule CodingAgent.UI.Tui do
   alias ExRatatui.Event
   alias ExRatatui.Layout
   alias ExRatatui.Layout.Rect
-  alias ExRatatui.Widgets.{Block, Clear, Markdown, Paragraph}
+  alias ExRatatui.Widgets.{Clear, Markdown, Paragraph}
 
   @tool_cap 30
   # how long an armed esc-to-quit stays armed (ms)
@@ -83,14 +83,13 @@ defmodule CodingAgent.UI.Tui do
   # `UI.LiveBand.height/0` and `UI.Composer.height/1` (measure = paint).
   @layout_overhead 2 + 2 + LiveBand.height() + Composer.min_height()
 
+  # The bottom box's height (UI.Composer.height/1 — measure = paint): it
+  # includes the tab strip when a child tab exists, so the pane height
+  # drops by that row with it.
   defp input_height(state), do: Composer.height(composer(state))
 
-  # The subagent tab bar (ADR 018) takes one row above the composer when it
-  # is present (measure = paint, ADR 028): the pane height must drop by
-  # that row, or the viewport over-reserves and the last line clips.
   defp layout_overhead(state) do
-    tab_h = if map_size(Map.get(state, :subagents, %{})) > 0, do: 1, else: 0
-    2 + 2 + LiveBand.height() + input_height(state) + tab_h
+    2 + 2 + LiveBand.height() + input_height(state)
   end
 
   # The room every OVERLAY (menu, approval, budget, doom, question) has:
@@ -3741,39 +3740,24 @@ defmodule CodingAgent.UI.Tui do
     [mid_area, _air_area] =
       Layout.split(mid_area, :horizontal, [{:length, min(@measure, mid_area.width)}, {:min, 0}])
 
-    # The subagent tab bar (ADR 018) belongs with the INPUT, not above the
-    # transcript (owner decision 2026-09-30): it switches which view the
-    # field/transcript shows, so it sits directly above the composer where
-    # the human's attention is. It claims one row only while a `task` child
-    # exists; a parent-only session keeps its full height.
-    tabs? = map_size(Map.get(state, :subagents, %{})) > 0
-
+    # The tab strip is part of the COMPOSER's rect, not a layout row of
+    # its own: everything in the bottom box answers "how do I plan the
+    # next move", so it is one surface with one padding (owner decision
+    # 2026-10-11, superseding the 2026-09-30 "directly above the
+    # composer" placement — same position, one box). `input_height/1`
+    # already includes the strip when there is one.
+    #
     # Stacked regions sharing ONE air row between them: transcript, the
-    # live band (what the running turn does), and the input field (what the
-    # next input uses), with the tab row sandwiched above the field when
-    # tabs exist. No borders in this stack — the air row separates them.
-    template =
-      case tabs? do
-        true ->
-          [
-            {:min, 0},
-            {:length, 1},
-            {:length, band_h},
-            {:length, 1},
-            {:length, 1},
-            {:length, in_h}
-          ]
-
-        false ->
-          [{:min, 0}, {:length, 1}, {:length, band_h}, {:length, 1}, {:length, in_h}]
-      end
+    # live band (what the running turn does), and the input box (what the
+    # next input uses). No borders in this stack — the air row separates
+    # them.
+    template = [{:min, 0}, {:length, 1}, {:length, band_h}, {:length, 1}, {:length, in_h}]
 
     areas = Layout.split(mid_area, :vertical, template)
 
-    {tab_area, transcript_area, band_area, input_area} =
+    {transcript_area, band_area, input_area} =
       case areas do
-        [tr, _air1, band, _air2, tab, input] -> {tab, tr, band, input}
-        [tr, _air1, band, _air2, input] -> {nil, tr, band, input}
+        [tr, _air1, band, _air2, input] -> {tr, band, input}
       end
 
     sidebar_widgets =
@@ -3783,11 +3767,8 @@ defmodule CodingAgent.UI.Tui do
         []
       end
 
-    tab_widgets = if tab_area, do: [{tab_bar(state), tab_area}], else: []
-
     widgets =
-      tab_widgets ++
-        transcript_widgets(state, transcript_area) ++
+      transcript_widgets(state, transcript_area) ++
         sidebar_widgets ++
         LiveBand.placements(live_band(state), band_area) ++
         Composer.placements(composer(state), input_area)
@@ -3948,63 +3929,15 @@ defmodule CodingAgent.UI.Tui do
       avail = pane.height - (y - pane.y)
       h = max(min(h, avail), 1)
 
-      # Bordered widgets (open tools, user frames) must not RE-ANCHOR
-      # at the pane top when partially scrolled out: the box would
-      # repaint its top border forever while its content scrolled away
-      # ('empty lines at the end of the block', found live). When the
-      # entry's own top rows are already above the pane, drop the
-      # border chrome that has scrolled out and window the content:
-      # the box EXITS through the top instead of sticking to it.
-      # the border rows are skipped FIRST (they are the entry's top
-      # chrome), then any remaining skipped rows scroll the content —
-      # compute the border allowance BEFORE stripping it
-      chrome = border_rows(widget)
-      widget = window_border(widget, skipped)
-      widget = apply_scroll(widget, max(skipped - chrome, 0))
+      # A one-sided rule has nothing to RE-ANCHOR: when the entry's own
+      # top rows are already above the pane, the rule is one of them and
+      # is simply gone (the content scrolls). No border chrome is
+      # stripped, no window rebuilt — the frame that needed that is not
+      # there any more.
+      widget = apply_scroll(widget, skipped)
 
       {widget, %Rect{x: column_x(pane, w), y: y, width: w, height: h}}
     end)
-  end
-
-  # Rows of border chrome a widget carries at its top (for windowing).
-  # :all must expand — `:top in [:all]` is false, which cost the ▾ row
-  # of an open tool when the box straddled the pane top (found live).
-  defp border_rows(%Paragraph{block: %Block{borders: [:all]}}), do: 1
-
-  defp border_rows(%Paragraph{block: %Block{borders: sides}}),
-    do: if(:top in sides, do: 1, else: 0)
-
-  defp border_rows(_), do: 0
-
-  # When `skipped` rows of the entry are above the pane, the top border
-  # is one of them: paint the remaining rows as a borderless window.
-  defp window_border(widget, skipped) do
-    case widget do
-      %Paragraph{block: %Block{} = block} when skipped > 0 ->
-        # :all must expand before stripping — rejecting against [:all]
-        # strips nothing (found live: the box kept repainting while its
-        # content scrolled away)
-        sides =
-          case block.borders do
-            [:all] -> [:top, :left, :right, :bottom]
-            sides -> sides
-          end
-
-        sides = Enum.reject(sides, &(&1 in [:top, :left, :right]))
-
-        %{
-          widget
-          | block: %{
-              block
-              | borders: sides,
-                title: nil,
-                title_position: :top
-            }
-        }
-
-      _ ->
-        widget
-    end
   end
 
   # The reading column: capped at @measure, centered on wide panes.
@@ -4111,31 +4044,27 @@ defmodule CodingAgent.UI.Tui do
 
   # One widget per entry (v1): heights are single-widget, computed via
   # TranscriptView.height. The user AND assistant messages share the
-  # same bordered frame (TranscriptView.agent_block — one definition
-  # of the box, per the "reuse, always reuse" design): the only thing
-  # that differs is the content widget (Paragraph vs Markdown) and the
-  # footer label. Both 2-tuples (no attribution) and 3-tuples (carrying
-  # the agent name) render — the 2-tuple form shows a neutral footer.
+  # same RULE (TranscriptView.rule/1 — one definition of the separator):
+  # the only thing that differs is the content widget (Paragraph vs
+  # Markdown) and the signature in the label. Both 2-tuples (no
+  # attribution) and 3-tuples (carrying the agent name) render — the
+  # 2-tuple form shows a neutral label.
   defp entry_widgets({:user, text, agent}, w, _te) do
-    h = TranscriptView.height({:user, text, agent}, w, nil)
+    h = TranscriptView.height({:user, text, agent}, w, nil) - TranscriptView.air()
 
     widget = %Paragraph{
       text: text,
       style: Styles.role(:text),
-      block:
-        TranscriptView.agent_block(
-          TranscriptView.user_footer(agent),
-          Styles.role(:user)
-        )
+      block: TranscriptView.rule(TranscriptView.user_footer(agent))
     }
 
-    [{widget, h}]
+    [{widget, max(h, 1)}]
   end
 
   defp entry_widgets({:assistant, text, agent}, w, _te) do
     # placement height includes the air rows; the widget rect covers
-    # the content + border rows only, so the air rows below stay
-    # background (same convention as the old assistant entries)
+    # the content + rule only, so the air rows below stay background
+    # (same convention as the old assistant entries)
     h = TranscriptView.height({:assistant, text, agent}, w, nil) - TranscriptView.air()
 
     [
@@ -4143,11 +4072,7 @@ defmodule CodingAgent.UI.Tui do
          content: text,
          style: Styles.role(:text),
          wrap: true,
-         block:
-           TranscriptView.agent_block(
-             TranscriptView.agent_footer(agent),
-             Styles.role(:muted)
-           )
+         block: TranscriptView.rule(TranscriptView.agent_footer(agent))
        }, max(h, 1)}
     ]
   end
@@ -4193,17 +4118,16 @@ defmodule CodingAgent.UI.Tui do
   end
 
   defp entry_widgets({:tool, id, name, content}, w, _open_id) do
-    # rect covers content + border rows only (h - air); the air rows
-    # below stay background — same convention as assistant entries
+    # rect covers the header + content rows only (h - air); the air row
+    # below stays background — same convention as assistant entries
     h = TranscriptView.height({:tool, id, name, content}, w, id) - TranscriptView.air()
 
     widget = %Paragraph{
-      text: "▾ #{name}\n" <> content,
-      style: Styles.role(:muted),
-      block: Styles.panel(title: " tool output ")
+      text: "▾ #{name}\n" <> TranscriptView.indent(content),
+      style: Styles.role(:muted)
     }
 
-    [{widget, h}]
+    [{widget, max(h, 1)}]
   end
 
   # Compaction/notice lines carry the agent that triggered them; a bare
@@ -4483,7 +4407,8 @@ defmodule CodingAgent.UI.Tui do
       # session's (the row must name the model the NEXT input would use)
       model: Map.get(state, :next_agent_model) || Map.get(state, :model),
       note: esc_hint(state) || Map.get(state, :menu_note),
-      diagnostics: if(Map.get(state, :debug_visible?, false), do: scroll_diagnostics(state))
+      diagnostics: if(Map.get(state, :debug_visible?, false), do: scroll_diagnostics(state)),
+      tab_line: tab_line(state)
     )
   end
 
@@ -4767,30 +4692,36 @@ defmodule CodingAgent.UI.Tui do
   # that popup, not by clicking (the bar is read-only, like the band).
   @tab_bar_cap 5
 
-  defp tab_bar(state) do
+  # The subagent tab strip is part of the bottom box: `Composer.placements/2`
+  # renders it inside the composer's rect (with the panel's padding), and
+  # `Composer.height/1` counts it. `nil` when no child tab exists, so a
+  # parent-only session has no strip at all.
+  defp tab_line(state) do
     subs = Map.get(state, :subagents, %{})
-    active_tab = active_tab_id(state)
 
-    {running, finished} =
-      subs
-      |> Enum.sort_by(fn {_id, c} -> Map.get(c, :agent) end)
-      |> Enum.split_with(fn {_id, c} -> not Map.get(c, :finished?, false) end)
+    if map_size(subs) == 0 do
+      nil
+    else
+      active_tab = active_tab_id(state)
 
-    shown = Enum.take(running, @tab_bar_cap)
-    hidden_running = length(running) - length(shown)
+      {running, finished} =
+        subs
+        |> Enum.sort_by(fn {_id, c} -> Map.get(c, :agent) end)
+        |> Enum.split_with(fn {_id, c} -> not Map.get(c, :finished?, false) end)
 
-    labels = ["primary" | Enum.map(shown, fn {_id, c} -> Map.get(c, :agent) end)]
+      shown = Enum.take(running, @tab_bar_cap)
+      hidden_running = length(running) - length(shown)
 
-    counts =
-      [{hidden_running, "running"}, {length(finished), "finished"}]
-      |> Enum.reject(fn {n, _} -> n == 0 end)
+      labels = ["primary" | Enum.map(shown, fn {_id, c} -> Map.get(c, :agent) end)]
 
-    # the row is on the chrome surface (above the composer); Styles owns
-    # the roles and the accent-vs-muted split
-    %Paragraph{
-      text: Styles.tab_line(labels, active_tab_name(state, active_tab), counts),
-      style: Styles.surface(:chrome)
-    }
+      counts =
+        [{hidden_running, "running"}, {length(finished), "finished"}]
+        |> Enum.reject(fn {n, _} -> n == 0 end)
+
+      # the row is on the chrome surface (inside the composer panel);
+      # Styles owns the roles and the accent-vs-muted split
+      Styles.tab_line(labels, active_tab_name(state, active_tab), counts)
+    end
   end
 
   # the agent name of the active tab (nil = the primary tab), so the
@@ -4907,10 +4838,11 @@ defmodule CodingAgent.UI.Tui do
       # the whole panel carries the sidebar fill, so the gaps between
       # role-styled spans are filled too (a patchy fill looked broken)
       style: Styles.surface(:sidebar),
-      # NO title: the heading is the first BODY line (see above). The
-      # panel keeps one border — the separating rule against the
-      # transcript, not a frame.
-      block: Styles.panel(borders: [:right], surface: :sidebar)
+      # NO title and no border: the heading is the first BODY line (see
+      # above), and the panel's grey fill against the transcript's
+      # default background is the separation. A `[:right]` rule drew a
+      # column the fill already draws.
+      block: Styles.panel(borders: [], surface: :sidebar)
     }
   end
 

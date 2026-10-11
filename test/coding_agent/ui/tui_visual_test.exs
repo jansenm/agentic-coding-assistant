@@ -109,17 +109,24 @@ defmodule CodingAgent.UI.TuiVisualTest do
     refute Enum.any?(st.transcript, &match?({:reasoning, _}, &1))
   end
 
-  test "assistant box footer shows the turn's agent name, not the neutral label", %{pid: pid} do
+  test "the assistant's rule carries the turn's agent name, not the neutral label", %{pid: pid} do
     # A fresh session's turn_agents is empty until the local send path
-    # records a name; the box footer must still show the agent the session
-    # resolved for this turn ({:turn_started, ...}), not fall back to the
-    # neutral "agent" label.
+    # records a name; the rule's label must still show the agent the
+    # session resolved for this turn ({:turn_started, ...}), not fall back
+    # to the neutral "agent" label.
     agent(pid, {:turn_started, "build"})
     agent(pid, {:llm_message, "the answer"})
 
-    buffer = Enum.join(buffer(pid), "\n")
+    rows = buffer(pid)
+    buffer = Enum.join(rows, "\n")
     assert buffer =~ "build"
-    refute buffer =~ "agent╯"
+    # no frame: the label rides the rule itself
+    refute buffer =~ "╯"
+    refute buffer =~ "╰"
+
+    rule_row = Enum.find(rows, &String.contains?(&1, "build"))
+    assert rule_row =~ "─"
+    assert rule_row =~ "build"
   end
 
   test "assistant entries breathe: blank line after headings", %{pid: pid} do
@@ -149,11 +156,12 @@ defmodule CodingAgent.UI.TuiVisualTest do
     assert String.ends_with?(capped, "line 59\nline 60")
 
     h = TranscriptView.height({:tool, id, "shell", capped}, 78, id)
-    # capped content (22 lines) + borders (2) + air (3)
-    assert h <= 27
+    # capped content (22 lines) + the header row + 1 air
+    assert h <= 24
   end
 
-  test "open tool box never overlaps the next entry (border rows counted)", %{pid: pid} do
+  test "the expanded tool is a header + indented body, and the next entry starts below it",
+       %{pid: pid} do
     agent(pid, {:tool_executed, "glob", "lib/coding_agent.ex"})
     agent(pid, {:llm_message, "# Answer\n\nHere is the result of the glob."})
 
@@ -166,19 +174,29 @@ defmodule CodingAgent.UI.TuiVisualTest do
     entries = st.transcript
     [tool_h, answer_h] = for e <- entries, do: TranscriptView.height(e, 100, tool_id)
 
-    # the box needs: border(2) + its 2 text rows; measured height covers
-    # text + border + air — so the widget rect (h - air) fits the box
-    # exactly and the answer starts BELOW it
-    assert tool_h - TranscriptView.air() >= 4
+    # no frame: the measured height is the header row, the content rows
+    # and the air row — nothing else to reserve
+    assert tool_h - TranscriptView.air() >= 2
     # sanity: answer is fully below the tool block
     assert answer_h >= 1
+
+    rows = buffer(pid)
+    refute Enum.join(rows, "\n") =~ "tool output"
+    # the header is present and the body is indented relative to it
+    header = Enum.find_index(rows, &String.contains?(&1, "▾ glob"))
+    assert header != nil
+    body = Enum.find_index(rows, &String.contains?(&1, "  lib/coding_agent.ex"))
+    assert body == header + 1
+    assert Enum.at(rows, header) |> String.contains?("▾ glob")
   end
 
-  test "open tool straddling the pane top windows its content (box exits, no phantom frame)", %{
+  test "an open tool taller than the pane scrolls its content out; nothing re-anchors", %{
     pid: pid
   } do
-    # 40-line tool content (no trailing blanks needed) + answer: total
-    # exceeds the 80x24 test pane (15 rows) so the box straddles the top
+    # 40-line tool content + answer: total exceeds the pane, so the tool
+    # block's top rows are legitimately above the view. There is no top
+    # border to re-anchor any more: the header scrolls away with its
+    # content instead of sticking to the pane's first row.
     content = Enum.map_join(1..40, "\n", &"row #{&1}")
     agent(pid, {:tool_executed, "read_file", content})
     agent(pid, {:llm_message, "# Answer\n\nDone."})
@@ -189,17 +207,20 @@ defmodule CodingAgent.UI.TuiVisualTest do
     {:tool, id, _, _} = Enum.find(st.transcript, &match?({:tool, _, _, _}, &1))
     assert st.open_tool_id == id
 
-    # follow mode: the box is taller than the pane → its top rows
-    # (border + title) are legitimately above the view; the windowed
-    # widget must still show the ▾ header row of the content, i.e. the
-    # content scroll is (skipped - chrome), not skipped
     entries = st.transcript
     total = Enum.sum(for e <- entries, do: TranscriptView.height(e, 100, st.open_tool_id))
     pane_h = st.last_pane_height
-    top = max(total - pane_h - min(st.scroll_offset, max(total - pane_h, 0)), 0)
-    skipped = top
-    # border chrome consumed the first skipped row; the rest scrolls content
+    skipped = max(total - pane_h - min(st.scroll_offset, max(total - pane_h, 0)), 0)
     assert skipped >= 1
+
+    rows = buffer(pid)
+    # the header is above the view: it must not be glued to the pane top
+    refute Enum.any?(rows, &String.contains?(&1, "▾ read_file"))
+    # ...and the content that IS in view is the tool's own tail
+    assert Enum.any?(rows, &String.contains?(&1, "row 40"))
+    # no frame glyph anywhere: nothing to re-anchor
+    refute Enum.join(rows, "\n") =~ "╭"
+    refute Enum.join(rows, "\n") =~ "╰"
   end
 
   test "cap_lines trims trailing blank lines before capping", %{pid: pid} do
@@ -302,10 +323,11 @@ defmodule CodingAgent.UI.TuiVisualTest do
     # the sidebar's first content row is its scope heading (it was the
     # "status" title until O4 — the heading is a body line now, flush
     # with the panel content instead of floating one cell in from the
-    # border); the border column is still drawn at the input row
-    # (full-height span)
+    # border). Nothing rules the column off any more: the panel's grey
+    # FILL against the transcript's background is the separation, so the
+    # full-height claim lives in the cell assertions (tui_cells_test).
     assert rows |> Enum.at(1) |> String.contains?(sidebar_heading())
-    assert rows |> Enum.at(26) |> String.contains?("│")
+    refute Enum.any?(rows, &String.contains?(&1, "│"))
 
     # floor: empty input = 4 rows; typing 5 lines grows the box
     ExRatatui.textarea_insert_str(
@@ -364,9 +386,11 @@ defmodule CodingAgent.UI.TuiVisualTest do
     rows = buffer(pid)
     refute rows |> Enum.at(1) |> String.contains?(sidebar_heading())
     refute Enum.join(rows, "\n") =~ "provider:"
-    # and no border column anywhere: the panel is out of the layout, not
-    # painted empty
-    refute Enum.any?(rows, &String.contains?(&1, "│"))
+    # and the panel is out of the layout, not painted empty. (There is no
+    # rule glyph left to check — the panel is a filled column now — so
+    # this is the symbol-level half; the fill is asserted in
+    # tui_cells_test.)
+    refute rows |> Enum.at(1) |> String.contains?(sidebar_heading())
   end
 
   test "approval dialog: cleared background, above status, capped width" do

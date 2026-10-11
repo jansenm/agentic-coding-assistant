@@ -74,6 +74,36 @@ defmodule CodingAgent.UI.ComposerTest do
       assert meta_rect.y == text_rect.y + text_rect.height + 1
     end
 
+    test "the tab strip is the panel's first row, on the same padding" do
+      rect = %Rect{x: 5, y: 10, width: 40, height: 7}
+
+      tabbed = composer(tab_line: Text.Line.new([Text.Span.new("[primary]")]))
+
+      # one row taller than without a strip, and the strip is a body row
+      # INSIDE the panel — same x and width as the field, not flush with
+      # the pane edge
+      assert Composer.height(tabbed) == Composer.height(composer()) + 2
+
+      [fill, tab, text, meta] = Composer.placements(tabbed, rect)
+      assert {%Paragraph{}, ^rect} = fill
+      assert {%Paragraph{}, tab_rect} = tab
+      assert {%Textarea{}, text_rect} = text
+      assert {%Paragraph{}, _meta_rect} = meta
+
+      assert tab_rect.y == rect.y + 1
+      assert tab_rect.x == text_rect.x
+      assert tab_rect.width == text_rect.width
+      # one blank row between the strip and the field
+      assert text_rect.y == tab_rect.y + tab_rect.height + 1
+    end
+
+    test "no strip, no widget: a parent-only session gains no row" do
+      rect = %Rect{x: 0, y: 0, width: 40, height: 6}
+
+      assert [{_, ^rect}, {%Textarea{}, _}, {%Paragraph{}, _}] =
+               Composer.placements(composer(), rect)
+    end
+
     test "the fill's block is a borderless chrome surface (the 'no frame' report)" do
       %Paragraph{block: block} =
         elem(hd(Composer.placements(composer(), %Rect{width: 20, height: 6})), 0)

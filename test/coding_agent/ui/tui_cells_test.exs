@@ -53,11 +53,9 @@ defmodule CodingAgent.UI.TuiCellsTest do
     assert length(filled_cols) > 40
 
     # the TYPED text (not the identity line): stated white, on the fill —
-    # the identity spans keep their own semantic roles
-    ExRatatui.textarea_insert_str(sync(pid).textarea, "hello")
-    # paint the edit: a key event renders synchronously (a direct state
-    # edit does not)
-    key(pid, "shift")
+    # the identity spans keep their own semantic roles. TYPE it (key
+    # events render synchronously; a direct state edit does not paint)
+    for ch <- ["h", "e", "l", "l", "o"], do: key(pid, ch)
     snapshot = cells(session)
 
     typed =
@@ -66,7 +64,7 @@ defmodule CodingAgent.UI.TuiCellsTest do
     assert typed != nil
 
     # find the column by CELL, not by byte offset: the row string is
-    # UTF-8 and the sidebar's │ is 3 bytes (a byte index would be off)
+    # UTF-8 and a 3-byte glyph earlier in the row would shift a byte index
     col =
       Enum.find(0..(snapshot.width - 1), fn c ->
         Enum.map_join(c..(c + 4), "", &cell(snapshot, typed, &1).symbol) == "hello"
@@ -78,8 +76,8 @@ defmodule CodingAgent.UI.TuiCellsTest do
     assert h.fg == {:indexed, 255}
     assert h.bg == fill
 
-    # ...and no frame glyphs inside the composer's own pane (the sidebar
-    # keeps ITS right border — that is a different surface)
+    # ...and no frame glyphs anywhere in the composer's own pane (the
+    # sidebar is a different surface and has no rule either)
     pane = Enum.map_join(37..(snapshot.width - 2), "", &cell(snapshot, row, &1).symbol)
     refute pane =~ "╭"
     refute pane =~ "╰"
@@ -127,9 +125,8 @@ defmodule CodingAgent.UI.TuiCellsTest do
     band = Enum.find(0..(snapshot.height - 1), &String.contains?(row_text(snapshot, &1), "idle"))
     assert band != nil
 
-    # the band rect starts at the sidebar's right border; its first cell
-    # is the LEFT padding, and the status text begins one cell later (the
-    # left "│" column is the sidebar's own border, not the band)
+    # the band rect starts where the sidebar's column ends; its first
+    # cell is the LEFT padding, and the status text begins one cell later
     assert cell(snapshot, band, 37).symbol == " "
     assert cell(snapshot, band, 38).symbol != " "
     assert String.starts_with?(row_text(snapshot, band) |> String.slice(37..-1//1), " ○ idle")
@@ -237,7 +234,7 @@ defmodule CodingAgent.UI.TuiCellsTest do
 
   # The sidebar's identity block (the redesign): the scope heads the panel
   # as a BOLD body line (not a Block title floating one cell in from the
-  # border), and the model spec is split into its two halves so neither is
+  # fill), and the model spec is split into its two halves so neither is
   # clipped. Both facts are colour/column facts, so they are asserted on
   # the cell buffer.
   test "the sidebar heads with a bold scope and splits model from provider" do
@@ -284,7 +281,7 @@ defmodule CodingAgent.UI.TuiCellsTest do
   end
 
   # The column a substring starts at, in graphemes (a row string is UTF-8
-  # and the panel's border "│" is 3 bytes — a byte offset would be off).
+  # and the tree glyph "▸" is 3 bytes — a byte offset would be off).
   defp grapheme_col(row, needle) do
     {at, _len} = :binary.match(row, needle)
     row |> binary_part(0, at) |> String.graphemes() |> length()

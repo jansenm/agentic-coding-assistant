@@ -13,6 +13,8 @@ defmodule CodingAgent.UI.Composer do
   ## Geometry (the "gepresst" report)
 
       +--------------------------------------------+  <- chrome fill, WHOLE rect
+      |  [primary]  explore                         |  <- TAB row (only once a child exists)
+      |                                             |  <- one blank row of air
       |  <textarea>                                 |  <- 1-cell padding
       |                                             |  <- one blank row of air
       |  build · model …                            |  <- SETUP row: next input
@@ -21,9 +23,15 @@ defmodule CodingAgent.UI.Composer do
   There is deliberately NO border — a frame around the field read as
   "c64". The block that paints is a pure FILL: it carries the surface's
   background over the whole rect, one cell WIDER than the fields inside
-  it, and the fields (textarea, meta) sit inside the padding. That is
-  the "the background goes on past the fields" shape: the surface reads
-  as one panel, the text as something standing in it.
+  it, and the fields (tab row, textarea, meta) sit inside the padding.
+  That is the "the background goes on past the fields" shape: the
+  surface reads as one panel, the text as something standing in it.
+
+  The TAB row is part of this panel, not a region of its own: everything
+  in the bottom box answers "how do I plan the next move" (which view,
+  which agent, which model), so it is one information unit with one
+  padding. It used to be a separate layout row flush with the pane edge,
+  which is why it alone had no padding.
 
   The meta row is REAL content on its own row, not a `Block` title on
   the field: a title paints over the last row of its rect (F6), which is
@@ -68,6 +76,9 @@ defmodule CodingAgent.UI.Composer do
   # one blank row between the typed text and the meta row
   @gap 1
 
+  # one blank row between the tab row and the field
+  @tab_gap 1
+
   @type t :: %__MODULE__{
           textarea: reference() | nil,
           placeholder: String.t(),
@@ -75,6 +86,7 @@ defmodule CodingAgent.UI.Composer do
           model: String.t() | nil,
           note: String.t() | nil,
           diagnostics: String.t() | nil,
+          tab_line: ExRatatui.Text.Line.t() | nil,
           max_lines: pos_integer()
         }
 
@@ -84,7 +96,26 @@ defmodule CodingAgent.UI.Composer do
             model: nil,
             note: nil,
             diagnostics: nil,
+            tab_line: nil,
             max_lines: @max_lines
+
+  # Rows the tab strip adds to the panel when a child tab exists: the row
+  # itself plus the blank row under it. ONE definition — the height and
+  # the layout split both read it, so they cannot disagree.
+  @tab_block 1 + @tab_gap
+
+  @doc """
+  The height of the tab strip (0 when there is none) — part of the
+  panel's height, because the strip IS part of the panel.
+  """
+  @spec tab_height(t()) :: non_neg_integer()
+  def tab_height(%__MODULE__{tab_line: nil}), do: 0
+  def tab_height(%__MODULE__{}), do: @tab_block
+
+  # The strip as layout segments (empty when there is no strip).
+  defp strip_segments(%__MODULE__{tab_line: nil}), do: []
+
+  defp strip_segments(%__MODULE__{}), do: [{:length, 1}, {:length, @tab_gap}]
 
   @doc "Builds a composer from resolved values (see the moduledoc)."
   @spec new(keyword()) :: t()
@@ -92,35 +123,43 @@ defmodule CodingAgent.UI.Composer do
 
   @doc """
   The panel height (the measure side of the measure/paint contract): the
-  typed lines (clamped), plus one blank row, the meta row and the
-  padding ring.
+  typed lines (clamped), the tab strip when one exists, and the padding
+  ring; inside it, one blank row under the tab strip and one under the
+  field.
   """
   @spec height(t()) :: pos_integer()
   def height(%__MODULE__{} = composer) do
-    @padding + min(text_lines(composer), composer.max_lines) + @gap + 1 + @padding
+    @padding +
+      tab_height(composer) +
+      min(text_lines(composer), composer.max_lines) +
+      @gap +
+      1 +
+      @padding
   end
 
   @doc """
   The floor height (an empty composer) — the state-side math before any
-  render, and without a textarea.
+  render, and without a textarea or a tab strip.
   """
   @spec min_height() :: pos_integer()
   def min_height, do: @padding + @lines + @gap + 1 + @padding
 
   @doc """
   Places the composer into `rect` and returns `{widget, rect}` tuples for
-  `ExRatatui.draw/2` — fill first (bottom layer), then the fields on top.
+  `ExRatatui.draw/2` — fill first (bottom layer), then the strip and the
+  fields on top.
   """
   @spec placements(t(), Rect.t()) :: [{ExRatatui.widget(), Rect.t()}]
   def placements(%__MODULE__{} = composer, %Rect{} = rect) do
     inner = inset(rect)
-    {text_area, meta_area} = split(inner)
+    {tab_area, text_area, meta_area} = split(composer, inner)
 
-    [
-      {fill(), rect},
-      {textarea_widget(composer), text_area},
-      {meta_widget(composer), meta_area}
-    ]
+    [{fill(), rect}] ++
+      tab_widgets(composer, tab_area) ++
+      [
+        {textarea_widget(composer), text_area},
+        {meta_widget(composer), meta_area}
+      ]
   end
 
   defp text_lines(%{textarea: nil}), do: @lines
@@ -129,6 +168,14 @@ defmodule CodingAgent.UI.Composer do
   # the surface: a borderless block whose style fills its whole rect —
   # a widget-level bg would only paint the rows a widget writes (F4)
   defp fill, do: %Paragraph{text: "", block: Styles.panel(borders: [], surface: :chrome)}
+
+  # the tab strip, or nothing at all when no child tab exists. It is a
+  # body row on the same padding as the rest of the panel (the fill
+  # underneath carries the surface).
+  defp tab_widgets(%__MODULE__{tab_line: nil}, _area), do: []
+
+  defp tab_widgets(%__MODULE__{tab_line: line}, area),
+    do: [{%Paragraph{text: line, style: Styles.surface(:chrome)}, area}]
 
   defp inset(rect) do
     %Rect{
@@ -139,13 +186,33 @@ defmodule CodingAgent.UI.Composer do
     }
   end
 
-  # the inner area minus the air row and the meta row is the textarea's
-  defp split(inner) do
-    case Layout.split(inner, :vertical, [{:min, 0}, {:length, @gap}, {:length, 1}]) do
-      [text_area, _gap, meta] -> {text_area, meta}
-      _ -> {inner, inner}
+  # The panel, top to bottom: the tab strip (one row + one blank row,
+  # only when it exists), the field, one blank row, the meta row. One
+  # split, so the strip can never claim a row the height did not count —
+  # and, because it is a segment of the SAME inner rect, it inherits the
+  # panel's padding instead of being indented per line.
+  defp split(composer, inner) do
+    case strip_segments(composer) do
+      [] ->
+        case Layout.split(inner, :vertical, [{:min, 0}, {:length, @gap}, {:length, 1}]) do
+          [text_area, _gap, meta] -> {empty_rect(inner), text_area, meta}
+          _ -> {empty_rect(inner), inner, inner}
+        end
+
+      strip ->
+        segments = strip ++ [{:min, 0}, {:length, @gap}, {:length, 1}]
+
+        case Layout.split(inner, :vertical, segments) do
+          [tab_area, _strip_gap, text_area, _gap, meta] ->
+            {tab_area, text_area, meta}
+
+          _ ->
+            {empty_rect(inner), inner, inner}
+        end
     end
   end
+
+  defp empty_rect(%Rect{} = rect), do: %Rect{rect | height: 0}
 
   defp textarea_widget(composer) do
     %Textarea{
