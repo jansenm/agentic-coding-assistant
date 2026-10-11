@@ -209,7 +209,7 @@ defmodule CodingAgent.UI.TuiVisualTest do
 
     entries = st.transcript
     total = Enum.sum(for e <- entries, do: TranscriptView.height(e, 100, st.open_tool_id))
-    pane_h = st.last_pane_height
+    pane_h = CodingAgent.UI.Tui.pane_rect(st).height
     skipped = max(total - pane_h - min(st.scroll_offset, max(total - pane_h, 0)), 0)
     assert skipped >= 1
 
@@ -316,7 +316,7 @@ defmodule CodingAgent.UI.TuiVisualTest do
 
   test "sidebar spans the full window height and the input grows while typing" do
     pid = start_tui({100, 30})
-    # seed deterministic pane dims (live resize polling is off in test_mode)
+    # first poll: paints the frame the assertions below read
     fire(pid, :__resize_poll__)
 
     rows = buffer(pid)
@@ -391,6 +391,92 @@ defmodule CodingAgent.UI.TuiVisualTest do
     # this is the symbol-level half; the fill is asserted in
     # tui_cells_test.)
     refute rows |> Enum.at(1) |> String.contains?(sidebar_heading())
+  end
+
+  test "the pane geometry the reader measures is the one the painter painted" do
+    # measure = paint, from OUTSIDE: `Tui.pane_rect/1` is the pane the
+    # hit-test, the clamp and the diagnostics use, and it must be the rect
+    # the frame actually paints at — rows above `y` belong to the app
+    # margin, rows at `y + height` and below to the band/composer.
+    #
+    # The two dimensions a stored number could not know are the ones that
+    # move: the sidebar (+36 columns) and the composer (the tab strip adds
+    # two rows). Asserted over the sizes where the reading measure is
+    # actually reached, because the widths differ there too.
+    for {w, h} <- [{100, 30}, {160, 30}, {80, 24}], tabs <- [false, true] do
+      pid = start_tui({w, h})
+      fire(pid, :__resize_poll__)
+
+      if tabs do
+        child = %{
+          agent: "explore",
+          model: "m",
+          finished?: false,
+          transcript: [{:info, "child"}],
+          stream: [],
+          open_tool_id: nil,
+          scroll_offset: 0
+        }
+
+        :sys.replace_state(pid, &put_in(&1.user_state.subagents, %{"c1" => child}))
+      end
+
+      agent(pid, {:llm_message, "A\nB\nC\nD"})
+
+      pane = Tui.pane_rect(sync(pid))
+      assert pane.y >= 1
+      assert pane.y + pane.height < h
+
+      rows = buffer(pid)
+
+      # the answer is painted INSIDE the pane rows and nowhere above them
+      assert Enum.any?(pane.y..(pane.y + pane.height - 1), fn row ->
+               String.contains?(Enum.at(rows, row), "A")
+             end)
+
+      refute Enum.any?(0..(pane.y - 1), &String.contains?(Enum.at(rows, &1), "A"))
+    end
+  end
+
+  test "the pane the readers measure follows the composer, with no resize" do
+    # The stale-offset family (N94): the clamp and the diagnostics used to
+    # read the pane size from state, which the render path refreshed only
+    # on a resize (and, in the old code, on an edit). Anything else that
+    # moved the pane between two resizes left the readers measuring an
+    # older pane. Now no reader stores a dimension: `pane_rect/1` derives
+    # it, so this asserts the derived rect against the painted rows.
+    pid = start_tui({100, 30}, sidebar: false)
+    fire(pid, :__resize_poll__)
+
+    sid = sync(pid).session_id
+    for i <- 1..80, do: agent(pid, sid, {:info, "line #{i}"})
+
+    painted_rows = fn ->
+      rows = buffer(pid)
+      indexes = for {t, r} <- Enum.with_index(rows), String.contains?(t, "line "), do: r
+      {Enum.min(indexes), Enum.max(indexes)}
+    end
+
+    # 80 one-row entries (plus the air row each block carries): far taller
+    # than the pane, so the transcript fills every painted row. The last
+    # entry's air row is blank, which is why the bottom text row is one
+    # above the pane's edge.
+    pane = Tui.pane_rect(sync(pid))
+    assert painted_rows.() == {pane.y, pane.y + pane.height - 2}
+
+    # grow the composer by four rows (five typed lines: the field's floor
+    # is two, so 5 lines add three rows and the box's own padding accounts
+    # for the rest) — no resize event, no resize poll
+    sync(pid).textarea |> ExRatatui.textarea_insert_str("l1\nl2\nl3\nl4\nl5")
+    fire(pid, :__resize_poll__)
+
+    st = sync(pid)
+    pane = Tui.pane_rect(st)
+
+    assert pane.height == 18 - 4
+    # ...and the painted transcript moved with it: the reader and the
+    # painter agree on where the pane starts and how tall it is
+    assert painted_rows.() == {pane.y, pane.y + pane.height - 2}
   end
 
   test "approval dialog: cleared background, above status, capped width" do

@@ -34,9 +34,10 @@ defmodule CodingAgent.UI.TuiAccordionTest do
   test "click on a collapsed tool header opens THAT block", %{pid: pid} do
     send(pid, {:agent, {:tool_executed, "read_file", "one line"}})
 
-    # entries are placed TOP-anchored in the pane; frame row 0 is the
-    # app margin, so the first pane row is frame row 1
-    y = 1
+    # one entry, placed at the pane's top row — the pane starts at the
+    # app margin, one cell in (NOT a hard-coded row 1: the geometry is
+    # `Tui.pane_rect/1`)
+    y = Tui.pane_rect(sync(pid)).y
 
     click(pid, 5, y)
     assert sync(pid).open_tool_id != nil
@@ -45,20 +46,23 @@ defmodule CodingAgent.UI.TuiAccordionTest do
   test "click below the transcript pane (input area) does nothing", %{pid: pid} do
     send(pid, {:agent, {:tool_executed, "read_file", "one line"}})
 
-    # 24-row terminal: transcript rows are 0..18; 20 is input area
-    click(pid, 5, 20)
+    # 24-row terminal: one entry fills the first pane row; the row just
+    # BELOW the pane is the air row above the live band, never the
+    # transcript
+    pane = Tui.pane_rect(sync(pid))
+    click(pid, 5, pane.y + pane.height + 1)
     assert sync(pid).open_tool_id == nil
   end
 
   test "the clickable row IS the painted header row, with the sidebar on and wrapping above", %{
     pid: pid
   } do
-    # Regression (measured live): the hit-test measured entries at
-    # `terminal - 4` while the renderer paints at `measure | main - 2 -
-    # sidebar - 2` — 96 vs 60 at 100x30 with the sidebar on. The wrapped
-    # answer above the tool therefore reserved fewer rows than it
-    # painted, and the tool's hit band sat ROWS ABOVE its header: the
-    # click landed on the line above the one the human aimed at.
+    # Regression (measured live): the hit-test measured entries at a
+    # different width than the painter AND mapped the click through a
+    # hard-coded pane offset of 1. The wrapped answer above the tool
+    # therefore reserved fewer rows than it painted (96 vs 60 columns at
+    # 100x30 with the sidebar on), and the pane origin was a guess: the
+    # click landed on the WRONG FRAME ROW.
     #
     # The terminal here is 80 wide and the sidebar is ON (the default),
     # so the two widths differ by 36 columns.
@@ -70,6 +74,11 @@ defmodule CodingAgent.UI.TuiAccordionTest do
     header_row = Enum.find_index(rows, &String.contains?(&1, "▸ shell"))
     assert header_row != nil
 
+    # the painted row is the pane's own row: the geometry says where the
+    # pane starts, and the hit-test reads the same rect
+    pane = Tui.pane_rect(sync(pid))
+    assert header_row >= pane.y
+
     # clicking the painted header row opens it
     click(pid, 5, header_row)
     assert sync(pid).open_tool_id != nil
@@ -80,7 +89,7 @@ defmodule CodingAgent.UI.TuiAccordionTest do
 
     # the rows just above the header belong to the answer, not the tool:
     # this is what the width bug broke (the band reached into them)
-    for y <- [header_row - 1, header_row - 2], y >= 1 do
+    for y <- [header_row - 1, header_row - 2], y >= pane.y do
       click(pid, 5, y)
       assert sync(pid).open_tool_id == nil, "row #{y} (above the header) opened the tool"
     end

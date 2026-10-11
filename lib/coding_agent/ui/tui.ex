@@ -75,22 +75,18 @@ defmodule CodingAgent.UI.Tui do
   @spin_ms 120
   @spin_tick :__spin__
 
-  # rows the transcript pane loses to chrome: app margin top+bottom (2)
-  # + spacing above/below it (2) + the live band + composer panel. Kept
-  # in one place so the manual dimension math
-  # (mount/poller/resize/clamp) agrees with the layout; render-side and
-  # live handlers use layout_overhead(state). The heights live in
-  # `UI.LiveBand.height/0` and `UI.Composer.height/1` (measure = paint).
-  @layout_overhead 2 + 2 + LiveBand.height() + Composer.min_height()
-
-  # The bottom box's height (UI.Composer.height/1 — measure = paint): it
-  # includes the tab strip when a child tab exists, so the pane height
+  # The bottom box's height (UI.Composer.height_for/3 — measure = paint):
+  # it includes the tab strip when a child tab exists, so the pane height
   # drops by that row with it.
-  defp input_height(state), do: Composer.height(composer(state))
-
-  defp layout_overhead(state) do
-    2 + 2 + LiveBand.height() + input_height(state)
-  end
+  #
+  # This reads the composer's height from the facts it depends on — "is
+  # there a tab?" and the textarea's line count — and NOT from the built
+  # composer. That is not a style choice: `composer/1` puts the scroll
+  # diagnostics on the meta row, and the diagnostics measure the
+  # transcript pane, which needs this height. Building the composer to
+  # measure the pane would recurse forever.
+  defp input_height(state),
+    do: Composer.height_for(map_size(Map.get(state, :subagents, %{})) > 0, state.textarea)
 
   # The room every OVERLAY (menu, approval, budget, doom, question) has:
   # the rows above the live band. An overlay may cover the transcript (the
@@ -127,13 +123,12 @@ defmodule CodingAgent.UI.Tui do
   end
 
   # The app's breathing room: 1 cell of background on every side of the
-  # frame (`Layout.split margin: 1`) and the 1-cell inset the transcript
-  # pane keeps inside its own rect (`place_entries/4`: x + @inset, width
-  # - 2 * @inset). Named here because the pane geometry below must
-  # reproduce them for the hit-test, the clamp and the diagnostics —
-  # measuring a different width than the painter is the hit-test's width
-  # bug.
-  @margin 1
+  # frame (`Layout.split margin: 1`, spelled there because the layout
+  # helper owns it) and the 1-cell inset the transcript pane keeps inside
+  # its own rect (`place_entries/4`: x + @inset, width - 2 * @inset).
+  # Named here because the pane geometry below must reproduce them for
+  # the hit-test, the clamp and the diagnostics — measuring a different
+  # width than the painter is the hit-test's width bug.
   @inset 1
 
   # reading measure (typography): the eye loses the return-sweep past
@@ -194,24 +189,10 @@ defmodule CodingAgent.UI.Tui do
   end
 
   defp mount_picker(opts, sessions, prompt, root) do
-    {tw, th} =
-      case Keyword.get(opts, :test_mode) do
-        {w, h} when is_integer(w) and is_integer(h) ->
-          {w, h}
-
-        _ ->
-          case ExRatatui.terminal_size() do
-            {w, h} when is_integer(w) and is_integer(h) -> {w, h}
-            _ -> {80, 24}
-          end
-      end
-
     initial = %{
       session_id: nil,
       model: nil,
       session_usage: CodingAgent.Core.Session.Usage.new(),
-      last_total_width: tw,
-      last_pane_height: max(th - @layout_overhead, 1),
       status: :idle,
       transcript: [],
       # esc-to-quit confirm: first esc arms, second esc (within
@@ -354,30 +335,13 @@ defmodule CodingAgent.UI.Tui do
     id = id || Keyword.get(opts, :session_id) || CodingAgent.Core.Session.new_id()
 
     with {:ok, _pid, restored, notice} <- start_session(id, opts) do
-      # real terminal dimensions: captured at mount, kept fresh by a
-      # resize poller (the local transport never dispatches Resize
-      # events — nothing sends them, found live). In test_mode the
-      # terminal_size() NIF can't see the virtual terminal (it reads
-      # the HOST tty) — seed from the declared test size instead, or
-      # the clamp math diverges from the renderer (found via the
-      # straddle probes: clamp said 15 rows, renderer drew 31).
-      initial_size =
-        case Keyword.get(opts, :test_mode) do
-          {w, h} when is_integer(w) and is_integer(h) ->
-            {w, h}
-
-          _ ->
-            case ExRatatui.terminal_size() do
-              {w, h} when is_integer(w) and is_integer(h) -> {w, h}
-              _ -> {80, 24}
-            end
-        end
-
       # resize poll: the local transport dispatches no Resize events, so
-      # the live TUI polls the host tty. In test_mode that NIF would read
-      # the HOST terminal (nondeterministic) — skip the timer; tests seed
-      # deterministic pane dims from the declared size and may fire
-      # :__resize_poll__ explicitly.
+      # the live TUI polls the host tty. No dimension is stored — every
+      # reader derives its rect from the terminal size the runtime
+      # reports, the same source the frame is painted at. In test_mode
+      # the terminal_size() NIF would read the HOST terminal
+      # (nondeterministic), so the poll is skipped; the reader's
+      # `term_size/1` prefers the declared virtual size instead.
       unless Keyword.get(opts, :test_mode) do
         Process.send_after(self(), :__resize_poll__, 500)
       end
@@ -431,8 +395,6 @@ defmodule CodingAgent.UI.Tui do
       # (compaction summaries excluded) so an attached old session can
       # walk back through its past messages
       recall = (restored && restored_recall(restored)) || []
-
-      {tw, th} = initial_size
 
       # the session's ACTUAL model (opts may have been defaulted inside
       # Session.init): mirrored so the model menu marks "(current)"
@@ -506,8 +468,6 @@ defmodule CodingAgent.UI.Tui do
         next_agent_model: agent_model(session_scope(effective_id), session_agent(effective_id)),
         session_usage:
           CodingAgent.Core.Session.Usage.from_map(restored && Map.get(restored, :usage)),
-        last_total_width: tw,
-        last_pane_height: max(th - @layout_overhead, 1),
         status: status,
         transcript: history,
         # esc-to-quit confirm: first esc arms, second esc (within
@@ -983,38 +943,30 @@ defmodule CodingAgent.UI.Tui do
   # closes automatically — only one id is ever remembered). Click an
   # open block → close. The hit-test recomputes the viewport (a pure
   # function of state) through the SAME geometry the renderer paints with
-  # (`transcript_width/2` — widths measured differently was the bug that
-  # put the band rows above the header).
+  # (`pane_rect/1` — measuring differently was the bug that put the
+  # band rows above the header, and reading a stale copy of the pane size
+  # is how the row itself drifted).
   def handle_event(%Event.Mouse{kind: "down", button: "left", y: y}, state) do
-    # frame row 0 is the app margin; the transcript occupies the next
-    # transcript_visible_height rows
-    if y >= 1 and y <= transcript_visible_height(state) do
-      case block_at_row(state, y - 1) do
-        {:tool, id, _name, _content} ->
-          open = if active_open_id(state) == id, do: nil, else: id
-          {:noreply, put_open_id(state, open) |> clamp_scroll_now()}
+    # The click lands on a FRAME row; the hit-test works in the pane's
+    # own coordinates. Both come from the same `pane_rect/1`, so
+    # the row the human aimed at is the row the painter painted (N92/N94).
+    pane = pane_rect(state)
 
-        _ ->
-          {:noreply, state}
-      end
-    else
-      {:noreply, state}
+    case block_at_row(state, y - pane.y) do
+      {:tool, id, _name, _content} ->
+        open = if active_open_id(state) == id, do: nil, else: id
+        {:noreply, put_open_id(state, open) |> clamp_scroll_now()}
+
+      _ ->
+        {:noreply, state}
     end
   end
 
-  # Terminal dimensions arrive here (and on every actual resize).
-  # render/2 sees the frame but CANNOT persist state — every state
-  # update computed in render is discarded by the runtime. The
-  # last_pane_* values are authoritative only through this handler
-  # (found live: dims defaulted to 24/78 forever because render-side
-  # persistence was an illusion; the headless tests ran at exactly the
-  # default dims and never noticed).
-  def handle_event(%Event.Resize{width: width, height: height}, state) do
-    state =
-      state
-      |> Map.put(:last_total_width, width)
-      |> Map.put(:last_pane_height, max(height - layout_overhead(state), 1))
-
+  # A resize arrived. Nothing to store — every reader derives its rect
+  # from the terminal size the runtime reports (`term_size/1`), the same
+  # source the next frame is painted at. Only the scroll needs re-clamping
+  # against the new geometry.
+  def handle_event(%Event.Resize{}, state) do
     {:noreply, clamp_scroll_now(state)}
   end
 
@@ -2850,31 +2802,13 @@ defmodule CodingAgent.UI.Tui do
 
   # Apply ONE edit through the single executor (ADR 021). The raw
   # terminal event never reaches the crate; the intent is an action name
-  # or a text string. Then re-derive the pane: an edit can grow the input
-  # box (opencode-style), which changes the transcript pane height
-  # (measure/render agreement, as the resize handler does).
+  # or a text string. Then re-clamp: an edit can grow (or shrink) the
+  # input box (opencode-style), which changes the transcript pane height,
+  # and the offset accepted under the shorter pane may sit past the new
+  # one.
   defp edit(state, intent) do
     :ok = Editor.apply(state.textarea, intent)
-    rederive_pane(state)
-  end
-
-  defp rederive_pane(state) do
-    case pane_size(state) do
-      {w, h} ->
-        pane_h = max(h - layout_overhead(state), 1)
-
-        if state.last_total_width == w and state.last_pane_height == pane_h do
-          state
-        else
-          state
-          |> Map.put(:last_total_width, w)
-          |> Map.put(:last_pane_height, pane_h)
-          |> clamp_scroll_now()
-        end
-
-      _ ->
-        state
-    end
+    clamp_scroll_now(state)
   end
 
   # 5c: history navigation through the textarea value setter.
@@ -3341,9 +3275,10 @@ defmodule CodingAgent.UI.Tui do
 
     state = %{state | subagents: Map.put(state.subagents, child_id, sub)}
 
-    # the tab bar appears with the first child: re-derive the pane height
-    # so the transcript viewport matches what render/2 will paint (ADR 028)
-    {:noreply, rederive_pane(state)}
+    # the tab bar appears with the first child, which makes the composer
+    # one row taller: re-clamp so the offset accepted under the taller
+    # pane cannot sit past the shorter one (ADR 028)
+    {:noreply, clamp_scroll_now(state)}
   end
 
   def handle_info({:agent, {:subagent_finished, child_id, outcome}}, state) do
@@ -3431,27 +3366,20 @@ defmodule CodingAgent.UI.Tui do
       Process.send_after(self(), :__resize_poll__, 500)
     end
 
-    case pane_size(state) do
-      {w, h} ->
-        pane_h = max(h - layout_overhead(state), 1)
-
-        if state.last_total_width == w and state.last_pane_height == pane_h do
-          # unchanged size: nothing to repaint, so skip the frame. The
-          # 500ms idle poll was forcing a full render every tick (the
-          # transcript rebuild is O(session)), which read as the UI being
-          # busy while merely idle.
-          {:noreply, state, %{render?: false}}
-        else
-          state =
-            state
-            |> Map.put(:last_total_width, w)
-            |> Map.put(:last_pane_height, pane_h)
-
-          {:noreply, clamp_scroll_now(state)}
-        end
-
-      _ ->
-        {:noreply, state, %{render?: false}}
+    # The poll no longer TRACKS a pane size — it notices that the frame's
+    # geometry moved. The comparison is on the pane rect, because that is
+    # where every dimension that can change without a resize lands: the
+    # input box grows with the typed lines and the tab strip, and both
+    # move the transcript pane. A render-side change (a typed line, a new
+    # tab) can skip its own explicit render, and the poll catches it here
+    # instead of painting over it.
+    if last_pane_rect(state) == pane_rect(state) do
+      # unchanged: nothing to repaint, so skip the frame. The 500ms idle
+      # poll was forcing a full render every tick (the transcript rebuild
+      # is O(session)), which read as the UI being busy while merely idle.
+      {:noreply, state, %{render?: false}}
+    else
+      {:noreply, remember_pane_rect(clamp_scroll_now(state))}
     end
   end
 
@@ -3687,21 +3615,6 @@ defmodule CodingAgent.UI.Tui do
     end
   end
 
-  # Test mode reports its declared virtual size; production reads the tty.
-  defp pane_size(%{test_mode?: true} = state) do
-    case state.mount_opts[:test_mode] do
-      {w, h} when is_integer(w) and is_integer(h) -> {w, h}
-      _ -> :unknown
-    end
-  end
-
-  defp pane_size(_state) do
-    case ExRatatui.terminal_size() do
-      {w, h} when is_integer(w) and is_integer(h) -> {w, h}
-      _ -> :unknown
-    end
-  end
-
   # -- Rendering -------------------------------------------------------------
 
   @impl true
@@ -3718,53 +3631,19 @@ defmodule CodingAgent.UI.Tui do
   end
 
   defp render_main(state, frame) do
-    area = %Rect{x: 0, y: 0, width: frame.width, height: frame.height}
-
-    # breathing: 1 cell of background visible on every side of the app
-    # and between the two regions (opencode-comparison lesson: crammed
-    # vs airy is margins + spacing, not line height). The window's bottom
-    # row is the composer's own padding now (the bottom status row is
-    # gone), and the live band sits between the transcript and the field.
-    [main_area] =
-      Layout.split(area, :vertical, [{:min, 0}], margin: 1, spacing: 1)
-
-    # sidebar hidden: give the whole width to the transcript instead of
-    # painting an empty column (the pane stays usable on narrow panes)
-    {sidebar_area, mid_area} =
-      if Map.get(state, :sidebar_visible?, true) do
-        [sa, ma] = Layout.split(main_area, :horizontal, [{:length, @sidebar_width}, {:min, 0}])
-        {sa, ma}
-      else
-        {nil, main_area}
-      end
-
     in_h = input_height(state)
     band_h = LiveBand.height()
 
-    # input pane width: capped at the reading measure so a wide
-    # terminal doesn't stretch the input full width (user feedback)
-    [mid_area, _air_area] =
-      Layout.split(mid_area, :horizontal, [{:length, min(@measure, mid_area.width)}, {:min, 0}])
+    layout =
+      frame_layout(frame.width, frame.height, sidebar?(state), in_h, band_h)
 
-    # The tab strip is part of the COMPOSER's rect, not a layout row of
-    # its own: everything in the bottom box answers "how do I plan the
-    # next move", so it is one surface with one padding (owner decision
-    # 2026-10-11, superseding the 2026-09-30 "directly above the
-    # composer" placement — same position, one box). `input_height/1`
-    # already includes the strip when there is one.
-    #
-    # Stacked regions sharing ONE air row between them: transcript, the
-    # live band (what the running turn does), and the input box (what the
-    # next input uses). No borders in this stack — the air row separates
-    # them.
-    template = [{:min, 0}, {:length, 1}, {:length, band_h}, {:length, 1}, {:length, in_h}]
-
-    areas = Layout.split(mid_area, :vertical, template)
-
-    {transcript_area, band_area, input_area} =
-      case areas do
-        [tr, _air1, band, _air2, input] -> {tr, band, input}
-      end
+    %{
+      area: area,
+      sidebar: sidebar_area,
+      transcript: transcript_area,
+      band: band_area,
+      input: input_area
+    } = layout
 
     sidebar_widgets =
       if sidebar_area do
@@ -3913,7 +3792,7 @@ defmodule CodingAgent.UI.Tui do
   end
 
   defp place_entries(entries, pane, offset, open_id) do
-    w = content_width(max(pane.width - 2 * @inset, 10))
+    w = entry_width(pane.width)
 
     # ADR 028: the viewport measures LAZILY from the tail and returns the
     # clamped offset plus pane-relative positions. No eager total_height
@@ -3950,40 +3829,109 @@ defmodule CodingAgent.UI.Tui do
   # Measurement and rendering share this width (heights must match).
   defp content_width(w), do: min(w, @measure)
 
-  # -- pane geometry (ONE definition for paint AND every reader) ------------
+  # -- the frame's geometry (ONE definition for paint AND every reader) ---
   #
-  # The renderer derives the transcript pane from two decisions of its
-  # own: the sidebar claims @sidebar_width columns, and the mid column is
-  # capped at @measure. The mouse hit-test (`block_at_row/2`), the scroll
-  # clamp (`clamp_scroll_now/1`) and the scroll diagnostics must measure
-  # what the renderer PAINTS, or an entry's reserved rows disagree with
-  # its painted ones and every row-based reader lands on the wrong entry
-  # (measured: at 100x30 with the sidebar on, the readers used 96 while
-  # the painter used 60; a wrapped assistant entry reserved 4 rows and
-  # painted 5, so a tool's hit band sat one row above its header).
+  # The renderer decides the transcript pane from three things a stored
+  # number cannot know: the app's margin, whether the sidebar is up (it
+  # claims @sidebar_width columns), the reading measure (the mid column is
+  # capped at @measure), and the composer's height (it grows with the
+  # typed lines and the tab strip). Every reader that must measure what
+  # the painter painted — the mouse hit-test (`block_at_row/2`), the
+  # scroll clamp (`clamp_scroll_now/1`), the scroll diagnostics and the
+  # overlay room — therefore derives its rect from THIS function, from the
+  # terminal size the runtime reports plus the state it already has. Not
+  # from a copy of the pane size kept in state, which the render path may
+  # only refresh on a resize: a reader measuring a stale copy is exactly
+  # how the hit-test ended up at 96 columns while the painter used 60
+  # (N92), and how a transcript that only GREW between resizes stayed
+  # clamped against its older extent.
   #
-  # `total_width` is the full terminal width; `sidebar?` is the state's
-  # toggle. The renderer's numbers, in the same order:
-  #
-  #     main  = total - 2 * margin   (`Layout.split margin: 1`)
-  #     pane  = main - sidebar_width (when the sidebar is visible)
-  #     entry = min(@measure, pane) - 2 * inset
-  #
-  defp transcript_pane_width(total_width, sidebar?) do
-    total_width = if is_integer(total_width), do: total_width, else: 80
-    sidebar_w = if sidebar?, do: @sidebar_width, else: 0
-    min(@measure, max(total_width - 2 * @margin - sidebar_w, 4))
+  # `input_h` and `band_h` are passed in rather than recomputed so the
+  # render path builds the composer ONCE per frame and the readers do not
+  # build it at all: `composer/1` carries the scroll diagnostics, and the
+  # diagnostics need this geometry (via `input_height/1`). Two heights in,
+  # three rects out — no cycle.
+  defp frame_layout(total_width, total_height, sidebar?, input_h, band_h) do
+    area = %Rect{x: 0, y: 0, width: total_width, height: total_height}
+
+    # breathing: 1 cell of background on every side of the app and
+    # between the two regions (opencode-comparison lesson: crammed vs
+    # airy is margins + spacing, not line height)
+    [main_area] = Layout.split(area, :vertical, [{:min, 0}], margin: 1, spacing: 1)
+
+    [sidebar_area, mid_area] =
+      if sidebar? do
+        Layout.split(main_area, :horizontal, [{:length, @sidebar_width}, {:min, 0}])
+      else
+        [nil, main_area]
+      end
+
+    # the mid column is capped at the reading measure and then split
+    # vertically into (transcript, air, band, air, input)
+    [mid_area, _gutter] =
+      Layout.split(mid_area, :horizontal, [{:length, min(@measure, mid_area.width)}, {:min, 0}])
+
+    template = [{:min, 0}, {:length, 1}, {:length, band_h}, {:length, 1}, {:length, input_h}]
+
+    [transcript_area, _air1, band_area, _air2, input_area] =
+      Layout.split(mid_area, :vertical, template)
+
+    %{
+      area: area,
+      sidebar: sidebar_area,
+      transcript: transcript_area,
+      band: band_area,
+      input: input_area
+    }
   end
 
+  # The entry width inside the transcript pane: the pane minus the inset
+  # on both sides (`place_entries/4`), capped at the reading measure.
+  # Public for the layout tests (measure = paint, asserted from outside).
   @doc false
-  # The ENTRY width inside the pane: the pane minus the inset on both
-  # sides (`place_entries/4`).
-  def transcript_width(total_width, sidebar?) do
-    max(transcript_pane_width(total_width, sidebar?) - 2 * @inset, 10)
-  end
+  def entry_width(pane_width), do: content_width(max(pane_width - 2 * @inset, 10))
 
   # Does the state show the sidebar? (one reader for the toggle default)
   defp sidebar?(state), do: Map.get(state, :sidebar_visible?, true)
+
+  # The terminal size every reader measures against: the declared virtual
+  # size under test, the tty in production — the SAME source `render/2`
+  # gets its frame from, so a reader can never be a resize behind.
+  defp term_size(%{test_mode?: true} = state) do
+    case state.mount_opts[:test_mode] do
+      {w, h} when is_integer(w) and is_integer(h) -> {w, h}
+      _ -> {80, 24}
+    end
+  end
+
+  defp term_size(_state) do
+    case ExRatatui.terminal_size() do
+      {w, h} when is_integer(w) and is_integer(h) -> {w, h}
+      _ -> {80, 24}
+    end
+  end
+
+  # The transcript pane for THIS state: the terminal size it will be
+  # painted at (the declared virtual size under test, the tty in
+  # production) through the one geometry function. `@doc false` because
+  # it is internal geometry, but public so the probes and the layout
+  # tests can assert against the same rect the painter uses instead of a
+  # copy of a number.
+  @doc false
+  def pane_rect(state) do
+    {w, h} = term_size(state)
+
+    frame_layout(w, h, sidebar?(state), input_height(state), LiveBand.height()).transcript
+  end
+
+  # Repaint bookkeeping for the idle poll: the pane rect the last frame was
+  # painted with. NOT a measurement — no reader consults it (every reader
+  # derives its rect from `term_size/1` through `frame_layout/5`); it only
+  # answers the poll's one question, "did the frame's geometry move under
+  # us?". `nil` before the first frame, which is why the first poll always
+  # paints.
+  defp last_pane_rect(state), do: Map.get(state, :last_pane_rect)
+  defp remember_pane_rect(state), do: Map.put(state, :last_pane_rect, pane_rect(state))
 
   defp column_x(pane, w) do
     pane.x + @inset + div(max(pane.width - 2 * @inset - w, 0), 2)
@@ -4002,14 +3950,16 @@ defmodule CodingAgent.UI.Tui do
   # viewport is the clamp (ADR 028).
   defp clamp_scroll_now(state) do
     {entries, offset, open_id} = active_transcript(state)
-
-    pane_height =
-      if is_integer(state.last_pane_height), do: state.last_pane_height, else: 24
-
-    pane_width = transcript_width(state.last_total_width, sidebar?(state))
+    pane = pane_rect(state)
 
     {clamped, _selected} =
-      TranscriptView.viewport(entries, pane_height, offset, pane_width, open_id)
+      TranscriptView.viewport(
+        entries,
+        max(pane.height, 1),
+        offset,
+        entry_width(pane.width),
+        open_id
+      )
 
     put_scroll(state, clamped)
   end
@@ -4682,22 +4632,22 @@ defmodule CodingAgent.UI.Tui do
     end
   end
 
-  # Transcript rows visible above the input/status areas.
-  defp transcript_visible_height(state) do
-    if is_integer(state.last_pane_height), do: state.last_pane_height, else: 24
-  end
-
-  # Which entry covers screen row `y` (transcript-pane-relative)?
-  # Recomputes the same placement the renderer produces this frame — the
-  # lazy viewport (ADR 028) returns pane-relative rows directly, so no
-  # absolute total is needed.
+  # Which entry covers pane-relative row `y`? Recomputes the same
+  # placement the renderer produces this frame — the lazy viewport
+  # (ADR 028) returns pane-relative rows directly, so no absolute total
+  # is needed.
   defp block_at_row(state, y) do
     {entries, offset, open_id} = active_transcript(state)
+    pane = pane_rect(state)
 
-    w = transcript_width(state.last_total_width, sidebar?(state))
-    ph = transcript_visible_height(state)
-
-    {_clamped, selected} = TranscriptView.viewport(entries, ph, offset, w, open_id)
+    {_clamped, selected} =
+      TranscriptView.viewport(
+        entries,
+        max(pane.height, 1),
+        offset,
+        entry_width(pane.width),
+        open_id
+      )
 
     Enum.find_value(selected, fn {entry, rel_top, h} ->
       if y >= rel_top and y <= rel_top + h - 1, do: entry
@@ -5191,17 +5141,21 @@ defmodule CodingAgent.UI.Tui do
   # the eager cost on every debug frame.
   defp scroll_diagnostics(state) do
     entries = display_entries(state)
-
-    w = transcript_width(state.last_total_width, sidebar?(state))
-    ph = if is_integer(state.last_pane_height), do: state.last_pane_height, else: 24
+    pane = pane_rect(state)
 
     {clamped, _selected} =
-      TranscriptView.viewport(entries, ph, state.scroll_offset, w, state.open_tool_id)
+      TranscriptView.viewport(
+        entries,
+        max(pane.height, 1),
+        state.scroll_offset,
+        entry_width(pane.width),
+        state.open_tool_id
+      )
 
     open = if state.open_tool_id, do: "open:#{state.open_tool_id}", else: "tools shut"
 
     "scroll: #{clamped} (#{length(entries)} entries, " <>
-      "#{open}, h: #{ph} w: #{w})"
+      "#{open}, h: #{pane.height} w: #{entry_width(pane.width)})"
   end
 
   # Session manager (ADR 020, slice 1): list either this directory's

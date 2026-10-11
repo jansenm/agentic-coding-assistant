@@ -660,24 +660,45 @@ painted, and the tool's hit band sat ROWS ABOVE its own header: measured,
 the header painted at frame row 6 and clicked at row 5, and clicking row
 6 did nothing.
 
-The fix is one geometry function used by paint and every reader —
-``Tui.transcript_width/2`` (entry width) and ``transcript_pane_width/2``
-(pane width), which state the two constants the renderer already used
-(``@margin``, ``@inset``) instead of folding them into one opaque
-number. ``block_at_row/2``, ``clamp_scroll_now/1``,
-``scroll_diagnostics/1`` and the three pane-size readers now all derive
-from the same two inputs (raw width + the sidebar toggle), so measuring
-and painting cannot disagree by construction.
+**3. The reader derives the pane from the frame; state stores no size.**
+The fix for (2) still read the pane SIZE out of state — a copy the render
+path refreshed only on a resize. The pane also moves for reasons that are
+not resizes (the composer grows with the typed lines and the tab strip),
+so the copy could be stale in both dimensions. Measured: with the sidebar
+on, the click was mapped through a hard-coded pane offset of 1 while the
+pane actually starts at row 1 but is 18 rows tall in a 30-row window —
+the hit-test was one row off in the frame, so the fix above was still
+landing the click on the wrong row. And a transcript that only GREW
+between two resizes stayed clamped against the older extent.
 
-**Found and not fixed by this amendment** (recorded so it is not lost):
-the scroll clamp and the diagnostics read the entry width and the pane
-height from state, which the render path refreshes only on a resize
-event. A transcript that only GROWS between two resizes is still clamped
-against the older extent — a stale-offset window. It is the same class of
-bug (a reader measuring something the painter did not), one step further
-out.
+There is now ONE geometry function, ``Tui.frame_layout/5``, from
+``(width, height, sidebar?, input_h, band_h)`` to the frame's rects; the
+renderer CONSUMES those rects and every reader — ``block_at_row/2``,
+``clamp_scroll_now/1``, ``scroll_diagnostics/1`` — derives its pane rect
+from the same function through ``Tui.pane_rect/1``. The inputs are the
+terminal size the runtime reports (the declared virtual size under test,
+the tty in production: ``term_size/1``) plus state that already exists,
+so a reader cannot be a resize behind. Deleted with it:
+``@layout_overhead``, ``layout_overhead/1``, ``last_pane_height``,
+``last_total_width``, ``transcript_visible_height/1``,
+``rederive_pane/1`` and ``pane_size/1``.
+
+The one thing the poll still stores is the pane rect of the LAST PAINTED
+FRAME (``last_pane_rect``), and no reader consults it: it only answers the
+idle poll's question, "did the frame's geometry move under us?" — which is
+how a composer that grew between resizes still gets its frame.
+
+One cycle had to be broken to make this work: the composer's meta row
+carries the scroll diagnostics, the diagnostics need the pane, the pane
+needs the composer's height. ``Composer.height_for/3`` computes the height
+from the three facts it depends on (a tab strip exists, the textarea's
+line count, the line cap), so the TUI never builds a composer to measure
+the pane; ``height/1`` and ``min_height/0`` are thin readers of it.
 
 Acceptance: ``tui_accordion_test.exs`` ("the clickable row IS the painted
-header row, with the sidebar on and wrapping above": the painted header
-row opens the block, closing through the same row works, and the two
-rows ABOVE the header do not open it).
+header row, with the sidebar on and wrapping above"); ``tui_visual_test.exs``
+("the pane geometry the reader measures is the one the painter painted"
+over three terminal sizes with and without a tab strip, and "the pane the
+readers measure follows the composer, with no resize");
+``tui_cells_test.exs`` ("the band is painted in the SAME frame rows the
+layout reserves for it").

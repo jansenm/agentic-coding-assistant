@@ -143,9 +143,9 @@ defmodule CodingAgent.UI.TuiCellsTest do
   end
 
   test "the band is painted in the SAME frame rows the layout reserves for it" do
-    # measure = paint: the transcript pane height the TUI computes (and
-    # uses for its scroll clamp) must leave the band's rows out of the
-    # transcript. The band is 3 rows (padding, row, padding) + 2 air rows.
+    # measure = paint: the transcript pane height the renderer paints at
+    # IS the pane the hit-test, the clamp and the diagnostics measure.
+    # The band is 3 rows (padding, row, padding) + 2 air rows.
     {pid, session} = start_cell_tui([scope_root: File.cwd!(), sidebar: false], {100, 30})
     fire(pid, :__resize_poll__)
 
@@ -158,13 +158,16 @@ defmodule CodingAgent.UI.TuiCellsTest do
     # field measures 5, one row under `min_height/0`, which is the floor
     # before a textarea exists)
     assert composer_h == 5
-    assert st.last_pane_height == 30 - 2 - 2 - 3 - composer_h
+    pane = CodingAgent.UI.Tui.pane_rect(st)
+    assert pane.height == 30 - 2 - 2 - 3 - composer_h
 
     # the band's status row is one row past the transcript + the air row
-    # (its own first row is the top padding)
+    # (its own first row is the top padding). `pane.y` is where the pane
+    # STARTS, which is what the hit-test needs (it used to assume row 1).
     snapshot = cells(session)
     band = Enum.find(0..29, &String.contains?(row_text(snapshot, &1), "idle"))
-    assert band == st.last_pane_height + 3
+    assert band == pane.y + pane.height + 2
+    assert pane.y == 1
   end
 
   test "the chrome grey covers the sidebar, the composer and the overlays alike" do

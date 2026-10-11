@@ -104,14 +104,6 @@ defmodule CodingAgent.UI.Composer do
   # the layout split both read it, so they cannot disagree.
   @tab_block 1 + @tab_gap
 
-  @doc """
-  The height of the tab strip (0 when there is none) — part of the
-  panel's height, because the strip IS part of the panel.
-  """
-  @spec tab_height(t()) :: non_neg_integer()
-  def tab_height(%__MODULE__{tab_line: nil}), do: 0
-  def tab_height(%__MODULE__{}), do: @tab_block
-
   # The strip as layout segments (empty when there is no strip).
   defp strip_segments(%__MODULE__{tab_line: nil}), do: []
 
@@ -128,21 +120,32 @@ defmodule CodingAgent.UI.Composer do
   field.
   """
   @spec height(t()) :: pos_integer()
-  def height(%__MODULE__{} = composer) do
+  def height(%__MODULE__{} = composer),
+    do: height_for(composer.tab_line != nil, composer.textarea, composer.max_lines)
+
+  @doc """
+  The panel height from the three facts it actually depends on: whether a
+  tab strip exists, how many lines the field holds and the line cap. The
+  TUI needs the height BEFORE it can build a composer (the composer's own
+  meta row carries the scroll diagnostics, whose pane math needs the
+  height), so this is the one definition `height/1` and the layout share.
+  """
+  @spec height_for(boolean(), reference() | nil, pos_integer()) :: pos_integer()
+  def height_for(has_tabs?, textarea, max_lines \\ @max_lines) do
     @padding +
-      tab_height(composer) +
-      min(text_lines(composer), composer.max_lines) +
+      if(has_tabs?, do: @tab_block, else: 0) +
+      text_line_count(textarea, max_lines) +
       @gap +
       1 +
       @padding
   end
 
   @doc """
-  The floor height (an empty composer) — the state-side math before any
-  render, and without a textarea or a tab strip.
+  The floor height (an empty composer: two text rows, no tab strip) — the
+  state-side math before any render touches it.
   """
   @spec min_height() :: pos_integer()
-  def min_height, do: @padding + @lines + @gap + 1 + @padding
+  def min_height, do: height_for(false, nil)
 
   @doc """
   Places the composer into `rect` and returns `{widget, rect}` tuples for
@@ -162,8 +165,10 @@ defmodule CodingAgent.UI.Composer do
       ]
   end
 
-  defp text_lines(%{textarea: nil}), do: @lines
-  defp text_lines(%{textarea: ta}), do: max(ExRatatui.textarea_line_count(ta), 1)
+  defp text_line_count(nil, _max_lines), do: @lines
+
+  defp text_line_count(ta, max_lines),
+    do: ta |> ExRatatui.textarea_line_count() |> max(1) |> min(max_lines)
 
   # the surface: a borderless block whose style fills its whole rect —
   # a widget-level bg would only paint the rows a widget writes (F4)
