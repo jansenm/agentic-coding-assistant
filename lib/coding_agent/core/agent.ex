@@ -101,6 +101,53 @@ defmodule CodingAgent.Core.Agent do
     mode in [:primary, :all] and hidden != true
   end
 
+  @doc """
+  Whether another agent may start this definition through the ``task``
+  tool (ADR 017/018).
+
+  True for ``:subagent`` and ``:all`` — the mirror of ``selectable?/1``,
+  which owns ``:primary``/``:all``. ``hidden`` is deliberately allowed
+  here (ADR 029: that seam is exactly what it is for), and ``:internal``
+  is not: the runtime drives those itself and never by delegation.
+  """
+  @spec delegatable?(t()) :: boolean()
+  def delegatable?(%__MODULE__{mode: mode}) do
+    mode in [:subagent, :all]
+  end
+
+  @doc """
+  The one direct-selection resolver: the definition ``name`` refers to in
+  ``definitions``, or ``{:error, reason}`` naming what the human may
+  select instead.
+
+  The mode rules live on the definition (``selectable?/1``); keeping the
+  lookup here is what stops every start path from re-deriving
+  ``Enum.find`` and its error shape. The session turns the definition
+  into policy and prompt — that composition is not this function's job.
+  """
+  @spec resolve_selectable([t()], String.t()) :: {:ok, t()} | {:error, term()}
+  def resolve_selectable(definitions, name) do
+    case Enum.find(definitions, &(&1.name == name)) do
+      nil -> {:error, {:unknown_agent, name, selectable_names(definitions)}}
+      %__MODULE__{} = agent -> check_selectable(agent, definitions)
+    end
+  end
+
+  defp check_selectable(%__MODULE__{} = agent, definitions) do
+    if selectable?(agent) do
+      {:ok, agent}
+    else
+      {:error, {:unselectable_agent, agent.name, agent.mode, selectable_names(definitions)}}
+    end
+  end
+
+  # The names a direct selection may resolve to — the same list the TUI
+  # offers, so an error names what IS available rather than the raw
+  # definition set.
+  defp selectable_names(definitions) do
+    definitions |> Enum.filter(&selectable?/1) |> Enum.map(& &1.name)
+  end
+
   # -- Loading -----------------------------------------------------------------
 
   @doc """

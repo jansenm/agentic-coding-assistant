@@ -97,6 +97,27 @@ defmodule CodingAgent.Core.Session.AgentWiringTest do
              )
   end
 
+  test "a subagent or internal definition cannot be selected (ADR 029)" do
+    # `explore` is a subagent, `compaction` is internal: both are defined
+    # and load fine, but neither is for the human to pick. The definition
+    # being present must not make `--agent` accept it. The start path
+    # raises, so the DynamicSupervisor hands back the wrapped exception.
+    for name <- ["explore", "compaction"] do
+      assert {:error, {%ArgumentError{message: message}, _stacktrace}} =
+               CodingAgent.Core.Session.Supervisor.start_session(
+                 id: "wiring-unselectable-#{name}",
+                 scope_root: @tmp_root,
+                 test_mode: true,
+                 agent: name
+               )
+
+      assert message =~ "is not selectable"
+      assert message =~ name
+      # the offered set is the selectable one, not the raw definition set
+      assert message =~ "available: build, plan"
+    end
+  end
+
   describe "set_agent/2 (ADR 018 next-slot switch)" do
     test "switches the agent and its tool restrictions" do
       start("switch-a", agent: "build")
@@ -146,6 +167,18 @@ defmodule CodingAgent.Core.Session.AgentWiringTest do
       assert {:error, {:unknown_agent, "nope", _}} = Session.set_agent("switch-e", "nope")
 
       {:ok, s} = Session.state("switch-e")
+      assert s.agent.name == "build"
+    end
+
+    test "an unselectable agent returns an error and leaves the state alone" do
+      start("switch-f", agent: "build")
+
+      assert {:error, {:unselectable_agent, "explore", :subagent, available}} =
+               Session.set_agent("switch-f", "explore")
+
+      assert available == ["build", "plan"]
+
+      {:ok, s} = Session.state("switch-f")
       assert s.agent.name == "build"
     end
   end

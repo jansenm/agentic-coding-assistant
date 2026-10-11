@@ -13,8 +13,10 @@ The scope
 
 Every path tool is bounded to the session's **scope root** (the working
 directory, ADR 030): reads outside it are rejected and the sandbox mounts
-the rest of the filesystem read-only. ``grep``/``glob`` delegate to
-``rg``/``fd`` when present.
+the rest of the filesystem read-only. ``grep``/``glob`` are front ends to
+a **required** engine — ``rg`` for content, ``fd`` for filenames — so a
+missing binary is a named error naming the binary to install, not a silent
+fallback (ADR 030).
 
 Read-only tools
 ---------------

@@ -28,6 +28,13 @@ defmodule CodingAgent.Core.Session.SubagentTest do
     )
   end
 
+  # The loaded definition by name — what a runtime start passes in place
+  # of a name (its own delegation rule already ran).
+  defp definition(root, name) do
+    {:ok, definitions} = CodingAgent.Core.Config.agents(root)
+    {Enum.find(definitions, &(&1.name == name)), definitions}
+  end
+
   defp start_parent(id, root, opts) do
     {:ok, _} =
       Session.Supervisor.start_session(
@@ -139,6 +146,25 @@ defmodule CodingAgent.Core.Session.SubagentTest do
       assert text =~ "primary"
     end
 
+    test "an internal agent cannot be delegated to either", %{root: root} do
+      # `compaction` is `:internal` (shipped): the runtime drives it, no
+      # delegation. `find_definition/2` reads `Agent.delegatable?/1`, so
+      # this is refused for the mode, not just for being non-primary.
+      id = "sub-internal-#{System.unique_integer([:positive])}"
+      start_parent(id, root, interactive: true)
+      :ok = Session.debug_gate(id, [task_call("t1", "compaction", "go")])
+
+      {:ok, state} = Session.state(id)
+
+      text =
+        state.context
+        |> ReqLLM.Context.to_list()
+        |> Enum.map_join("\n", &message_text/1)
+
+      assert text =~ "internal"
+      assert text =~ "not delegatable"
+    end
+
     test "a failed child surfaces as an error result, not a failed parent turn", %{root: root} do
       write_agent(root, "grumpy", "You fail.")
       id = "sub-child-fail-#{System.unique_integer([:positive])}"
@@ -234,10 +260,11 @@ defmodule CodingAgent.Core.Session.SubagentTest do
   end
 
   describe "depth 1 (ADR 017)" do
-    test "the delegatable list excludes primaries", %{root: root} do
+    test "the delegatable list excludes primaries and internal", %{root: root} do
       write_agent(root, "explorer", "x", "mode: subagent\n")
       write_agent(root, "reviewer", "y", "mode: all\n")
       write_agent(root, "boss", "z", "mode: primary\n")
+      write_agent(root, "driver", "z", "mode: internal\n")
 
       {:ok, definitions} = CodingAgent.Core.Config.agents(root)
       names = Subagent.delegatable(definitions) |> Enum.map(& &1.name)
@@ -245,15 +272,20 @@ defmodule CodingAgent.Core.Session.SubagentTest do
       assert "explorer" in names
       assert "reviewer" in names
       refute "boss" in names
+      refute "driver" in names
     end
 
     test "a depth-1 parent refuses to delegate further", %{root: root} do
       write_agent(root, "explorer", "x", "mode: subagent\n")
       id = "sub-depth-#{System.unique_integer([:positive])}"
 
+      # the definition, not its name: only the human path goes through the
+      # selection rule (a `mode: subagent` definition is not selectable)
+      {explorer, _} = definition(root, "explorer")
+
       start_parent(id, root,
         interactive: true,
-        agent: "explorer",
+        agent: explorer,
         depth: 1,
         subagent_runner: child_runner("should not run")
       )
@@ -273,7 +305,8 @@ defmodule CodingAgent.Core.Session.SubagentTest do
     test "a child session's tool set excludes task", %{root: root} do
       write_agent(root, "explorer", "x", "mode: subagent\n")
       id = "sub-tools-#{System.unique_integer([:positive])}"
-      start_parent(id, root, interactive: true, agent: "explorer", depth: 1)
+      {explorer, _} = definition(root, "explorer")
+      start_parent(id, root, interactive: true, agent: explorer, depth: 1)
 
       {:ok, parent} = Session.state(id)
 

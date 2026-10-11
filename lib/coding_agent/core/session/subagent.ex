@@ -137,7 +137,10 @@ defmodule CodingAgent.Core.Session.Subagent do
       # the model resolved once by `child_model/2` (see it for the
       # precedence: definition > config.subagent_model > parent)
       model: model,
-      agent: definition.name,
+      # the definition, not its name: `find_definition/2` already applied
+      # the DELEGATION rule (`Agent.delegatable?/1`), and this start path
+      # does not re-run the human selection rule a `--agent` name gets.
+      agent: definition,
       interactive: false,
       # test_mode propagates: a child of a test session must never reach a
       # provider (the suite is LLM-free); its blocking body comes from the
@@ -216,14 +219,18 @@ defmodule CodingAgent.Core.Session.Subagent do
       {:ok, definitions} ->
         case Enum.find(definitions, &(&1.name == type)) do
           nil ->
-            names = delegatable(definitions) |> Enum.map(& &1.name)
+            names = delegatable_names(definitions)
             {:error, "unknown subagent #{inspect(type)}; available: #{Enum.join(names, ", ")}"}
 
-          %Agent{mode: :primary} ->
-            {:error, "#{inspect(type)} is a primary agent; it cannot be delegated to"}
-
-          definition ->
-            {:ok, definition}
+          %Agent{} = definition ->
+            if Agent.delegatable?(definition) do
+              {:ok, definition}
+            else
+              {:error,
+               "agent #{inspect(type)} is not delegatable (mode: #{definition.mode}) — " <>
+                 "only a subagent is; available: " <>
+                 Enum.join(delegatable_names(definitions), ", ")}
+            end
         end
 
       {:error, errors} ->
@@ -237,9 +244,11 @@ defmodule CodingAgent.Core.Session.Subagent do
   029 says the seam needs exactly that for internal agents).
   """
   @spec delegatable([Agent.t()]) :: [Agent.t()]
-  def delegatable(definitions) do
-    Enum.filter(definitions, &(&1.mode in [:subagent, :all]))
-  end
+  def delegatable(definitions), do: Enum.filter(definitions, &Agent.delegatable?/1)
+
+  @doc "The delegatable names, for the `task` tool's listing and errors."
+  @spec delegatable_names([Agent.t()]) :: [String.t()]
+  def delegatable_names(definitions), do: Enum.map(delegatable(definitions), & &1.name)
 
   defp depth_ok(%State{depth: depth}) when depth >= @max_depth do
     {:error, "subagents may not start further subagents (depth #{@max_depth})"}

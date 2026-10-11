@@ -43,6 +43,7 @@ defmodule CodingAgent.Core.Session do
 
   require Logger
 
+  alias CodingAgent.Core.Agent
   alias CodingAgent.Core.Compaction
   alias CodingAgent.Core.Config
   alias CodingAgent.Core.Checkpoint
@@ -281,7 +282,7 @@ defmodule CodingAgent.Core.Session do
   defp resumable_agent_name(%State{agent: %{name: name}, scope_root: root}) do
     case Config.agents(root) do
       {:ok, agents} ->
-        if Enum.any?(agents, &(&1.name == name and CodingAgent.Core.Agent.selectable?(&1))),
+        if Enum.any?(agents, &(&1.name == name and Agent.selectable?(&1))),
           do: name,
           else: nil
 
@@ -745,20 +746,22 @@ defmodule CodingAgent.Core.Session do
   # definitions are needed — not the whole config snapshot.)
   defp agents_of(state), do: Config.agents(state.scope_root)
 
-  defp resolve_agent(nil, policy, system_prompt, _agents) do
+  # The agent layer of the system prompt (ADR 017): the definition's
+  # policy narrows the base, its prompt is appended. `agent` is the
+  # caller's OWN definition — the runtime resolves its children and hands
+  # them in (`Subagent`), so the selection rules stay at the entry
+  # points (`Session` for a human-chosen name). A `nil` is the no-agent
+  # path.
+  defp resolve_agent(nil, policy, system_prompt, _opts) do
     {:ok, nil, policy, system_prompt}
   end
 
   defp resolve_agent(name, policy, system_prompt, agents) when is_binary(name) do
     case agents do
       {:ok, definitions} ->
-        case Enum.find(definitions, &(&1.name == name)) do
-          nil ->
-            {:error, {:unknown_agent, name, Enum.map(definitions, & &1.name)}}
-
-          agent ->
-            composed = Prompt.compose_agent(system_prompt, agent.prompt)
-            {:ok, agent, Permissions.apply_agent(policy, agent), composed}
+        case Agent.resolve_selectable(definitions, name) do
+          {:ok, agent} -> compose_agent(agent, policy, system_prompt)
+          {:error, reason} -> {:error, reason}
         end
 
       {:error, errors} ->
@@ -766,9 +769,29 @@ defmodule CodingAgent.Core.Session do
     end
   end
 
+  # A start opt carries the definition the runtime already resolved, so a
+  # runtime-started session (a `task` child) does not pass through the
+  # human selection rule its own entry point applied.
+  defp resolve_agent(%Agent{} = agent, policy, system_prompt, _agents) do
+    compose_agent(agent, policy, system_prompt)
+  end
+
+  # Turn a definition into the three things the session runs with: the
+  # definition, the policy it narrows, and the composed system prompt.
+  # The SELECTION rule is not here — `Agent.resolve_selectable/2` owns it.
+  defp compose_agent(agent, policy, system_prompt) do
+    composed = Prompt.compose_agent(system_prompt, agent.prompt)
+    {:ok, agent, Permissions.apply_agent(policy, agent), composed}
+  end
+
   # A human-readable message for a resolve_agent error.
   defp format_agent_error({:unknown_agent, name, available}) do
     "unknown agent #{inspect(name)}; available: #{Enum.join(available, ", ")}"
+  end
+
+  defp format_agent_error({:unselectable_agent, name, mode, available}) do
+    "agent #{inspect(name)} is not selectable (mode: #{mode}) — only a " <>
+      "primary agent is; available: #{Enum.join(available, ", ")}"
   end
 
   defp format_agent_error({:bad_definitions, errors}) do

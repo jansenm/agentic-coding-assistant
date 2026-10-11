@@ -297,6 +297,63 @@ defmodule CodingAgent.Core.AgentTest do
     end
   end
 
+  describe "delegatable?/1 (ADR 017/018)" do
+    defp delegatable_agent(mode, hidden \\ false) do
+      %Agent{name: "a", prompt: "p", source: "t", mode: mode, hidden: hidden}
+    end
+
+    test "subagent and all are delegatable; primary and internal are not" do
+      assert Agent.delegatable?(delegatable_agent(:subagent))
+      assert Agent.delegatable?(delegatable_agent(:all))
+      refute Agent.delegatable?(delegatable_agent(:primary))
+      refute Agent.delegatable?(delegatable_agent(:internal))
+    end
+
+    test "hidden is allowed — it is exactly the internal seam (ADR 029)" do
+      assert Agent.delegatable?(delegatable_agent(:subagent, true))
+    end
+  end
+
+  describe "resolve_selectable/2 (the one direct-selection resolver)" do
+    defp definition(name, mode, hidden \\ false) do
+      %Agent{name: name, prompt: "p", source: "t", mode: mode, hidden: hidden}
+    end
+
+    defp definitions do
+      [
+        definition("build", :primary),
+        definition("plan", :primary),
+        definition("explore", :subagent)
+      ]
+    end
+
+    test "a selectable name resolves to its definition" do
+      assert {:ok, %Agent{name: "plan", mode: :primary}} =
+               Agent.resolve_selectable(definitions(), "plan")
+    end
+
+    test "an unknown name errors and offers only the selectable names" do
+      assert {:error, {:unknown_agent, "nope", available}} =
+               Agent.resolve_selectable(definitions(), "nope")
+
+      assert available == ["build", "plan"]
+    end
+
+    test "a known but unselectable name errors with its mode and the same list" do
+      assert {:error, {:unselectable_agent, "explore", :subagent, available}} =
+               Agent.resolve_selectable(definitions(), "explore")
+
+      assert available == ["build", "plan"]
+    end
+
+    test "a hidden primary is refused like any other unselectable definition" do
+      defs = [definition("build", :primary), definition("shadow", :primary, true)]
+
+      assert {:error, {:unselectable_agent, "shadow", :primary, ["build"]}} =
+               Agent.resolve_selectable(defs, "shadow")
+    end
+  end
+
   describe "Permissions.apply_agent/2 (layer 4)" do
     test "the definition's deny cannot be overridden by allow" do
       policy = Permissions.load(nil, nil)
