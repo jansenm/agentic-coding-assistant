@@ -126,9 +126,15 @@ defmodule CodingAgent.UI.Tui do
     }
   end
 
-  # columns the transcript loses: app margin left+right (2) + the
-  # 1-cell inner inset the renderer uses (pane.x + 1 and width - 2)
-  @width_overhead 4
+  # The app's breathing room: 1 cell of background on every side of the
+  # frame (`Layout.split margin: 1`) and the 1-cell inset the transcript
+  # pane keeps inside its own rect (`place_entries/4`: x + @inset, width
+  # - 2 * @inset). Named here because the pane geometry below must
+  # reproduce them for the hit-test, the clamp and the diagnostics —
+  # measuring a different width than the painter is the hit-test's width
+  # bug.
+  @margin 1
+  @inset 1
 
   # reading measure (typography): the eye loses the return-sweep past
   # ~100 characters (newspapers/books: 45-90). On wider panes the
@@ -204,7 +210,7 @@ defmodule CodingAgent.UI.Tui do
       session_id: nil,
       model: nil,
       session_usage: CodingAgent.Core.Session.Usage.new(),
-      last_pane_width: max(tw - @width_overhead, 10),
+      last_total_width: tw,
       last_pane_height: max(th - @layout_overhead, 1),
       status: :idle,
       transcript: [],
@@ -500,7 +506,7 @@ defmodule CodingAgent.UI.Tui do
         next_agent_model: agent_model(session_scope(effective_id), session_agent(effective_id)),
         session_usage:
           CodingAgent.Core.Session.Usage.from_map(restored && Map.get(restored, :usage)),
-        last_pane_width: max(tw - @width_overhead, 10),
+        last_total_width: tw,
         last_pane_height: max(th - @layout_overhead, 1),
         status: status,
         transcript: history,
@@ -976,7 +982,9 @@ defmodule CodingAgent.UI.Tui do
   # Click a closed tool block header → open THAT block (single-open: any other
   # closes automatically — only one id is ever remembered). Click an
   # open block → close. The hit-test recomputes the viewport (a pure
-  # function of state) — the same placement math the renderer uses.
+  # function of state) through the SAME geometry the renderer paints with
+  # (`transcript_width/2` — widths measured differently was the bug that
+  # put the band rows above the header).
   def handle_event(%Event.Mouse{kind: "down", button: "left", y: y}, state) do
     # frame row 0 is the app margin; the transcript occupies the next
     # transcript_visible_height rows
@@ -1004,7 +1012,7 @@ defmodule CodingAgent.UI.Tui do
   def handle_event(%Event.Resize{width: width, height: height}, state) do
     state =
       state
-      |> Map.put(:last_pane_width, max(width - @width_overhead, 10))
+      |> Map.put(:last_total_width, width)
       |> Map.put(:last_pane_height, max(height - layout_overhead(state), 1))
 
     {:noreply, clamp_scroll_now(state)}
@@ -2853,14 +2861,13 @@ defmodule CodingAgent.UI.Tui do
   defp rederive_pane(state) do
     case pane_size(state) do
       {w, h} ->
-        pane_w = max(w - @width_overhead, 10)
         pane_h = max(h - layout_overhead(state), 1)
 
-        if state.last_pane_width == pane_w and state.last_pane_height == pane_h do
+        if state.last_total_width == w and state.last_pane_height == pane_h do
           state
         else
           state
-          |> Map.put(:last_pane_width, pane_w)
+          |> Map.put(:last_total_width, w)
           |> Map.put(:last_pane_height, pane_h)
           |> clamp_scroll_now()
         end
@@ -3426,10 +3433,9 @@ defmodule CodingAgent.UI.Tui do
 
     case pane_size(state) do
       {w, h} ->
-        pane_w = max(w - @width_overhead, 10)
         pane_h = max(h - layout_overhead(state), 1)
 
-        if state.last_pane_width == pane_w and state.last_pane_height == pane_h do
+        if state.last_total_width == w and state.last_pane_height == pane_h do
           # unchanged size: nothing to repaint, so skip the frame. The
           # 500ms idle poll was forcing a full render every tick (the
           # transcript rebuild is O(session)), which read as the UI being
@@ -3438,7 +3444,7 @@ defmodule CodingAgent.UI.Tui do
         else
           state =
             state
-            |> Map.put(:last_pane_width, pane_w)
+            |> Map.put(:last_total_width, w)
             |> Map.put(:last_pane_height, pane_h)
 
           {:noreply, clamp_scroll_now(state)}
@@ -3907,7 +3913,7 @@ defmodule CodingAgent.UI.Tui do
   end
 
   defp place_entries(entries, pane, offset, open_id) do
-    w = content_width(max(pane.width - 2, 10))
+    w = content_width(max(pane.width - 2 * @inset, 10))
 
     # ADR 028: the viewport measures LAZILY from the tail and returns the
     # clamped offset plus pane-relative positions. No eager total_height
@@ -3944,8 +3950,43 @@ defmodule CodingAgent.UI.Tui do
   # Measurement and rendering share this width (heights must match).
   defp content_width(w), do: min(w, @measure)
 
+  # -- pane geometry (ONE definition for paint AND every reader) ------------
+  #
+  # The renderer derives the transcript pane from two decisions of its
+  # own: the sidebar claims @sidebar_width columns, and the mid column is
+  # capped at @measure. The mouse hit-test (`block_at_row/2`), the scroll
+  # clamp (`clamp_scroll_now/1`) and the scroll diagnostics must measure
+  # what the renderer PAINTS, or an entry's reserved rows disagree with
+  # its painted ones and every row-based reader lands on the wrong entry
+  # (measured: at 100x30 with the sidebar on, the readers used 96 while
+  # the painter used 60; a wrapped assistant entry reserved 4 rows and
+  # painted 5, so a tool's hit band sat one row above its header).
+  #
+  # `total_width` is the full terminal width; `sidebar?` is the state's
+  # toggle. The renderer's numbers, in the same order:
+  #
+  #     main  = total - 2 * margin   (`Layout.split margin: 1`)
+  #     pane  = main - sidebar_width (when the sidebar is visible)
+  #     entry = min(@measure, pane) - 2 * inset
+  #
+  defp transcript_pane_width(total_width, sidebar?) do
+    total_width = if is_integer(total_width), do: total_width, else: 80
+    sidebar_w = if sidebar?, do: @sidebar_width, else: 0
+    min(@measure, max(total_width - 2 * @margin - sidebar_w, 4))
+  end
+
+  @doc false
+  # The ENTRY width inside the pane: the pane minus the inset on both
+  # sides (`place_entries/4`).
+  def transcript_width(total_width, sidebar?) do
+    max(transcript_pane_width(total_width, sidebar?) - 2 * @inset, 10)
+  end
+
+  # Does the state show the sidebar? (one reader for the toggle default)
+  defp sidebar?(state), do: Map.get(state, :sidebar_visible?, true)
+
   defp column_x(pane, w) do
-    pane.x + 1 + div(max(pane.width - 2 - w, 0), 2)
+    pane.x + @inset + div(max(pane.width - 2 * @inset - w, 0), 2)
   end
 
   # Immediate scroll clamp on toggle: collapsing can shrink the content
@@ -3965,8 +4006,7 @@ defmodule CodingAgent.UI.Tui do
     pane_height =
       if is_integer(state.last_pane_height), do: state.last_pane_height, else: 24
 
-    pane_width =
-      content_width(if is_integer(state.last_pane_width), do: state.last_pane_width, else: 78)
+    pane_width = transcript_width(state.last_total_width, sidebar?(state))
 
     {clamped, _selected} =
       TranscriptView.viewport(entries, pane_height, offset, pane_width, open_id)
@@ -4112,9 +4152,14 @@ defmodule CodingAgent.UI.Tui do
   end
 
   defp entry_widgets({:tool, id, name, content}, _w, open_id) when id != open_id do
-    line = "▸ #{name}: #{first_line(content)}"
+    # collapsed: header + preview, ONE builder shared with the measure
+    # side (measure = paint, so the hit band and the painted rows agree)
+    body = TranscriptView.collapsed_body(name, content)
 
-    [{%Paragraph{text: line, style: Styles.role(:muted)}, 1}]
+    [
+      {%Paragraph{text: body, style: Styles.role(:muted)},
+       max(length(String.split(body, "\n")), 1)}
+    ]
   end
 
   defp entry_widgets({:tool, id, name, content}, w, _open_id) do
@@ -4314,8 +4359,6 @@ defmodule CodingAgent.UI.Tui do
   end
 
   # (info rects stay 1 row; the air below is background)
-
-  defp first_line(text), do: text |> String.split("\n") |> List.first() |> String.slice(0, 80)
 
   # The full display list, each entry carrying the agent of the turn it
   # belongs to. turn_agents[i] attributes the i-th USER turn (seeded on
@@ -4651,7 +4694,7 @@ defmodule CodingAgent.UI.Tui do
   defp block_at_row(state, y) do
     {entries, offset, open_id} = active_transcript(state)
 
-    w = content_width(if is_integer(state.last_pane_width), do: state.last_pane_width, else: 78)
+    w = transcript_width(state.last_total_width, sidebar?(state))
     ph = transcript_visible_height(state)
 
     {_clamped, selected} = TranscriptView.viewport(entries, ph, offset, w, open_id)
@@ -5149,7 +5192,7 @@ defmodule CodingAgent.UI.Tui do
   defp scroll_diagnostics(state) do
     entries = display_entries(state)
 
-    w = content_width(if is_integer(state.last_pane_width), do: state.last_pane_width, else: 78)
+    w = transcript_width(state.last_total_width, sidebar?(state))
     ph = if is_integer(state.last_pane_height), do: state.last_pane_height, else: 24
 
     {clamped, _selected} =

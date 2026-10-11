@@ -146,7 +146,7 @@ defmodule CodingAgent.UI.TuiVisualTest do
     agent(pid, {:tool_executed, "shell", long})
 
     st = sync(pid)
-    # collapsed by default: one line
+    # collapsed by default (header + preview)
     assert st.open_tool_id == nil
 
     # the STORED display shape is already capped: 10 head + note + 10 tail

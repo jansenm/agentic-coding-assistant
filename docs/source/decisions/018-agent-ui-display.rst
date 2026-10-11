@@ -626,11 +626,58 @@ reason, so the gap is one number again (two consecutive tool calls were
 4 rows apart).
 
 Acceptance: ``transcript_view_test.exs`` (the heights: info 2, user 3 =
-content + rule + air, assistant with wrapping, collapsed tool 2, open
-tool 5), ``composer_test.exs`` (the strip is the panel's first row at
-the field's x/width; no strip, no widget and no row),
+content + rule + air, assistant with wrapping, collapsed tool = header +
+preview, open tool), ``composer_test.exs`` (the strip is the panel's
+first row at the field's x/width; no strip, no widget and no row),
 ``tui_visual_test.exs`` (the expanded tool is a header plus an indented
 body and no ``tool output`` frame; no rule glyph anywhere in the
 sidebar), ``tui_cells_test.exs`` (the typed text is still the stated
 white on the chrome fill), ``tui_agent_test.exs`` (the setup row is the
 input rect's last row and carries no status).
+
+Amendment 2026-10-11 (ii): the collapsed tool shows a preview; the hit-test measures what the painter paints
+------------------------------------------------------------------------------------------------------------
+
+**1. A collapsed tool block is no longer a single header line.** It is
+``▸ name`` plus the result's first rows (``@preview`` 6), indented, and
+one elision row when the output is longer; opening it (click, enter,
+``ctrl-t``) replaces the preview with the full body. The header string
+had TWO builders — ``Tui.entry_widgets/3`` built ``"▸ name: first
+line"`` and ``TranscriptView.widget_for/3`` built the same shape for the
+measurement probe — so the two could drift apart the moment either
+changed. There is now one: ``TranscriptView.collapsed_body/2`` is called
+by the painter and by the probe.
+
+**2. The mouse hit-test measured a different width than the renderer.**
+``state.last_pane_width`` was ``terminal_width - @width_overhead`` (4 =
+app margin 2 + the pane's inner inset 2) and is now ``last_total_width``:
+the raw terminal width. The renderer's width depends on two toggles that
+a constant cannot know — the sidebar claims 36 columns, and the mid
+column is capped at the ``@measure`` reading width — so the readers
+measured 96 columns at 100x30 with the sidebar on while the painter used
+60. A wrapped answer above a tool therefore reserved fewer rows than it
+painted, and the tool's hit band sat ROWS ABOVE its own header: measured,
+the header painted at frame row 6 and clicked at row 5, and clicking row
+6 did nothing.
+
+The fix is one geometry function used by paint and every reader —
+``Tui.transcript_width/2`` (entry width) and ``transcript_pane_width/2``
+(pane width), which state the two constants the renderer already used
+(``@margin``, ``@inset``) instead of folding them into one opaque
+number. ``block_at_row/2``, ``clamp_scroll_now/1``,
+``scroll_diagnostics/1`` and the three pane-size readers now all derive
+from the same two inputs (raw width + the sidebar toggle), so measuring
+and painting cannot disagree by construction.
+
+**Found and not fixed by this amendment** (recorded so it is not lost):
+the scroll clamp and the diagnostics read the entry width and the pane
+height from state, which the render path refreshes only on a resize
+event. A transcript that only GROWS between two resizes is still clamped
+against the older extent — a stale-offset window. It is the same class of
+bug (a reader measuring something the painter did not), one step further
+out.
+
+Acceptance: ``tui_accordion_test.exs`` ("the clickable row IS the painted
+header row, with the sidebar on and wrapping above": the painted header
+row opens the block, closing through the same row works, and the two
+rows ABOVE the header do not open it).

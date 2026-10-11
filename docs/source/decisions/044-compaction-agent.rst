@@ -91,15 +91,15 @@ Consequences
   A pinned compaction model must be able to HOLD the span, or the call
   fails on large sessions. ``Compactor.compaction_target/1`` resolves the
   model and the span cap together from the catalog window:
-   ``Compactor.resolve_target/3`` gives a pinned model a span capped at
-   half its window (chars = ``tokens × 4 × 0.5``, never above the 300k
-   default), and if that cap is below ``@min_viable_span_chars`` (20k) the
-   pin is DROPPED and the session model summarizes. An UNKNOWN or loading
-   window also falls back to the **session model** with the default cap
-   (review N58): the pin's window cannot be verified as big enough, so it
-   is not trusted with the full span — the branch a first over-limit turn
-   hits, because the catalog warms in the background. The span and the
-   model come from one call, so they cannot disagree.
+  ``Compactor.resolve_target/3`` gives a pinned model a span capped at
+  half its window (chars = ``tokens × 4 × 0.5``, never above the 300k
+  default), and if that cap is below ``@min_viable_span_chars`` (20k) the
+  pin is DROPPED and the session model summarizes. An UNKNOWN or loading
+  window also falls back to the **session model** with the default cap
+  (review N58): the pin's window cannot be verified as big enough, so it
+  is not trusted with the full span — the branch a first over-limit turn
+  hits, because the catalog warms in the background. The span and the
+  model come from one call, so they cannot disagree.
 - The template's section names are load-bearing (rolling folding reads the
   prior summary); a user body cannot change them, only the priorities.
 

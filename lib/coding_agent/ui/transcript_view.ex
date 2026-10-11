@@ -142,19 +142,57 @@ defmodule CodingAgent.UI.TranscriptView do
 
   defp widget_for({:tool, id, name, content}, _width, open_id) do
     if id == open_id do
-      # open: a header row plus the output, indented. No block — the
+      # open: a header row plus the FULL output, indented. No block — the
       # header is the frame's whole job and the indent carries the rest.
       {%ExRatatui.Widgets.Paragraph{
          text: "▾ #{name}\n" <> indent(content),
          style: Styles.role(:muted)
        }, 0}
     else
-      # collapsed: Tui paints a bare one-line header (no block)
+      # collapsed: the header plus the result's first rows. Building it
+      # HERE is the measure = paint contract — the painter in Tui calls
+      # this same builder for the same string.
       {%ExRatatui.Widgets.Paragraph{
-         text: tool_header(name, content),
+         text: collapsed_body(name, content),
          style: Styles.role(:muted)
        }, 0}
     end
+  end
+
+  # The collapsed tool block (public: `Tui.entry_widgets/3` paints it,
+  # here it is measured). ONE builder for header + preview, so the two
+  # cannot drift.
+
+  # A closed tool block used to be a single header line ("▸ shell: first
+  # line"); the result's first `@preview` rows are now shown under it as
+  # an experiment — seeing the top of an output is usually enough, and
+  # expanding stays for the rest. When the output is longer, one elision
+  # row says so (pressing `t`/enter replaces it with the full body).
+  @preview 6
+
+  @doc "The painted text of a COLLAPSED tool entry: header + up to @preview result rows."
+  @spec collapsed_body(String.t(), String.t()) :: String.t()
+  def collapsed_body(name, content) do
+    lines = preview_lines(content)
+    body = "▸ #{name}\n" <> indent(Enum.join(lines, "\n"))
+
+    if String.trim(content) == "" or Enum.join(lines, "\n") == content do
+      String.trim_trailing(body)
+    else
+      body <> "\n  … open with t (enter/ctrl-t) for the rest"
+    end
+  end
+
+  # The content's first `@preview` lines. Trailing blanks are trimmed
+  # first: a `read_file` with trailing empty lines would otherwise fill
+  # the preview with blanks (the same trim `cap_lines/2` does).
+  defp preview_lines(content) do
+    content
+    |> String.split("\n")
+    |> Enum.reverse()
+    |> Enum.drop_while(&(String.trim(&1) == ""))
+    |> Enum.reverse()
+    |> Enum.take(@preview)
   end
 
   # two cells of indent: what the frame's side columns used to say
@@ -400,9 +438,5 @@ defmodule CodingAgent.UI.TranscriptView do
     end
 
     :ok
-  end
-
-  defp tool_header(name, content) do
-    "▸ #{name}: #{content |> String.split("\n") |> List.first() |> String.slice(0, 80)}"
   end
 end

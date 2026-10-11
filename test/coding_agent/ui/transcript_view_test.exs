@@ -21,9 +21,20 @@ defmodule CodingAgent.UI.TranscriptViewTest do
       assert TranscriptView.height({:assistant, String.duplicate("x", 200)}, 80, nil) == 5
     end
 
-    test "collapsed tool is one line" do
-      # 1 header line + 1 air
-      assert TranscriptView.height(tool("t1", "shell", "a\nb\nc"), 80, nil) == 2
+    test "collapsed tool is the header plus the preview of the result" do
+      # header + 3 result rows + 1 air (under @preview, so nothing is
+      # elided and no elision row is painted)
+      assert TranscriptView.height(tool("t1", "shell", "a\nb\nc"), 80, nil) == 5
+    end
+
+    test "collapsed tool elides once the result is longer than the preview" do
+      # @preview rows + 1 elision row, under the header, + 1 air
+      long = Enum.map_join(1..12, "\n", &"line #{&1}")
+      assert TranscriptView.height(tool("t1", "shell", long), 80, nil) == 6 + 1 + 1 + 1
+    end
+
+    test "an empty result is just the header" do
+      assert TranscriptView.height(tool("t1", "shell", ""), 80, nil) == 1 + 1
     end
 
     test "expanded tool is header + indented content" do
