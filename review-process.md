@@ -25,9 +25,8 @@ Rules that survive:
   commit table — is the owner's call (same as any deletion).
 * A record that is fully worked off is **deleted**, not renamed: its fixes
   are commits, and `review.md`'s table names them. (The old
-  `review-<subject>.md.triaged` convention is retired; it produced two files
-  whose own `## Closed by` line named a commit that did not exist — see
-  N70.)
+  `review-<subject>.md.triaged` convention is retired; its `## Closed by`
+  line named a commit that did not exist — see step 3 below.)
 
 
 ## Roles
@@ -57,9 +56,13 @@ findings off, and commits — the review agent never does.
 ## Closing a finding
 
 1. **Work it off** against the current branch.
-2. **Move it to the commit table** in `review.md` — one row, `N…` → commit.
-3. **Note the fix in the commit message** (the commit is the durable record; the
+2. **Note the fix in the commit message** (the commit is the durable record; the
    table is only an index).
+3. **Move it to the commit table** in `review.md` — one row, `N…` → commit.
+   **Write the row only once the commit exists.** A hash noted before the commit
+   is a guess, and a guess has been wrong here: the retired `.triaged` record
+   named `c6b7d2f`, which never existed. Until the hash exists, anchor the work
+   to the `TODO.md` entry or the commit message, never to a guessed hash.
 4. **Do not `rm` an open finding.** Closing one is a deletion, and deletions are
    the owner's call — same as any other file.
 
