@@ -40,9 +40,11 @@ directory, no platform, no date, and no model. The reference tools do
 not work this way: opencode ships several prompt files and selects one
 by model ID, and generates a per-call environment block.
 
-Reading opencode's source (``packages/opencode/src/session/system.ts``,
-MIT, 2026-09-21) settled what the provider-dependent part actually is.
-It is **not** nine unrelated prompts: the files are ~90% the same
+Reading opencode's source (then
+``packages/opencode/src/session/system.ts``; MIT; the file set has since
+moved and changed size — see the amendment below) settled what the
+provider-dependent part actually is.
+It is **not** one unrelated prompt per model: the files are ~90% the same
 document, reordered and re-trimmed per model family. The same worked
 examples, the same "do not add comments" rule, the same tool-usage
 policy appear in each. The differences are calibration:
@@ -58,12 +60,14 @@ The lesson is that **the prompt is a per-model tuning surface**, not a
 one-time document. A local Ollama model receiving the same five lines as
 a frontier model is the analogue of shipping ``default.txt`` to Claude.
 
-Correction to the secondary source: the circulating summary (rmk40
-gist) claims the fallback is ``qwen.txt`` and the ``beast.txt`` branch
-covers only "GPT/o1/o3". The source shows **nine** branches and **no
-``qwen.txt``** — the fallback is ``default.txt``, and there are separate
-``gpt.txt`` / ``gpt-astra.txt`` (gpt-6) / ``codex.txt`` branches, plus
-``meta.txt`` (muse), ``trinity.txt``, and ``kimi.txt``.
+Correction to the secondary source: a circulating summary (rmk40 gist)
+claimed the fallback is ``qwen.txt`` and that a ``beast.txt`` branch
+covered only "GPT/o1/o3". Two parts of that were wrong and one was right:
+there is no ``qwen.txt``, and the branches were separate files rather than
+a GPT-only branch — but a ``beast.txt`` did exist, and the count in this
+paragraph ("nine") was a snapshot that no longer holds (review N79; see
+the amendment on the source). What matters for the decision is only the
+shape: a set of per-model variants over one shared document.
 
 ### The environment block
 
@@ -132,6 +136,32 @@ a tool round.
    Why the environment block and not the capability block: these are
    *session identity*, which is what ``<env>`` is for; the capability block
    states what the session may *do*. Both ride every request.
+
+.. note::
+   **Amendment 2026-10-11 — the source moved, and "nine" is stale (review
+   N79).** The Context above quotes opencode at
+   ``packages/opencode/src/session/system.ts`` (MIT, 2026-09-21) and says
+   the source shows **nine** branches. A re-read (2026-10-11, opencode
+   ``7b3d4ce3a7``) found neither the path nor the count:
+
+   * The prompt files are **not** under ``packages/opencode`` any more.
+     They live at ``packages/core/src/plugin/system-prompt/*.txt`` — **six**
+     files (``anthropic``, ``gpt``, ``gpt-astra``, ``kimi``, ``meta``,
+     ``trinity``) plus a runner prompt at
+     ``packages/core/src/session/runner/prompt/system.txt``. The directory
+     moved with ``720f062cd0`` ("select system prompts through plugins")
+     and the old package was removed in ``44b6938b2a``.
+   * The file **count has never been stable.** The old directory
+     (``packages/opencode/src/session/prompt/``) held one file at its
+     earliest revision and **fifteen** at its highest; at its last revision
+     (``44b6938b2a^``, 2026-07-20) it held fourteen. So "nine" was a
+     snapshot of *some* commit, and any such number is stale on arrival.
+
+   Neither the count nor the path is load-bearing for the decision — what
+   we take is *structure and calibration*, and that is unaffected. The
+   consequences are that (a) ``THIRD_PARTY.md`` no longer states a count,
+   and (b) a future re-read should date and SHA-pin what it read, as this
+   note does.
 
 Decision
 --------
@@ -210,8 +240,9 @@ Consequences
   model.
 - ``base_prompt`` stays prompt-cacheable; only the suffix changes per
   call.
-- The provider-file set is a maintenance surface that drifts (opencode
-  has nine). Keeping it at two, behind a selector, bounds that cost.
+- The provider-file set is a maintenance surface that drifts (opencode's
+  has changed size repeatedly; see the amendment on the source). Keeping
+  it at two, behind a selector, bounds that cost.
 - Attribution is structural (SPDX + ``LICENSES/`` + ``NOTICE``), so it
   cannot be lost by a later refactor.
 - MPL vs MIT is a project-wide decision this ADR only *relies on*; a
@@ -229,3 +260,13 @@ Open questions
    not decide it.
 3. Is a second prompt variant enough to justify the selector now, or is
    the selector speculative until a second model is dogfooded?
+4. **How much of the calibration did we actually take?** Reading the
+   source above, the files look ~90% identical *to each other*. The
+   overlap between **our** file and any upstream one has not been measured
+   line-by-line. What is checkable today: every structural feature named
+   as "ours" in ``THIRD_PARTY.md`` (the identity rewrite, the tool-name
+   mapping, the harness/``<env>`` block, the ``Context budget`` section)
+   is absent from upstream, and the retained material is at the
+   rule level — the same *instructions* expressed in our words. That is
+   the shape of an adaptation; whether "~90%" is the right number for it
+   is not established by this ADR and should not be quoted as if it were.
