@@ -70,21 +70,30 @@ defmodule Mix.Tasks.Tui do
       Mix.raise(CodingAgent.Core.Config.no_model_message())
     end
 
-    {:ok, _} = CodingAgent.UI.Tui.start_link(tui_opts)
+    {:ok, tui} = CodingAgent.UI.Tui.start_link(tui_opts)
+    await_tui(tui)
+  end
 
-    # The app runs supervised; keep this process alive while the TUI is up
-    ref =
-      case Process.whereis(CodingAgent.UI.Tui) do
-        nil -> self()
-        pid -> Process.monitor(pid)
-      end
+  # Wait for the TUI to stop, then take the VM down with it. Public (with
+  # the one-line halt injected) so the line that matters is testable: the
+  # pid to monitor is the one `start_link/1` RETURNED, never a name.
+  # `use ExRatatui.App` generates `start_link/1` as `dispatch_start/1` into
+  # `ExRatatui.Server`, whose default registered name is
+  # `ExRatatui.Server` — `CodingAgent.UI.Tui` is a callback module, never a
+  # process. The old `Process.whereis(CodingAgent.UI.Tui)` was therefore
+  # always nil, so it fell back to `self()` and no `:DOWN` ever arrived:
+  # `q` stopped the TUI and the VM lingered at an iex-like prompt — the
+  # exact symptom this wait exists to prevent (review N88).
+  @doc false
+  def await_tui(tui, halt \\ &System.halt/1) do
+    ref = Process.monitor(tui)
 
     receive do
       {:DOWN, ^ref, _, _, _} ->
         # the TUI stopped (q / ctrl-c): shut the BEAM down. Without this
         # the Mix VM lingers at an iex-like prompt — supervised trees and
         # the logger keep the scheduler alive after the task returns.
-        System.halt(0)
+        halt.(0)
     end
   end
 

@@ -31,8 +31,14 @@ defmodule CodingAgent.Application do
       # owns the session store's single SQLite connection (see Store):
       # one connection per store path, serialising this VM's access.
       CodingAgent.Core.Session.Store,
-      CodingAgent.Core.Session.Compactor.TaskSupervisor,
-      CodingAgent.Core.Session.TurnTaskSupervisor,
+      # Two named Task.Supervisors, used directly: the library already
+      # declares the child spec (`type: :supervisor`, `id:` from the
+      # name), so a wrapper module would only hand-roll what it provides
+      # — and a hand-rolled copy can get the process type wrong, which is
+      # how this pair was broken (a plain `Supervisor` answers no
+      # `{:start_task, …}`, review N84/N85).
+      {Task.Supervisor, name: CodingAgent.Core.Session.Compactor.TaskSupervisor},
+      {Task.Supervisor, name: CodingAgent.Core.Session.TurnTaskSupervisor},
       CodingAgent.Core.Session.Supervisor
     ]
 

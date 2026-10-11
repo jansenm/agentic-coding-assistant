@@ -320,7 +320,7 @@ counts the whole think+answer time as one inactivity gap against
 ``receive_timeout``), on the session model by default and on a pinned
 ``compaction`` agent model when one is defined (ADR 044). It is executed
 in a task under
-:mod:`CodingAgent.Core.Session.Compactor.TaskSupervisor` — **never
+``CodingAgent.Core.Session.Compactor.TaskSupervisor`` — **never
 linked to the session process** (a crash inside the provider stack
 must degrade, not kill the turn) — and bounded twice: a receive
 (inactivity) timeout inside the call and a hard wall-clock budget

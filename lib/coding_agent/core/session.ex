@@ -16,7 +16,8 @@ defmodule CodingAgent.Core.Session do
   execution, compaction). Running it inline in this GenServer froze the
   mailbox for the turn's duration — `state/1` and `set_agent/2` queued
   behind it and the TUI hung on Tab (found live). The blocking loop now
-  runs in a supervised worker task (`Session.TurnTaskSupervisor`): this
+  runs in a supervised worker task (`Task.Supervisor` named
+  `Session.TurnTaskSupervisor`): this
   process owns the durable state, starts the worker, keeps answering
   calls, and merges the worker's final state when it reports back.
   `run/2` and `decide/2` still return synchronously TO THE CALLER via
@@ -689,14 +690,17 @@ defmodule CodingAgent.Core.Session do
   defp delegatable_names(_), do: []
 
   # Schedule the orphan-ref sweep (review N54) off the start path (review
-  # N63). The start returns immediately; the git call runs in a supervised
-  # task, so a cold/slow git never delays a session start. The keep-set
-  # (every persisted id, every live id, plus THIS id, captured at schedule
-  # time) is snapshotted in the task.
+  # N63). The start returns immediately; the git call runs off-process, so
+  # a cold/slow git never delays a session start. The keep-set (every
+  # persisted id, every live id, plus THIS id, captured at schedule time)
+  # is snapshotted in the task.
   defp schedule_checkpoint_reconcile(scope_root, id) do
-    # `Task.start/1` links, so the whole body must be crash-proof: a raise
-    # or exit here must never take the session down. `reconcile_checkpoints`
-    # already rescues; this catch is the belt for an exit.
+    # `Task.start/1` is unlinked AND unsupervised: a raise or exit in the
+    # body reaches nobody — the session is unaffected, and the only trace
+    # is the `Task … terminating` report. So the body is made crash-proof
+    # on purpose rather than for the caller's sake: `reconcile_checkpoints`
+    # rescues, and this catch is the belt for a throw or exit. `:ok`
+    # either way; the sweep is best effort and has no result to report.
     Task.start(fn ->
       try do
         reconcile_checkpoints(scope_root, id)
@@ -1437,7 +1441,7 @@ defmodule CodingAgent.Core.Session do
   # supervised `async_nolink` task, NOT in the session process. The
   # session holds the durable state and only routes: it starts a worker,
   # keeps answering calls, and merges the worker's final state when it
-  # reports back. See `TurnTaskSupervisor`.
+  # reports back. See the `Task.Supervisor` named `TurnTaskSupervisor`.
 
   # Prepare and launch the run worker. Returns the updated session state
   # with the worker booked (worker_ref/worker_from set).
@@ -1611,7 +1615,7 @@ defmodule CodingAgent.Core.Session do
     case Process.whereis(CodingAgent.Core.Session.TurnTaskSupervisor) do
       nil ->
         # bare tests without the app tree: lazy, like the compactor's
-        case CodingAgent.Core.Session.TurnTaskSupervisor.start_link() do
+        case Task.Supervisor.start_link(name: CodingAgent.Core.Session.TurnTaskSupervisor) do
           {:ok, _pid} -> CodingAgent.Core.Session.TurnTaskSupervisor
           {:error, {:already_started, _pid}} -> CodingAgent.Core.Session.TurnTaskSupervisor
         end

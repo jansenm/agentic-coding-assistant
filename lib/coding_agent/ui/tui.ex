@@ -5150,7 +5150,7 @@ defmodule CodingAgent.UI.Tui do
   # next input changes, via Session.set_agent/2.
   #
   # The session no longer blocks while a turn streams (the turn runs in
-  # a worker; see Session.TurnTaskSupervisor), so this is a plain call.
+  # a worker under `Task.Supervisor`), so this is a plain call.
   # A running turn keeps its agent: the session applies the switch at
   # the turn boundary, which is exactly the ADR 018 semantics.
   defp switch_agent(state) do

@@ -1,6 +1,9 @@
 defmodule Mix.Tasks.TuiHandlerTest do
   use ExUnit.Case, async: true
 
+  alias ExRatatui.CellSession
+  alias ExRatatui.Server
+  alias Mix.Tasks.Tui
   alias Mix.Tasks.Tui.Handler
 
   # The TUI's log file is the ONLY record once the app owns the screen
@@ -113,5 +116,45 @@ defmodule Mix.Tasks.TuiHandlerTest do
                %{level: :warning, msg: {:string, "x"}},
                %{config: %{file: "/nonexistent-dir-#{System.unique_integer([:positive])}/x"}}
              )
+  end
+
+  # `mix tui` must monitor a pid, not a name. `use ExRatatui.App` generates
+  # `start_link/1` as `dispatch_start/1` into `ExRatatui.Server` (default
+  # registered name `ExRatatui.Server`), so `CodingAgent.UI.Tui` is a
+  # callback module and never a process: the old
+  # `Process.whereis(CodingAgent.UI.Tui)` was always nil, the wait fell
+  # back to `self()`, and no `:DOWN` ever arrived — `q` stopped the TUI and
+  # the VM lingered at an iex-like prompt (review N88).
+  test "the mix task waits on the pid start_link returned, not on a name" do
+    session = CellSession.new(80, 10)
+
+    start_opts = [
+      mod: CodingAgent.UI.Tui,
+      test_mode: {80, 10},
+      # `name: nil` — the DEFAULT registered name is `ExRatatui.Server`, and
+      # this module is `async: true`: another test's server may hold it.
+      name: nil,
+      transport: {:cell_session, session, fn _diff -> :ok end}
+    ]
+
+    {:ok, tui} = Server.start_link(start_opts)
+
+    # the premise of the bug: the name the task used to try is unregistered
+    refute Process.whereis(CodingAgent.UI.Tui)
+    assert is_pid(tui) and Process.alive?(tui)
+
+    test_pid = self()
+    spawn(fn -> Process.sleep(50) && GenServer.stop(tui) end)
+
+    # halting the VM here would kill the test run, so the task's one
+    # side effect is injected: the seam proves the DOWN was seen and that
+    # the halt sits behind it.
+    halt = fn code ->
+      send(test_pid, {:halted, code})
+      :ok
+    end
+
+    assert :ok = Tui.await_tui(tui, halt)
+    assert_receive {:halted, 0}
   end
 end

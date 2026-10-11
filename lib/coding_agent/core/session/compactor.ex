@@ -689,13 +689,13 @@ defmodule CodingAgent.Core.Session.Compactor do
 
   # The summarize task must never be linked to the session (see
   # compact/3): the supervisor is a permanent child of the application
-  # tree, created lazily when the tree is absent (bare tests).
+  # tree, created lazily only when the tree is absent (a bare test VM).
   defp task_supervisor do
-    case Process.whereis(Compactor.TaskSupervisor) do
+    case Process.whereis(__MODULE__.TaskSupervisor) do
       nil ->
-        case Task.Supervisor.start_link(name: Compactor.TaskSupervisor) do
-          {:ok, _pid} -> Compactor.TaskSupervisor
-          {:error, {:already_started, _pid}} -> Compactor.TaskSupervisor
+        case Task.Supervisor.start_link(name: __MODULE__.TaskSupervisor) do
+          {:ok, _pid} -> __MODULE__.TaskSupervisor
+          {:error, {:already_started, _pid}} -> __MODULE__.TaskSupervisor
         end
 
       pid when is_pid(pid) ->

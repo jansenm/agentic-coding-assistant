@@ -242,8 +242,8 @@ Mechanism
   the same background slot as the idle pass, so the reply means
   "started", not "summarized".
 - Both background tasks run under the existing
-  ``Compactor.TaskSupervisor`` (never linked to the session), like the
-  current summarize call.
+  ``Task.Supervisor`` named ``Compactor.TaskSupervisor`` (never linked to
+  the session), like the current summarize call.
 
 Consequences
 ------------
