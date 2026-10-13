@@ -313,17 +313,26 @@ nothing. y-fatigue is the enemy of the gate: a user trained to press
 ``y`` after the first ten prompts is a user who will not read the
 eleventh, which *is* the safety loss.
 
-**Decision: a deny-list, checked before the policy lookup.** The
-opposite of an allow-list: not "these commands are safe", but "this
-shell spelling duplicates a native tool — use the tool". A shell call
-whose leading program is in the table is denied with a steering
-message as its tool result, in the same round:
+**Decision: a redirect table, checked before the policy lookup.** Not
+"these commands are safe", but "this shell spelling duplicates a native
+tool — use the tool". A shell call whose leading program is in the table
+is answered with a one-line hint as its tool result, in the same round:
 
 .. code-block:: elixir
 
    # lib/coding_agent/core/tools/shell.ex — @redirect (v1)
    "grep" => "please use the grep tool instead of shell grep ..."
    "rg" / "ag" / "ack" / "sg" => "please use the grep tool ..."
+
+The verdict is a *hint*, not a result: ``Shell.redirect/1`` returns
+``{:hint, message}`` when there is something to steer the model with and
+``:ok`` when there is not. ``:ok`` is **not** "this command is safe" —
+nothing in the table decides that; the sandbox profile does. It means
+only "nothing to redirect you to", which is why the two returns carry
+their own tag rather than an ``{:ok, message}`` next to an ``:error``
+that reads like "the check passed". (The 2026-09-15 text called the
+function ``Shell.blacklisted?/1`` and the bucket ``:blacklisted``; the
+rename is a later amendment — see the note at the end of this section.)
 
 The check is deliberately **shallow**: the first command word only —
 basename of an absolute path (``/usr/bin/grep`` is caught), after
@@ -355,8 +364,8 @@ Honesty about what this is and is not:
   re-emits the call against the native tool and the user's net
   keystroke count for the search drops to zero.
 - **The tool callback stays a pure executor.** The verdict lives in
-  ``Shell.blacklisted?/1`` (public, unit-testable), the session's gate
-  checkpoint consults it before the policy lookup and answers denied
+  ``Shell.redirect/1`` (public, unit-testable), the session's gate
+  checkpoint consults it before the policy lookup and answers redirected
   calls with tool-result messages directly. A direct
   ``ReqLLM.Tool.execute`` bypasses the check — the gate is the policy
   point (same discipline as the timeout soft cap).
@@ -367,17 +376,50 @@ Honesty about what this is and is not:
 collision check (``cat`` the pager-alias, ``ls`` the Lisp interpreter)
 and its own live evidence.
 
-Consequences: every blacklisted denial is a log line
-(``gate: shell command denied (blacklist)``); the class-default
+Consequences: every redirected call is a log line
+(``gate: shell command redirected (native tool)``); the class-default
 allow-list in ``Permissions`` is untouched (this check is shell-only
 and tool-argument-shaped, not path-shaped); the roadmap's
 protected-path sketch (``.git/**``, ``AGENTS.md``) remains the open
 half of the y-fatigue story — paths where a write is invisible to the
 review argument.
 
-Acceptance: ``test/coding_agent/core/shell_test.exs`` — the blacklist
+Acceptance: ``test/coding_agent/core/shell_test.exs`` — the redirect
 unit table (family members, basenames, wrappers, degenerate inputs,
 deliberate misses in both directions) plus gate-integration tests
-proving a denied call produces NO interruption, the steering message
-reaches the model as its tool result, and non-blacklisted shell calls
+proving a redirected call produces NO interruption, the hint
+reaches the model as its tool result, and non-redirected shell calls
 still pause.
+
+Amendment 2026-10-13: the redirect verdict is a hint, not a blacklist
+--------------------------------------------------------------------
+
+The 2026-09-15 amendment above shipped the mechanism under a name that
+said the opposite of what it does: ``Shell.blacklisted?/1`` returning
+``{:ok, message} | :error``. Three problems, all naming:
+
+- **``:error`` did not mean "unsafe".** It covered "not a native-tool
+  duplicate", "a deliberately uncaught evader spelling" and "degenerate
+  input" alike, and the ``:ok``/``:error`` shape is the one for *did the
+  operation succeed* — so every reader parsed ``:ok`` as "the check
+  passed", which slides into "the command is safe". It decided neither:
+  the sandbox profile decides safety, this table decides nothing at all.
+- **The caller matched an absence.** The gate wrote
+  ``match?({:ok, _}, Shell.blacklisted?(args))``; matching on a missing
+  result is how the misreading got typed in.
+- **``blacklist`` named the opposite of the mechanism.** Nothing is
+  blacklisted here — the call is answered with a line telling the model
+  which tool to use instead, and an explicit policy entry plus the
+  sandbox still own the actual decision.
+
+Renamed with this amendment: ``Shell.blacklisted?/1`` → ``Shell.redirect/1``
+returning ``:ok | {:hint, message}``; the gate's bucket ``:blacklisted``
+→ ``:redirected``; ``Gate.blacklist_result/1`` → ``Gate.redirect_result/1``;
+the log line ``gate: shell command denied (blacklist)`` →
+``gate: shell command redirected (native tool)``. Behaviour is unchanged:
+the same table, the same first-word check, the same no-keystroke answer.
+
+Not renamed: ``@redirect`` (already correct), and the historical text
+above keeps the old names — it records what was decided then, and this
+amendment records the correction, rather than pretending the first
+amendment said something it did not.

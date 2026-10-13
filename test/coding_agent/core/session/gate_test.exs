@@ -118,10 +118,10 @@ defmodule CodingAgent.Core.Session.GateTest do
       assert length(plan.pending) == 1
     end
 
-    test "a shell call duplicating a native tool is blacklisted, never pending" do
+    test "a shell call duplicating a native tool is redirected, never pending" do
       plan = Gate.classify("s", policy(), @tmp_root, [call("shell", %{"command" => "grep x ."})])
 
-      assert length(plan.blacklisted) == 1
+      assert length(plan.redirected) == 1
       assert plan.pending == []
     end
 
@@ -140,7 +140,7 @@ defmodule CodingAgent.Core.Session.GateTest do
     test "each refusal carries a model-readable message" do
       assert Gate.denied_result(call("write_file", %{"path" => "x"})).content =~ "denied"
 
-      assert Gate.blacklist_result(call("shell", %{"command" => "grep x ."})).content =~
+      assert Gate.redirect_result(call("shell", %{"command" => "grep x ."})).content =~
                "grep tool"
 
       escalated = call("shell", %{"command" => "curl x", "network" => true})

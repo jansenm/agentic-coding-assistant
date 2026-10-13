@@ -24,12 +24,13 @@ defmodule CodingAgent.Core.Tools.Shell do
   hard cap (#{@max_timeout}s) refuses longer runs and tells the model to
   split the work.
 
-  Command blacklist (2026-09-15 amendment 2): the gate's real cost was
+  Command redirects (2026-09-15 amendment 2): the gate's real cost was
   *y-fatigue* — most gated calls were grep-style read duplicates of
-  native tools. So the direction is a DENY-list, checked before the gate:
-  a shell call whose leading program duplicates a native tool denies with
-  steering ("please use the grep tool"). Under confinement this is UX
-  steering only, never a boundary.
+  native tools. So the gate consults a table of *redirects* before the
+  policy: a shell call whose leading program duplicates a native tool is
+  answered with a one-line hint ("please use the grep tool") instead of
+  a keystroke. Under confinement this is UX steering only, never a
+  boundary — the mount bounds the call, not the command text.
 
   Output: stdout+stderr combined (merged through /bin/sh), exit code,
   wall time. On truncation head and tail are kept (tail matters for test
@@ -234,15 +235,15 @@ defmodule CodingAgent.Core.Tools.Shell do
     end
   end
 
-  # -- Command blacklist (2026-09-15 ADR 010 amendment 2) ----------------------
+  # -- Command redirects (2026-09-15 ADR 010 amendment 2) ----------------------
   #
-  # The OPPOSITE of an allow-list: not "these commands are safe", but
-  # "this shell spelling duplicates a native tool — use the tool". The
-  # gate (Session.gate_tools) consults this BEFORE the policy lookup,
-  # so a denied call never costs a keystroke and the redirect message
-  # steers the model in the same round. Enforcement stays at the gate;
-  # the tool callback remains a pure executor (a direct ReqLLM.Tool
-  # execution bypasses this check — the gate is the policy point).
+  # Not "these commands are safe", but "this shell spelling duplicates a
+  # native tool — use the tool". The gate (Session.Gate) consults this
+  # BEFORE the policy lookup, so a redirected call never costs a
+  # keystroke and the hint reaches the model in the same round.
+  # Enforcement stays at the gate; the tool callback remains a pure
+  # executor (a direct ReqLLM.Tool execution bypasses this check — the
+  # gate is the policy point).
 
   @redirect %{
     "grep" =>
@@ -257,26 +258,31 @@ defmodule CodingAgent.Core.Tools.Shell do
   }
 
   @doc """
-  The command-blacklist verdict for a shell call's arguments: `{:ok, guidance}` when the leading
-  program duplicates a native tool (the value is the denied message for the model), `:error`
-  otherwise.
+  The redirect verdict for a shell call's arguments: `{:hint, guidance}` when the leading
+  program duplicates a native tool (the value is the hint for the model), `:ok` otherwise.
+
+  `:ok` is not "this command is safe" — nothing here decides that; the sandbox profile does.
+  It means only "nothing to redirect you to". The first return is a hint, not a result, which
+  is why it is tagged instead of being a bare `{:ok, message}` next to `:error`.
 
   Deliberately shallow, on purpose: the FIRST program word only — basename of an absolute path,
   after env-var assignments (`FOO=1`). Pipes do not widen the check (`echo hi | grep hi` runs) and
   neither do evader spellings (`git grep`, `awk`, `find -exec`). This is prompt hygiene, not
   containment — shell stays ask-at-the-gate for everything not listed.
   """
-  @spec blacklisted?(term()) :: {:ok, String.t()} | :error
-  def blacklisted?(args) when is_map(args) do
+  @spec redirect(term()) :: :ok | {:hint, String.t()}
+  def redirect(args) when is_map(args) do
     command = Map.get(args, :command) || Map.get(args, "command")
 
     with {:ok, prog} <- leading_program(command),
-         {:ok, guidance} <- Map.fetch(@redirect, prog) do
-      {:ok, guidance}
+         {:ok, hint} <- Map.fetch(@redirect, prog) do
+      {:hint, hint}
+    else
+      _ -> :ok
     end
   end
 
-  def blacklisted?(_args), do: :error
+  def redirect(_args), do: :ok
 
   defp leading_program(command) when is_binary(command) do
     command

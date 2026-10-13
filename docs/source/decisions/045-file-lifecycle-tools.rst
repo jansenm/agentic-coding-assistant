@@ -108,7 +108,7 @@ Non-goals
   Same direction, separate slice (TODO T10).
 - **Recursion as a silent default.** ``recursive`` is opt-in; a
   non-empty directory without it is ``rm``'s "Directory not empty".
-- **``rm``/``mv`` in the shell blacklist.** The blacklist steers
+- **``rm``/``mv`` in the shell redirect table.** The table steers
   *read*-duplicates ("use grep"); ``rm -rf _build`` inside a build script
   is legitimate. The native tools are additions, not a redirect.
 

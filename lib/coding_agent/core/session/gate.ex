@@ -6,8 +6,8 @@ defmodule CodingAgent.Core.Session.Gate do
   Given a policy, a scope root and a round's tool calls, `classify/3`
   sorts every call into one of five buckets:
 
-    * `:blacklisted` — a shell call whose leading program duplicates a
-      native tool; denied with a steering message, no keystroke spent;
+    * `:redirected` — a shell call whose leading program duplicates a
+      native tool; answered with a one-line hint, no keystroke spent;
     * `:no_reason` — an escalation (`network`/`git_write`) without the
       stated reason the human needs to answer the prompt (ADR 015);
     * `:denied` — an explicit policy `deny`; answered in the same round,
@@ -35,7 +35,7 @@ defmodule CodingAgent.Core.Session.Gate do
 
   @typedoc "One call's classification buckets, in round order."
   @type plan :: %{
-          blacklisted: [term()],
+          redirected: [term()],
           no_reason: [term()],
           denied: [term()],
           auto: [term()],
@@ -48,10 +48,10 @@ defmodule CodingAgent.Core.Session.Gate do
   """
   @spec classify(String.t(), Permissions.t(), String.t() | nil, [term()]) :: plan()
   def classify(session_id, policy, scope_root, calls) do
-    {blacklisted, rest} =
+    {redirected, rest} =
       Enum.split_with(calls, fn call ->
         {_id, name, args} = ToolCall.normalize(call)
-        name == "shell" and match?({:ok, _}, Shell.blacklisted?(args))
+        name == "shell" and match?({:hint, _}, Shell.redirect(args))
       end)
 
     {auto, pending, denied, no_reason} =
@@ -70,7 +70,7 @@ defmodule CodingAgent.Core.Session.Gate do
       end)
 
     %{
-      blacklisted: blacklisted,
+      redirected: redirected,
       no_reason: Enum.reverse(no_reason),
       denied: Enum.reverse(denied),
       auto: Enum.reverse(auto),
@@ -110,12 +110,12 @@ defmodule CodingAgent.Core.Session.Gate do
     }
   end
 
-  @doc "The result for a blacklisted (native-tool-duplicating) shell call."
-  @spec blacklist_result(term()) :: map()
-  def blacklist_result(call) do
+  @doc "The result for a redirected (native-tool-duplicating) shell call."
+  @spec redirect_result(term()) :: map()
+  def redirect_result(call) do
     {id, _name, args} = ToolCall.normalize(call)
-    {:ok, guidance} = Shell.blacklisted?(args)
-    %{id: id, name: "shell", content: "error: #{guidance}"}
+    {:hint, hint} = Shell.redirect(args)
+    %{id: id, name: "shell", content: "error: #{hint}"}
   end
 
   @doc "The result for an escalation whose required reason is missing."

@@ -517,7 +517,7 @@ defmodule CodingAgent.Core.Session do
 
     # A session that was parked at the gate when it last stopped resumes
     # PARKED, not idle: the pending calls (and the half of the round that
-    # was already decided — auto-executed, blacklist/policy-denied) come
+    # was already decided — auto-executed, redirect/policy-denied) come
     # back so `decide/2` can finish the exchange. Dropping them used to
     # silently discard work the user then had to redo.
     #
@@ -2104,7 +2104,7 @@ defmodule CodingAgent.Core.Session do
   end
 
   # All gate policy lives in Session.Gate: it buckets this round's calls
-  # (blacklist / escalation-without-reason / explicit deny / allow / ask)
+  # (redirect / escalation-without-reason / explicit deny / allow / ask)
   # using the one Permissions.effective/4 path. A `question` call never
   # reaches the policy gate (see run_round): it is answered by the human.
   #
@@ -2134,10 +2134,10 @@ defmodule CodingAgent.Core.Session do
 
     plan = Gate.classify(state.id, state.policy, state.scope_root, answerable)
 
-    blacklist_results =
-      Enum.map(plan.blacklisted, fn call ->
-        log_refusal(call, "gate: shell command denied (blacklist)")
-        Gate.blacklist_result(call)
+    redirected_results =
+      Enum.map(plan.redirected, fn call ->
+        log_refusal(call, "gate: shell command redirected (native tool)")
+        Gate.redirect_result(call)
       end)
 
     no_reason_results =
@@ -2148,13 +2148,13 @@ defmodule CodingAgent.Core.Session do
 
     # Results already decided for this round, before any human input, plus
     # the question answers and the todo updates.
-    known_calls = plan.blacklisted ++ plan.no_reason ++ plan.denied
+    known_calls = plan.redirected ++ plan.no_reason ++ plan.denied
 
     known_results =
       answered ++
         todo_results ++
         compact_results ++
-        blacklist_results ++
+        redirected_results ++
         no_reason_results ++ Enum.map(plan.denied, &Gate.denied_result/1)
 
     # A `task` call runs its child session inline (ADR 017/018): its only

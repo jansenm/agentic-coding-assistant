@@ -232,13 +232,13 @@ defmodule CodingAgent.Core.Tools.ShellTest do
     test "a rejected shell call leaves no trace", do: reject_rejected_shell()
   end
 
-  # -- Command blacklist (2026-09-15 ADR 010 amendment 2) ----------------------
+  # -- Command redirects (2026-09-15 ADR 010 amendment 2) ---------------------
 
-  describe "command blacklist (2026-09-15 amendment 2)" do
-    test "shell grep is denied with steering to the native grep tool", %{tool: tool} do
-      {:ok, guidance} = Shell.blacklisted?(%{"command" => "grep -rn handle_call lib/"})
-      assert guidance =~ "grep tool"
-      assert guidance =~ "allow-by-policy"
+  describe "command redirects (2026-09-15 amendment 2)" do
+    test "shell grep is redirected with a hint to the native grep tool", %{tool: tool} do
+      {:hint, hint} = Shell.redirect(%{"command" => "grep -rn handle_call lib/"})
+      assert hint =~ "grep tool"
+      assert hint =~ "allow-by-policy"
 
       # direct tool execution is untouched — the gate is the policy point
       # (cwd is the tmp scope; make the file first)
@@ -247,49 +247,49 @@ defmodule CodingAgent.Core.Tools.ShellTest do
       assert out =~ "exit 0"
     end
 
-    test "the whole grep family is denied: rg, ag, ack, sg" do
+    test "the whole grep family is redirected: rg, ag, ack, sg" do
       for prog <- ["rg", "ag", "ack", "sg"] do
-        assert {:ok, guidance} = Shell.blacklisted?(%{"command" => "#{prog} pattern lib/"})
-        assert guidance =~ "grep tool"
+        assert {:hint, hint} = Shell.redirect(%{"command" => "#{prog} pattern lib/"})
+        assert hint =~ "grep tool"
       end
     end
 
     test "absolute-path programs are recognized by basename" do
-      assert {:ok, guidance} =
-               Shell.blacklisted?(%{"command" => "/usr/bin/grep -n foo bar.ex"})
+      assert {:hint, hint} =
+               Shell.redirect(%{"command" => "/usr/bin/grep -n foo bar.ex"})
 
-      assert guidance =~ "grep tool"
-      assert {:ok, guidance} = Shell.blacklisted?(%{"command" => "/bin/grep foo bar"})
-      assert guidance =~ "grep tool"
+      assert hint =~ "grep tool"
+      assert {:hint, hint} = Shell.redirect(%{"command" => "/bin/grep foo bar"})
+      assert hint =~ "grep tool"
     end
 
-    test "non-grep leading programs pass: sed, cat, ls, touch, mix" do
+    test "non-grep leading programs are not redirected: sed, cat, ls, touch, mix" do
       # deliberately NOT covered yet (one-line follow-ups when wanted)
-      assert :error = Shell.blacklisted?(%{"command" => "sed -n '1,5p' mix.exs"})
-      assert :error = Shell.blacklisted?(%{"command" => "cat mix.exs"})
-      assert :error = Shell.blacklisted?(%{"command" => "ls lib"})
-      assert :error = Shell.blacklisted?(%{"command" => "mix test"})
-      assert :error = Shell.blacklisted?(%{"command" => "echo hello"})
+      assert :ok = Shell.redirect(%{"command" => "sed -n '1,5p' mix.exs"})
+      assert :ok = Shell.redirect(%{"command" => "cat mix.exs"})
+      assert :ok = Shell.redirect(%{"command" => "ls lib"})
+      assert :ok = Shell.redirect(%{"command" => "mix test"})
+      assert :ok = Shell.redirect(%{"command" => "echo hello"})
     end
 
-    test "deliberately shallow: pipes and evader spellings are NOT caught" do
-      assert :error = Shell.blacklisted?(%{"command" => "echo hi | grep hi"})
-      assert :error = Shell.blacklisted?(%{"command" => "git grep handle_call"})
-      assert :error = Shell.blacklisted?(%{"command" => "find . -name '*.ex' -exec grep x {} +"})
-      # chained but LEADING: the first word is still grep — caught. The
+    test "deliberately shallow: pipes and evader spellings get no hint" do
+      assert :ok = Shell.redirect(%{"command" => "echo hi | grep hi"})
+      assert :ok = Shell.redirect(%{"command" => "git grep handle_call"})
+      assert :ok = Shell.redirect(%{"command" => "find . -name '*.ex' -exec grep x {} +"})
+      # chained but LEADING: the first word is still grep — redirected. The
       # shallow check is first-word only, in both directions.
-      assert {:ok, _} = Shell.blacklisted?(%{"command" => "grep -q foo bar && touch marker"})
+      assert {:hint, _} = Shell.redirect(%{"command" => "grep -q foo bar && touch marker"})
     end
 
-    test "degenerate inputs are :error, not crashes" do
-      assert :error = Shell.blacklisted?(%{})
-      assert :error = Shell.blacklisted?(%{"command" => ""})
-      assert :error = Shell.blacklisted?(%{"command" => nil})
-      assert :error = Shell.blacklisted?("grep foo")
-      assert :error = Shell.blacklisted?(nil)
+    test "degenerate inputs are :ok, not crashes" do
+      assert :ok = Shell.redirect(%{})
+      assert :ok = Shell.redirect(%{"command" => ""})
+      assert :ok = Shell.redirect(%{"command" => nil})
+      assert :ok = Shell.redirect("grep foo")
+      assert :ok = Shell.redirect(nil)
     end
 
-    test "gate denies blacklisted shell calls with NO keystroke (no interruption)" do
+    test "gate answers redirected shell calls with NO keystroke (no interruption)" do
       id = "shell-bl-#{System.unique_integer()}"
 
       {:ok, _} =
@@ -316,11 +316,11 @@ defmodule CodingAgent.Core.Tools.ShellTest do
       last = ReqLLM.Context.to_list(state.context) |> List.last()
       assert last.role == :tool
       assert text_of(last) =~ "please use the grep tool"
-      assert log =~ "gate: shell command denied (blacklist)"
+      assert log =~ "gate: shell command redirected (native tool)"
       assert log =~ "\"g1\""
     end
 
-    test "gate denies only the blacklisted call in a mixed batch" do
+    test "gate redirects only the redirectable call in a mixed batch" do
       id = "shell-bl-mixed-#{System.unique_integer()}"
 
       {:ok, _} =
@@ -353,11 +353,11 @@ defmodule CodingAgent.Core.Tools.ShellTest do
 
       contents = Enum.map_join(tool_msgs, "\n", &text_of/1)
       assert contents =~ "please use the grep tool"
-      assert log =~ "gate: shell command denied (blacklist)"
+      assert log =~ "gate: shell command redirected (native tool)"
       assert log =~ "\"m1\""
     end
 
-    test "non-blacklisted shell calls run allow-by-default (ADR 030)" do
+    test "non-redirected shell calls run allow-by-default (ADR 030)" do
       id = "shell-bl-neg-#{System.unique_integer()}"
 
       {:ok, _} =

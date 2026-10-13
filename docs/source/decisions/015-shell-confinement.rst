@@ -78,7 +78,9 @@ messages, 115 tool calls)::
    ------------------------------------
    total                              112
 
-The blacklist catches 24. The other **88 would each have paused for a
+The redirect table catches 24 (the amendment-2 mechanism; it was named
+a "blacklist" until the 2026-10-13 amendment to ADR 010). The other **88
+would each have paused for a
 ``y``** in one session. A user facing that sets ``shell = allow`` or
 reaches for a less nagging tool — the exact rubber-stamp failure the
 gate exists to prevent. **The gate currently pays its safety cost

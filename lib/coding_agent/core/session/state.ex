@@ -47,9 +47,9 @@ defmodule CodingAgent.Core.Session.State do
     # These carry the already-known half across the pause — every call of
     # the round (so the assistant message can declare them all, in final
     # edited form) and the results already computed (auto-executed,
-    # blacklist-denied, policy-denied). Without them a mixed round
-    # appended bare tool results with no declaring assistant message,
-    # and a resumed round lost the auto results.
+    # redirected, policy-denied). Without them a
+    # mixed round appended bare tool results with no declaring assistant
+    # message, and a resumed round lost the auto results.
     pending_round_calls: [],
     pending_round_results: [],
     # Parked at the tool-round budget (ADR 025): %{calls, rounds} when an
