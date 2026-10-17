@@ -244,6 +244,15 @@ defmodule CodingAgent.Core.Tools.Shell do
   # Enforcement stays at the gate; the tool callback remains a pure
   # executor (a direct ReqLLM.Tool execution bypasses this check — the
   # gate is the policy point).
+  #
+  # The table is ADVICE, never a wall (owner ruling 2026-10-13). Which
+  # spellings it can see is a coincidence of the first word: `git add`
+  # matches a row, `bash -c 'git add …'` does not. So a hint may not be
+  # the last word — it would steer the honest spelling away while the
+  # wrapped one reached the gate and ran. The escape is the one the
+  # caller already has: STATE an escalation (`git_write: true`/`network:
+  # true` plus a `reason`), and the call goes to the human instead of
+  # getting advice. See `redirect/1`.
 
   @redirect %{
     "grep" =>
@@ -254,6 +263,8 @@ defmodule CodingAgent.Core.Tools.Shell do
     # sg = sushi-ripgrep's wrapper; the name collision with the Unix
     # set-group sg is accepted — an agent essentially never wants that
     "sg" => "please use the grep tool instead of shell sg",
+    "git" =>
+      "please use the git tool instead of shell git (allow-by-default, runs git directly and may write .git); for git inside a script, state git_write: true with a reason",
     "timeout" => "please set the timeout as a parameter on the tool call"
   }
 
@@ -265,6 +276,12 @@ defmodule CodingAgent.Core.Tools.Shell do
   It means only "nothing to redirect you to". The first return is a hint, not a result, which
   is why it is tagged instead of being a bare `{:ok, message}` next to `:error`.
 
+  **The hint is advice, never a wall.** A call that *states* an escalation (`network: true` /
+  `git_write: true`, each with its `reason`) is asking to run this command as written by hand,
+  and goes to the gate like any other escalated call — no hint. Without that, the table's
+  first-word blindness would invert the outcome: the honest `git add` (escalation stated) would
+  be steered away, while `bash -c 'git add …'` reached the human and ran.
+
   Deliberately shallow, on purpose: the FIRST program word only — basename of an absolute path,
   after env-var assignments (`FOO=1`). Pipes do not widen the check (`echo hi | grep hi` runs) and
   neither do evader spellings (`git grep`, `awk`, `find -exec`). This is prompt hygiene, not
@@ -272,6 +289,12 @@ defmodule CodingAgent.Core.Tools.Shell do
   """
   @spec redirect(term()) :: :ok | {:hint, String.t()}
   def redirect(args) when is_map(args) do
+    if escalated?(args), do: :ok, else: hint_for(args)
+  end
+
+  def redirect(_args), do: :ok
+
+  defp hint_for(args) do
     command = Map.get(args, :command) || Map.get(args, "command")
 
     with {:ok, prog} <- leading_program(command),
@@ -281,8 +304,6 @@ defmodule CodingAgent.Core.Tools.Shell do
       _ -> :ok
     end
   end
-
-  def redirect(_args), do: :ok
 
   defp leading_program(command) when is_binary(command) do
     command

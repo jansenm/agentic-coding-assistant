@@ -338,8 +338,8 @@ The check is deliberately **shallow**: the first command word only —
 basename of an absolute path (``/usr/bin/grep`` is caught), after
 env-var assignments (``FOO=1 grep …``) and shelling-out wrappers
 (``env`` / ``command`` / ``nohup``). Pipes do not widen the check
-(``echo hi | grep hi`` runs), and evader spellings pass (``git grep``,
-``awk``, ``find -exec``, ``bash -c``).
+(``echo hi | grep hi`` runs), and evader spellings pass (``bash -c``,
+``awk``, ``find -exec``).
 
 **Pipes are a live question, deferred on purpose.** A pipe is the one
 plausibly *legitimate* shell-grep shape (``cat x | grep y`` is rare —
@@ -392,7 +392,7 @@ reaches the model as its tool result, and non-redirected shell calls
 still pause.
 
 Amendment 2026-10-13: the redirect verdict is a hint, not a blacklist
---------------------------------------------------------------------
+---------------------------------------------------------------------
 
 The 2026-09-15 amendment above shipped the mechanism under a name that
 said the opposite of what it does: ``Shell.blacklisted?/1`` returning
@@ -416,8 +416,42 @@ Renamed with this amendment: ``Shell.blacklisted?/1`` → ``Shell.redirect/1``
 returning ``:ok | {:hint, message}``; the gate's bucket ``:blacklisted``
 → ``:redirected``; ``Gate.blacklist_result/1`` → ``Gate.redirect_result/1``;
 the log line ``gate: shell command denied (blacklist)`` →
-``gate: shell command redirected (native tool)``. Behaviour is unchanged:
-the same table, the same first-word check, the same no-keystroke answer.
+``gate: shell command redirected (native tool)``. Same table, same
+first-word check, same no-keystroke answer — with the one addition below.
+
+Amendment 2026-10-13 (b): the hint is advice, never a wall
+----------------------------------------------------------
+
+The 2026-09-15 amendment's own honesty note says the check is
+first-word-only and that ``bash -c`` walks around it. That asymmetry is
+harmless while the hint is a *convenience*, but it inverts the outcome the
+moment a row covers a command the agent may legitimately want to run **as
+written** — ``git add`` in a release script being the live case::
+
+   git add -A                       → first word `git` → hinted, never runs
+   bash -c 'git add -A && mix test' → first word `bash` → reaches the gate
+
+So the honest spelling would be steered away and the wrapped one would
+reach the human and run. The row must therefore be escapable through the
+mechanism the caller already has: **state an escalation** (``git_write:
+true`` / ``network: true``, each with its ``reason``) and the call is left
+alone and goes to the gate like any other escalated call. ``Shell.redirect/1``
+returns ``:ok`` for it, so the hint is advice and can always be walked,
+while the escalation still costs a keystroke and a stated reason.
+
+Consequence, stated plainly: **a reasonless escalation is treated as no
+escalation at all** — the call gets the hint, the escalation is not
+granted, and the command fails against the mount instead of running wide.
+A stated escalation is what the human answers; a bare ``true`` is not
+answerable, so it does not count (the same shape as ``:no_reason`` at the
+gate).
+
+The ``git`` row itself: shell ``git`` duplicates the dedicated tool, which
+is allow-by-default and may write ``.git``. The hint names both the tool
+and the escape (``git_write: true`` with a reason), which is also where
+P5's "escalations are only discoverable by failing" is answered — the
+message tells the model the way out instead of leaving it to deduce one
+from EROFS.
 
 Not renamed: ``@redirect`` (already correct), and the historical text
 above keeps the old names — it records what was decided then, and this

@@ -274,11 +274,41 @@ defmodule CodingAgent.Core.Tools.ShellTest do
 
     test "deliberately shallow: pipes and evader spellings get no hint" do
       assert :ok = Shell.redirect(%{"command" => "echo hi | grep hi"})
-      assert :ok = Shell.redirect(%{"command" => "git grep handle_call"})
+      assert :ok = Shell.redirect(%{"command" => "bash -c 'grep -rn x lib'"})
       assert :ok = Shell.redirect(%{"command" => "find . -name '*.ex' -exec grep x {} +"})
       # chained but LEADING: the first word is still grep — redirected. The
       # shallow check is first-word only, in both directions.
       assert {:hint, _} = Shell.redirect(%{"command" => "grep -q foo bar && touch marker"})
+    end
+
+    test "shell git is redirected to the git tool, naming the script escape" do
+      {:hint, hint} = Shell.redirect(%{"command" => "git add -A"})
+      assert hint =~ "git tool"
+      assert hint =~ "git_write"
+
+      assert {:hint, _} = Shell.redirect(%{"command" => "/usr/bin/git status"})
+    end
+
+    test "a stated escalation makes the redirect advice, not a wall" do
+      # the same command, now asking to run as written: goes to the gate
+      assert :ok =
+               Shell.redirect(%{
+                 "command" => "git add -A",
+                 "git_write" => true,
+                 "reason" => "release script stages the tree"
+               })
+
+      # a row whose native tool has no escalation (grep) is bypassed too:
+      # the escape is a property of the call, not of the row
+      assert :ok =
+               Shell.redirect(%{
+                 "command" => "grep -rn x lib",
+                 "network" => true,
+                 "reason" => "r"
+               })
+
+      # and the gate then refuses the *reasonless* escalation, as before
+      assert :ok = Shell.redirect(%{"command" => "grep -rn x lib", "network" => true})
     end
 
     test "degenerate inputs are :ok, not crashes" do

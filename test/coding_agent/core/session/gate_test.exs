@@ -5,6 +5,7 @@ defmodule CodingAgent.Core.Session.GateTest do
 
   alias CodingAgent.Core.Permissions
   alias CodingAgent.Core.Session.Gate
+  alias CodingAgent.Core.Tools.Shell
   alias CodingAgent.TestSandbox.Stub
 
   @tmp_root System.tmp_dir!()
@@ -123,6 +124,26 @@ defmodule CodingAgent.Core.Session.GateTest do
 
       assert length(plan.redirected) == 1
       assert plan.pending == []
+    end
+
+    test "a stated escalation outranks the redirect: the hint is advice, never a wall" do
+      # `git add` matches the table on its first word, `bash -c 'git add …'`
+      # does not. If the hint were final, the honest spelling would be
+      # steered away while the wrapped one reached the gate — so a stated,
+      # reasoned escalation goes to the human instead.
+      escalated =
+        call("shell", %{
+          "command" => "git add -A",
+          "git_write" => true,
+          "reason" => "release script stages the tree"
+        })
+
+      assert Shell.redirect(escalated.arguments) == :ok
+
+      plan = Gate.classify("s", policy(), @tmp_root, [escalated])
+
+      assert plan.redirected == []
+      assert length(plan.pending) == 1
     end
 
     test "an escalation without a reason is its own bucket, never pending" do
