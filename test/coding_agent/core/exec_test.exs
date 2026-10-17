@@ -156,22 +156,25 @@ defmodule CodingAgent.Core.ExecTest do
       # see them, so the first cut of this test was green even on the
       # buggy version. `:binary` (a list of `{ref, size, refc?}`) does.
       #
-      # 64 MiB of output in 64 KiB chunks (a 4 ms pause between them so
+      # 64 MiB of output in 256 KiB chunks (a 4 ms pause between them so
       # the consumer drains and the port mailbox stays small — a
       # saturating producer floods it and makes the number
-      # scheduling-dependent, 3-16 MB across runs).
+      # scheduling-dependent). 256 chunks, not 1024: the per-chunk `sleep`
+      # is a process spawn, so the iteration count dominated the test's
+      # wall clock (≈5 s) without changing what it measures — the
+      # footprint is a function of the output total.
       #
       # Fixed: the accumulator holds O(cap) plus the mailbox backlog,
-      # measured 3-16 MB and FLAT from 64 to 8192 chunks (512 MB output).
-      # Buggy: it held the whole stream, 64 MB here (128 MB with the
-      # final materialization). 40 MB separates them with margin — the
-      # old metric (`:memory`) never saw the refc binaries and was green
-      # on the bug (N34).
-      peak = peak_binary_for(1024)
-      assert peak < 40 * 1024 * 1024
+      # measured ~10-12 MB here (3-16 MB across runs and shapes) and FLAT
+      # from 64 to 8192 chunks (512 MB output). Buggy: it held the whole
+      # stream, 64 MB here (128 MB with the final materialization). 40 MB
+      # separates them with margin — the old metric (`:memory`) never saw
+      # the refc binaries and was green on the bug (N34).
+      peak = peak_binary_for(256)
+      assert peak < 40 * 1024 * 1024, "peak #{peak} bytes"
 
       # and the spill really happened, with the in-file cap marker
-      scratch = Path.join(@tmp_root, "scratch-oom-1024")
+      scratch = Path.join(@tmp_root, "scratch-oom-256")
       host = Path.wildcard(Path.join(scratch, "spill/shell-*")) |> List.first()
       assert host != nil
       file = File.read!(host)
@@ -179,7 +182,7 @@ defmodule CodingAgent.Core.ExecTest do
       assert file =~ "spill truncated"
     end
 
-    # Emits `chunks` x 64 KiB with a short pause; returns the worker's
+    # Emits `chunks` x 256 KiB with a short pause; returns the worker's
     # peak binary footprint.
     defp peak_binary_for(chunks) do
       scratch = Path.join(@tmp_root, "scratch-oom-#{chunks}")
@@ -187,7 +190,7 @@ defmodule CodingAgent.Core.ExecTest do
       profile = %{root: @tmp_root, scratch: scratch, session_id: nil}
       me = self()
 
-      cmd = "for i in $(seq 1 #{chunks}); do printf '%65536s' x; sleep 0.004; done"
+      cmd = "for i in $(seq 1 #{chunks}); do printf '%262144s' x; sleep 0.004; done"
 
       {pid, ref} =
         spawn_monitor(fn ->
