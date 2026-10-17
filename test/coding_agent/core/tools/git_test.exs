@@ -82,13 +82,20 @@ defmodule CodingAgent.Core.Tools.GitTest do
     end
   end
 
-  describe "profile/1" do
-    test "always grants git_write and keeps the network off", %{root: root} do
-      profile = Git.profile(%{root: root, mounts: %{rw: ["/rw"], ro: [], hide: []}})
+  describe "profile/2" do
+    test "grants git_write, and the network only from the CALL's args", %{root: root} do
+      scope = %{root: root, mounts: %{rw: ["/rw"], ro: [], hide: []}}
 
+      # no args at all is the checkpoint's internal call — must stay offline
+      profile = Git.profile(scope)
       assert profile.git_write == true
       assert profile.network == false
       assert profile.rw == ["/rw"]
+
+      assert Git.profile(scope, %{}).network == false
+      assert Git.profile(scope, %{"network" => false}).network == false
+      assert Git.profile(scope, %{"network" => true}).network == true
+      assert Git.profile(scope, %{network: true}).network == true
     end
 
     test "tolerates a scope without mounts", %{root: root} do
@@ -113,6 +120,28 @@ defmodule CodingAgent.Core.Tools.GitTest do
       assert {:error, msg} = Git.effective_timeout(%{"timeout_secs" => 99999})
       assert msg =~ "hard cap"
       assert {:ok, 120} = Git.effective_timeout("nope")
+    end
+  end
+
+  describe "network_verdict/1 (pure)" do
+    test "names the escalation for a remote subcommand that did not ask for it" do
+      for sub <- ~w(fetch clone push pull ls-remote) do
+        msg = Git.network_verdict(%{"args" => [sub, "origin"]})
+        assert msg =~ "network: true"
+        assert msg =~ sub
+      end
+
+      # asked for: no advice, the gate handles it
+      assert Git.network_verdict(%{"args" => ["fetch"], "network" => true, "reason" => "r"}) ==
+               nil
+
+      # local subcommands never need it
+      for args <- [["status"], ["log", "-1"], ["commit", "-am", "x"], ["diff"]],
+          do: assert(Git.network_verdict(%{"args" => args}) == nil)
+
+      # malformed args fall through to argv/1's own error
+      assert Git.network_verdict(%{"args" => []}) == nil
+      assert Git.network_verdict("nope") == nil
     end
   end
 

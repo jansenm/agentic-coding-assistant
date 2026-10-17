@@ -146,6 +146,47 @@ defmodule CodingAgent.Core.Session.GateTest do
       assert length(plan.pending) == 1
     end
 
+    test "a git network escalation asks, and a git call without one does not" do
+      ask =
+        call("git", %{
+          "args" => ["fetch", "origin"],
+          "network" => true,
+          "reason" => "fetch the upstream tags"
+        })
+
+      plan = Gate.classify("s", policy(), @tmp_root, [ask])
+      assert length(plan.pending) == 1
+      assert plan.redirected == []
+
+      # the same call without the escalation: allow-by-default, like git
+      # always was (only the network grant re-enables the prompt)
+      plain = call("git", %{"args" => ["fetch", "origin"]})
+      plan = Gate.classify("s", policy(), @tmp_root, [plain])
+      assert length(plan.auto) == 1
+
+      # `git_write` is granted unconditionally to this tool, so stating it
+      # is not an escalation the tool offers and must not cost a keystroke
+      write = call("git", %{"args" => ["commit", "-am", "x"], "git_write" => true})
+      plan = Gate.classify("s", policy(), @tmp_root, [write])
+      assert length(plan.auto) == 1
+      assert plan.pending == []
+    end
+
+    test "a git network escalation without a reason is refused, naming the git call" do
+      plan =
+        Gate.classify("s", policy(), @tmp_root, [
+          call("git", %{"args" => ["fetch", "origin"], "network" => true})
+        ])
+
+      assert length(plan.no_reason) == 1
+
+      call = hd(plan.no_reason)
+      result = Gate.no_reason_result(call)
+      assert result.name == "git"
+      assert result.content =~ "reason"
+      assert result.content =~ "network"
+    end
+
     test "an escalation without a reason is its own bucket, never pending" do
       plan =
         Gate.classify("s", policy(), @tmp_root, [

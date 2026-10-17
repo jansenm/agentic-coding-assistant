@@ -25,9 +25,45 @@ defmodule CodingAgent.Core.Tools.Git do
 
   alias CodingAgent.Core.Exec
   alias CodingAgent.Core.Tools
+  alias CodingAgent.Core.Tools.Escalation
+  alias CodingAgent.Core.Tools.Escalation
 
   @default_timeout 120
   @max_timeout 1800
+
+  @doc """
+  The tool's parameter schema. Public so the gate reads the SAME keywords
+  the tool declares instead of assuming what a git call may escalate.
+  """
+  @spec parameter_schema() :: keyword()
+  def parameter_schema do
+    [
+      args: [
+        type: {:list, :string},
+        required: true,
+        doc: "Git arguments, without the leading `git` (e.g. [\"status\"])"
+      ],
+      timeout_secs: [
+        type: :integer,
+        required: false,
+        doc: "Maximum runtime in seconds (default #{@default_timeout}, max #{@max_timeout})"
+      ],
+      network: [
+        type: :boolean,
+        required: false,
+        doc:
+          "Escalation: allow network access for this call (default false) — required for " <>
+            "fetch/clone/push; .git stays writable either way"
+      ],
+      reason: [
+        type: :string,
+        required: false,
+        doc:
+          "REQUIRED when you set network: one short sentence, shown to the human in the " <>
+            "approval prompt, explaining why this call needs the escalation."
+      ]
+    ]
+  end
 
   @spec tool(Tools.scope()) :: ReqLLM.Tool.t()
   def tool(scope) do
@@ -36,20 +72,10 @@ defmodule CodingAgent.Core.Tools.Git do
       description:
         "Run a git command in the session scope. Pass the git arguments as a " <>
           "list, e.g. [\"commit\", \"-am\", \"fix\"]. Unlike shell, this may " <>
-          "write .git (commit/tag/reset). For git inside a script, use shell " <>
-          "with git_write.",
-      parameter_schema: [
-        args: [
-          type: {:list, :string},
-          required: true,
-          doc: "Git arguments, without the leading `git` (e.g. [\"status\"])"
-        ],
-        timeout_secs: [
-          type: :integer,
-          required: false,
-          doc: "Maximum runtime in seconds (default #{@default_timeout}, max #{@max_timeout})"
-        ]
-      ],
+          "write .git (commit/tag/reset). No network unless you request it " <>
+          "(network: true + reason) — `fetch` and `clone` need that. For git " <>
+          "inside a script, use shell with git_write.",
+      parameter_schema: parameter_schema(),
       callback: fn args -> execute(scope, args) end
     )
   end
@@ -98,21 +124,59 @@ defmodule CodingAgent.Core.Tools.Git do
 
   def argv(_args), do: {:error, "args must be a non-empty list of strings"}
 
-  # -- Execution --------------------------------------------------------------
+  # A `git` call that talks to a remote needs the network, and the gate
+  # asks for it from the tool's own schema (see `Gate`). The check runs
+  # here rather than being left to `Bwrap`: without it a `fetch` dies on
+  # the NAMESPACE with "cannot resolve host", which names neither the cause
+  # nor the way out. `ls-remote` is in the list because it is the cheap
+  # probe an agent reaches for exactly when it suspects it has no network.
+  #
+  # Deliberately NOT exhaustive (a script can drive git through a remote
+  # helper); this is the message, not the boundary — the grant is the
+  # declared escalation and the sandbox enforces it.
+  @network_subcommands ~w(fetch clone push pull ls-remote)
 
-  defp execute(scope, args) do
-    argv = Map.get(args, :args) || Map.get(args, "args")
+  @doc """
+  Whether this `git` call needs the network and did not ask for it. Returns
+  `nil` when it is fine, a message for the model otherwise.
+  """
+  @spec network_verdict(term()) :: String.t() | nil
+  def network_verdict(args) when is_map(args) do
+    if Escalation.granted?(args, :network) do
+      nil
+    else
+      case argv(args) do
+        {:ok, [sub | _]} when sub in @network_subcommands ->
+          "`git #{sub}` needs the network: retry with `network: true` and a `reason` " <>
+            "(the confinement has no network unless a call states it)"
 
-    with {:ok, git_args} <- argv(%{"args" => argv}),
-         {:ok, secs} <- effective_timeout(args) do
-      run(scope, git_args, secs)
+        _ ->
+          nil
+      end
     end
   end
 
-  defp run(scope, git_args, secs) do
+  def network_verdict(_args), do: nil
+
+  # -- Execution --------------------------------------------------------------
+
+  defp execute(scope, args) do
+    case network_verdict(args) do
+      nil ->
+        with {:ok, git_args} <- argv(args),
+             {:ok, secs} <- effective_timeout(args) do
+          run(scope, git_args, secs, args)
+        end
+
+      message ->
+        Tools.error(message)
+    end
+  end
+
+  defp run(scope, git_args, secs, args) do
     started = System.monotonic_time(:millisecond)
     cwd = Path.expand(scope.root)
-    profile = profile(scope)
+    profile = profile(scope, args)
     command = Enum.join(["git" | git_args], " ")
 
     case Exec.run({:exec, "git", git_args}, cwd, secs, profile,
@@ -140,16 +204,25 @@ defmodule CodingAgent.Core.Tools.Git do
   end
 
   @doc """
-  The sandbox profile for a git call: the scope's mounts plus
-  `git_write: true`. Public so the gate and tests share it.
+  The sandbox profile for a git call: the scope's mounts, `.git` writable
+  (ADR 015 decision 4) and the network if — and only if — this call states
+  `network: true`.
+
+  The network grant comes from the CALL's `args`, never from the profile
+  shape: this function is shared with `Checkpoint.git/4`, whose internal
+  git runs must not gain the network because the tool happens to have a
+  parameter for it. `args` defaults to `%{}` for exactly that caller, so a
+  missing argument can only ever mean "no network".
+
+  Public so the gate and tests share it.
   """
-  @spec profile(map()) :: CodingAgent.Core.Sandbox.profile()
-  def profile(scope) do
+  @spec profile(map(), term()) :: CodingAgent.Core.Sandbox.profile()
+  def profile(scope, args \\ %{}) do
     mounts = Map.get(scope, :mounts) || CodingAgent.Core.Sandbox.Mounts.empty()
 
     %{
       root: scope.root,
-      network: false,
+      network: Escalation.granted?(args, :network),
       git_write: true,
       session_id: Map.get(scope, :session_id),
       scratch: CodingAgent.Core.Session.Scratch.from_scope(scope),

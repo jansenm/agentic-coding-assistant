@@ -5327,7 +5327,7 @@ defmodule CodingAgent.UI.Tui do
       # Escalations carry the agent's stated reason (ADR 015): show it
       # first, so the human reads WHY before the raw arguments.
       reason =
-        case escalation_reason(name, args) do
+        case escalation_reason(args) do
           nil -> ""
           r -> "why: #{r}\n\n"
         end
@@ -5589,20 +5589,22 @@ defmodule CodingAgent.UI.Tui do
   defp hard_breaks(text), do: String.replace(text, "\n", "  \n")
 
   # The agent's stated reason for an escalation (ADR 015), for display.
-  # Only meaningful for `shell`; other tools have no escalations.
-  defp escalation_reason("shell", args) do
+  # Shown for any call that STATES one — `git` carries the same `network`
+  # escalation `shell` does, so this keys off the arguments, not the tool
+  # name (a file tool can state a `reason` too; then it is shown, and the
+  # gate ignores it, since that tool declares no escalation to attach it to).
+  defp escalation_reason(args) do
     case Map.get(args, "reason") || Map.get(args, :reason) do
       r when is_binary(r) and r != "" -> r
       _ -> nil
     end
   end
 
-  defp escalation_reason(_name, _args), do: nil
-
-  # `reason` is rendered separately as "why:", and the escalation booleans
-  # are shown by the reason itself — omit them from the raw argument list
-  # so the dialog does not say the same thing twice.
-  @hidden_args ~w(reason network git_write)
+  # `reason` is rendered separately as "why:" — omit it from the raw argument
+  # list so the dialog does not say the same thing twice. The escalation
+  # booleans stay visible: they are the grant being approved, and `git` now
+  # carries one too (`network`).
+  @hidden_args ~w(reason)
 
   defp pretty_args(args) do
     args

@@ -328,6 +328,53 @@ once in ``Core.Exec``, the single ``Sandbox.wrap`` call site.
    ``[permissions.git] "*" = "ask"`` (or use another VCS). An explicit
    policy entry always wins over the class default, for both tools.
 
+Amendment 2026-10-17: one escalation module, and the git tool's network
+-----------------------------------------------------------------------
+
+The gate decided which tool could escalate by matching the string
+``"shell"`` in four places, and a tool's escalation keywords were a copy in
+the code that read them. Adding the network to the ``git`` tool would have
+meant a fifth and sixth copy, so the semantics moved to one module first:
+
+* ``Tools.Escalation`` owns the keyword list (``all/0``), the schema reader
+  (``of/1``), the coarse-boolean reader (``requested/2``, ``granted?/2``),
+  the reason (``reason/1``) and the verdict (``verdict/2``).
+* Each tool publishes its own parameter schema (``Shell.parameter_schema/0``,
+  ``Git.parameter_schema/0``). The gate reads the keywords **the tool
+  declares** instead of assuming which ones apply, so a keyword a tool does
+  not offer is not an escalation — it can never demand a reason for a file
+  tool, and cannot widen a profile that has no such grant.
+* ``Shell`` keeps its API as thin delegations (``escalations/1``,
+  ``escalated?/1``, ``reason/1``, ``escalation_verdict/1``); ``Shell`` and
+  ``Git`` share one ``truthy?/1`` instead of two.
+
+**The ``git`` tool gains ``network`` (and ``reason``).** The network is the
+one grant left for it: ``.git`` write is unconditional (decision 4), so
+``git_write`` on a git call is *not* an escalation the tool offers, and
+stating it costs no keystroke. The parameter is what makes ``fetch``,
+``clone``, ``pull`` and ``push`` possible at all. Measured, before it:
+
+``fatal: Could not read from remote repository`` with no network namespace,
+i.e. a host-resolution error naming neither the cause nor the way out — so
+``Git.network_verdict/1`` answers a remote subcommand that did not ask with
+"retry with `network: true` and a `reason`". The list is not a boundary and
+is not exhaustive; it is the message (an unlisted subcommand, or a script
+driving git, fails at the namespace as before). ``push`` additionally needs
+credentials, which the confinement does not bind: ``fetch`` is the case
+that works end to end.
+
+**Where the network can come from is the call, never the profile shape.**
+``Git.profile/1`` became ``profile/2`` with ``args`` defaulting to ``%{}``
+— because ``Checkpoint.git/4`` shares that function for its internal index
+work, and a default that read the profile rather than the call would have
+silently given the checkpoint path the network. ``Git.profile(scope)`` is
+still exactly the old shape: ``.git`` writable, offline.
+
+One display consequence: the approval dialog showed the stated reason only
+for ``shell``. It now keys off the arguments, and hides only ``reason`` from
+the raw argument list — the escalation booleans stay visible, because they
+are the grant being approved and ``git`` now carries one too.
+
 ### Implementation notes (as built)
 
 - The command is a **spec**: ``{:shell, command}`` or

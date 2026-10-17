@@ -40,6 +40,7 @@ defmodule CodingAgent.Core.Tools.Shell do
 
   alias CodingAgent.Core.Exec
   alias CodingAgent.Core.Tools
+  alias CodingAgent.Core.Tools.Escalation
 
   @spec tool(Tools.scope()) :: ReqLLM.Tool.t()
   def tool(scope) do
@@ -53,34 +54,43 @@ defmodule CodingAgent.Core.Tools.Shell do
           "The command runs confined (filesystem limited to the scope and " <>
           "configured caches, no network); it cannot write .git unless you " <>
           "request git_write. These escalations require approval.",
-      parameter_schema: [
-        command: [type: :string, required: true, doc: "The shell command to run"],
-        timeout_secs: [
-          type: :integer,
-          required: false,
-          doc: "Maximum runtime in seconds (default #{@default_timeout}, max #{@max_timeout})"
-        ],
-        network: [
-          type: :boolean,
-          required: false,
-          doc: "Escalation: allow network access for this call (default false)"
-        ],
-        git_write: [
-          type: :boolean,
-          required: false,
-          doc: "Escalation: allow writing .git for this call (default false)"
-        ],
-        reason: [
-          type: :string,
-          required: false,
-          doc:
-            "REQUIRED when you set network or git_write: one short sentence, " <>
-              "shown to the human in the approval prompt, explaining why this " <>
-              "call needs the escalation. A request without a reason is refused."
-        ]
-      ],
+      parameter_schema: parameter_schema(),
       callback: fn args -> execute(scope, args) end
     )
+  end
+
+  @doc """
+  The tool's parameter schema. Public so the gate reads the SAME keywords
+  the tool declares instead of assuming what a shell call may escalate.
+  """
+  @spec parameter_schema() :: keyword()
+  def parameter_schema do
+    [
+      command: [type: :string, required: true, doc: "The shell command to run"],
+      timeout_secs: [
+        type: :integer,
+        required: false,
+        doc: "Maximum runtime in seconds (default #{@default_timeout}, max #{@max_timeout})"
+      ],
+      network: [
+        type: :boolean,
+        required: false,
+        doc: "Escalation: allow network access for this call (default false)"
+      ],
+      git_write: [
+        type: :boolean,
+        required: false,
+        doc: "Escalation: allow writing .git for this call (default false)"
+      ],
+      reason: [
+        type: :string,
+        required: false,
+        doc:
+          "REQUIRED when you set network or git_write: one short sentence, " <>
+            "shown to the human in the approval prompt, explaining why this " <>
+            "call needs the escalation. A request without a reason is refused."
+      ]
+    ]
   end
 
   @doc """
@@ -114,64 +124,25 @@ defmodule CodingAgent.Core.Tools.Shell do
   def soft_cap, do: @default_timeout
 
   @doc """
-  The requested escalations for a call (ADR 015): `:network` and
-  `:git_write`, as coarse booleans the agent states. Returns the list of
-  granted escalation names, e.g. `[:network, :git_write]`.
+  The escalations a `shell` call states (ADR 015): `:network` and
+  `:git_write`, as coarse booleans the agent says. See
+  `CodingAgent.Core.Tools.Escalation`, which owns the semantics; `shell`
+  declares both keywords, so every escalation applies to it.
   """
-  @spec escalations(term()) :: [atom()]
-  def escalations(args) when is_map(args) do
-    [:network, :git_write]
-    |> Enum.filter(fn key -> truthy?(Map.get(args, key) || Map.get(args, to_string(key))) end)
-  end
+  @spec escalations(term()) :: [Escalation.name()]
+  def escalations(args), do: Escalation.requested(args)
 
-  def escalations(_args), do: []
-
-  @doc """
-  Whether a call requests any escalation. The gate asks for these even
-  when confinement would otherwise allow the call.
-  """
+  @doc "Whether a `shell` call asks to widen its profile at all."
   @spec escalated?(term()) :: boolean()
   def escalated?(args), do: escalations(args) != []
 
-  @doc """
-  The agent's stated reason for an escalation, or `nil`. Every escalation
-  must carry one (ADR 015): the human sees *why* before approving, not
-  just a bare boolean. `reason` may be supplied for any call; it is only
-  required when an escalation is requested.
-  """
+  @doc "The agent's stated reason for an escalation, or `nil`."
   @spec reason(term()) :: String.t() | nil
-  def reason(args) when is_map(args) do
-    case Map.get(args, :reason) || Map.get(args, "reason") do
-      r when is_binary(r) ->
-        case String.trim(r) do
-          "" -> nil
-          trimmed -> trimmed
-        end
+  defdelegate reason(args), to: Escalation
 
-      _ ->
-        nil
-    end
-  end
-
-  def reason(_args), do: nil
-
-  @doc """
-  The escalation gate verdict: `:ok`, or `{:error, guidance}` when an
-  escalation was requested without a stated reason. The reason is not
-  security theatre — it is what the human reads in the approval dialog,
-  and refusing a bare boolean keeps the prompt answerable.
-  """
+  @doc "The escalation gate verdict: `:ok`, or `{:error, guidance}` when a stated escalation has no reason."
   @spec escalation_verdict(term()) :: :ok | {:error, String.t()}
-  def escalation_verdict(args) do
-    if escalated?(args) and reason(args) == nil do
-      {:error,
-       "an escalation (network/git_write) must include `reason`: one short " <>
-         "sentence explaining why this call needs it — the human sees it in " <>
-         "the approval prompt and a bare request is refused"}
-    else
-      :ok
-    end
-  end
+  defdelegate escalation_verdict(args), to: Escalation, as: :verdict
 
   @doc """
   Builds the sandbox profile for a call from the scope and the
@@ -193,8 +164,8 @@ defmodule CodingAgent.Core.Tools.Shell do
 
     %{
       root: root,
-      network: truthy?(Map.get(args, :network) || Map.get(args, "network")),
-      git_write: truthy?(Map.get(args, :git_write) || Map.get(args, "git_write")),
+      network: Escalation.granted?(args, :network),
+      git_write: Escalation.granted?(args, :git_write),
       # a read-only agent's shell cannot write the source either; an
       # unconfined sandbox refuses this rather than running read-write
       root_ro: shell_mode == :ro,
@@ -213,11 +184,6 @@ defmodule CodingAgent.Core.Tools.Shell do
   # sandbox keeps its ephemeral tmpfs `/tmp`.
   defp scratch(%{} = scope), do: CodingAgent.Core.Session.Scratch.from_scope(scope)
   defp scratch(_root), do: nil
-
-  defp truthy?(true), do: true
-  defp truthy?("true"), do: true
-  defp truthy?(1), do: true
-  defp truthy?(_), do: false
 
   # -- Execution --------------------------------------------------------------
 

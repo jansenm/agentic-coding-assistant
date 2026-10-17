@@ -22,6 +22,8 @@ defmodule CodingAgent.Core.Session.Gate do
   runtime probe. An explicit `allow`/`ask`/`deny` entry is the user's
   own choice and always wins; an escalation (`network`/`git_write`)
   still asks, because it widens the profile the agent stated it needs.
+  Which escalations a tool may state is read from that tool's own
+  parameter schema (`Tools.Escalation`), not assumed here.
   `Permissions` answers the pure-policy question (explicit entry, else a
   supplied fallback), and this module supplies the confinement fallback
   — so there is no second policy lookup implementation.
@@ -29,6 +31,8 @@ defmodule CodingAgent.Core.Session.Gate do
 
   alias CodingAgent.Core.Permissions
   alias CodingAgent.Core.ToolCall
+  alias CodingAgent.Core.Tools.Escalation
+  alias CodingAgent.Core.Tools.Git
   alias CodingAgent.Core.Tools.Shell
 
   require Logger
@@ -121,18 +125,25 @@ defmodule CodingAgent.Core.Session.Gate do
   @doc "The result for an escalation whose required reason is missing."
   @spec no_reason_result(term()) :: map()
   def no_reason_result(call) do
-    {id, _name, args} = ToolCall.normalize(call)
-    {:error, guidance} = Shell.escalation_verdict(args)
-    %{id: id, name: "shell", content: "error: #{guidance}"}
+    {id, name, args} = ToolCall.normalize(call)
+    {:error, guidance} = Escalation.verdict(args, escalation_names(name))
+    %{id: id, name: name, content: "error: #{guidance}"}
   end
 
-  @doc "Whether an escalation was requested without the reason ADR 015 requires."
+  @doc "Whether a call stated an escalation it cannot be asked about, having no reason."
   @spec unanswerable_escalation?(String.t(), term()) :: boolean()
-  def unanswerable_escalation?("shell", args) do
-    match?({:error, _}, Shell.escalation_verdict(args))
+  def unanswerable_escalation?(name, args) do
+    match?({:error, _}, Escalation.verdict(args, escalation_names(name)))
   end
 
-  def unanswerable_escalation?(_name, _args), do: false
+  # The escalation keywords a tool actually declares, read from the tool
+  # that will run — a keyword a tool does not offer is not an escalation,
+  # and asking for one must not be able to widen a profile that has no such
+  # grant. Tools with no escalations (every file tool) get the empty list,
+  # so `verdict/2` can never demand a reason for them.
+  defp escalation_names("shell"), do: Escalation.of(Shell.parameter_schema())
+  defp escalation_names("git"), do: Escalation.of(Git.parameter_schema())
+  defp escalation_names(_name), do: []
 
   # The path argument(s) a call exposes to the policy, relative to the
   # scope root. Most calls name one (`path`); `move_file` names two
@@ -176,7 +187,7 @@ defmodule CodingAgent.Core.Session.Gate do
   end
 
   # The confinement fallback (ADR 030). A session only exists when a
-  # confining sandbox is active (`Session.init/1`), so `shell`/`git` are
+  # confining sandbox is active (`Session.init/1`), so every tool is
   # allow-by-default here — with one exception: a stated escalation
   # (network / git_write) widens the profile and therefore re-enables the
   # prompt. An explicit policy entry always wins over this fallback
@@ -185,10 +196,11 @@ defmodule CodingAgent.Core.Session.Gate do
     if Shell.escalated?(args), do: :ask, else: :allow
   end
 
-  # git always runs with `.git` writable inside the profile; no
-  # escalations. A user who wants every git call reviewed writes
-  # `[permissions.git] "*" = "ask"`.
-  defp fallback_for("git", _args), do: :allow
+  # git grant `.git` write unconditionally (ADR 015 decision 4), so the
+  # only escalation left to ask about is the network one (`fetch`/`clone`).
+  defp fallback_for("git", args) do
+    if Escalation.requested?(args, Git.parameter_schema()), do: :ask, else: :allow
+  end
 
   defp fallback_for(tool, _args), do: Permissions.default_for(tool)
 
