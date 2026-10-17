@@ -441,24 +441,26 @@ defmodule CodingAgent.Core.CompactionTest do
 
   # ADR 044 caveat: a pinned compaction model must be able to HOLD the
   # span. resolve_target/3 is pure — the caller passes the catalog result —
-  # so each case is testable without a catalog.
+  # so each case is testable without a catalog. The third element is the
+  # WHY (review N67): the caller says the drop in the transcript, so the
+  # reason is part of the contract, not an implementation detail.
   describe "resolve_target/3 (the pinned-model window guard)" do
     @default 300_000
 
     test "no pin: session model, default cap" do
       assert Compactor.resolve_target("ollama:session", "ollama:session", :session) ==
-               {"ollama:session", @default}
+               {"ollama:session", @default, :none}
     end
 
     test "a pinned model with a big window gets the default cap (never larger)" do
       # 200k tokens -> 400k chars, clamped to the 300k default
       assert Compactor.resolve_target("ollama:session", "openai:gpt-4o", {:ok, 200_000}) ==
-               {"openai:gpt-4o", @default}
+               {"openai:gpt-4o", @default, :none}
     end
 
     test "a pinned model with a modest window gets a proportionally smaller span" do
       # 16385 tokens -> ~32.7k chars (half the window in chars)
-      assert {"openai:gpt-3.5-turbo", cap} =
+      assert {"openai:gpt-3.5-turbo", cap, :none} =
                Compactor.resolve_target("ollama:session", "openai:gpt-3.5-turbo", {:ok, 16_385})
 
       assert cap == round(16_385 * 4 * 0.5)
@@ -468,17 +470,23 @@ defmodule CodingAgent.Core.CompactionTest do
     test "a KNOWN too-small pinned window falls back to the session model" do
       # 2000 tokens -> 4000 chars < the 20k floor: not a viable summarizer
       assert Compactor.resolve_target("ollama:session", "tiny:model", {:ok, 2_000}) ==
-               {"ollama:session", @default}
+               {"ollama:session", @default, :too_small}
     end
 
     test "an UNKNOWN window falls back to the session model (review N58)" do
       # The pin's window cannot be verified as big enough, so it must not be
       # handed the full span; the session model (known good) summarizes.
       assert Compactor.resolve_target("ollama:session", "ollama:cheap", :unknown) ==
-               {"ollama:session", @default}
+               {"ollama:session", @default, :unknown}
+    end
 
-      assert Compactor.resolve_target("ollama:session", "ollama:cheap", :loading) ==
-               {"ollama:session", @default}
+    # review N67: `:loading` and `:unknown` are the same fallback with
+    # different prospects — one heals in seconds, the other never will. The
+    # reason must not collapse them, or the transcript promises a resolution
+    # that `:unknown` cannot deliver.
+    test "a LOADING window is a different reason than an UNKNOWN one (review N67)" do
+      assert {"ollama:session", @default, :loading} =
+               Compactor.resolve_target("ollama:session", "ollama:cheap", :loading)
     end
   end
 
@@ -645,6 +653,126 @@ defmodule CodingAgent.Core.CompactionTest do
       end)
 
     assert notes == 1
+  end
+
+  # review N67: the N58 guard dropped the pin silently, so the configured
+  # (and paid for) compaction model was never used and no one could tell.
+  # The note is emitted once per REASON, not once per session: `:loading`
+  # heals on the catalog-ready re-resolve, and a later `:unknown` is a
+  # different fact. `note_pin_dropped/2` is public for the same reason
+  # `warn_approaching/1` is: the contract is testable without a provider.
+  describe "note_pin_dropped/2 (review N67)" do
+    defp pinned_state(id, opts \\ []) do
+      root = Path.join(System.tmp_dir!(), "pin-drop-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(Path.join(root, ".coding-agent/agents"))
+      on_exit(fn -> File.rm_rf!(root) end)
+
+      File.write!(
+        Path.join(root, ".coding-agent/agents/compaction.md"),
+        "---\nname: compaction\ndescription: Summarizes an older span.\nmode: internal\n" <>
+          "model: ollama:cheap\n---\nbody\n"
+      )
+
+      state(Keyword.merge([id: id, scope_root: root, model: "ollama:session"], opts))
+    end
+
+    defp notes(id, n \\ 5) do
+      Enum.flat_map(1..n, fn _ ->
+        receive do
+          {:agent, ^id, {:info, text}} -> [text]
+        after
+          0 -> []
+        end
+      end)
+    end
+
+    test ":none says nothing and records nothing" do
+      id = "pin-none-#{System.unique_integer([:positive])}"
+      _ = Registry.register(CodingAgent.EventRegistry, {Events.key(), id}, nil)
+
+      s = pinned_state(id)
+      assert Compactor.note_pin_dropped(s, :none) == s
+      assert notes(id) == []
+    end
+
+    test "a dropped pin is said once, naming the pin and the model that runs instead" do
+      id = "pin-unknown-#{System.unique_integer([:positive])}"
+      _ = Registry.register(CodingAgent.EventRegistry, {Events.key(), id}, nil)
+
+      s = pinned_state(id)
+      s2 = Compactor.note_pin_dropped(s, :unknown)
+
+      assert s2.compaction_pin_dropped == :unknown
+
+      assert [text] = notes(id)
+      assert text =~ "ollama:cheap"
+      assert text =~ "ollama:session"
+      assert text =~ "summarizes instead"
+
+      # the same reason again: the user has read it, do not repeat it
+      assert Compactor.note_pin_dropped(s2, :unknown) == s2
+      assert notes(id) == []
+    end
+
+    test "a DIFFERENT reason is said again (loading heals, unknown does not)" do
+      id = "pin-two-#{System.unique_integer([:positive])}"
+      _ = Registry.register(CodingAgent.EventRegistry, {Events.key(), id}, nil)
+
+      s = Compactor.note_pin_dropped(pinned_state(id), :loading)
+      assert s.compaction_pin_dropped == :loading
+      assert [loading_note] = notes(id)
+      assert loading_note =~ "catalog is still loading"
+
+      s2 = Compactor.note_pin_dropped(s, :too_small)
+      assert s2.compaction_pin_dropped == :too_small
+      assert [too_small_note] = notes(id)
+      assert too_small_note =~ "too small"
+    end
+
+    test "test_mode stays structurally note-free" do
+      id = "pin-testmode-#{System.unique_integer([:positive])}"
+      _ = Registry.register(CodingAgent.EventRegistry, {Events.key(), id}, nil)
+
+      s = pinned_state(id, test_mode: true)
+      assert Compactor.note_pin_dropped(s, :unknown) == s
+      assert notes(id) == []
+    end
+
+    # The wiring, end to end: a real compaction pass over a session whose
+    # pinned compaction model the catalog cannot resolve. The pin must be
+    # announced on the path that really calls the provider — and the pass
+    # must still summarize (a drop is a fallback, not a failure).
+    #
+    # WHICH reason is the suite's timing, not the code's: this file is sync,
+    # so it runs after the async ones and usually sees a warm catalog
+    # (`:unknown`), but a targeted single-file run starts inside the ~3 s
+    # warm (`:loading`). Both are the same decision, so the test pins the
+    # REASON-to-TEXT coupling rather than the catalog's warm state.
+    test "a compaction pass announces the dropped pin and still summarizes" do
+      id = "pin-pass-#{System.unique_integer([:positive])}"
+      _ = Registry.register(CodingAgent.EventRegistry, {Events.key(), id}, nil)
+
+      s = pinned_state(id, usage: %{last_input_tokens: 136_000})
+
+      {s2, true} = Compactor.maybe_compact(s, fn _state, _span -> {:ok, "a summary"} end)
+
+      assert s2.compaction_pin_dropped in [:loading, :unknown]
+
+      assert [drop] = Enum.filter(notes(id), &(&1 =~ "ollama:cheap"))
+      assert drop =~ "ollama:session"
+      assert drop =~ "summarizes instead"
+
+      # the reason the state carries IS the reason the note gives
+      assert drop =~
+               if(s2.compaction_pin_dropped == :loading,
+                 do: "still loading",
+                 else: "does not know"
+               )
+
+      # the summary landed: the drop did not turn into a failure
+      assert s2.compaction_backoff == 0
+      assert Usage.last_input_tokens(s2.usage) < 136_000
+    end
   end
 
   test "a successful compaction resets last_input_tokens to the shrunk size" do

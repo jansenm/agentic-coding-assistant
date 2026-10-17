@@ -132,6 +132,12 @@ defmodule CodingAgent.Core.Session.State do
     # set once the 80%-of-trigger warning has been broadcast (once,
     # not every turn)
     compaction_warned: false,
+    # the last drop reason the pinned compaction model was announced with
+    # (review N67), or nil. One note PER REASON, not per compaction:
+    # `:loading` heals on the catalog-ready re-resolve, and a later
+    # `:unknown`/`:too_small` is a different fact worth saying. Reset on
+    # restore (a resumed session re-resolves and must speak up again).
+    compaction_pin_dropped: nil,
     # set once a checkpoint failure has been surfaced as a transcript note
     # (ADR 036; review F3): a snapshot that keeps failing (e.g. a linked
     # worktree whose git dir is not writable through the sandbox) must not
@@ -234,6 +240,7 @@ defmodule CodingAgent.Core.Session.State do
           turn_agents: [String.t() | nil],
           usage: CodingAgent.Core.Session.Usage.t(),
           compaction_warned: boolean(),
+          compaction_pin_dropped: :too_small | :loading | :unknown | nil,
           checkpoint_warned: boolean(),
           compaction_backoff: non_neg_integer(),
           worker_ref: reference() | nil,
@@ -331,6 +338,10 @@ defmodule CodingAgent.Core.Session.State do
       # usage heals a legacy map into the struct (wire-compatible)
       usage: CodingAgent.Core.Session.Usage.from_map(Map.get(state, :usage)),
       compaction_warned: Map.get(state, :compaction_warned, false),
+      # re-arm the "pinned compaction model dropped" note (review N67):
+      # like `window_warned`, a resumed session re-resolves and must speak
+      # up again if the pin is still unusable
+      compaction_pin_dropped: nil,
       checkpoint_warned: Map.get(state, :checkpoint_warned, false),
       compaction_backoff: Map.get(state, :compaction_backoff, 0),
       pending_round_calls: Map.get(state, :pending_round_calls, []),

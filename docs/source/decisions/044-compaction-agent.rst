@@ -106,10 +106,18 @@ Consequences
 Open questions
 --------------
 
-1. **A pinned model that is too small is silently ignored.** We fall back
-   to the session model rather than warn. A transcript note ("compaction
-   model X's window is too small; using the session model") would be
-   friendlier; deferred until it bites in practice.
+1. **A pinned model that is too small is silently ignored — CLOSED
+   (review N67, 2026-10-17).** We still fall back to the session model
+   rather than warn, but the fallback is no longer silent:
+   ``Compactor.resolve_target/3`` returns the reason the pin was dropped
+   (``:too_small``, or ``:loading``/``:unknown`` when the window cannot be
+   verified) and ``Compactor.note_pin_dropped/2`` says it once per reason
+   per session, naming the pinned model and the model that runs instead.
+   The three reasons stay distinct on purpose: ``:loading`` heals on the
+   catalog-ready re-resolve, ``:unknown`` never will, and ``:too_small``
+   is the user's own choice to correct. "It bites in practice" was the
+   wrong test — the guard was untestable by design, because a silent
+   fallback has no observable to assert on.
 2. **Per-tool/per-turn summarizer variants.** One ``compaction`` name
    today. If a need appears for different summarizers (idle vs. model-
    triggered), that is a naming/selection question, not a new mechanism.

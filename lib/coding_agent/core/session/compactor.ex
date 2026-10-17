@@ -87,6 +87,23 @@ defmodule CodingAgent.Core.Session.Compactor do
   """
   @type outcome :: :changed | :nothing | :interrupted | {:failed, term()}
 
+  @typedoc """
+  Why a pinned compaction model did NOT summarize — the reason carried
+  out of `resolve_target/3` so the drop can be said in the transcript
+  instead of happening silently (review N67).
+
+    * `:none` — the pin IS the summarizer (no pin, or a window that fits);
+    * `:too_small` — the window is known and too small for a viable span;
+    * `:loading` — the catalog is still warming (~3 s at every boot), so
+      the window cannot be verified yet;
+    * `:unknown` — the catalog is loaded and does not know the model.
+
+  `:loading` and `:unknown` are different truths and must not be
+  collapsed: `:loading` resolves itself on `{:catalog, :updated}` within
+  seconds, `:unknown` is permanent for that spec.
+  """
+  @type drop_reason :: :none | :too_small | :loading | :unknown
+
   @typedoc "Injected summarizer: session state and rendered old span in, summary text out."
   @type summarize_fn :: (State.t(), String.t() -> {:ok, String.t()} | {:error, term()})
 
@@ -288,6 +305,62 @@ defmodule CodingAgent.Core.Session.Compactor do
     end
   end
 
+  @doc """
+  Says ONCE, in the transcript, that the configured compaction model was
+  not used and why (review N67). Returns the state with the reason
+  recorded.
+
+  ADR 044 promises the pinned model's window is enforced; a drop is the
+  enforcement. Silent, the user watched a cheaper model being configured
+  and never learned it was ignored — the pin looked broken, and the N58
+  guard could not be seen to work at all (N67 was found by reading the
+  branch, not by running a session).
+
+  Once per REASON per session, not once per session: `:loading` heals on
+  the catalog-ready re-resolve and a later `:unknown` (or `:too_small`) is
+  a DIFFERENT fact that must still be said. The field is reset on restore
+  (`State.restore/1`) for the same reason `window_warned` is: a resumed
+  session re-resolves its windows and must speak up again.
+
+  `:none` never reaches here (the pin is the summarizer). test_mode emits
+  nothing — the suite must stay structurally note-free.
+  """
+  @spec note_pin_dropped(State.t(), drop_reason()) :: State.t()
+  def note_pin_dropped(%State{test_mode: true} = state, _reason), do: state
+
+  def note_pin_dropped(%State{} = state, :none), do: state
+
+  def note_pin_dropped(%State{compaction_pin_dropped: reason} = state, reason)
+      when not is_nil(reason),
+      do: state
+
+  def note_pin_dropped(%State{} = state, reason) do
+    pinned = compaction_model(state, compaction_agent(state))
+    session = State.effective_model(state)
+    state = %{state | compaction_pin_dropped: reason}
+
+    broadcast(
+      state,
+      {:info,
+       "· compaction model #{pinned}: #{drop_reason_text(reason)} — " <>
+         "#{session} summarizes instead"}
+    )
+
+    state
+  end
+
+  # The reason in words a user can act on. `:loading` and `:unknown` are the
+  # same fallback with different prospects, so the text must not promise a
+  # resolution that `:unknown` will never deliver.
+  defp drop_reason_text(:too_small),
+    do: "its context window is too small to hold a summary worth keeping"
+
+  defp drop_reason_text(:loading),
+    do: "the model catalog is still loading, so its window is unverified for now"
+
+  defp drop_reason_text(:unknown),
+    do: "the model catalog does not know it, so its window is unverified"
+
   # -- The summarize operation -------------------------------------------------
 
   # The summarize call is a slow provider round trip: tell the UI NOW,
@@ -307,7 +380,7 @@ defmodule CodingAgent.Core.Session.Compactor do
     # Render bounded to the SUMMARIZER model's window (ADR 044): a pinned
     # cheap model with a small window gets a proportionally smaller span,
     # so it is not handed more than it can hold.
-    {_model, cap} = compaction_target(state)
+    {_model, cap, drop_reason} = compaction_target(state)
     span = Compaction.render(old, cap)
 
     # An empty rendered span means there is nothing NEW to summarize: the
@@ -319,6 +392,12 @@ defmodule CodingAgent.Core.Session.Compactor do
     if String.trim(span) == "" do
       {state, :nothing}
     else
+      # Say WHO summarizes and WHY not the pin, before the call (review
+      # N67). Both notes are emitted only here, on the path that really
+      # calls the provider — a compaction that renders nothing new must
+      # not narrate a model it never used.
+      state = note_pin_dropped(state, drop_reason)
+
       broadcast(state, {:info, "· compacting context (this can take a while)…"})
       do_compact(state, span, summarize_fn, kind, @summarize_retries)
     end
@@ -487,7 +566,7 @@ defmodule CodingAgent.Core.Session.Compactor do
   def summarize(state, old_span_text) do
     prior = Compaction.prior_summary(state.context)
     agent = compaction_agent(state)
-    {model, _cap} = compaction_target(state)
+    {model, _cap, _reason} = compaction_target(state)
 
     with {:ok, model_input, base_opts} <-
            Request.build(model, state.provider_config, state.scope_root),
@@ -545,6 +624,12 @@ defmodule CodingAgent.Core.Session.Compactor do
   # If the window is KNOWN and too small for a useful span, the pin is
   # dropped for the same reason.
   #
+  # The WHY is returned, not swallowed (review N67): the third element is
+  # the reason the pin did not summarize, so the caller can say it. A drop
+  # is a real decision (a model the user configured is not being used),
+  # and it used to be invisible — which made the N58 guard untestable in
+  # practice and unobservable in a live session.
+  #
   # Fraction and floor: half the window goes to the old span, leaving room
   # for the system body, the template, the kept tail and the output. Below
   # `@min_viable_span_chars` a model cannot summarize usefully, so a pin
@@ -553,7 +638,7 @@ defmodule CodingAgent.Core.Session.Compactor do
   @min_viable_span_chars 20_000
 
   @doc false
-  @spec compaction_target(State.t()) :: {String.t() | nil, pos_integer()}
+  @spec compaction_target(State.t()) :: {String.t() | nil, pos_integer(), drop_reason()}
   def compaction_target(state) do
     agent = compaction_agent(state)
     session = State.effective_model(state)
@@ -570,22 +655,30 @@ defmodule CodingAgent.Core.Session.Compactor do
 
   @doc false
   @spec resolve_target(String.t() | nil, String.t() | nil, term()) ::
-          {String.t() | nil, pos_integer()}
-  def resolve_target(session, session, _), do: {session, Compaction.max_input_chars()}
+          {String.t() | nil, pos_integer(), drop_reason()}
+  def resolve_target(session, session, _), do: {session, Compaction.max_input_chars(), :none}
 
   def resolve_target(session, pinned, {:ok, tokens}) do
     cap = round(tokens * 4 * @span_window_fraction) |> min(Compaction.max_input_chars())
 
     if cap < @min_viable_span_chars,
-      do: {session, Compaction.max_input_chars()},
-      else: {pinned, cap}
+      do: {session, Compaction.max_input_chars(), :too_small},
+      else: {pinned, cap, :none}
   end
 
   # unknown / loading: the pin's window cannot be verified, so fall back to
   # the SESSION model (known good) with the default cap rather than trust an
   # unverified small model with the full span (review N58 — the branch a
   # first over-limit turn hits, because the catalog warms in the background).
-  def resolve_target(session, _pinned, _), do: {session, Compaction.max_input_chars()}
+  #
+  # The two are told APART (review N67): `:loading` heals by itself when the
+  # catalog signals ready, `:unknown` never will. One word for both would
+  # have the transcript promise a resolution that does not come.
+  def resolve_target(session, _pinned, :loading),
+    do: {session, Compaction.max_input_chars(), :loading}
+
+  def resolve_target(session, _pinned, _),
+    do: {session, Compaction.max_input_chars(), :unknown}
 
   # GLM on an 80K-char context takes minutes; without an inactivity cap
   # a hung summary stalls every turn's start (found live).
