@@ -1,8 +1,8 @@
 defmodule CodingAgent.TestSandbox.Unavailable do
   @moduledoc """
-  Test sandbox double: confines but is NOT available on this machine — the
-  hardened-host case (no bwrap / disabled user namespaces). The resolver
-  must fall back to `Sandbox.None` and `diagnose/0` must report a reason.
+  Test sandbox double: NOT available on this machine — the hardened-host
+  case (no bwrap / disabled user namespaces). The resolver yields no usable
+  implementation and `diagnose/0` must report a reason.
   """
 
   @behaviour CodingAgent.Core.Sandbox
@@ -12,9 +12,6 @@ defmodule CodingAgent.TestSandbox.Unavailable do
 
   @impl true
   def available?, do: false
-
-  @impl true
-  def confines?, do: true
 
   @impl true
   def check, do: {:error, "test sandbox is unavailable"}

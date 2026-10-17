@@ -5,11 +5,10 @@ defmodule CodingAgent.Core.Tools.Shell do
 
   @moduledoc """
   Shell execution tool (slice 2c). Under ADR 015 the command runs inside a
-  sandbox (`CodingAgent.Core.Sandbox`); with a confining sandbox active it
-  is allow-by-default *inside the profile*, because its worst-case effect
-  is bounded by construction rather than guessed from command text. With
-  no confining sandbox (`Sandbox.None`, the default) it falls back to the
-  ADR 010 behaviour: every call goes through the permission gate.
+  sandbox (`CodingAgent.Core.Sandbox`); a confining sandbox is always
+  active (ADR 030), so it is allow-by-default *inside the profile*,
+  because its worst-case effect is bounded by construction rather than
+  guessed from command text.
 
   Two coarse **escalations** re-enable the prompt even under confinement,
   and the agent must *state* them — they are never inferred from the
@@ -305,13 +304,6 @@ defmodule CodingAgent.Core.Tools.Shell do
 
       {:error, reason} ->
         Tools.error("cannot run #{inspect(command)}: #{:file.format_error(reason)}")
-
-      {:sandbox_error, :root_ro_unavailable} ->
-        Tools.error(
-          "this agent's shell is read-only, but no confining sandbox is available " <>
-            "on this machine — refusing rather than running it read-write. Use the " <>
-            "read_file/grep/glob tools instead."
-        )
 
       {:sandbox_error, reason} ->
         Tools.error("cannot confine #{inspect(command)}: #{inspect(reason)}")

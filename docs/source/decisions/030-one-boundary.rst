@@ -15,6 +15,11 @@ One boundary: the sandbox enforces reach, and a confining sandbox is required to
    ADR 015 for the production case and removes the second boundary the
    native file tools carried.
 
+   **Extended by ADR 046** (2026-10-17): the "test seam" role decision 3
+   left ``Sandbox.None`` is retired — the no-op and ``confines?/0`` are
+   deleted, so the unconfined mode decision 4 removed is gone seam
+   included.
+
    Shipped in two commits (slices 1–4, then 5–7). ``Tools.FileExec``
    runs the file tools as confined ``cat``/``tee``/``ls``; ``Exec``
    carries stdin and env; session start refuses without confinement;
@@ -108,7 +113,9 @@ Everything follows from that:
    diagnostic naming what is missing (``bwrap``; unprivileged user
    namespaces) and how to enable it. ``Sandbox.None`` survives only as a
    **test seam** — an explicit, deliberately-unconfined implementation
-   the suite selects, never a runtime fallback.
+   the suite selects, never a runtime fallback. **Superseded by ADR 046:**
+   the seam is deleted too; a session starts iff a *confining*
+   implementation is available.
 
 4. **The unconfined operating mode is deleted.** With confinement
    guaranteed, ``confinement_allows?/2`` is unconditionally true, so the
@@ -193,7 +200,7 @@ Open questions
 4. **macOS/Windows equivalent.** Keep the profile contract identical;
    the implementation is the work.
 5. **Test seam shape — ANSWERED (implemented).** A confining test double
-   is the suite default (``config/test.exs``); ``Sandbox.None`` appears
-   only where the unconfined seam or the refusal path is under test, and
-   ``SandboxCase.put_sandbox/1`` restores the env on exit. The refusal
-   path is asserted in ``Sandbox.GateTest``.
+   is the suite default (``config/test.exs``); ``SandboxCase.put_sandbox/1``
+   restores the env on exit. The refusal path is asserted in
+   ``Sandbox.GateTest``. **Revised by ADR 046:** ``Sandbox.None`` no longer
+   appears at all; the refusal is driven by an unavailable implementation.

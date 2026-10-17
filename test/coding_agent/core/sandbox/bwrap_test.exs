@@ -252,8 +252,8 @@ defmodule CodingAgent.Core.Sandbox.BwrapTest do
       if Bwrap.available?() do
         :ok
       else
-        # Missing binary or no unprivileged userns (hardened host): this is
-        # the Sandbox.None fallback path, not a failure. Skip.
+        # Missing binary or no unprivileged userns (hardened host): skip,
+        # not a failure — the suite's default double covers the rest.
         {:ok, skip: true}
       end
     end

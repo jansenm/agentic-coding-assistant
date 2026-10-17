@@ -75,10 +75,12 @@ rule:
 - ``<label>`` is the tool (``shell``, ``grep``, ``webfetch``), so a
   directory listing is legible.
 
-When a scope carries no session id (a bare test scope, ``Sandbox.None``),
-there is no scratch: ``Spill.spill/3`` returns ``:no_scratch`` and the
-tool keeps today's behaviour (head+tail marker, no path). The feature
-degrades to "not available", never to "an unreadable path".
+When a scope carries no session id (a bare test scope), there is no
+scratch: ``Spill.spill/3`` returns ``:no_scratch`` and the tool keeps
+today's behaviour (head+tail marker, no path). The feature degrades to
+"not available", never to "an unreadable path". **Amended by ADR 046:**
+``Sandbox.None``, named here in the original, is deleted; "no session id"
+is the only no-scratch case.
 
 **2. ``Exec``, ``grep`` and ``webfetch`` spill.** ``Exec.run/5`` already
 receives the profile (which carries ``:scratch``); a new ``:label``

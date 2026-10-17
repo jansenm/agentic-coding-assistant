@@ -75,7 +75,12 @@ defmodule CodingAgent.Core.Checkpoint do
   def snapshot(scope, session_id) do
     root = Path.expand(scope.root)
 
-    case scratch_paths(session_id) do
+    # The bind and the temp index must name the SAME scratch: build the
+    # profile from the session id this checkpoint belongs to (the one the
+    # ref carries), never from a possibly-different `scope.session_id`.
+    profile = Git.profile(Map.put(scope, :session_id, session_id))
+
+    case scratch_paths(session_id, profile) do
       nil ->
         :skip
 
@@ -87,7 +92,7 @@ defmodule CodingAgent.Core.Checkpoint do
           untracked = ls_untracked(scope, root)
           staged_tree = staged_tree(scope, root)
 
-          with {:ok, tree} <- write_tree(scope, root, tmp_sandbox),
+          with {:ok, tree} <- write_tree(scope, root, tmp_sandbox, profile),
                {:ok, commit} <- commit_tree(scope, root, tree),
                {:ok, ref} <- anchor(scope, root, session_id, commit) do
             {:ok,
@@ -201,11 +206,11 @@ defmodule CodingAgent.Core.Checkpoint do
     end
   end
 
-  defp write_tree(scope, root, tmp_index) do
+  defp write_tree(scope, root, tmp_index, profile) do
     env = [{"GIT_INDEX_FILE", tmp_index}]
 
-    with {:ok, _, 0} <- git(scope, root, ["add", "-A"], env),
-         {:ok, out, 0} <- git(scope, root, ["write-tree"], env) do
+    with {:ok, _, 0} <- git(scope, root, ["add", "-A"], env, profile),
+         {:ok, out, 0} <- git(scope, root, ["write-tree"], env, profile) do
       {:ok, String.trim(out)}
     else
       {:ok, out, code} -> {:error, {:write_tree_failed, code, String.trim(out)}}
@@ -324,10 +329,10 @@ defmodule CodingAgent.Core.Checkpoint do
 
   # Run one git command through the sandbox under the git tool's profile
   # (git_write), non-interactively. cwd is the scope root.
-  defp git(scope, root, args, env) do
-    case Exec.run({:exec, "git", args}, root, 60, Git.profile(scope),
-           env: Exec.agent_env() ++ env
-         ) do
+  defp git(scope, root, args, env, profile \\ nil) do
+    profile = profile || Git.profile(scope)
+
+    case Exec.run({:exec, "git", args}, root, 60, profile, env: Exec.agent_env() ++ env) do
       {:ok, out, status} -> {:ok, out, status}
       {:timeout, _} -> {:error, :timeout}
       {:stopped, _} -> {:error, :stopped}
@@ -336,16 +341,22 @@ defmodule CodingAgent.Core.Checkpoint do
     end
   end
 
-  # The temporary index must be addressed by the path the CONFINED git
-  # sees, not the host path: the session scratch dir is bound OVER `/tmp`
-  # inside the sandbox (ADR 022), so `<scratch>/x` is `/tmp/x` in there.
-  # `{host_file, sandbox_file}`, or nil when there is no session scratch
-  # (then `/tmp` is a per-call tmpfs and the index could not survive
-  # between calls).
-  defp scratch_paths(session_id) do
+  # The temporary index must be addressed by the path the CONFINED git sees,
+  # not the host path: the sandbox may bind the session scratch OVER `/tmp`
+  # (ADR 022), so `<scratch>/x` is `/tmp/x` in there. Only the sandbox knows
+  # that mapping (`Sandbox.visible_path/2`), so we ask it rather than
+  # hardcode `/tmp` — a pass-through sandbox (the test double) uses the host
+  # path, and a future platform sandbox can bind differently. `{host_file,
+  # sandbox_file}`, or nil when there is no session scratch (then `/tmp` is
+  # a per-call tmpfs and the index could not survive between calls).
+  defp scratch_paths(session_id, profile) do
     case CodingAgent.Core.Session.Scratch.from_scope(%{session_id: session_id}) do
-      nil -> nil
-      base -> {Path.join(base, "checkpoint-index"), "/tmp/checkpoint-index"}
+      nil ->
+        nil
+
+      base ->
+        host = Path.join(base, "checkpoint-index")
+        {host, CodingAgent.Core.Sandbox.visible_path(host, profile)}
     end
   end
 

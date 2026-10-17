@@ -37,9 +37,9 @@ defmodule CodingAgent.Core.Sandbox.GateTest do
 
   defp gate(id, calls), do: Session.debug_gate(id, calls)
 
-  describe "without confinement (ADR 030: no session starts)" do
-    test "a session refuses to start under Sandbox.None" do
-      put_sandbox(CodingAgent.Core.Sandbox.None)
+  describe "without a usable sandbox (ADR 030: no session starts)" do
+    test "a session refuses to start when no usable sandbox is configured" do
+      put_sandbox(CodingAgent.TestSandbox.Unavailable)
 
       assert {:error, {%RuntimeError{message: message}, _stack}} =
                CodingAgent.Core.Session.Supervisor.start_session(
@@ -49,7 +49,6 @@ defmodule CodingAgent.Core.Sandbox.GateTest do
                )
 
       assert message =~ "no usable sandbox"
-      assert message =~ "Sandbox.None"
     end
   end
 

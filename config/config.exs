@@ -20,8 +20,7 @@ import Config
 # unprivileged user namespaces disabled by host hardening) the app logs a
 # warning at startup and every session start refuses with the diagnostic.
 # shell/git run allow-by-default inside the profile, with only network and
-# git-write escalations prompting. `Sandbox.None` exists as a test seam
-# and an explicit opt-out; selecting it means the session runs unconfined.
+# git-write escalations prompting.
 
 # Credentials are NOT configured here: secrets come from the environment
 # (ADR 008), and Request resolves them per provider as `<NAME>_API_KEY`

@@ -3,9 +3,9 @@ defmodule CodingAgent.SandboxCase do
   Test helper for tests that switch the global `:sandbox` application env.
 
   The env is process-global, so every test that writes it must restore the
-  previous value — otherwise a test that pins `Sandbox.None` or `Bwrap`
-  leaks into the rest of the suite (and, under ADR 030, makes session
-  starts refuse). `async: false` is the caller's responsibility.
+  previous value — otherwise a test that pins another sandbox leaks into
+  the rest of the suite (and, under ADR 030, makes session starts refuse).
+  `async: false` is the caller's responsibility.
 
   Two uses:
 

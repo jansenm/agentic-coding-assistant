@@ -4,7 +4,7 @@ defmodule CodingAgent.Core.SandboxTest do
   import CodingAgent.SandboxCase
 
   alias CodingAgent.Core.Sandbox
-  alias CodingAgent.Core.Sandbox.None
+  alias CodingAgent.Core.Sandbox.Bwrap
   alias CodingAgent.TestSandbox.Stub
   alias CodingAgent.TestSandbox.Unavailable
 
@@ -19,16 +19,11 @@ defmodule CodingAgent.Core.SandboxTest do
       assert Sandbox.impl() == Stub
     end
 
-    # ADR 030: the silent fallback to None is gone. An unavailable
-    # confining implementation yields nil, so callers must refuse.
+    # ADR 030: the fallback to an unconfined run is gone. An unavailable
+    # implementation yields nil, so callers must refuse.
     test "a confining implementation that is unavailable yields nil (no fallback)" do
       put_sandbox(Unavailable)
       assert Sandbox.impl() == nil
-    end
-
-    test "an explicit None is honored (the deliberate seam)" do
-      put_sandbox(None)
-      assert Sandbox.impl() == None
     end
 
     test "wrap/2 delegates to the effective implementation" do
@@ -49,61 +44,36 @@ defmodule CodingAgent.Core.SandboxTest do
     end
   end
 
-  describe "Sandbox.None" do
-    test "is always available" do
-      assert None.available?()
-    end
-
-    test "does not confine" do
-      refute None.confines?()
-      put_sandbox(None)
-      refute Sandbox.confines?()
-    end
-
-    test "wraps a shell command as /bin/sh -c, ignoring the profile" do
-      assert {:ok, "/bin/sh", ["-c", "rm -rf /"]} =
-               None.wrap({:shell, "rm -rf /"}, %{root: "/repo", network: true, git_write: true})
-    end
-
-    test "wraps an exec spec, resolving the executable" do
-      assert {:ok, exe, ["status"]} = None.wrap({:exec, "git", ["status"]}, %{root: "/repo"})
-      assert Path.type(exe) == :absolute
-    end
-
-    test "an unknown executable is an error, not a crash" do
-      assert {:error, {:executable_not_found, _}} =
-               None.wrap({:exec, "definitely-not-a-real-binary-xyz", ["x"]}, %{root: "/repo"})
-    end
-
-    test "id is :none" do
-      assert None.id() == :none
-    end
-  end
-
-  describe "confines?/0" do
-    test "is true for a confining implementation that is available" do
+  describe "visible_path/2" do
+    test "is the host path when the implementation does not remap /tmp" do
+      # the test double does not bind the scratch over /tmp, so the optional
+      # callback's identity default applies
       put_sandbox(Stub)
-      assert Sandbox.confines?()
+      host = "/var/tmp/scratch/checkpoint-index"
+
+      assert Sandbox.visible_path(host, %{root: "/repo"}) == host
     end
 
-    test "is false when the confining implementation is unavailable" do
-      put_sandbox(Unavailable)
-      refute Sandbox.confines?()
+    test "maps a scratch file to /tmp under bwrap (ADR 022)" do
+      scratch = "/var/tmp/scratch-#{System.unique_integer([:positive])}"
+      profile = %{root: "/repo", scratch: scratch}
+
+      assert Bwrap.visible_path(Path.join(scratch, "checkpoint-index"), profile) ==
+               "/tmp/checkpoint-index"
+
+      assert Bwrap.visible_path(scratch, profile) == "/tmp"
+
+      # a path outside the scratch is left alone
+      assert Bwrap.visible_path("/etc/hosts", profile) == "/etc/hosts"
     end
 
-    test "is false for the no-op" do
-      put_sandbox(None)
-      refute Sandbox.confines?()
+    test "is the host path when bwrap has no session scratch (per-call tmpfs)" do
+      assert Bwrap.visible_path("/etc/hosts", %{root: "/repo"}) == "/etc/hosts"
     end
   end
 
   describe "diagnose/0" do
-    test "is :ok for the no-op" do
-      put_sandbox(None)
-      assert Sandbox.diagnose() == :ok
-    end
-
-    test "surfaces the reason when a confining implementation cannot run" do
+    test "surfaces the reason when the implementation cannot run" do
       put_sandbox(Unavailable)
       assert {:error, reason} = Sandbox.diagnose()
       assert is_binary(reason)
@@ -128,7 +98,6 @@ defmodule CodingAgent.Core.SandboxTest do
 
       assert message =~ "no usable sandbox"
       assert message =~ "unprivileged user namespaces"
-      assert message =~ "Sandbox.None"
     end
   end
 end

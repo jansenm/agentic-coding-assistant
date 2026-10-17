@@ -211,7 +211,9 @@ Two properties worth stating:
   ``{:error, :root_ro_unavailable}`` and the shell call fails with a
   message pointing at the read tools. Silently running read-write would
   reinstate the bypass on exactly the hosts where the gate is the only
-  boundary.
+  boundary. **Superseded by ADR 046:** ``Sandbox.None`` is deleted, so the
+  refusal path is gone with it — a host without a confining sandbox cannot
+  start a session at all, which is the stronger form of the same refusal.
 
 The cost accepted: **in-tree builds fail for ``plan``** (``mix compile``,
 ``cargo build``, ``mvn``). The owner's call is to try this before

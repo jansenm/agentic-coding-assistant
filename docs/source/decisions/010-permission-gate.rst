@@ -144,8 +144,10 @@ every pending call and resumes only when every call has a decision.
    answers "what may the process reach" (ADR 015) — but it *is* part of
    the permission table the author writes, because it is a narrowing of
    the shell capability. It merges most-restrictively (``:ro`` wins) and
-   is shell-only. ``Sandbox.None`` must REFUSE it (``:root_ro_unavailable``),
-   never silently run read-write. See ADR 017 for the ``plan`` use.
+   is shell-only. ``root_ro`` is a grant the sandbox either honours or
+   refuses; **superseded by ADR 046**, which deleted the non-confining
+   ``Sandbox.None`` that used to refuse it (``:root_ro_unavailable``). See
+   ADR 017 for the ``plan`` use.
 
 **6. Approval surface in 2b is a stub.** ``mix agent`` prints the
 pending call and reads a line (``y`` / ``e`` / ``n``); edit prompts for

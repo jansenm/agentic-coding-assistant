@@ -38,6 +38,10 @@ defmodule CodingAgent.Core.Sandbox.Bwrap do
   @ulimit_cpu_secs 1800
   @tmpfs_bytes 1024 * 1024 * 1024
 
+  # The session scratch is bound over this mount (ADR 022); `visible_path/2`
+  # is its inverse, and both must name the same place.
+  @scratch_mount "/tmp"
+
   @impl true
   def id, do: :bwrap
 
@@ -45,9 +49,6 @@ defmodule CodingAgent.Core.Sandbox.Bwrap do
   def available? do
     probe()
   end
-
-  @impl true
-  def confines?, do: true
 
   @doc """
   Functional probe, memoised per OS process: run a trivial command through
@@ -182,6 +183,25 @@ defmodule CodingAgent.Core.Sandbox.Bwrap do
 
   def wrap(_spec, _profile), do: {:error, :bad_profile}
 
+  @doc """
+  The session scratch is bound over `#{@scratch_mount}` (ADR 022), so a host
+  file under it is addressed inside the sandbox by its `#{@scratch_mount}/...`
+  path. Any other host path is unchanged.
+  """
+  @impl true
+  def visible_path(host_path, %{scratch: dir}) when is_binary(dir) and dir != "" do
+    dir = Path.expand(dir)
+    host = Path.expand(host_path)
+
+    if host == dir or String.starts_with?(host, dir <> "/") do
+      @scratch_mount <> String.replace_prefix(host, dir, "")
+    else
+      host_path
+    end
+  end
+
+  def visible_path(host_path, _profile), do: host_path
+
   # The session scratch directory (ADR 022) is created lazily on the first
   # confined call. A scope without a session id carries no `:scratch` and
   # keeps the ephemeral tmpfs, so nothing is created.
@@ -268,11 +288,11 @@ defmodule CodingAgent.Core.Sandbox.Bwrap do
   # (`bwrap: --size must be followed by --tmpfs`), so it appears only on
   # the fallback path.
   defp scratch_args(%{scratch: dir}) when is_binary(dir) and dir != "" do
-    ["--bind", Path.expand(dir), "/tmp"]
+    ["--bind", Path.expand(dir), @scratch_mount]
   end
 
   defp scratch_args(_profile) do
-    ["--size", to_string(@tmpfs_bytes), "--tmpfs", "/tmp"]
+    ["--size", to_string(@tmpfs_bytes), "--tmpfs", @scratch_mount]
   end
 
   # Extra read-write mounts (ADR 015 decision 3): the resolved mount

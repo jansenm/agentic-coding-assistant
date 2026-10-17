@@ -1,5 +1,5 @@
 defmodule CodingAgent.Core.CheckpointTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias CodingAgent.Core.Checkpoint
 

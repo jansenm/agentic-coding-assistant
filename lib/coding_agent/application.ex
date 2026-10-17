@@ -47,7 +47,7 @@ defmodule CodingAgent.Application do
 
   # Startup sandbox check (ADR 015/030). This is a DIAGNOSTIC, not the
   # guard: the guard is session start (`Session.init/1`), which refuses
-  # when `Sandbox.confines?/0` is false. The app itself still boots, so
+  # when no usable sandbox implementation is configured. The app itself still boots, so
   # the store/picker stay usable and the refusal surfaces with a readable
   # reason on the first session start.
   defp check_sandbox do

@@ -19,7 +19,5 @@ config :ex_ratatui, detach_local_input: false
 # 015), but a test run must behave identically on a machine without it.
 # ADR 030 makes a confining sandbox a session-start precondition, so the
 # suite runs under a confining TEST DOUBLE by default; tests that exercise
-# real bwrap select it explicitly (and self-skip when it is unavailable),
-# and `Sandbox.None` appears only where the unconfined seam itself is
-# under test (the refusal path, the None unit tests).
+# real bwrap select it explicitly (and self-skip when it is unavailable).
 config :coding_agent, sandbox: CodingAgent.TestSandbox.Stub

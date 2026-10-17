@@ -22,16 +22,13 @@ defmodule CodingAgent.TestSandbox.Stub do
   def available?, do: true
 
   @impl true
-  def confines?, do: true
-
-  @impl true
   def check, do: :ok
 
   @impl true
   def wrap({:shell, command}, _profile), do: {:ok, "/bin/sh", ["-c", command]}
 
-  # Port.open needs an absolute path, exactly as `Sandbox.None` resolves
-  # one; a bare "git" must not reach the port.
+  # Port.open needs an absolute path, resolved from PATH exactly as a
+  # shell would; a bare "git" must not reach the port.
   def wrap({:exec, file, args}, _profile) do
     case System.find_executable(file) do
       nil -> {:error, {:executable_not_found, file}}

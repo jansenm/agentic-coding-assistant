@@ -101,7 +101,10 @@ Decision
 5. **``Sandbox.None`` is unchanged.** The no-op runs against the real
    ``/tmp``, which is already persistent for the process's life; the
    ``:scratch`` profile key is ignored there. (ADR 030 makes ``None`` a
-   test seam; the statement holds for that seam.)
+   test seam; the statement holds for that seam.) **Superseded by ADR
+   046:** ``None`` is deleted, and the scratch↔``/tmp`` mapping is now
+   explicit in the behaviour (``Sandbox.visible_path/2``) rather than
+   assumed by callers.
 
 Why ``/tmp`` and not a new name
 -------------------------------

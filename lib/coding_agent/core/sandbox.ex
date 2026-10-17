@@ -8,21 +8,18 @@ defmodule CodingAgent.Core.Sandbox do
   `wrap/2` at the single `Port.open/2` call site; everything that
   decides *what the process may reach* lives behind this behaviour.
 
-  Two implementations:
+  `CodingAgent.Core.Sandbox.Bwrap` (bubblewrap) is the shipped Linux
+  implementation; other platforms bring their own. The test run uses a
+  confining double (`CodingAgent.TestSandbox.Stub`, `config/test.exs`).
 
-    * `CodingAgent.Core.Sandbox.None` — `{:ok, "/bin/sh", ["-c", command]}`,
-      the deliberately-unconfined no-op. ADR 030: a **test seam and an
-      explicit opt-out**, never an automatic fallback.
-    * `CodingAgent.Core.Sandbox.Bwrap` — bubblewrap on Linux, the shipped
-      default.
-
-  Selection mirrors `CodingAgent.Core.Providers.resolve/2`: the
-  implementation is data (`:sandbox` application env). When the configured
-  implementation is confining but cannot run on this machine, there is
-  **no silent fallback to `None`** (ADR 030): `wrap/2` returns
+  Confinement is a **precondition, not a capability to query** (ADR 030):
+  every implementation confines, and a session only starts when a usable
+  one is configured. Selection mirrors `CodingAgent.Core.Providers.resolve/2`:
+  the implementation is data (`:sandbox` application env). When the
+  configured implementation cannot run on this machine there is **no
+  fallback to an unconfined run**: `wrap/2` returns
   `{:error, {:sandbox_unavailable, reason}}`, `diagnose/0` reports why,
-  and a session refuses to start (`refusal_message/0`). An explicitly
-  configured `None` still runs unconfined — that is the deliberate seam.
+  and a session refuses to start (`refusal_message/0`).
   """
 
   @typedoc """
@@ -34,8 +31,8 @@ defmodule CodingAgent.Core.Sandbox do
     * `:git_write` — may the process write `.git` (default false).
     * `:root_ro` — bind the scope root READ-ONLY (default false). An agent
       with only read tools sets this so `shell` cannot bypass the file-tool
-      deny (`echo > f`). A non-confining implementation must REFUSE it,
-      never silently run read-write (`None` returns `{:error, :root_ro}`).
+      deny (`echo > f`). An implementation that cannot make the root
+      read-only must REFUSE it, never silently run read-write.
     * `:scratch` — a host directory to bind over `/tmp` for the session
       (ADR 022); `nil` keeps the per-call tmpfs, so a scope without a
       session id is unchanged.
@@ -74,8 +71,8 @@ defmodule CodingAgent.Core.Sandbox do
           | {:stdin, non_neg_integer(), spec()}
 
   @doc false
-  # The unconfined stdin wrapper shared by `Sandbox.None` and the test
-  # double: a shell pipeline feeding exactly `count` bytes, then closing
+  # The unconfined stdin wrapper the test double shares: a shell pipeline
+  # feeding exactly `count` bytes, then closing
   # the pipe (that close is the inner process's EOF). The exec form keeps
   # its argv as positional parameters, so a path with spaces or quotes is
   # never re-parsed by the shell.
@@ -105,14 +102,21 @@ defmodule CodingAgent.Core.Sandbox do
   """
   @callback check() :: :ok | {:error, String.t()}
 
-  @optional_callbacks check: 0
+  @optional_callbacks check: 0, visible_path: 2
 
   @doc """
-  Whether this implementation actually confines the process. `None` is
-  `false`: it is a no-op, so the permission gate must keep asking. Only a
-  real sandbox lets `shell`/`git` become allow-by-default (ADR 015).
+  The path a confined process sees for a host path, given the profile — the
+  inverse of the mounts `wrap/2` sets up. Optional: the default is the
+  identity, so an implementation that does not remap the host filesystem
+  reports the host path unchanged.
+
+  The one shipped remap is the session scratch bound over `/tmp` (ADR 022):
+  `Bwrap` maps `<scratch>/x` to `/tmp/x`. A caller that must hand a host file
+  to a confined process (the checkpoint temp index, ADR 036) asks here
+  instead of hardcoding `/tmp`, so a platform sandbox that binds differently
+  — or not at all — stays correct.
   """
-  @callback confines?() :: boolean()
+  @callback visible_path(host_path :: String.t(), profile()) :: String.t()
 
   @doc """
   Turns a command spec + profile into `{executable, argv}` for
@@ -126,7 +130,6 @@ defmodule CodingAgent.Core.Sandbox do
               {:ok, executable :: String.t(), argv :: [String.t()]} | {:error, term()}
 
   @default CodingAgent.Core.Sandbox.Bwrap
-  @none CodingAgent.Core.Sandbox.None
 
   @doc """
   The module the user configured with the `:sandbox` application env
@@ -142,10 +145,9 @@ defmodule CodingAgent.Core.Sandbox do
   The effective sandbox implementation, or `nil` when the configured one
   cannot run on this machine.
 
-  ADR 030 removed the silent fallback to `#{inspect(@none)}`: an
-  unavailable confining implementation yields `nil`, so callers must
-  refuse rather than run unconfined. An explicitly configured `None` (the
-  test seam / deliberate opt-out) is honored and returned as-is.
+  ADR 030 removed the fallback to an unconfined run: an unavailable
+  implementation yields `nil`, so callers must refuse rather than run
+  unconfined.
   """
   @spec impl() :: module() | nil
   def impl do
@@ -154,14 +156,8 @@ defmodule CodingAgent.Core.Sandbox do
   end
 
   defp usable_module?(module) when is_atom(module) and not is_nil(module) do
-    cond do
-      # A non-confining implementation (None) has nothing to check.
-      not exports?(module, :confines?, 0) -> true
-      not module.confines?() -> true
-      # A confining implementation must prove it works on this machine.
-      exports?(module, :available?, 0) -> module.available?()
-      true -> true
-    end
+    # An implementation must prove it works on this machine.
+    if exports?(module, :available?, 0), do: module.available?(), else: true
   end
 
   defp usable_module?(_), do: false
@@ -178,22 +174,27 @@ defmodule CodingAgent.Core.Sandbox do
   defp module_loaded?(module), do: :erlang.module_loaded(module) != false
 
   @doc """
-  Whether the *effective* implementation confines (ADR 015/030). An
-  unusable configuration confines nothing.
+  The sandbox-visible path for `host_path` under `profile`. Delegates to the
+  effective implementation; an implementation without the optional callback
+  — or an unusable configuration — reports the host path.
   """
-  @spec confines?() :: boolean()
-  def confines? do
+  @spec visible_path(String.t(), profile()) :: String.t()
+  def visible_path(host_path, profile) do
     case impl() do
-      nil -> false
-      impl -> exports?(impl, :confines?, 0) and impl.confines?()
+      nil ->
+        host_path
+
+      impl ->
+        if exports?(impl, :visible_path, 2),
+          do: impl.visible_path(host_path, profile),
+          else: host_path
     end
   end
 
   @doc """
-  A startup diagnostic for the configured sandbox: `:ok` when it is the
-  no-op or the confining implementation works, `{:error, reason}` when a
-  confining implementation was requested but cannot run, with a
-  human-readable reason.
+  A startup diagnostic for the configured sandbox: `:ok` when it works,
+  `{:error, reason}` when the implementation cannot run on this machine,
+  with a human-readable reason.
   """
   @spec diagnose() :: :ok | {:error, String.t()}
   def diagnose do
@@ -202,12 +203,6 @@ defmodule CodingAgent.Core.Sandbox do
     cond do
       not is_atom(module) or is_nil(module) ->
         {:error, "invalid :sandbox configuration: #{inspect(module)}"}
-
-      module == @none ->
-        :ok
-
-      not exports?(module, :confines?, 0) or not module.confines?() ->
-        :ok
 
       exports?(module, :check, 0) ->
         module.check()
@@ -230,8 +225,7 @@ defmodule CodingAgent.Core.Sandbox do
       end
 
     "no usable sandbox: #{reason}. " <>
-      "Install bubblewrap and enable unprivileged user namespaces, or set " <>
-      "`sandbox: CodingAgent.Core.Sandbox.None` explicitly to run unconfined."
+      "Install bubblewrap and enable unprivileged user namespaces."
   end
 
   @doc """

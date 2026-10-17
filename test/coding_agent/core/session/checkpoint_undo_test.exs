@@ -3,7 +3,7 @@ defmodule CodingAgent.Core.Session.CheckpointUndoTest do
   Session-level integration for ADR 036: a checkpoint is taken before a
   turn can write, and `/undo` (``Session.undo/1``) restores the files.
   """
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias CodingAgent.Core.Session
 

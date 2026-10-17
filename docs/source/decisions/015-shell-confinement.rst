@@ -24,6 +24,10 @@ Shell confinement: bound the process, not the command text
    precondition. The threat model, the bwrap profile, the mount schema
    and the escalation decisions below stand unchanged.
 
+   **Also superseded by ADR 046** (2026-10-17): the ``confines?/0``
+   callback and the ``Sandbox.None`` bullet below are gone — confinement
+   is a precondition, not a capability to query.
+
 Threat model (read this first)
 ------------------------------
 
@@ -284,8 +288,15 @@ A behaviour with swappable implementations, selected like
   **superseded by ADR 030**: it is no longer an automatic fallback, and
   a session refuses to start without confinement.
 
-``confines?/0`` is distinct from "a sandbox is configured": it is the
-gate's question (``None.confines?`` is false). **ADR 030 supersedes**
+.. note::
+   **Superseded by ADR 046** (2026-10-17). ``Sandbox.None`` is deleted and
+   the ``confines?/0`` callback is gone with it: it could only subtract
+   capability, because confinement is a session-start precondition. The
+   behaviour carries ``visible_path/2`` (the host→sandbox path mapping) in
+   its place.
+
+``confines?/0`` was distinct from "a sandbox is configured": it was the
+gate's question (``None.confines?`` was false). **ADR 030 supersedes**
 ``configured/0``/``impl/0``'s silent fallback: an unavailable confining
 implementation now yields ``nil`` and a refusal, never ``None``.
 
@@ -390,6 +401,8 @@ are the grant being approved and ``git`` now carries one too.
   **ADR 030 changed the consequence**: a session refuses to start when
   this is false, so the gate's confinement fallback is unconditional in
   practice (shell/git allow-by-default; only escalations ask).
+  **Superseded by ADR 046**: ``confines?/0`` is deleted; availability is
+  the only question left.
 - The port loop (spawn, deadline, kill, truncate) lives once in
   ``Core.Exec``, the single ``Sandbox.wrap`` call site shared by ``Shell``
   and ``Git``.
@@ -454,4 +467,5 @@ the ``git_write`` escalation.
 **ADR 030 (2026-09-27) finished the model**: ``Sandbox.None`` is now the
 test seam rather than a runtime path, the native file tools run as
 confined processes under the same profile, and session start requires
-confinement. See ``030-one-boundary.rst``.
+confinement. See ``030-one-boundary.rst``. (``Sandbox.None`` is itself
+deleted by **ADR 046**; the original step remains here for the record.)
