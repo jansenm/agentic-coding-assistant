@@ -283,8 +283,8 @@ defmodule CodingAgent.Core.Tools.ShellTest do
 
     test "shell git is redirected to the git tool, naming the script escape" do
       {:hint, hint} = Shell.redirect(%{"command" => "git add -A"})
-      assert hint =~ "git tool"
-      assert hint =~ "git_write"
+      assert hint =~ "use your git tool"
+      assert hint =~ "git_write: true"
 
       assert {:hint, _} = Shell.redirect(%{"command" => "/usr/bin/git status"})
     end

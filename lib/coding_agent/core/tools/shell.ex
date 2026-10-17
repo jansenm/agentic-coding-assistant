@@ -264,7 +264,7 @@ defmodule CodingAgent.Core.Tools.Shell do
     # set-group sg is accepted — an agent essentially never wants that
     "sg" => "please use the grep tool instead of shell sg",
     "git" =>
-      "please use the git tool instead of shell git (allow-by-default, runs git directly and may write .git); for git inside a script, state git_write: true with a reason",
+      "please use your git tool instead of shell git (it is allow-by-default, runs git directly and may write .git) — git inside a script that CHANGES the repository needs the parameter git_write: true plus a reason on the shell call",
     "timeout" => "please set the timeout as a parameter on the tool call"
   }
 

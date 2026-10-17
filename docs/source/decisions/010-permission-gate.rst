@@ -448,10 +448,10 @@ gate).
 
 The ``git`` row itself: shell ``git`` duplicates the dedicated tool, which
 is allow-by-default and may write ``.git``. The hint names both the tool
-and the escape (``git_write: true`` with a reason), which is also where
-P5's "escalations are only discoverable by failing" is answered — the
-message tells the model the way out instead of leaving it to deduce one
-from EROFS.
+and the escape (``git_write: true`` with a reason, on a script that
+**changes** the repository) — which is also where P5's "escalations are
+only discoverable by failing" is answered: the message tells the model the
+way out instead of leaving it to deduce one from EROFS.
 
 Not renamed: ``@redirect`` (already correct), and the historical text
 above keeps the old names — it records what was decided then, and this
