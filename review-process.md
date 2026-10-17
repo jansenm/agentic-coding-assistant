@@ -12,15 +12,18 @@ A record per run meant that "what is still open" was a search across six
 files, with the closed ones kept as `.triaged` archives beside them even
 though the commits are the record. Open findings from every record (and the
 harness-feedback points) now live in **`review.md`**, one entry per finding,
-anchored to symbol + commit. Closed findings are deleted from it; a short
-table at the foot maps an old `N…`/`P…` to its fixing commit so a cited
-number still resolves.
+anchored to a symbol, its introducing commit and the revision it was read at.
+Closed findings are deleted from it; a short table at the foot maps an old
+`N…`/`P…` to its fixing commit so a cited number still resolves.
 
 Rules that survive:
 
 * A finding has a **number** (`N…`, ascending, never reused) or a feedback
   point (`P…`).
-* Anchor to **symbol + commit**, never a line number.
+* A finding carries an **Ort** (a symbol, never a line number) and an
+  **Eingeführt** (the commit that last wrote the offending line). The record
+  as a whole carries a **Stand** — the revision it was read at. Three
+  questions, three fields; see "Three fields, three jobs" below.
 * **Do not `rm` a finding while it is open.** Closing one — moving it to the
   commit table — is the owner's call (same as any deletion).
 * A record that is fully worked off is **deleted**, not renamed: its fixes
@@ -41,17 +44,72 @@ The review worktree is `agentic-coding-assistant-mjansen`, the main worktree is
 `agentic-coding-assistant`. The triage agent reads `review.md`, works the
 findings off, and commits — the review agent never does.
 
+**Work in the worktree your context names, and nowhere else.** The two are
+linked worktrees of ONE history, on the same filesystem: they do not see each
+other's edits, and another harness is usually live in the other one. A `cd` into
+the sibling checkout (or an absolute path into it) writes into a second writer's
+tree. The worktree you were started in is named in the env block's
+`Working directory` row; that is the answer, and there is no case where reaching
+across is right.
+
+**"The owner commits" is a rule about committing, not about writing.** An agent
+in build mode EDITS `review.md` and `review-process.md` like any other file; the
+owner reviews and commits them afterwards. Marking a finding closed, adding a
+row to the commit table, and writing the triage prose are all agent work. Only
+the commit is the owner's.
+
+(Why this sentence exists: a build agent answered one of those tasks with a
+proposal instead of an edit — the mode in force was read-only, and the agent
+explained the restriction to itself out of the "owner commits" line. If the
+mode is ambiguous, WRITE and let the policy refuse: a refused write costs one
+turn, a plan the owner did not ask for costs the delivery. The mode itself is
+the harness's to broadcast — see P23 in `review.md`.)
+
 ## The record
 
 - **One file: `review.md`**, in the review worktree, **untracked** (the owner
   commits code changes, not review artefacts). One place for everything open.
 - Findings are numbered `N1, N2, …`, ascending, **never reused**. A new review
   continues the count; it does not restart.
-- Anchor every finding to a **symbol plus the commit that introduced it** — never
-  to a line number, which is void after the next rebase.
+- The record names the revision it was read at (**Stand**); each finding names
+  an **Ort** (a symbol — never a line number, which is void after the next
+  rebase) and an **Eingeführt** (the commit that last wrote the offending
+  line). See the next section.
 - **Deleted when closed**, not archived. A short table at the foot of
   `review.md` maps the number to its fixing commit, so a cited `N…` still
   resolves.
+
+## Three fields, three jobs
+
+`Stand`, `Ort` and `Eingeführt` are not synonyms, and treating them as one is
+how a whole review round came to anchor on a docs commit from the day the
+review was written instead of the months-old line that carries the bug. Three
+questions, three commands:
+
+| Field | Question | Who fills it | Command |
+|-------|----------|--------------|---------|
+| **Stand** | which revision did I read? | the reviewer, **once**, at the top of the record | `git rev-parse --short HEAD` + branch + `git log -1 --format=%ad --date=short`, and say "dirty" if the tree was not clean |
+| **Ort** | where do I find it now? | the reviewer, per finding | the module + symbol (function, attribute, prompt section) |
+| **Eingeführt** | how old is the bug? | whoever works the finding off | `git blame -L <line>,<line> --date=short -- <path>` |
+
+**Blame the offending line — not the file, not the symbol.** `git log -1 --
+<path>` almost always names a commit that had nothing to do with the finding,
+and a symbol's first commit can predate its bug: `Session.subscribe/1` is
+`6cb4e99` by `git log -S`, `git log -L` credits the whole clause to `686acd6`,
+and the caller-registration that IS finding N95 arrived with `c3dfda5` — three
+commands, three answers, each right for its own question. Blame's answer is the
+one anyone can reproduce, so it is the field.
+
+**When the line is wrong because of what an earlier commit did to it, say so in
+the sentence** — "what made it wrong" is a fourth thing and it is prose, not a
+field. An `Eingeführt` is a claim about age, and age is what decides "now or
+never"; a finding whose age is invisible reads as if it were filed today.
+
+`Eingeführt` is the triager's job, not the reviewer's: it needs the tree open.
+The reviewer writes `Stand` and `Ort` and is done.
+
+Once closed, only the commit matters — a fix's own hash is the record, so do not
+fuss over the fields of a finding that is already in the table.
 
 ## Closing a finding
 
@@ -75,8 +133,8 @@ next to the `comm -13 … | wc -l` line that produces the 65. Same for a flake �
 record the fail rate, the seeds and the tree, or the claim decays into
 "it seemed flaky once" (harness feedback, 2026-10-01: the only durable trace of
 a repeated suite run was prose). This is also why a finding MUST NOT anchor to
-a line number: the command is the anchor, the line number is void after the
-next rebase.
+a line number: the **command** is the evidence, the line number is void after
+the next rebase.
 - **Never `rm` an open finding.** If in doubt, ask the owner.
 - **`review.md` stays in the review worktree.** A copy in the main worktree is a
   second unversioned file that drifts; read and write it where it is.

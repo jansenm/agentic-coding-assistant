@@ -18,6 +18,22 @@ The following principles do not matter at this point:
 
 * Backwards compatibility. (*The software is unreleased*)
 
+## One repo, two worktrees — work in the one your context names
+
+This repository is checked out as **linked worktrees sharing one history**
+(`agentic-coding-assistant` and `agentic-coding-assistant-mjansen`). Both are on
+this filesystem at the same time, and they do **not** see each other's work: an
+edit, a new file and the git index live in the worktree, not in the repository.
+
+**Work in the worktree your context names** — the `Working directory` and
+`Git: linked worktree, <branch>` rows of your env block — and nowhere else. Do
+not `cd` into the sibling checkout, not even to look: a tool that writes there
+writes into another writer's tree, and the harness you are running beside works
+in it *at the same time*. Two harnesses have already lost each other's edits
+exactly this way.
+
+If your context does not name a worktree, ask before writing.
+
 ## Feedback from the agent (wanted)
 
 This repository is both the harness and the product: the program an agent
