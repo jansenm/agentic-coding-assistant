@@ -172,8 +172,30 @@ defmodule CodingAgent.Core.Session do
   """
   @spec subscribe(String.t()) :: :ok
   def subscribe(id) do
+    # Unregister first: registration is a no-op when it is already there,
+    # so re-subscribing the same process would leave TWO entries and every
+    # event would be delivered twice (the TUI re-mounts on a session
+    # switch, and `key: :duplicate` keeps both). Idempotent by design —
+    # this is "subscribe this caller to exactly one copy".
+    _ = Registry.unregister(CodingAgent.EventRegistry, {Events.key(), id})
     _ = Registry.register(CodingAgent.EventRegistry, {Events.key(), id}, nil)
     GenServer.call(via(id), :subscribe)
+  end
+
+  @doc """
+  Unsubscribes the CALLER from `id`'s events (no-op when it was never
+  subscribed).
+
+  The other half of `subscribe/1`: a view that switches away from a
+  session must drop its registration, or it keeps receiving events for a
+  session it no longer shows (and holds a registry entry for the rest of
+  its life). Best effort, like `subscribe/1` — the session may already be
+  gone, and a dead session has nothing left to unsubscribe from.
+  """
+  @spec unsubscribe(String.t()) :: :ok
+  def unsubscribe(id) do
+    _ = Registry.unregister(CodingAgent.EventRegistry, {Events.key(), id})
+    :ok
   end
 
   @doc """
@@ -301,9 +323,17 @@ defmodule CodingAgent.Core.Session do
   compaction) runs in a supervised worker task. The session keeps
   answering `state/1`, `set_agent/2`, `interrupt/1` and `decide/2`
   while it streams.
+
+  Like every other action verb this degrades instead of raising: a
+  session that is gone by the time the call is made returns
+  `{:error, :not_found}` (no more `:exit` in the caller's task), so the
+  TUI gets one shape to reconcile from. It was the LAST bare
+  `GenServer.call` (review N96) — the TUI sets `:running` optimistically
+  at send time, so an exit here used to leave a turn that never ran
+  behind a spinner that never stopped.
   """
   @spec run(String.t(), String.t()) :: {:ok, State.t()} | {:error, term()}
-  def run(id, prompt), do: GenServer.call(via(id), {:run, prompt}, @call_timeout)
+  def run(id, prompt), do: safe_call(id, {:run, prompt}, "run", @call_timeout)
 
   @doc """
   Interrupts a running turn (user stop request, opencode's esc).

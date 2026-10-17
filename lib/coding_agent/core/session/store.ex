@@ -777,21 +777,40 @@ defmodule CodingAgent.Core.Session.Store do
   end
 
   # Re-id the row in one connection: refuse a collision, load the old
-  # state, upsert under the new id, delete the old row, move the scratch
-  # and tell a live process (via Session) so its next save follows.
+  # state, upsert under the new id, delete the old row and move the
+  # scratch.
+  #
+  # Telling a live process under the old id (`Session.notify_renamed/2`)
+  # happens AFTER the call returns, i.e. OUTSIDE the store process.
+  # `with_db` runs its fun INSIDE the Store GenServer, and that
+  # notification is a synchronous call into the session — which calls
+  # `Store.save/1` from inside its own `handle_call` while a turn runs.
+  # Notifying from in there is a lock inversion (Store -> Session while
+  # the Session -> Store) with `:infinity` waits on both sides: a rename
+  # of a live session deadlocks the store behind it.
   defp do_rename(id, new_id) do
-    with_db(fn db ->
-      case fetch_one(db, "SELECT 1 FROM sessions WHERE id = ?", [new_id]) do
-        {:ok, row} when row != nil ->
-          {:error, :exists}
+    result =
+      with_db(fn db ->
+        case fetch_one(db, "SELECT 1 FROM sessions WHERE id = ?", [new_id]) do
+          {:ok, row} when row != nil ->
+            {:error, :exists}
 
-        {:ok, nil} ->
-          rename_row(db, id, new_id)
+          {:ok, nil} ->
+            rename_row(db, id, new_id)
 
-        {:error, reason} ->
-          {:error, reason}
-      end
-    end)
+          {:error, reason} ->
+            {:error, reason}
+        end
+      end)
+
+    case result do
+      {:ok, renamed} ->
+        CodingAgent.Core.Session.notify_renamed(id, renamed)
+        {:ok, renamed}
+
+      other ->
+        other
+    end
   end
 
   defp rename_row(db, id, new_id) do
@@ -814,7 +833,6 @@ defmodule CodingAgent.Core.Session.Store do
                exec(db, "UPDATE display SET session_id = ? WHERE session_id = ?", [new_id, id]),
              :ok <- exec(db, "DELETE FROM sessions WHERE id = ?", [id]) do
           Scratch.move(Scratch.path(id), Scratch.path(new_id))
-          CodingAgent.Core.Session.notify_renamed(id, new_id)
           {:ok, new_id}
         end
 

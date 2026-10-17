@@ -1815,9 +1815,19 @@ defmodule CodingAgent.UI.Tui do
 
   # switch attach: delegate to mount_session (start_session returns
   # {:ok, pid} for already-running sessions — keep-alive switching is
-  # free: the GenServer stays up, we swap the view)
+  # free: the GenServer stays up, we swap the view).
   defp attach_selected_session(%{id: id}, state) do
     opts = state.mount_opts || []
+
+    # Drop the outgoing session's subscription BEFORE mounting the new
+    # one: the TUI process is the subscriber, and the tag-routing above
+    # already ignores events of a session it is not showing — but the
+    # registry entry would survive the switch (it is keyed by session,
+    # and this caller keeps it for the rest of the process's life), so
+    # the old session would keep sending into a dead view. `mount_session`
+    # subscribes the new one (and `subscribe/1` is idempotent, so a
+    # re-attach cannot double-register).
+    Session.unsubscribe(state.session_id)
 
     case mount_session(id, Keyword.put(opts, :resume_id, id), nil) do
       {:ok, new_state} -> {:noreply, new_state}
@@ -2767,7 +2777,19 @@ defmodule CodingAgent.UI.Tui do
   defp run_prompt(%{test_mode?: true} = state, _prompt), do: state
 
   defp run_prompt(state, prompt) do
-    Task.start(fn -> Session.run(state.session_id, prompt) end)
+    sid = state.session_id
+    parent = self()
+
+    Task.start(fn ->
+      result =
+        case Session.run(sid, prompt) do
+          {:ok, session_state} -> {:ok, session_state.status}
+          {:error, reason} -> {:error, reason}
+        end
+
+      send(parent, {:__ran__, result})
+    end)
+
     state
   end
 
@@ -2912,6 +2934,28 @@ defmodule CodingAgent.UI.Tui do
 
   def handle_info({:__question_answered__, {:error, reason}}, state) do
     state = note_failure(resync_prompt(state, :question), "answer failed", reason)
+    {:noreply, state}
+  end
+
+  # The prompt reply landed (the `run_prompt/2` task). Nothing to do on
+  # success: the session's broadcasts already moved the UI, and the reply
+  # carries no state the events did not. A refusal is the case the TUI
+  # used to swallow — `Session.run/2` is a plain call, so a session that
+  # died between the keypress and the call returns `{:error, :not_found}`
+  # while the optimistic `status: :running` (set with the transcript
+  # entry) had nothing left to clear it (N96: a turn that never runs,
+  # behind a spinner that never stops).
+  def handle_info({:__ran__, {:ok, _status}}, state) do
+    {:noreply, state}
+  end
+
+  def handle_info({:__ran__, {:error, reason}}, state) do
+    state =
+      state
+      |> Map.put(:status, :idle)
+      |> end_tool()
+      |> note_failure("could not start the turn", reason)
+
     {:noreply, state}
   end
 
@@ -3294,7 +3338,7 @@ defmodule CodingAgent.UI.Tui do
     # is discarded (session switch). Unsubscribe — the child is stopped,
     # so no further events will come; the registration would otherwise
     # outlive the process as a dead entry.
-    Registry.unregister(CodingAgent.EventRegistry, {CodingAgent.Core.Events.key(), child_id})
+    Session.unsubscribe(child_id)
 
     subagents =
       case Map.fetch(state.subagents, child_id) do

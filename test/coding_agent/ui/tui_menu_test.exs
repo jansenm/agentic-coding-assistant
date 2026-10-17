@@ -239,6 +239,69 @@ defmodule CodingAgent.UI.TuiMenuTest do
     assert sync(pid).session_id == a
   end
 
+  test "switching drops the outgoing session's subscription (N95)", %{root: tmp_root} do
+    a = seed_session("sub-a", tmp_root)
+    b = seed_session("sub-b", tmp_root)
+
+    pid = start_tui(tmp_root)
+    key(pid, "x", ["ctrl"])
+    key(pid, "s")
+
+    st = sync(pid)
+    idx = Enum.find_index(st.menu_popup.items, &(&1.id == b))
+    if idx > 0, do: Enum.each(1..idx, fn _ -> key(pid, "down") end)
+    key(pid, "enter")
+
+    assert sync(pid).session_id == b
+
+    # The TUI process is the subscriber (`subscribe/1` registers the
+    # CALLER). Exactly one entry for the session it shows — a second
+    # mount used to leave a duplicate, and the duplicate is what
+    # delivered every event twice — and none left behind for the one it
+    # switched away from.
+    key = CodingAgent.Core.Events.key()
+
+    assert 1 ==
+             Registry.lookup(CodingAgent.EventRegistry, {key, b})
+             |> Enum.count(fn {p, _} -> p == pid end)
+
+    refute Enum.any?(
+             Registry.lookup(CodingAgent.EventRegistry, {key, a}),
+             fn {p, _} -> p == pid end
+           )
+  end
+
+  test "a turn that could not start clears the spinner (N96)", %{root: tmp_root} do
+    pid = start_tui(tmp_root)
+
+    # the mount left a session behind; make it unreachable so the prompt
+    # path takes its failure branch (the TUI process is linked to it, so
+    # the death is not a crash)
+    Session.stop(sync(pid).session_id)
+
+    # the reply the run_prompt/2 task sends for a session that is gone
+    send(pid, {:__ran__, {:error, :not_found}})
+    st = sync(pid)
+
+    assert st.status == :idle
+    assert Enum.any?(st.transcript, &match?({:info, "✖" <> _}, &1))
+  end
+
+  test "a run refusal reconciles the optimistic :running (N96)", %{root: tmp_root} do
+    id = seed_session("run-refused", tmp_root)
+    pid = start_tui(tmp_root, session_id: id)
+
+    send(pid, {:agent, {:status_changed, :running}})
+    assert sync(pid).status == :running
+
+    # the reply the run_prompt/2 task sends for a session that is gone
+    send(pid, {:__ran__, {:error, :not_found}})
+    st = sync(pid)
+
+    assert st.status == :idle
+    assert Enum.any?(st.transcript, &match?({:info, "✖" <> _}, &1))
+  end
+
   # -- model menu (ctrl-x m) ----------------------------------------------
 
   test "ctrl-x m opens the model popup with catalog + discovered entries", %{

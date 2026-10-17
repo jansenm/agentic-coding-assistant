@@ -194,6 +194,10 @@ defmodule CodingAgent.Core.SessionTest do
       assert {:error, :not_found} = Session.answer_question(id, [])
       assert {:error, :not_found} = Session.budget_decision(id, :stop)
       assert {:error, :not_found} = Session.doom_decision(id, :reject)
+      # run/2 was the last bare GenServer.call (N96): the TUI's prompt
+      # path ignored its exit, so a dead session left the optimistic
+      # `:running` standing forever.
+      assert {:error, :not_found} = Session.run(id, "hi")
     end
 
     test "subscribed process receives status events (self-included)" do
