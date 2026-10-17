@@ -170,6 +170,29 @@ defmodule CodingAgent.Core.Tools.GitTest do
       assert out =~ "exit 128" or out =~ "fatal"
     end
 
+    test "a commit message with a body travels as ONE argv element (P25)", %{root: root} do
+      git!(root, ~w(init -q -b main))
+      git!(root, ~w(config user.email t@example.com))
+      git!(root, ~w(config user.name Test))
+      File.write!(Path.join(root, "a.txt"), "x\n")
+      tool = Git.tool(%{root: root})
+
+      {:ok, _} = ReqLLM.Tool.execute(tool, %{"args" => ["add", "."]})
+
+      # The whole message, body included, is one argument with embedded
+      # newlines — the git tool has no shell to quote it and no `-F` file to
+      # leave behind. Git itself splits subject/body at the blank line.
+      message = "subject line\n\nbody paragraph one\nbody paragraph two"
+
+      assert {:ok, out} = ReqLLM.Tool.execute(tool, %{"args" => ["commit", "-m", message]})
+      assert out =~ "exit 0"
+
+      {body, 0} = System.cmd("git", ["log", "-1", "--format=%b"], cd: root)
+      # `%b` carries the message's own trailing newline plus the format's;
+      # what matters is that BOTH body lines arrived intact as one argument
+      assert String.trim_trailing(body) == "body paragraph one\nbody paragraph two"
+    end
+
     test "rejects a bad args payload with an error", %{root: root} do
       tool = Git.tool(%{root: root})
       assert {:error, msg} = ReqLLM.Tool.execute(tool, %{"args" => []})

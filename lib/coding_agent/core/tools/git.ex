@@ -26,7 +26,6 @@ defmodule CodingAgent.Core.Tools.Git do
   alias CodingAgent.Core.Exec
   alias CodingAgent.Core.Tools
   alias CodingAgent.Core.Tools.Escalation
-  alias CodingAgent.Core.Tools.Escalation
 
   @default_timeout 120
   @max_timeout 1800
@@ -71,7 +70,9 @@ defmodule CodingAgent.Core.Tools.Git do
       name: "git",
       description:
         "Run a git command in the session scope. Pass the git arguments as a " <>
-          "list, e.g. [\"commit\", \"-am\", \"fix\"]. Unlike shell, this may " <>
+          "list, e.g. [\"commit\", \"-am\", \"fix\"]. A commit message with a body " <>
+          "is ONE argument containing \\n: [\"commit\", \"-m\", \"subject\\n\\nbody\"] " <>
+          "— no file, no `-F`. Unlike shell, this may " <>
           "write .git (commit/tag/reset). No network unless you request it " <>
           "(network: true + reason) — `fetch` and `clone` need that. For git " <>
           "inside a script, use shell with git_write.",

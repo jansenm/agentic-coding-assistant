@@ -124,6 +124,21 @@ fuss over the fields of a finding that is already in the table.
 4. **Do not `rm` an open finding.** Closing one is a deletion, and deletions are
    the owner's call — same as any other file.
 
+## Committing
+
+The commit message is part of the record (see "Closing a finding"): the diff
+says what changed, the message says why — and the why is not recoverable from
+the diff later.
+
+* **Match the house style**: `type(scope): imperative subject`, then a blank
+  line, then the body. `git log --oneline -20` shows it; read it before writing.
+* **A body is not optional for a finding fix.** It carries the diagnosis, the
+  measurement and the rejected alternative. If the message needs the finding's
+  number, it needs the body too.
+* **The agent's `git` tool takes it as one argument with embedded newlines**:
+  `args: ["commit", "-m", "subject\n\nbody"]`. No temp file, no `-F`, no second
+  round trip.
+
 ## Evidence must be reproducible, not narrated
 
 A finding is a claim, and a claim needs a check the next person can run. The
