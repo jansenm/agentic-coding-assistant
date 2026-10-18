@@ -12,7 +12,7 @@ defmodule CodingAgent.Core.Tools.FileExec do
   no second predicate to keep in sync (`Tools.in_scope?/2` degrades to a
   discovery helper).
 
-  The operation is a small, fixed program per tool (`cat`, `tee`, `ls`,
+  The operation is a small, fixed program per tool (`cat`, `dd`, `ls`,
   `rm`, `mv`, `mkdir`, `sed`); the PATH is passed as an argument, never
   interpolated into the script, so a quote in a filename cannot escape the
   command. `Exec.run/5` carries the profile and, for writes, the payload on
@@ -31,9 +31,9 @@ defmodule CodingAgent.Core.Tools.FileExec do
   # The fixed programs, by bare name so each sandbox resolves them its
   # own way (`None`/the stub via PATH; bwrap's inner `sh` inside the
   # namespace). `--` terminates option parsing so a path that starts
-  # with `-` is a filename, not a flag. `cat`/`tee`/`ls` are POSIX.
+  # with `-` is a filename, not a flag. `cat`/`dd`/`ls` are POSIX.
   @cat "cat"
-  @tee "tee"
+  @dd "dd"
   @ls "ls"
   @sed "sed"
   @rm "rm"
@@ -78,18 +78,30 @@ defmodule CodingAgent.Core.Tools.FileExec do
   end
 
   @doc """
-  Writes `content` through a confined `tee`. Returns `{:ok, path}` or
-  `{:error, message}`. The content goes on stdin; the payload's byte size
-  is computed here and the pipe close is the child's EOF.
+  Writes `content` through a confined `dd`. Returns `{:ok, path}` or
+  `{:error, message}`. The content goes on stdin; the pipe close is the
+  child's EOF.
+
+  `dd`, not `tee` (review P28): `tee` echoes the payload back on stdout,
+  and `Exec` merges stderr into stdout, so the failure text for "write
+  into a path that is not there" arrived with the WHOLE payload glued to
+  its tail — measured at 443 characters for a 313-character write, i.e.
+  the model got its own content back instead of an error. `dd` writes
+  exactly the stdin it is given and reports a failure on stderr alone.
   """
   @spec write(Tools.scope(), String.t(), iodata(), pos_integer()) ::
           {:ok, String.t()} | {:error, String.t()}
   def write(scope, path, content, secs) do
     profile = Tools.profile(scope)
 
-    case Exec.run({:exec, @tee, ["--", path]}, cwd(scope), secs, profile, stdin: content) do
-      # tee echoes the payload to stdout; a zero exit means the bytes were
-      # written (and flushed) before it returned.
+    # `of=` is `dd`'s own output-file syntax, not a `--`-guarded operand
+    # (`dd` has no `--`): only an option looks like `name=value`, so a
+    # path that begins with `-` is a value, not a flag. `status=none`
+    # silences the transfer statistics.
+    case Exec.run({:exec, @dd, ["of=" <> path, "status=none"]}, cwd(scope), secs, profile,
+           stdin: content
+         ) do
+      # A zero exit means the bytes were written (and flushed).
       {:ok, _output, 0} ->
         {:ok, path}
 
@@ -149,12 +161,12 @@ defmodule CodingAgent.Core.Tools.FileExec do
   @doc """
   Removes a path through a confined `rm` (`delete_file`).
 
-  The flags are the tool's own, in the tool's spelling: `-r` when
-  `recursive`, `-d` when `dir`. `-d` is what lets `rm` remove an empty
-  directory or any symlink (the link itself — `rm` never dereferences);
-  a file needs neither flag. Without the matching flag `rm` reports its
-  own reason ("Is a directory", "Directory not empty") rather than
-  silently succeeding, which is exactly the signal we want.
+  The flags are the tool's own, in the tool's spelling: `--recursive`
+  when `recursive`, `--dir` when `dir`. Without the matching flag `rm`
+  reports its own reason ("Is a directory", "Directory not empty")
+  rather than silently succeeding, which is exactly the signal we want;
+  which flag fits which shape is the TOOL's check (`delete_file`), not a
+  second opinion here.
 
   `--` terminates option parsing, so a path that starts with `-` is a
   filename.
@@ -187,8 +199,8 @@ defmodule CodingAgent.Core.Tools.FileExec do
   end
 
   # The tool's own flags, in the long spelling the parameters are named
-  # after. `--recursive` removes a non-empty directory; `--dir` removes an
-  # empty one (or a symlink) — a plain file needs neither.
+  # after. `--recursive` descends into a tree; `--dir` removes an empty
+  # directory that `rm` would otherwise refuse.
   defp rm_flags(opts) do
     recursive = if Keyword.get(opts, :recursive, false), do: ["--recursive"], else: []
     dir = if Keyword.get(opts, :dir, false), do: ["--dir"], else: []
@@ -268,29 +280,43 @@ defmodule CodingAgent.Core.Tools.FileExec do
   @doc """
   Existence + type probe through a confined `ls`: `:dir`, `:file` or
   `:missing`. Used by `edit`'s fail-closed shape check without a BEAM
-  `File.stat/1`.
+  `File.stat/1`, and by `delete_file`'s flag check.
+
+  One `ls -dF` call answers it: what distinguishes the types is `-F`'s
+  trailing marker, read from the listing itself. Asking about a type
+  through a path (the earlier shape: `path/.` succeeds only for a
+  directory) cannot answer it — a SYMLINK to a directory carries the
+  marker `@`, which is precisely the shape `rm` must not dereference;
+  and `path/.` is exactly a dereference (`ls -d -- link/.` follows the
+  link, `ls -dF -- link` does not).
+
+  The marker is read from the listing, never from a suffix on the name:
+  `-F` never marks a symlink as a directory, and a name may itself end
+  in `@` or `/`.
   """
   @spec stat(Tools.scope(), String.t(), pos_integer()) :: :dir | :file | :missing
   def stat(scope, path, secs) do
-    profile = Tools.profile(scope)
-
-    # `ls -d` succeeds for a file OR a directory; `--` guards the path.
-    case Exec.run({:exec, @ls, ["-d", "--", path]}, cwd(scope), secs, profile) do
-      {:ok, _output, 0} -> type_probe(scope, path, secs)
+    case exec([@ls, "-dF"], ["--", path], scope, secs) do
+      {:ok, output, 0} -> shape(output)
       _ -> :missing
     end
   end
 
-  # `ls -d -- path/.` succeeds only if path is a directory (the trailing
-  # `/.` fails for a regular file). One more argument to the same fixed
-  # program; the path is never interpolated into a script.
-  defp type_probe(scope, path, secs) do
-    profile = Tools.profile(scope)
+  # The listing is one line per operand, and there is one operand: a
+  # trailing `/` is `-F`'s directory marker. Every other marker (`@` for a
+  # symlink — whatever it points at — `*` for an executable, none at all)
+  # is `:file`.
+  defp shape(output) do
+    stripped = String.trim_trailing(to_string(output), "\n")
 
-    case Exec.run({:exec, @ls, ["-d", "--", path <> "/."]}, cwd(scope), secs, profile) do
-      {:ok, _output, 0} -> :dir
-      _ -> :file
-    end
+    if String.ends_with?(stripped, "/"), do: :dir, else: :file
+  end
+
+  # The one place a confined program is started with a fixed argv, so
+  # `@ls`'s list and the call sites cannot drift apart.
+  defp exec([file | args], rest, scope, secs) do
+    profile = Tools.profile(scope)
+    Exec.run({:exec, file, args ++ rest}, cwd(scope), secs, profile)
   end
 
   @doc """

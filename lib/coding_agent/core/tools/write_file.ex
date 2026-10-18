@@ -2,7 +2,7 @@ defmodule CodingAgent.Core.Tools.WriteFile do
   @moduledoc """
   Whole-file write tool (slice 2b; ADR 045; ADR 030).
 
-  The write is a confined `tee` through `Tools.FileExec`: the content
+  The write is a confined `dd` through `Tools.FileExec`: the content
   goes on the process's stdin and the sandbox profile is the boundary.
   A path the profile hides or binds read-only fails at the write
   (`EROFS`), by construction. Allow-by-policy (ADR 010 amendment,
@@ -12,7 +12,7 @@ defmodule CodingAgent.Core.Tools.WriteFile do
 
   ## `parents`
 
-  `tee` does not create a directory (measured: `No such file or
+  `dd` does not create a directory (measured: `No such file or
   directory`), so a write into a missing parent fails. With `parents:
   true` the parent is created first through a confined `mkdir
   --parents` — which also makes an EXISTING parent a no-op, so the flag
@@ -88,7 +88,7 @@ defmodule CodingAgent.Core.Tools.WriteFile do
     end
   end
 
-  # The bare `tee` failure ("No such file or directory") does not say
+  # The bare `dd` failure ("No such file or directory") does not say
   # WHICH part is missing or how to fix it. When the parent is the
   # missing part, say so and name the parameter — the confinement rule
   # forbids a BEAM stat, so the probe is a confined `ls`.

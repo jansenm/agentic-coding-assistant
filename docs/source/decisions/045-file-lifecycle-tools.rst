@@ -46,11 +46,23 @@ mechanical, so the model carries no second vocabulary:
    * - Parameter
      - Flag
    * - ``delete_file.dir``
-     - ``rm --dir`` (an empty directory, or any symlink)
+     - ``rm --dir`` (an empty directory; refused for a file or a symlink)
    * - ``delete_file.recursive``
      - ``rm --recursive`` (a directory with its contents)
    * - ``move_file.force``
      - ``mv --force`` (overwrite; default is ``--no-clobber``)
+
+**2a. A flag whose shape does not match is refused (amendment
+2026-10-18, review P28).** ``rm --dir`` removes a plain file too —
+measured (GNU coreutils 9.12): exit 0 without a message — so the tool
+probes the shape through a confined ``ls -dF`` and accepts only a real
+directory under ``dir: true``. A symlink is not one, whatever it points
+at: ``rm`` removes the link and needs no flag for it. ``recursive:
+true`` is exempt — alone or beside ``dir: true`` it means the same for
+every shape. The ``-F`` marker decides and the name never does, because
+a name may itself end in ``@`` or ``/`` (the earlier check asked whether
+``path/.`` resolves, which cannot see the difference between a directory
+and a symlink to one).
 
 ``delete_file`` has **no** ``force``: ``rm --force`` means "ignore
 nonexistent files" (would turn "no such file" into a silent success,
@@ -78,7 +90,9 @@ dereference flag is ever passed, so the underlying programs decide and
 the result is exactly theirs — measured: ``rm`` removes the link (never
 the target), ``rm --dir`` removes a symlink whatever its target, and
 ``mv`` moves the link as a link. ``-d``/``-P``/``-L`` are deliberately
-not offered.
+not offered. The one place where the link's type matters is decision 2a:
+`dir: true` on a link is refused, because the flag is unnecessary for it
+and a "yes" would be a guess about a path ``rm`` will not dereference.
 
 **6. Allow-by-class (ADR 010 amendment, 2026-09-15).** Both join
 ``Permissions.@allow_class``: contained (``FileExec`` under the profile)
@@ -129,13 +143,23 @@ Open questions
 1. **``delete_file`` on a directory without ``recursive``** leans on
    ``rm``'s message. If the model misreads it, a friendlier sentence
    ("the directory is not empty; pass ``recursive: true``") could be
-   layered on — not before it bites.
+   layered on — not before it bites. The same message question for a
+   flag that names the wrong shape is **answered** (decision 2a): there
+   the program said nothing at all, so the tool must.
 2. **``copy_file`` or ``rsync``?** Reopen only on a real need (T15).
 3. **Move across filesystems.** ``mv`` falls back to copy+unlink, which
    for a large tree is slow and non-atomic. Not addressed; the scratch,
    the scope and the mounts are normally one filesystem.
 4. **``write_file parents`` vs. a ``mkdir`` tool.** The flag was added
    because a write into a missing directory is the common case and the
-   bare ``tee`` message named neither the cause nor the fix. A full
+   bare program message named neither the cause nor the fix. A full
    ``mkdir`` tool is still absent; add it when creating an EMPTY
    directory (with no file to put in it) is actually needed.
+5. **The write program.** ``write_file`` writes through a confined
+   ``dd`` (amendment 2026-10-18, review P28). ``tee`` was the first
+   choice and failed on its one job: it echoes stdin to stdout, and
+   ``Exec`` merges stderr into stdout, so the error text for a failed
+   write arrived with the whole payload behind it. If a POSIX program
+   writes stdin with quieter semantics than ``dd``'s ``of=``, it is
+   welcome to replace it — measured against the same four cases
+   (missing parent, ``EROFS`` bind, an existing file, an empty write).

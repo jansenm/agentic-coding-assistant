@@ -162,9 +162,37 @@ defmodule CodingAgent.Core.Tools.FileToolsTest do
         ReqLLM.Tool.execute(tool, %{"path" => "no/such/dir.txt", "content" => "x"})
 
       assert msg =~ "no/such/dir.txt"
-      # and it names the way out rather than leaving the bare tee message
+      # and it names the way out rather than leaving the bare dd message
       assert msg =~ "does not exist"
       assert msg =~ "parents"
+    end
+
+    test "a failed write never repeats the payload back", %{scope: scope} do
+      tool = find_tool("write_file", scope)
+      payload = String.duplicate("A", 200) <> "END_OF_PAYLOAD"
+
+      {:error, msg} =
+        ReqLLM.Tool.execute(tool, %{"path" => "no/such/dir.txt", "content" => payload})
+
+      # `tee` echoed the payload onto stdout, which Exec merges into the
+      # error text: the model got its own content back glued to the
+      # message (measured at 443 chars for a 313-char write). `dd` writes
+      # stdin and reports on stderr alone.
+      refute msg =~ "END_OF_PAYLOAD"
+      refute msg =~ String.duplicate("A", 20)
+    end
+
+    test "an overwrite truncates to the new content", %{scope: scope} do
+      tool = find_tool("write_file", scope)
+
+      {:ok, _} =
+        ReqLLM.Tool.execute(tool, %{
+          "path" => "top.txt",
+          "content" => String.duplicate("long ", 200)
+        })
+
+      {:ok, _} = ReqLLM.Tool.execute(tool, %{"path" => "top.txt", "content" => "short"})
+      assert File.read!(Path.join(scope.root, "top.txt")) == "short"
     end
 
     test "parents: true creates the missing chain", %{scope: scope} do
@@ -308,6 +336,47 @@ defmodule CodingAgent.Core.Tools.FileToolsTest do
 
       {:ok, _} = ReqLLM.Tool.execute(tool, %{"path" => "empty-dir", "dir" => true})
       refute File.exists?(Path.join(scope.root, "empty-dir"))
+    end
+
+    test "dir: true on a plain FILE is refused, not a silent delete (rm --dir would succeed)", %{
+      scope: scope
+    } do
+      tool = find_tool("delete_file", scope)
+
+      # measured: `rm --dir -- top.txt` exits 0 without a message, so the
+      # flag alone answers nothing about the shape
+      {:error, msg} = ReqLLM.Tool.execute(tool, %{"path" => "top.txt", "dir" => true})
+      assert msg =~ "not a directory"
+      assert msg =~ "no flag"
+      assert msg =~ "recursive"
+      assert File.read!(Path.join(scope.root, "top.txt")) == "top level"
+    end
+
+    test "dir: true on a SYMLINK is refused (a link to a directory is not a directory)", %{
+      scope: scope
+    } do
+      tool = find_tool("delete_file", scope)
+      File.mkdir_p!(Path.join(scope.root, "link-target"))
+      File.ln_s!("link-target", Path.join(scope.root, "link-to-dir"))
+
+      {:error, msg} =
+        ReqLLM.Tool.execute(tool, %{"path" => "link-to-dir", "dir" => true})
+
+      assert msg =~ "not a directory"
+
+      # with no flag the link goes, and its target stays
+      {:ok, _} = ReqLLM.Tool.execute(tool, %{"path" => "link-to-dir"})
+      assert File.dir?(Path.join(scope.root, "link-target"))
+    end
+
+    test "recursive: true is allowed for every shape", %{scope: scope} do
+      tool = find_tool("delete_file", scope)
+
+      {:ok, _} = ReqLLM.Tool.execute(tool, %{"path" => "top.txt", "recursive" => true})
+      refute File.exists?(Path.join(scope.root, "top.txt"))
+
+      {:ok, _} = ReqLLM.Tool.execute(tool, %{"path" => "nested.txt", "recursive" => true})
+      refute File.exists?(Path.join(scope.root, "nested.txt"))
     end
 
     test "a non-empty directory needs recursive: true", %{scope: scope} do

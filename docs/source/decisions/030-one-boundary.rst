@@ -21,13 +21,23 @@ One boundary: the sandbox enforces reach, and a confining sandbox is required to
    included.
 
    Shipped in two commits (slices 1–4, then 5–7). ``Tools.FileExec``
-   runs the file tools as confined ``cat``/``tee``/``ls``; ``Exec``
+   runs the file tools as confined ``cat``/``dd``/``ls``; ``Exec``
    carries stdin and env; session start refuses without confinement;
    ``rg``/``fd`` are required; shell/git are allow-by-default. A live
    bwrap bug surfaced while implementing this: ``hide`` for a FILE used
    ``--ro-bind /dev/null``, which is unreadable under the ``nodev``
    mount of an unprivileged userns; ``--dev-bind`` gives the intended
    empty-image semantic.
+
+   **Amended 2026-10-18 (review N74, P28).** Two details of the ``hide``
+   image and of the write path are no longer as this note describes.
+   ``hide`` binds the shipped notice instead of a ``/dev/null`` device —
+   the device needed the ``--dev-bind`` workaround, and an empty image
+   was indistinguishable from absence (ADR 015 carries the amendment).
+   And ``write_file`` no longer writes through ``tee``: ``tee`` echoes
+   the payload to stdout, which ``Exec`` merges into the error text, so
+   a failed write handed the model back its own content; the write is a
+   confined ``dd``.
 
 Context
 -------
@@ -98,13 +108,13 @@ Everything follows from that:
    ``write_file``, ``edit`` and ``list_dir`` execute their operation as
    a child process through ``Exec`` under the session's sandbox profile,
    exactly as ``shell``/``git`` do today. ``read_file`` is a confined
-   ``cat``; ``write_file`` a confined ``tee`` (``Exec`` gains stdin);
+   ``cat``; ``write_file`` a confined ``dd`` (``Exec`` gains stdin);
    ``edit`` is a confined read, the replacement computed in the BEAM,
    then a confined write; ``list_dir`` a confined ``ls``. There is no
    BEAM-side path predicate left as a boundary.
 
 2. **``hide``/``ro``/``root_ro`` work by construction.** A confined
-   ``cat`` on a hidden path reads the empty tmpfs/``/dev/null`` image; a
+   ``cat`` on a hidden path reads the notice the sandbox binds there; a
    confined write to a read-only bind fails with ``EROFS``. The mount
    schema is enforced without a second implementation to keep in sync.
 

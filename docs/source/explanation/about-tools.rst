@@ -32,11 +32,11 @@ permission gate introduced in slice 2b.
 
 Since **ADR 030 the sandbox profile is the one boundary**: the native
 file tools run their operation as a *confined child process* (a
-``cat``/``tee``/``ls`` under the session's profile), so what they can
+``cat``/``dd``/``ls`` under the session's profile), so what they can
 reach is exactly what the profile exposes — a ``hide``\ d path reads as
-the empty image, read-only binds fail a write, and the scope root's
-read-write bind is the only writable tree. Two properties are worth
-keeping in mind:
+the notice the sandbox binds over it (ADR 015), read-only binds fail a
+write, and the scope root's read-write bind is the only writable tree.
+Two properties are worth keeping in mind:
 
 - **Scope**: every tool receives a scope root (the session's working
   directory); relative paths resolve against it, and the process's

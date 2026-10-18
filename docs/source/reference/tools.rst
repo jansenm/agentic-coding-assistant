@@ -72,9 +72,10 @@ confined, so ``shell``/``git`` are allowed by default; a stated escalation
    * - ``edit``
      - Replace an exact string in a file; the match must be unique.
    * - ``delete_file``
-     - Delete a path (a confined ``rm``). A plain file needs no flag;
-       ``dir`` removes an empty directory (or a symlink — the link, not
-       its target), ``recursive`` a directory with its contents.
+     - Delete a path (a confined ``rm``). A file or a symlink needs no
+       flag (a symlink goes as the LINK, not its target); ``dir`` removes
+       an empty directory and is refused for anything that is not one;
+       ``recursive`` removes a directory with its contents.
    * - ``move_file``
      - Move or rename a path (a confined ``mv``). ``to`` is the exact new
        path (``-T``); an existing destination is refused unless
