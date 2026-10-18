@@ -55,10 +55,14 @@ defmodule CodingAgent.Core.Events do
       span with a summary; the payload is how many recent messages were
       kept verbatim
     * `{:provider_status, :up}` / `{:provider_status, :down, reason}`
-    * `{:context_window, window, soft, hard}` — the model catalog finished
-      loading (ADR 039) and the session re-resolved its compaction window
-      against it (the mount may have raced the background load and used
-      the fallback). Subscribers that mirror the window re-read it.
+    * `{:context_window, window, soft, hard}` — the session re-resolved
+      its compaction window/limits (ADR 039: the catalog finished
+      loading; also a model/agent switch, ADR 037 OQ1). The NUMBERS may
+      be unchanged while the PROVENANCE moved — `:loading` (catalog
+      still warming) and `:fallback` (loaded, model unknown) are the same
+      500k guess — so subscribers that mirror the window must re-read the
+      source from the session, not infer it from this payload (review
+      N76).
   """
   @type event :: term()
 

@@ -72,11 +72,13 @@ back to the configured value or the 500k default, as before.
 ``Session.init`` subscribes to ``{:catalog, :updated}`` when the window
 is not pinned by ``config.toml`` (a configured value always wins, so
 that case need not listen), and stores the provisional window. On the
-signal it recomputes the window/limits and, if they changed, updates the
-state and publishes ``{:context_window, window, soft, hard}``; the TUI
-mirrors the new numbers in the sidebar. The subscription is idempotent
-and delivers immediately when the catalog is already loaded, so a
-subscriber never has to race the load.
+signal it recomputes the window/limits and, if they or their SOURCE
+changed, updates the state and publishes ``{:context_window, window,
+soft, hard}``; the TUI mirrors the new numbers and the provenance in the
+sidebar. The subscription is idempotent and delivers immediately when the
+catalog is already loaded, so a subscriber never has to race the load.
+(The source half is the 2026-10-18 amendment at the end of this ADR,
+review N76: on an uncataloged model the numbers do not move.)
 
 Consequences
 ------------
@@ -102,8 +104,8 @@ Consequences
 - **Cost.** One more process in the tree and one more event in the
   vocabulary. Tests that assert a *cataloged* window must wait for
   readiness (the app warms it); tests that do not pin a window keep
-  seeing the fallback while the catalog is cold, so their numbers are
-  unchanged.
+  seeing the same 500k guess while the catalog is cold, so their numbers
+  are unchanged.
 - **The catalog only helps once a ``[providers.*]`` entry names a catalog
   provider.** The shipped ``config.toml`` declares only ``ollama`` and
   ``ollama_cloud``, neither of which is a req_llm catalog scope
@@ -114,8 +116,20 @@ Consequences
   configured — expected, but worth stating so the "catalog half" work is
   not mistaken for a stock-install feature.
 - **A resumed session is unaffected in the common case.** A model in the
-  catalog re-resolves on the next boot; a model absent from it already
-  used the fallback.
+  catalog re-resolves on the next boot; a model absent from it takes the
+  ``:fallback`` guess either way.
+
+**A session re-resolves when the PROVENANCE moves too (amendment
+2026-10-18, review N76).** ``:loading`` and ``:fallback`` are two states,
+not one: ``:loading`` is provisional and self-heals, ``:fallback`` is a
+verdict about a model the loaded catalog does not know. Both answer the
+same 500k guess, so a re-resolve that guards on the numbers alone
+publishes nothing on the very flip it exists to announce — the sidebar
+mirrored the source, kept ``:loading``, and never marked ``soft at`` as
+``(assumed)``. The guard now compares the source as well, so
+``{:context_window, …}`` means "what the session RESOLVED changed"; the
+numbers in the payload may be the old ones, which is why the TUI re-reads
+the source from the session instead of inferring it from the event.
 
 Open questions
 --------------
@@ -135,7 +149,9 @@ Open questions
    ADR 017). With the catalog loadable on demand the re-resolve is cheap.
 3. **Provisional-window compaction.** If a turn is somehow sent before
    the catalog is ready on a cataloged model, the decision uses the
-   fallback window. In practice the window arrives first; if that ever
-   proves false, the pre-call pass already re-reads the state each turn,
-   so the worst case is one decision on the fallback, healed by the
-   re-resolve.
+   provisional window — ``:loading``, the same 500k guess a loaded
+   catalog that does not know the model answers as ``:fallback``
+   (amendment 2026-10-18, review N76/N77). In practice the window arrives
+   first; if that ever proves false, the pre-call pass already re-reads
+   the state each turn, so the worst case is one decision on the guess,
+   healed by the re-resolve.

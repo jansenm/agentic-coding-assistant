@@ -87,6 +87,42 @@ defmodule CodingAgent.Core.Providers.CatalogTest do
     :ok = Session.stop(id)
   end
 
+  # The same race with the numbers NOT moving (review N76): an
+  # uncataloged model gets the 500k guess whether the catalog is cold
+  # (`:loading`) or loaded and ignorant (`:fallback`), so the guard on the
+  # three numbers alone published nothing and the sidebar kept `:loading`
+  # — it never marked `soft at` as `(assumed)` for a window that is a
+  # guess. The source is part of what the session resolved, so the flip
+  # must reach subscribers.
+  test "a source flip with unchanged numbers still reaches subscribers (N76)" do
+    alias CodingAgent.Core.Session
+
+    LLMDB.Catalog.clear!()
+    on_exit(fn -> LLMDB.load() end)
+
+    id = "catalog-source-flip-#{System.unique_integer([:positive])}"
+
+    {:ok, pid} =
+      CodingAgent.Core.Session.Supervisor.start_session(id: id, model: "ollama_cloud:nope")
+
+    :ok = Session.subscribe(id)
+
+    # mounted while loading: the guess, and the source says it is provisional
+    assert {:ok, %{context_window: 500_000, context_window_source: :loading}} = Session.state(id)
+
+    # the catalog finishes; the model is NOT in it
+    LLMDB.load()
+    send(pid, {:catalog, :updated})
+
+    assert_receive {:agent, ^id, {:context_window, window, soft, hard}}, 2000
+    # the numbers are the point of the test: they did not move
+    assert {window, soft, hard} == {500_000, 250_000, 436_000}
+
+    assert {:ok, %{context_window: 500_000, context_window_source: :fallback}} = Session.state(id)
+
+    :ok = Session.stop(id)
+  end
+
   test "an uncataloged model surfaces the assumed window once (review: visible fallback)" do
     alias CodingAgent.Core.Session
     import ExUnit.CaptureLog

@@ -1411,10 +1411,12 @@ defmodule CodingAgent.Core.Session do
   end
 
   # The model catalog finished loading (ADR 039). Re-resolve the window if
-  # it was provisional (no configured `context_window`): before the warm,
-  # a cataloged model resolved to the fallback, so its limits were wrong.
-  # Recompute and broadcast so the sidebar (which mirrors the values) and
-  # the next compaction decision use the real numbers. Idempotent.
+  # it was provisional (no configured `context_window`): while the catalog
+  # was cold the model resolved to `:loading` — the same 500k GUESS a
+  # loaded-but-unknown model gets as `:fallback`, but a different state
+  # (review N77). Recompute and broadcast so the sidebar (which mirrors
+  # the values AND the source) and the next compaction decision use the
+  # real numbers. Idempotent.
   def handle_info({:catalog, :updated}, state) do
     {:noreply, refresh_catalog_window(state)}
   end
@@ -1433,6 +1435,17 @@ defmodule CodingAgent.Core.Session do
   # (the switch is what made "resolved once at init" visibly wrong: the
   # session kept the old model's window, and the provider could then reject
   # a context the budget thought fit — or vice versa).
+  #
+  # The SOURCE is part of "changed" (review N76). `:loading` (the catalog
+  # is still warming) and `:fallback` (it is loaded and does not know the
+  # model) are the SAME numbers on an uncataloged model — 500k → soft
+  # 250k, hard 436k — so a guard on the numbers alone swallowed exactly the
+  # flip it exists to announce: the sidebar mirrors the source, kept
+  # `:loading`, and never marked `soft at` as `(assumed)` for the window
+  # that IS a guess. The event therefore means "what I RESOLVED changed",
+  # which is also right for the subscribers: the TUI re-reads the source
+  # from the session on every `{:context_window, …}` and mirrors it beside
+  # the numbers.
   defp recompute_window(state) do
     snapshot = Config.snapshot(state.scope_root)
 
@@ -1441,9 +1454,10 @@ defmodule CodingAgent.Core.Session do
 
     state = maybe_warn_unverified_window(state, source, window)
 
-    if {window, soft, hard} ==
-         {state.context_window, state.compaction_soft_limit, state.compaction_hard_limit} do
-      %{state | context_window_source: source}
+    if {window, soft, hard, source} ==
+         {state.context_window, state.compaction_soft_limit, state.compaction_hard_limit,
+          state.context_window_source} do
+      state
     else
       Events.publish(state.id, {:context_window, window, soft, hard})
 
@@ -1499,12 +1513,14 @@ defmodule CodingAgent.Core.Session do
   # with the worker booked (worker_ref/worker_from set).
   defp start_run(state, from, prompt) do
     # Re-resolve the window on the first real turn: at init the catalog may
-    # still be warming (`:loading`), so an uncataloged model's window is only
-    # known (as `:fallback`) once loaded. This also emits the once-per-session
-    # "unverified window" note before the first request, so the model's budget
-    # block and the warning agree. Idempotent and cheap when unchanged. Skips
-    # a test-mode session: the warning is a real-provider concern, and an
-    # injected note would perturb the display the suite asserts on.
+    # still be warming (`:loading`), so an uncataloged model's window is
+    # only known — still as a GUESS, but now as the `:fallback` an actual
+    # catalog lookup produces — once loaded. This also emits the
+    # once-per-session "unverified window" note before the first request,
+    # so the model's budget block and the warning agree. Idempotent and
+    # cheap when unchanged. Skips a test-mode session: the warning is a
+    # real-provider concern, and an injected note would perturb the display
+    # the suite asserts on.
     state = if state.test_mode, do: state, else: recompute_window(state)
     state = begin_run(state, prompt)
     runner = state.turn_runner

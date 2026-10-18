@@ -128,10 +128,11 @@ naming the file (ADR 014).
      - The model's context window in tokens (ADR 037), for the two
        compaction limits. Resolution: this key, then the catalog window,
        then the 500000 fallback. Set it for a cloud model absent from the
-       catalog. When the fallback is used (the catalog does not know the
-       model), the session emits one note and the sidebar marks ``soft at``
-       as ``(assumed)`` — the 500000-token guess can make compaction fire
-       later than a small model can hold.
+       catalog. When the window is a guess — the catalog does not know
+       the model, or is still loading — the session emits one note (for
+       the former) and the sidebar marks ``soft at`` as ``(assumed)``;
+       the 500000-token guess can make compaction fire later than a small
+       model can hold.
    * - ``compaction_soft_ratio``
      - number
      - ``0.5``
