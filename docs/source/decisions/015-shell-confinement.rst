@@ -245,8 +245,8 @@ Directive                bwrap translation                          Effect
 ======================  =========================================  ===============================
 ``rw = [paths]``         ``--bind <p> <p>``                         shared with host, writable
 ``ro = [paths]``         ``--ro-bind <p> <p>`` (after ``rw``)       readable, no write/delete
-``hide = [dirs]``        ``--tmpfs <p>``                            empty, invisible, writes discarded
-``hide = [files]``       ``--ro-bind /dev/null <p>``                empty/unreadable
+``hide = [dirs]``        ``--ro-bind <notice>/ <p>``                present, not readable
+``hide = [files]``       ``--ro-bind <notice>/README.txt <p>``      present, not readable
 ======================  =========================================  ===============================
 
 The default profile ships the cache paths (``~/.hex``, ``~/.mix``,
@@ -258,9 +258,15 @@ than the repo layer, never the reverse.
 
 Two clarifications to pin down in the schema:
 
-- ``hide`` on a directory yields an **empty writable** tmpfs; writes go
-  nowhere. If the intent is "not writable at all", that is ``ro``, a
-  distinct directive — do not conflate them.
+- ``hide`` makes the path **present and read-only**, bound to the
+  shipped notice (``priv/coding-agent/sandbox/README.txt``). Two earlier
+  images were tried and dropped: an empty tmpfs for a directory and
+  ``/dev/null`` for a file. Both left the agent unable to tell a hidden
+  path from a missing one, which is the one thing ``hide`` must
+  communicate — the user decided the path is invisible, and the agent
+  has to know that rather than conclude its information is stale. The
+  notice says so in words, and being read-only the path cannot be
+  written: nothing evaporates silently. See the amendment below.
 - ``rw`` is the sensitive directive: it is the one that *adds* reach. It
   can only ever come from the built-in default profile (caches) and the
   user layer, never from a repo config, so a checked-out repository
@@ -469,3 +475,48 @@ test seam rather than a runtime path, the native file tools run as
 confined processes under the same profile, and session start requires
 confinement. See ``030-one-boundary.rst``. (``Sandbox.None`` is itself
 deleted by **ADR 046**; the original step remains here for the record.)
+
+**Amended 2026-10-18 (the hidden path speaks, review N74).** The table's
+``hide`` rows were both wrong when read against the code, and the code
+was wrong in a second way. ``hide = [files]`` had drifted to
+``--dev-bind /dev/null`` (the ``nodev`` of an unprivileged user namespace
+makes a read-only-bound *device* unreadable, so the device was given
+device access instead), and both images shared a real defect: from
+inside, a hidden directory listed as empty, a hidden file read as the
+empty string with a zero exit — **indistinguishable from absence**. The
+finding that prompted this was ``AGENTS.md``'s "Deeper files" pointer
+sending the agent to a directory a ``hide`` entry had emptied: the
+sandbox hid the path and never said so, so the agent concluded the
+document was stale rather than that its world was smaller than it looks.
+
+``hide`` now binds the shipped notice
+(``priv/coding-agent/sandbox/README.txt``) **read-only** over the path —
+as a directory for a directory, as a file for a file. One flag
+(``--ro-bind``), one asset, both kinds: the path exists, names itself as
+hidden, refuses writes with ``EROFS``, and reads of anything else under
+it fail exactly as if absent. The ``nodev`` workaround disappears with
+the device.
+
+Two consequences, both deliberate:
+
+- **Descendant entries are pruned** (``Sandbox.Mounts.resolve/1``, by
+  path component so ``/a/bc`` is not below ``/a``). They were pointless
+  before — one mount hides the subtree — and are impossible now: bwrap
+  cannot create a mount point inside a read-only bind
+  (``Can't create file /a/b: Read-only file system``). A ``hide`` entry
+  under an ``rw``/``ro`` bind was already broken before this change and
+  stays broken; it is now at least reported as a startup failure rather
+  than silently mounting nothing.
+- **Search sees the notice.** ``fd``/``rg`` now return the notice file
+  under a hidden directory, where an empty tmpfs returned nothing. That
+  is the point of the change — the harness does not pretend the path
+  does not exist — but it is a visible behaviour change for anything
+  that counts matches.
+
+Measured 2026-10-18 under bwrap 0.12.0, because the interesting
+consequence is counter-intuitive: ``rm``/``mv`` of a hidden file fail
+with **EBUSY** (``Device or resource busy``), not with the ``EROFS`` a
+read-only *file* reports, because the path is a mount point of the
+scope bind and an unprivileged namespace cannot detach it. ``tee`` on
+the same path does report ``EROFS``. The error is honest — the path is
+still there — and the host file is untouched in every case.

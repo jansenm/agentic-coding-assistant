@@ -9,6 +9,19 @@ defmodule CodingAgent.Core.Sandbox.BwrapTest do
 
   @tmp_root System.tmp_dir!() |> Path.join("agent-bwrap-#{System.unique_integer([:positive])}")
 
+  # The shipped notice the sandbox binds over a hidden path. Derived here
+  # the same way `Bwrap` derives it (app dir), so the argv test does not
+  # hard-code an absolute path.
+  defp notice_path do
+    Path.join([
+      Application.app_dir(:coding_agent),
+      "priv",
+      "coding-agent",
+      "sandbox",
+      "README.txt"
+    ])
+  end
+
   setup_all do
     File.mkdir_p!(@tmp_root)
     on_exit(fn -> File.rm_rf!(@tmp_root) end)
@@ -140,7 +153,7 @@ defmodule CodingAgent.Core.Sandbox.BwrapTest do
       assert triple_in(argv, {"--ro-bind", Path.join(common, ".git"), Path.join(common, ".git")})
     end
 
-    test "hides a directory with an empty tmpfs and a file with /dev/null", %{root: root} do
+    test "a hidden path becomes the shipped notice, read-only", %{root: root} do
       dir = Path.join(root, "secret-dir")
       file = Path.join(root, "secret-file")
       File.mkdir_p!(dir)
@@ -148,11 +161,13 @@ defmodule CodingAgent.Core.Sandbox.BwrapTest do
 
       argv = Bwrap.argv(root, {:shell, "echo hi"}, %{root: root, hide: [dir, file]})
 
-      assert triple_in(argv, {"--tmpfs", dir})
-      # --dev-bind, not --ro-bind: a ro-bound device is unreadable under
-      # the nodev mount of an unprivileged userns (EACCES). Found live by
-      # the ADR 030 file-tool integration test.
-      assert triple_in(argv, {"--dev-bind", "/dev/null", file})
+      notice = notice_path()
+
+      # A directory gets the notice DIRECTORY (the README sits inside it),
+      # a file gets the notice file itself. Both are `--ro-bind`: a hidden
+      # path is present and says so, and is not writable.
+      assert triple_in(argv, {"--ro-bind", Path.dirname(notice), dir})
+      assert triple_in(argv, {"--ro-bind", notice, file})
     end
 
     test "sets resource caps in the shell prelude", %{root: root} do

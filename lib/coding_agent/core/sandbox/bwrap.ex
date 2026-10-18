@@ -418,28 +418,41 @@ defmodule CodingAgent.Core.Sandbox.Bwrap do
     Enum.flat_map(extra, fn path -> ["--ro-bind", path, path] end)
   end
 
-  # hide: a directory becomes an empty writable tmpfs; a file becomes
-  # /dev/null. The distinction is by host type (ADR 015 mount schema).
+  # hide: the path becomes a READ-ONLY bind of the shipped notice — as a
+  # directory for a hidden directory (so the notice file sits inside it),
+  # as a file for a hidden file. One flag and one asset for both cases:
+  # `--ro-bind <notice-dir> <p>` / `--ro-bind <notice-dir>/README.txt <p>`.
   #
-  # A file is bound with `--dev-bind`, not `--ro-bind`: unprivileged
-  # user namespaces mount with `nodev`, so a `--ro-bind`ed character
-  # device is NOT readable and `cat` fails with EACCES. `--dev-bind`
-  # grants device access for this one fixed, agent-inaccessible source,
-  # so a hidden file reads as empty (the /dev/null image) and writes are
-  # discarded — exactly the ADR 015 semantic. Found live by the ADR 030
-  # integration test (`Sandbox.FileToolsConfinementTest`); the argv test
-  # had only compared flags, never run a read.
+  # A hidden path therefore EXISTS and says so, instead of being an empty
+  # image the agent cannot tell from a missing one, and it is not
+  # writable, so nothing about it evaporates silently. The path must
+  # exist on the host for bwrap to mount over it; a stale entry emits
+  # nothing at all.
   defp hide_args(profile) do
+    notice = Path.dirname(notice_path())
+
     profile
     |> Map.get(:hide, [])
     |> Enum.map(&Path.expand/1)
     |> Enum.flat_map(fn path ->
       cond do
-        File.dir?(path) -> ["--tmpfs", path]
-        File.exists?(path) -> ["--dev-bind", "/dev/null", path]
+        File.dir?(path) -> ["--ro-bind", notice, path]
+        File.exists?(path) -> ["--ro-bind", notice_path(), path]
         true -> []
       end
     end)
+  end
+
+  # The notice shipped with the app; its content is the whole message, so
+  # the text lives in `priv/` and not here.
+  defp notice_path do
+    Path.join([
+      Application.app_dir(:coding_agent),
+      "priv",
+      "coding-agent",
+      "sandbox",
+      "README.txt"
+    ])
   end
 
   defp namespace_args(true), do: ["--unshare-all", "--share-net"]

@@ -4,7 +4,8 @@ defmodule CodingAgent.Core.Sandbox.FileToolsConfinementTest do
   bwrap (ADR 030): `read_file`, `write_file`, `edit` and `list_dir` are
   confined processes, so the PROFILE decides reach.
 
-  - a `hide`d path reads as its empty image and cannot be written;
+  - a `hide`d path is bound to the shipped notice (read-only), so it is
+    present, says it is hidden, and cannot be written;
   - a read-only bind (`ro`) is readable but fails with `EROFS` on write;
   - the whole filesystem is readable (`--ro-bind / /`), the scope root
     is the only writable tree;
@@ -48,7 +49,7 @@ defmodule CodingAgent.Core.Sandbox.FileToolsConfinementTest do
   end
 
   describe "hide (ADR 030: works for the native tools now)" do
-    test "a hidden file reads as empty and cannot be written", %{skip: skip} do
+    test "a hidden file reads the notice and cannot be written", %{skip: skip} do
       if skip do
         :ok
       else
@@ -60,17 +61,21 @@ defmodule CodingAgent.Core.Sandbox.FileToolsConfinementTest do
 
         read = tool("read_file", scoped)
         assert {:ok, content} = ReqLLM.Tool.execute(read, %{"path" => "secret.txt"})
-        # /dev/null binds over the file: reads succeed with empty content
-        assert content == ""
+        # the notice is bound over the file: the read succeeds and the
+        # model is told the path is hidden, not that it is empty
+        assert content =~ "Hidden by the harness"
+        refute content =~ "TOPSECRET"
 
         write = tool("write_file", scoped)
-        assert {:ok, _} = ReqLLM.Tool.execute(write, %{"path" => "secret.txt", "content" => "x"})
-        # the write went to /dev/null; the host file is untouched
+        {:error, wmsg} = ReqLLM.Tool.execute(write, %{"path" => "secret.txt", "content" => "x"})
+        # the notice is a read-only bind, so the write fails loudly and the
+        # host file is untouched (it used to succeed into /dev/null)
+        assert wmsg =~ "Read-only" or wmsg =~ "read-only"
         assert File.read!(secret) == "TOPSECRET"
       end
     end
 
-    test "a hidden directory does not leak into list_dir", %{skip: skip} do
+    test "a hidden directory holds the notice, not its contents", %{skip: skip} do
       if skip do
         :ok
       else
@@ -83,12 +88,19 @@ defmodule CodingAgent.Core.Sandbox.FileToolsConfinementTest do
 
         list = tool("list_dir", scoped)
         {:ok, out} = ReqLLM.Tool.execute(list, %{"path" => "."})
-        # the tmpfs is empty; the inner file is not there
+        # the directory is no longer empty to a listing: it carries the
+        # notice, which is the whole point (an empty tmpfs was
+        # indistinguishable from a missing directory)
         refute out =~ "inside.txt"
 
-        # the hidden directory is an empty tmpfs: the inner path does not
-        # exist at all (a hidden FILE reads as empty instead)
         read = tool("read_file", scoped)
+
+        assert {:ok, content} =
+                 ReqLLM.Tool.execute(read, %{"path" => "secret-dir/README.txt"})
+
+        assert content =~ "Hidden by the harness"
+
+        # everything else under it is gone, exactly as if absent
         {:error, msg} = ReqLLM.Tool.execute(read, %{"path" => "secret-dir/inside.txt"})
         assert msg =~ "No such file"
         refute msg =~ "TOPSECRET"
@@ -105,9 +117,11 @@ defmodule CodingAgent.Core.Sandbox.FileToolsConfinementTest do
 
         scoped = scope(root, hide: [secret])
 
-        # `/dev/null` is bound over the file, so `rm`/`mv` fail with EBUSY
-        # (the mount point cannot be unlinked) — measured under real bwrap.
-        # The host file is untouched either way; that is the point.
+        # Measured under real bwrap: `rm`/`mv` on the mount point fail with
+        # EBUSY (the mount cannot be detached from inside), not with EROFS
+        # as a plain read-only *file* would — `tee` on the same path does
+        # report EROFS. The host file is untouched either way; that is the
+        # point.
         delete = tool("delete_file", scoped)
         {:error, dmsg} = ReqLLM.Tool.execute(delete, %{"path" => "secret.txt"})
         assert dmsg =~ "busy" or dmsg =~ "Read-only"

@@ -64,6 +64,30 @@ defmodule CodingAgent.Core.Sandbox.MountsTest do
 
       assert Mounts.resolve([layer, layer, %{}]).ro == ["/a", "/b"]
     end
+
+    test "a hide entry below another hide entry is pruned" do
+      layer = %{"sandbox" => %{"hide" => ["/a/b", "/a"]}}
+
+      assert Mounts.resolve([%{}, %{}, layer]).hide == ["/a"]
+    end
+
+    test "pruning compares path components, not string prefixes" do
+      # `/a/bc` and `/a/b` are SIBLINGS, not ancestor and child: a prefix
+      # test (`String.starts_with?/2` → true) would drop `/a/bc`'s hide
+      # and leave it visible while its neighbour is hidden.
+      layer = %{"sandbox" => %{"hide" => ["/a/b", "/a/bc"]}}
+
+      assert Mounts.resolve([%{}, %{}, layer]).hide == ["/a/b", "/a/bc"]
+    end
+
+    test "only hide is pruned: ro and rw keep their nested entries" do
+      layer = %{"sandbox" => %{"ro" => ["/a", "/a/b"], "rw" => ["/c", "/c/d"]}}
+
+      mounts = Mounts.resolve([layer, %{}, %{}])
+
+      assert mounts.ro == ["/a", "/a/b"]
+      assert mounts.rw == ["/c", "/c/d"]
+    end
   end
 
   describe "eligible?/1" do

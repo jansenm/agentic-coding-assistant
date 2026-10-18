@@ -50,7 +50,7 @@ discover = "openai"
 #
 #   rw   = [...]   bind read-write, shared with the host
 #   ro   = [...]   bind read-only
-#   hide = [...]   a dir becomes an empty tmpfs, a file becomes /dev/null
+#   hide = [...]   a dir becomes a notice directory, a file a notice file
 #
 # `rw` ADDS reach, so it is honoured only from this shipped file and your
 # own ~/.config/coding-agent/config.toml — never from a project's

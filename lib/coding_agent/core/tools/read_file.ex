@@ -4,9 +4,9 @@ defmodule CodingAgent.Core.Tools.ReadFile do
 
   ADR 030: the read is a confined `cat` through `Tools.FileExec`, not a
   BEAM `File.read/1`. What the tool can reach is exactly what the session
-  profile exposes — `hide`d paths read as the empty image, `ro` binds are
-  readable, and the whole read-only root is available. There is no second
-  scope predicate at this layer.
+  profile exposes — a `hide`d path reads the notice file the sandbox
+  binds over it, `ro` binds are readable, and the whole read-only root is
+  available. There is no second scope predicate at this layer.
   """
 
   alias CodingAgent.Core.Tools
