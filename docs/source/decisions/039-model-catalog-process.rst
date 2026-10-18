@@ -131,6 +131,53 @@ mirrored the source, kept ``:loading``, and never marked ``soft at`` as
 numbers in the payload may be the old ones, which is why the TUI re-reads
 the source from the session instead of inferring it from the event.
 
+**The sidebar dates the catalog it assumed from (amendment 2026-10-18,
+review N106).** The snapshot is a *packaged* file, cut on llm_db's release
+cadence — measured 2026-10-18: llm_db 2026.8.4 carrying a snapshot
+generated 2026-08-23, against a 2026-10-14 release on Hex, i.e. 56 days
+behind, with ``deepseek-v4.1-*`` absent although ``ollama_cloud`` is in
+the catalog with 20 other models. A cloud model released since the cut is
+therefore *missing*, which is the ordinary cause of a ``:fallback``
+window, and a bare ``(assumed)`` gave no way to see why. The sidebar now
+carries a ``catalog`` row (``2026-08-23 (56d)``, read from the snapshot's
+own ``:meta.source_generated_at`` through ``Catalog.snapshot_age/0``)
+whenever the catalog was actually consulted — muted when it answered,
+warning-coloured when it did not know the model, hidden when the window is
+``:configured`` or still ``:loading``.
+
+Two corrections to this ADR's earlier text, same amendment: ``:ollama_cloud``
+**does** exist as a catalog scope with 20 models (decision/Consequences,
+``795a59d``, says it does not — the original N25 measurement was about a
+specific model id, not the scope), and the "stock install resolves the
+fallback window for everything" line holds only for models the snapshot
+predates.
+
+**Why not resolve the window from a live list instead?** The obvious
+alternative — take the window from the same live fetch the model menu uses
+(``Discovery``, ``GET <base>/models``) — was considered and rejected on
+what that fetch returns: it is an id list (``map(& &1["id"])``,
+``discovery.ex:261``), with no window in it. A provider's own ``/models``
+would have to be trusted for a decision that governs compaction, and a
+wrong number there is worse than a dated guess: it silently overruns the
+model. So the catalog stays the only window source, the escape for a model
+it does not know remains an explicit ``context_window``, and the age row
+is what makes the gap visible. (``llm_db`` *can* load a non-packaged
+snapshot — ``snapshot_source: {:github_releases, …}`` /
+``{:file, path}`` — but that is a refresh source, still a snapshot from
+someone else's cut, and it needs the network at boot; deferred with the
+timer in Open question 1.)
+
+**Why not the ``llmcatalog.dev`` REST API?** It serves the same llm_db
+data fresh (``v2026.10.5``, i.e. the current line) and ``llm_db`` can
+already read a remote snapshot (``snapshot_source: {:file, url}`` →
+``Sources.Remote``), so it is tempting. Rejected for now: it adds an HTTP
+dependency to the mount path — the window is resolved when a session
+mounts, which is exactly the ``~3.7 s`` this ADR exists to get off that
+path — for a value we already carry offline, and it would make a third
+party a load-bearing input to how much context we dare send a provider.
+It is a reasonable *refresh* source behind the same ``Catalog`` seam (Open
+question 1), not a replacement for the packaged read.
+
 Open questions
 --------------
 
@@ -138,8 +185,14 @@ Open questions
    (``Process.send_after`` → ``LLMDB.load/1`` → notify), but no source is
    configured. llm_db defaults to the version-pinned packaged snapshot
    (no network); a live feed would set
-   ``snapshot_source: {:github_releases, …}``. Deferred until a feed is
-   wanted; the timer is intentionally absent now.
+   ``snapshot_source: {:github_releases, …}`` — and llm_db's release
+   store defaults to the ``agentjido/llmdb`` GitHub repo, an asset host,
+   **not** the operator's own service. Deferred until a feed is wanted;
+   the timer is intentionally absent now. (The obvious alternative today
+   is to move the package pin: ``req_llm`` allows ``~> 2026.8.4``, so a
+   transitive update cannot reach the current llm_db line; the packaged
+   snapshot's date is shown in the sidebar — amendment below — so the
+   stale pin is at least visible.)
 2. **Per-model windows on model switch — RESOLVED (review N9, N26).**
    ADR 037 open question 1: the window resolved only for the model at
    init. ``Session.recompute_window/1`` now re-resolves on every

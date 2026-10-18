@@ -40,6 +40,29 @@ defmodule CodingAgent.Core.Providers.CatalogTest do
     assert_receive {:catalog, :updated}, 1000
   end
 
+  # The snapshot is a PACKAGED file cut on llm_db's release cadence, so its
+  # age is the thing that explains an `assumed` window: a cloud model
+  # released after the cut is absent from it (review N106 — `deepseek-v4.1-*`
+  # is missing from a snapshot cut 2026-08-23, and its window is a guess).
+  # The date comes from the snapshot's own `:meta.source_generated_at`,
+  # not from when this process loaded it.
+  test "snapshot_age dates the packaged snapshot (N106)" do
+    wait_ready()
+    assert age = Catalog.snapshot_age()
+    assert age =~ ~r/^\d{4}-\d{2}-\d{2} \(\d+d\)$/
+
+    # and it names the DATA's date, which is what the packaged file says
+    %{source_generated_at: at} = %{source_generated_at: LLMDB.snapshot().meta.source_generated_at}
+    assert age =~ Calendar.strftime(DateTime.from_iso8601(at) |> elem(1), "%Y-%m-%d")
+  end
+
+  test "snapshot_age is \"unknown\" while the catalog is cold" do
+    LLMDB.Catalog.clear!()
+    on_exit(fn -> LLMDB.load() end)
+
+    assert Catalog.snapshot_age() == "unknown"
+  end
+
   # The `:loading` branch: while llm_db has no snapshot, the lookup must
   # answer `:loading` (never block) so `Config.context_window/2` can fall
   # back. This test owns the global persistent_term store for its duration

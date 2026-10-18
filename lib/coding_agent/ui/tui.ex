@@ -25,7 +25,7 @@ defmodule CodingAgent.UI.Tui do
   use ExRatatui.App
 
   alias CodingAgent.Core.Session
-  alias CodingAgent.Core.Providers.Discovery
+  alias CodingAgent.Core.Providers.{Catalog, Discovery}
   alias CodingAgent.Core.ToolCall
   alias CodingAgent.Core.Session.Compactor
   alias CodingAgent.Core.Session.Store
@@ -4835,6 +4835,16 @@ defmodule CodingAgent.UI.Tui do
     soft_suffix = if fallback?, do: " tok (assumed)", else: " tok"
     soft_role = if fallback?, do: :warning, else: pct_role
 
+    # WHEN the window came out of the catalog — matched or missed — say how
+    # old that catalog's data is (review N106). The snapshot is a PACKAGED
+    # file cut on llm_db's release cadence, so it is routinely months
+    # behind the providers: a cloud model released since the cut is absent
+    # from it and gets the 500k guess. Without the date the guess looks
+    # arbitrary; with it, `assumed` beside `2026-08-23 (55d)` IS the
+    # explanation. Hidden when the window is configured (the catalog was
+    # not used) or still loading (it was not consulted).
+    source = Map.get(state, :context_window_source)
+
     stats =
       [
         {"effort", effort_name(effort)},
@@ -4843,7 +4853,7 @@ defmodule CodingAgent.UI.Tui do
         {"context", {:decimal, fmt_k(last_in), " (#{pct}% win)"}, pct_role},
         {"soft at", {:decimal, fmt_k(soft), soft_suffix}, soft_role},
         {"hard at", {:decimal, fmt_k(hard), " tok"}, pct_role}
-      ]
+      ] ++ catalog_row(source, fallback?)
 
     cost_line =
       case usage.cost do
@@ -4881,6 +4891,19 @@ defmodule CodingAgent.UI.Tui do
       # column the fill already draws.
       block: Styles.panel(borders: [], surface: :sidebar)
     }
+  end
+
+  # The sidebar's catalog row: which data the window was resolved against,
+  # and how old it is. It belongs to the stats block (it is a property of
+  # the numbers above it) and the role says whether that answer was USED:
+  # `:warning` when the catalog was consulted and did not know the model
+  # (the `assumed` marker's cause), `:muted` when it answered. Absent in
+  # the two states where there is nothing to date — a `:configured` window
+  # never consulted it, and `:loading` has not finished loading it.
+  defp catalog_row(source, _fallback?) when source in [nil, :configured, :loading], do: []
+
+  defp catalog_row(_source, fallback?) do
+    [{"catalog", Catalog.snapshot_age(), if(fallback?, do: :warning, else: :muted)}]
   end
 
   # The sidebar's TODO block (ADR 031): a gap, a muted "todo" header, then

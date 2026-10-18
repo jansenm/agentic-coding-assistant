@@ -130,9 +130,18 @@ naming the file (ADR 014).
        then the 500000 fallback. Set it for a cloud model absent from the
        catalog. When the window is a guess — the catalog does not know
        the model, or is still loading — the session emits one note (for
-       the former) and the sidebar marks ``soft at`` as ``(assumed)``;
+       the former) and the sidebar marks ``soft at`` as ``(assumed)``,
+       with a ``catalog`` row dating the snapshot the lookup ran against;
        the 500000-token guess can make compaction fire later than a small
        model can hold.
+
+       The snapshot is a PACKAGED file cut on llm_db's release cadence
+       (see ``mix.lock``), not a live list: a model released after the cut
+       — a new cloud model, typically — is simply absent from it, which is
+       the usual reason a model the provider serves has an assumed window.
+       ``deps.update llm_db`` moves the cut; the ``catalog`` row in the
+       sidebar shows its date, and it is the same version ``llm_db``
+       reports for the installed package.
    * - ``compaction_soft_ratio``
      - number
      - ``0.5``

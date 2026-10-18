@@ -45,6 +45,50 @@ defmodule CodingAgent.Core.Providers.Catalog do
   def ready?, do: LLMDB.snapshot() != nil
 
   @doc """
+  How old the catalog's own data is, for display: `"2026-08-23 (56d)"`.
+
+  The snapshot is a PACKAGED file, cut by llm_db's release cadence, so it
+  is routinely weeks or months behind the providers it describes — a
+  cloud model released since the cut is simply absent, and its window
+  falls back to the 500k guess (review N106). Dating the source beside the
+  `(assumed)` marker is what makes that diagnosable instead of a hunch.
+
+  `"unknown"` while the catalog is cold or when the snapshot carries no
+  date, so a caller never has to branch: this is a display string.
+  """
+  @spec snapshot_age() :: String.t()
+  def snapshot_age do
+    case snapshot_meta() do
+      %{source_generated_at: at} when is_binary(at) -> age_label(at)
+      _ -> "unknown"
+    end
+  end
+
+  # `:meta` is where llm_db keeps the snapshot's own provenance;
+  # `:source_generated_at` is when the DATA was cut, not when this process
+  # loaded it (`:loaded_at`), and the former is the honest age to show.
+  defp snapshot_meta do
+    case LLMDB.snapshot() do
+      %{meta: %{source_generated_at: at}} -> %{source_generated_at: at}
+      _ -> nil
+    end
+  end
+
+  defp age_label(iso) do
+    case DateTime.from_iso8601(iso) do
+      {:ok, at, _offset} ->
+        "#{Calendar.strftime(at, "%Y-%m-%d")} (#{days_since(at)}d)"
+
+      _ ->
+        "unknown"
+    end
+  end
+
+  defp days_since(at) do
+    DateTime.diff(DateTime.utc_now(), at, :second) |> div(86_400) |> max(0)
+  end
+
+  @doc """
   The model's context window in tokens, resolved from the catalog.
 
     * `{:ok, tokens}` — the catalog is loaded and knows the model;
