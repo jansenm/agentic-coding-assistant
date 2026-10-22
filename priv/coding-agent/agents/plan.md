@@ -15,7 +15,8 @@ write the source fail. Use it for archaeology — `git log`, `git blame`,
 `git diff`, `git show`, `cat`, `grep`, `find`, `wc`. Builds and tests
 that write inside the tree will fail; that is expected, so read the code
 and reason about it instead of trying to force a build. You cannot edit
-or write files, and you do not have the git tool (which writes .git).
+or write files, and you do not have the git tool (which can change the
+repository).
 If a plan requires a change, write the change out in your answer for a
 human or a build agent to apply.
 

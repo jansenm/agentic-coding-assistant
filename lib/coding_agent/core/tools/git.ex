@@ -1,17 +1,20 @@
 defmodule CodingAgent.Core.Tools.Git do
   @moduledoc """
-  Dedicated git tool (ADR 015 decision 5): run git with `.git` writable.
+  Dedicated git tool (ADR 015 decision 5): run git with the repository's
+  version control state writable.
 
-  Plain `shell` gets `.git` bound read-only, so it can inspect history but
-  not commit. This tool's sandbox profile grants `git_write: true`, so the
+  Plain `shell` has the git metadata bound read-only, so it can inspect
+  history but not commit — a `commit` dies on `index.lock: Read-only file
+  system`. This tool's sandbox profile grants `change_vcs: true`, so the
   agent can `add`, `commit`, `tag`, `reset` and the rest the way it always
-  has — without the user having to allow shell `.git` writes wholesale.
+  has — without the user having to allow shell repository writes
+  wholesale.
 
   The command is a **git subcommand line**, not a full shell command:
   `args: ["commit", "-m", "msg"]` runs `git commit -m msg`. Everything is
   passed as argv to `git` through the sandbox; there is no shell, so
   quoting/`&&`/subshells in a git command are not a thing here. For a
-  script that commits, use `shell` with the `git_write` escalation.
+  script that commits, use `shell` with the `change_vcs` escalation.
 
   Gate: since ADR 030 a session only exists under a confining sandbox, so
   the tool is allow-by-default (the profile confines the process); an
@@ -52,7 +55,7 @@ defmodule CodingAgent.Core.Tools.Git do
         required: false,
         doc:
           "Escalation: allow network access for this call (default false) — required for " <>
-            "fetch/clone/push; .git stays writable either way"
+            "fetch/clone/push; the repository stays writable either way"
       ],
       reason: [
         type: :string,
@@ -73,9 +76,9 @@ defmodule CodingAgent.Core.Tools.Git do
           "list, e.g. [\"commit\", \"-am\", \"fix\"]. A commit message with a body " <>
           "is ONE argument containing \\n: [\"commit\", \"-m\", \"subject\\n\\nbody\"] " <>
           "— no file, no `-F`. Unlike shell, this may " <>
-          "write .git (commit/tag/reset). No network unless you request it " <>
+          "change the repository (add/commit/tag/reset). No network unless you request it " <>
           "(network: true + reason) — `fetch` and `clone` need that. For git " <>
-          "inside a script, use shell with git_write.",
+          "inside a script, use shell with change_vcs.",
       parameter_schema: parameter_schema(),
       callback: fn args -> execute(scope, args) end
     )
@@ -205,9 +208,9 @@ defmodule CodingAgent.Core.Tools.Git do
   end
 
   @doc """
-  The sandbox profile for a git call: the scope's mounts, `.git` writable
-  (ADR 015 decision 4) and the network if — and only if — this call states
-  `network: true`.
+  The sandbox profile for a git call: the scope's mounts, the repository's
+  version control state writable (ADR 015 decision 4) and the network if —
+  and only if — this call states `network: true`.
 
   The network grant comes from the CALL's `args`, never from the profile
   shape: this function is shared with `Checkpoint.git/4`, whose internal
@@ -224,7 +227,7 @@ defmodule CodingAgent.Core.Tools.Git do
     %{
       root: scope.root,
       network: Escalation.granted?(args, :network),
-      git_write: true,
+      change_vcs: true,
       session_id: Map.get(scope, :session_id),
       scratch: CodingAgent.Core.Session.Scratch.from_scope(scope),
       rw: Map.get(mounts, :rw, []),

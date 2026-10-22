@@ -114,7 +114,7 @@ defmodule CodingAgent.Core.Sandbox.GateTest do
       assert log =~ "escalation without reason"
     end
 
-    test "a git_write escalation interrupts" do
+    test "a change_vcs escalation interrupts" do
       id = "conf-git-#{System.unique_integer()}"
       start_session(id)
 
@@ -125,7 +125,7 @@ defmodule CodingAgent.Core.Sandbox.GateTest do
             name: "shell",
             arguments: %{
               "command" => "./release.sh",
-              "git_write" => true,
+              "change_vcs" => true,
               "reason" => "release script commits the version bump"
             }
           }

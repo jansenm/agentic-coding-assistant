@@ -8,7 +8,7 @@ defmodule CodingAgent.Core.Session.Gate do
 
     * `:redirected` — a shell call whose leading program duplicates a
       native tool; answered with a one-line hint, no keystroke spent;
-    * `:no_reason` — an escalation (`network`/`git_write`) without the
+    * `:no_reason` — an escalation (`network`/`change_vcs`) without the
       stated reason the human needs to answer the prompt (ADR 015);
     * `:denied` — an explicit policy `deny`; answered in the same round,
       never parked (approving a denied call would run a forbidden
@@ -20,7 +20,7 @@ defmodule CodingAgent.Core.Session.Gate do
   session only exists under a confining sandbox, so `shell`/`git` are
   allow-by-default: the confinement fallback no longer depends on a
   runtime probe. An explicit `allow`/`ask`/`deny` entry is the user's
-  own choice and always wins; an escalation (`network`/`git_write`)
+  own choice and always wins; an escalation (`network`/`change_vcs`)
   still asks, because it widens the profile the agent stated it needs.
   Which escalations a tool may state is read from that tool's own
   parameter schema (`Tools.Escalation`), not assumed here.
@@ -189,14 +189,14 @@ defmodule CodingAgent.Core.Session.Gate do
   # The confinement fallback (ADR 030). A session only exists when a
   # confining sandbox is active (`Session.init/1`), so every tool is
   # allow-by-default here — with one exception: a stated escalation
-  # (network / git_write) widens the profile and therefore re-enables the
+  # (network / change_vcs) widens the profile and therefore re-enables the
   # prompt. An explicit policy entry always wins over this fallback
   # (`Permissions.effective/4`).
   defp fallback_for("shell", args) do
     if Shell.escalated?(args), do: :ask, else: :allow
   end
 
-  # git grant `.git` write unconditionally (ADR 015 decision 4), so the
+  # git grants `change_vcs` unconditionally (ADR 015 decision 4), so the
   # only escalation left to ask about is the network one (`fetch`/`clone`).
   defp fallback_for("git", args) do
     if Escalation.requested?(args, Git.parameter_schema()), do: :ask, else: :allow

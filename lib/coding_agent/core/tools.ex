@@ -137,7 +137,7 @@ defmodule CodingAgent.Core.Tools do
   @doc """
   The sandbox profile for the native file tools and the read-only
   delegations (`grep`/`glob`): the scope root plus its configured mounts,
-  no network and no `.git` write.
+  no network and no VCS write.
 
   ADR 030: this is the ONE profile for every non-git tool. A read-only
   agent (`shell_mode: :ro`, e.g. the plan agent) gets `root_ro: true`, so
@@ -151,7 +151,7 @@ defmodule CodingAgent.Core.Tools do
     %{
       root: Map.fetch!(scope, :root),
       network: false,
-      git_write: false,
+      change_vcs: false,
       root_ro: Map.get(scope, :shell_mode) == :ro,
       # The owning session, so `Exec` can abort a running command when the
       # user presses esc (Core.Exec's cancellation note). A scope without

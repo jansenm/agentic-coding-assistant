@@ -93,8 +93,8 @@ defmodule CodingAgent.Core.Tools.ShellTest do
     test "escalations/1 reads the coarse booleans the agent states" do
       assert Shell.escalations(%{}) == []
       assert Shell.escalations(%{"network" => true}) == [:network]
-      assert Shell.escalations(%{"git_write" => true}) == [:git_write]
-      assert Shell.escalations(%{network: true, git_write: true}) == [:network, :git_write]
+      assert Shell.escalations(%{"change_vcs" => true}) == [:change_vcs]
+      assert Shell.escalations(%{network: true, change_vcs: true}) == [:network, :change_vcs]
       assert Shell.escalations(%{"network" => false}) == []
       assert Shell.escalations("nope") == []
     end
@@ -119,7 +119,7 @@ defmodule CodingAgent.Core.Tools.ShellTest do
       assert {:error, msg} = Shell.escalation_verdict(%{"network" => true})
       assert msg =~ "reason"
 
-      assert {:error, _} = Shell.escalation_verdict(%{"git_write" => true})
+      assert {:error, _} = Shell.escalation_verdict(%{"change_vcs" => true})
       assert {:error, _} = Shell.escalation_verdict(%{"network" => true, "reason" => "  "})
     end
 
@@ -130,7 +130,7 @@ defmodule CodingAgent.Core.Tools.ShellTest do
 
       assert profile.root == @tmp_root
       assert profile.network == true
-      assert profile.git_write == false
+      assert profile.change_vcs == false
       assert profile.rw == ["/rw"]
       assert profile.ro == ["/ro"]
       assert profile.hide == ["/hide"]
@@ -166,6 +166,43 @@ defmodule CodingAgent.Core.Tools.ShellTest do
 
       assert rw.root_ro == false
       assert ro.root_ro == true
+    end
+
+    # -- the EROFS note (P5, fourth path) ----------------------------------
+
+    test "note/2: no EROFS in the output means no note" do
+      assert Shell.note(Shell.profile(%{root: @tmp_root}, %{}), "hi\n") == ""
+      assert Shell.note(Shell.profile(%{root: @tmp_root}, %{}), "") == ""
+    end
+
+    test "note/2: a write hit on a read-only path names the missing change_vcs grant and the git tool" do
+      note = Shell.note(Shell.profile(%{root: @tmp_root}, %{}), "dd: Read-only file system\n")
+
+      assert note =~ "note: a write hit a read-only path"
+      assert note =~ "without change_vcs"
+      assert note =~ "use the git tool"
+      # conditional, because the profile knows the grant, not the path
+      assert note =~ "if that is what failed"
+    end
+
+    test "note/2: a call that already has change_vcs gets the standing sentence only" do
+      profile = Shell.profile(%{root: @tmp_root}, %{"change_vcs" => true})
+      note = Shell.note(profile, "git: Read-only file system\n")
+
+      assert note =~ "Only the scope root and the configured cache mounts are writable"
+      refute note =~ "change_vcs"
+      refute note =~ "the git tool"
+    end
+
+    test "note/2: root_ro wins — a policy is named, and no flag is offered" do
+      profile = Shell.profile(%{root: @tmp_root, shell_mode: :ro}, %{})
+      note = Shell.note(profile, "sh: Read-only file system\n")
+
+      assert note =~ "shell_mode: :ro"
+      assert note =~ "a policy, not a missing flag"
+      refute note =~ "change_vcs"
+      # and the root is NOT called writable, because it is not
+      refute note =~ "Only the scope root"
     end
   end
 
@@ -263,7 +300,7 @@ defmodule CodingAgent.Core.Tools.ShellTest do
     test "shell git is redirected to the git tool, naming the script escape" do
       {:hint, hint} = Shell.redirect(%{"command" => "git add -A"})
       assert hint =~ "use your git tool"
-      assert hint =~ "git_write: true"
+      assert hint =~ "change_vcs: true"
 
       assert {:hint, _} = Shell.redirect(%{"command" => "/usr/bin/git status"})
     end
@@ -273,7 +310,7 @@ defmodule CodingAgent.Core.Tools.ShellTest do
       assert :ok =
                Shell.redirect(%{
                  "command" => "git add -A",
-                 "git_write" => true,
+                 "change_vcs" => true,
                  "reason" => "release script stages the tree"
                })
 

@@ -15,8 +15,16 @@ defmodule CodingAgent.Core.Tools.Shell do
   command text (ADR 015):
 
     * `network: true` — may this call use the network (default false);
-    * `git_write: true` — may this call write `.git` (default false; for
-      scripts that commit, e.g. a release script).
+    * `change_vcs: true` — may this call change the repository's version
+      control state, i.e. the git index, objects and refs (default
+      false; for scripts that must run git themselves).
+
+  A git command that writes its repository state (`add`, `commit`, `tag`,
+  `reset`, `stash`, …) fails under the default profile with
+  `index.lock: Read-only file system` — the git metadata the command
+  writes is bound read-only, which for a linked worktree is the MAIN
+  repository's `.git` outside the scope root. The `git` tool runs with
+  that grant already; `shell` needs it stated.
 
   The gate surfaces the requested timeout at the soft cap
   (#{@default_timeout}s) so the user can edit it before approval; the
@@ -51,8 +59,10 @@ defmodule CodingAgent.Core.Tools.Shell do
           "commands a suitable timeout_secs (seconds); the hard cap is " <>
           "#{@max_timeout}s — split longer work into several commands. " <>
           "The command runs confined (filesystem limited to the scope and " <>
-          "configured caches, no network); it cannot write .git unless you " <>
-          "request git_write. These escalations require approval.",
+          "configured caches, no network). Git commands that change the " <>
+          "repository (add, commit, tag, reset) fail with `index.lock: " <>
+          "Read-only file system` unless you request change_vcs; the git " <>
+          "tool already has that grant. These escalations require approval.",
       parameter_schema: parameter_schema(),
       callback: fn args -> execute(scope, args) end
     )
@@ -76,16 +86,19 @@ defmodule CodingAgent.Core.Tools.Shell do
         required: false,
         doc: "Escalation: allow network access for this call (default false)"
       ],
-      git_write: [
+      change_vcs: [
         type: :boolean,
         required: false,
-        doc: "Escalation: allow writing .git for this call (default false)"
+        doc:
+          "Escalation: let this call change the repository's version control state — " <>
+            "the git index, objects and refs, so `add`/`commit`/`tag`/`reset` work " <>
+            "(default false). Prefer the git tool, which always has it"
       ],
       reason: [
         type: :string,
         required: false,
         doc:
-          "REQUIRED when you set network or git_write: one short sentence, " <>
+          "REQUIRED when you set network or change_vcs: one short sentence, " <>
             "shown to the human in the approval prompt, explaining why this " <>
             "call needs the escalation. A request without a reason is refused."
       ]
@@ -124,7 +137,7 @@ defmodule CodingAgent.Core.Tools.Shell do
 
   @doc """
   The escalations a `shell` call states (ADR 015): `:network` and
-  `:git_write`, as coarse booleans the agent says. See
+  `:change_vcs`, as coarse booleans the agent says. See
   `CodingAgent.Core.Tools.Escalation`, which owns the semantics; `shell`
   declares both keywords, so every escalation applies to it.
   """
@@ -164,7 +177,7 @@ defmodule CodingAgent.Core.Tools.Shell do
     %{
       root: root,
       network: Escalation.granted?(args, :network),
-      git_write: Escalation.granted?(args, :git_write),
+      change_vcs: Escalation.granted?(args, :change_vcs),
       # a read-only agent's shell cannot write the source either; an
       # unconfined sandbox refuses this rather than running read-write
       root_ro: shell_mode == :ro,
@@ -215,7 +228,7 @@ defmodule CodingAgent.Core.Tools.Shell do
   # matches a row, `bash -c 'git add …'` does not. So a hint may not be
   # the last word — it would steer the honest spelling away while the
   # wrapped one reached the gate and ran. The escape is the one the
-  # caller already has: STATE an escalation (`git_write: true`/`network:
+  # caller already has: STATE an escalation (`change_vcs: true`/`network:
   # true` plus a `reason`), and the call goes to the human instead of
   # getting advice. See `redirect/1`.
 
@@ -229,7 +242,7 @@ defmodule CodingAgent.Core.Tools.Shell do
     # set-group sg is accepted — an agent essentially never wants that
     "sg" => "please use the grep tool instead of shell sg",
     "git" =>
-      "please use your git tool instead of shell git (it is allow-by-default, runs git directly and may write .git) — git inside a script that CHANGES the repository needs the parameter git_write: true plus a reason on the shell call",
+      "please use your git tool instead of shell git (it is allow-by-default, runs git directly and may change the repository) — git inside a script that CHANGES the repository needs the parameter change_vcs: true plus a reason on the shell call",
     "timeout" => "please set the timeout as a parameter on the tool call"
   }
 
@@ -242,7 +255,7 @@ defmodule CodingAgent.Core.Tools.Shell do
   is why it is tagged instead of being a bare `{:ok, message}` next to `:error`.
 
   **The hint is advice, never a wall.** A call that *states* an escalation (`network: true` /
-  `git_write: true`, each with its `reason`) is asking to run this command as written by hand,
+  `change_vcs: true`, each with its `reason`) is asking to run this command as written by hand,
   and goes to the gate like any other escalated call — no hint. Without that, the table's
   first-word blindness would invert the outcome: the honest `git add` (escalation stated) would
   be steered away, while `bash -c 'git add …'` reached the human and ran.
@@ -292,7 +305,10 @@ defmodule CodingAgent.Core.Tools.Shell do
     case Exec.run({:shell, command}, cwd, secs, profile, env: Exec.agent_env(), label: "shell") do
       {:ok, output, status} ->
         elapsed = System.monotonic_time(:millisecond) - started
-        {:ok, Exec.format(command, output, {:exit, status}, elapsed, secs)}
+
+        {:ok,
+         Exec.format(command, output, {:exit, status}, elapsed, secs) <>
+           note(profile, output)}
 
       {:timeout, partial} ->
         elapsed = System.monotonic_time(:millisecond) - started
@@ -307,6 +323,49 @@ defmodule CodingAgent.Core.Tools.Shell do
 
       {:sandbox_error, reason} ->
         Tools.error("cannot confine #{inspect(command)}: #{inspect(reason)}")
+    end
+  end
+
+  @doc """
+  The note appended to a shell result whose output reports a write on a
+  read-only path (review P5, fourth path); `""` for any other output.
+
+  `Read-only file system` is ONE kernel string, so recognising it is not a
+  parse of a program's error messages and not a list of the ways git can
+  fail; what the note then says is a fact of the PROFILE the call ran with
+  — the binds it actually had.
+
+  Public so the branches can be asserted against a profile without a live
+  bwrap; the integration test covers the round trip.
+  """
+  @spec note(CodingAgent.Core.Sandbox.profile(), String.t()) :: String.t()
+  def note(profile, output) do
+    if String.contains?(output, "Read-only file system") do
+      "\nnote: a write hit a read-only path. " <> cause(profile)
+    else
+      ""
+    end
+  end
+
+  # One clause, because the facts nest: `root_ro` is a POLICY that no flag
+  # lifts (the narrower grant wins, so `change_vcs` cannot re-open what a
+  # read-only agent closed), and it makes even the scope root unwritable —
+  # a note telling such an agent to reach for a flag would send it after a
+  # lever it does not have, and calling the root "writable" would be false.
+  defp cause(profile) do
+    cond do
+      Map.get(profile, :root_ro, false) ->
+        "This agent's scope root is bound read-only (shell_mode: :ro) — a policy, not " <>
+          "a missing flag, so no tool can write here."
+
+      Map.get(profile, :change_vcs, false) ->
+        "Only the scope root and the configured cache mounts are writable."
+
+      true ->
+        "Only the scope root and the configured cache mounts are writable. This call " <>
+          "ran without change_vcs, so the repository's git state (index, objects, refs) " <>
+          "was read-only too — if that is what failed, use the git tool (it always has " <>
+          "the grant) or change_vcs: true with a reason."
     end
   end
 

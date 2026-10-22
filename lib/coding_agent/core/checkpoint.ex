@@ -41,7 +41,7 @@ defmodule CodingAgent.Core.Checkpoint do
 
   The temp index is addressed by its ``/tmp/...`` path (the scratch is
   bound OVER ``/tmp``), never the host path. All git work runs confined
-  through the ``git`` tool's profile (``git_write: true``). ``/undo`` is a
+  through the ``git`` tool's profile (``change_vcs: true``). ``/undo`` is a
   human verb, not an agent tool call, so the harness itself unlinks the
   created files: the agent gains no unconfined filesystem call.
   """
@@ -328,7 +328,7 @@ defmodule CodingAgent.Core.Checkpoint do
   end
 
   # Run one git command through the sandbox under the git tool's profile
-  # (git_write), non-interactively. cwd is the scope root.
+  # (change_vcs), non-interactively. cwd is the scope root.
   defp git(scope, root, args, env, profile \\ nil) do
     profile = profile || Git.profile(scope)
 

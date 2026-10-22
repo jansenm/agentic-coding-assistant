@@ -88,7 +88,7 @@ loop checkpoint where slice 2a executed unconditionally).
 joined the allow class in 2026-09-15 (contained, reviewable as a git
 diff); ``shell``/``git`` joined with ADR 030, because a session only
 exists under a confining sandbox and the profile is their boundary.
-A stated escalation (``network``/``git_write``) still asks, and
+A stated escalation (``network``/``change_vcs``) still asks, and
 ``webfetch`` remains :ask — a fetch pulls foreign content in. A repo
 or user layer can turn any tool back into ask/deny per path
 (``[permissions.edit] "src/**" = "ask"``); the class default is only

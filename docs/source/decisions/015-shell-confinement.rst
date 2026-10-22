@@ -220,7 +220,7 @@ write access. The escalation is explicit, per invocation, and
 user-visible:
 
 1. The agent calls ``shell`` with a flag/param such as
-   ``git_write: true`` (or an equivalent dedicated "run with git" mode).
+   ``change_vcs: true`` (or an equivalent dedicated "run with git" mode).
    This is **not** inferred from the command text — the agent states its
    intent, the human decides.
 2. The gate raises ``:ask`` with the full script shown, exactly like
@@ -367,7 +367,7 @@ meant a fifth and sixth copy, so the semantics moved to one module first:
 
 **The ``git`` tool gains ``network`` (and ``reason``).** The network is the
 one grant left for it: ``.git`` write is unconditional (decision 4), so
-``git_write`` on a git call is *not* an escalation the tool offers, and
+``change_vcs`` on a git call is *not* an escalation the tool offers, and
 stating it costs no keystroke. The parameter is what makes ``fetch``,
 ``clone``, ``pull`` and ``push`` possible at all. Measured, before it:
 
@@ -456,7 +456,7 @@ Decisions taken (2026-09-17)
 4. **Resource caps** — in v1 (``nproc``/``fsize``/tmpfs size).
 5. **``git`` tool** — yes, a dedicated tool with a read-write-``.git``
    profile.
-6. **Script git write** — explicit per-invocation ``git_write``
+6. **Script git write** — explicit per-invocation ``change_vcs``
    escalation; default stays read-only-``.git``.
 7. **Relation to ADR 010** — ADR 015 **supersedes** decision 5.
 
@@ -468,7 +468,7 @@ The first code step was intentionally trivial and behaviour-neutral: the
 call site, so the full test suite stayed green before any bwrap code
 existed. Then ``Sandbox.Bwrap`` with the functional probe, then the
 ``rw``/``ro``/``hide`` mount schema, then the dedicated ``git`` tool and
-the ``git_write`` escalation.
+the ``change_vcs`` escalation.
 
 **ADR 030 (2026-09-27) finished the model**: ``Sandbox.None`` is now the
 test seam rather than a runtime path, the native file tools run as
@@ -520,3 +520,73 @@ read-only *file* reports, because the path is a mount point of the
 scope bind and an unprivileged namespace cannot detach it. ``tee`` on
 the same path does report ``EROFS``. The error is honest — the path is
 still there — and the host file is untouched in every case.
+
+Amendment 2026-10-22: the grant is called ``change_vcs``, and EROFS learns to
+say why
+----------------------------------------------------------------------------
+
+Two corrections from one dogfooding session — a ``shell`` call that tried
+to commit in a linked worktree.
+
+**The keyword is renamed ``git_write`` → ``change_vcs``.** The old name was
+not wrong about the mechanism (the grant is what re-binds the git
+metadatas read-write) but it named a PATH, and the path is wrong as soon
+as the scope root is not the repository root. In a linked worktree the
+read-only binds are ``<main>/.git/worktrees/<name>`` and its commondir,
+both OUTSIDE the scope; in a plain checkout they are ``<scope>/.git``. A
+reader who takes ``change_vcs`` literally looks for the thing inside the
+scope and finds a gitfile. ``change_vcs`` names the effect (the
+repository's version control state — index, objects, refs), matches the
+wording the sandbox profile already used, and a second VCS widens the same
+grant instead of adding a synonym. Renamed in the schema, ``Escalation``,
+the profile key, the gate and every current sentence of this ADR — the
+keyword is something a caller TYPES, so a stale spelling in prose is an
+instruction that no longer works, which is a different case from the
+``blacklisted?``→``redirect`` rename that kept its historical text.
+``Sandbox.Bwrap.git_args/2`` keeps its name: it emits git binds, and it is
+private.
+
+**"it cannot write .git" was false, and the honest sentence is about
+symptoms.** The ``shell`` description said the command ``cannot write
+.git``. In this very worktree the failing path was
+``<main>/.git/worktrees/<name>/index.lock`` — not the ``.git`` entry in
+the scope, which is a FILE pointing there — so the sentence described
+something the caller could not see and implied a capability
+(write another checkout's repository metadata) that never existed. It now
+names what will be observed instead: a git command that changes the
+repository fails with ``index.lock: Read-only file system`` unless the
+call grants ``change_vcs``. That is a symptom the model can match against
+its own output, which the previous sentence was not.
+
+**The fourth P5 path: act on the failure, not on the spelling.** Widening
+the redirect table to ``cd … && git …`` was considered and rejected
+(owner ruling): it is a war of spelling against spellers — first ``cd x &&
+``, then ``bash -c``, then a script that is written to a file first — and
+the table's blindness is what makes it advice rather than a wall
+(2026-10-13 (b)). Parsing git's error messages was rejected too, and for a
+sharper reason: enumerating "all the ways a git command can fail on a
+read-only ``.git``" is unbounded, and any list would be wrong within a
+version.
+
+So ``Shell`` appends a note to a shell result whose output contains
+``Read-only file system`` — ONE kernel string, not a program's prose — and
+the note states facts about the profile the call ran with, which the
+harness knows exactly:
+
+* the trigger is the OUTPUT, not the exit status. ``git commit … | tail
+  -1`` exits 0 with its first command failed; 21 of the 45 EROFS rows in
+  the store are that shape, so a status-gated note would miss exactly the
+  failures it exists for. Appending to a successful result is
+  deliberate — it does not suppress or rewrite the output (ADR 030).
+* ``root_ro`` wins the explanation when set: it is a policy, no flag lifts
+  it (the narrower grant wins), so the note says "a policy, not a missing
+  flag" rather than sending the agent after ``change_vcs``.
+* otherwise the note names the missing ``change_vcs`` grant AND the
+  ``git`` tool that always has it, phrased conditionally — "if that is
+  what failed". The profile knows which grant was absent; it does not know
+  which path the program tried to write, and a note that asserted the
+  cause would be the same kind of lie as the sentence this amendment
+  removes.
+* a failure with no EROFS in it gets no note. The note is bounded: no
+  heuristic on command text, no diagnosis of anything but the profile.
+

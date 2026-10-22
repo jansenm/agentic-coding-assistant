@@ -39,7 +39,7 @@ matters: the owner runs the TUI in a **dirty** working tree (their own
 uncommitted work is always present), so "just commit first" is not a
 usable answer, and a checkpoint must not disturb that work.
 
-The ``git`` tool (ADR 015 decision 5) already runs with ``git_write:
+The ``git`` tool (ADR 015 decision 5) already runs with ``change_vcs:
 true`` in the confined profile, and ``Exec.agent_env/0`` makes git
 non-interactive. The pieces to snapshot a tree exist; only the
 snapshot/restore verbs are missing.
@@ -98,7 +98,7 @@ stash, or any branch:
    colliding. The ref anchors the object against ``git gc``.
 
 The whole thing runs confined with the ``git`` tool's profile
-(``git_write: true``), so ADR 030 holds: no unconfined git. The temp
+(``change_vcs: true``), so ADR 030 holds: no unconfined git. The temp
 index keeps the user's real index exactly as it was.
 
 Restore is the inverse against the checkpoint's tree:
@@ -118,7 +118,7 @@ filesystem work is the harness backing up and restoring the real index
 file around ``read-tree`` and unlinking the created files: ``/undo`` is a
 *human* action, not an agent tool call, so it runs in the harness process
 (ADR 030 confines agent calls, not the human's verbs). The whole thing
-runs confined with the ``git`` tool's profile (``git_write: true``).
+runs confined with the ``git`` tool's profile (``change_vcs: true``).
 
 The state carries the checkpoint stack (ref, tree, commit, timestamp) in
 the store's state BLOB, like ``todos`` (ADR 031) — no migration. The ref

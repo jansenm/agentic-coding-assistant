@@ -28,7 +28,11 @@ defmodule CodingAgent.Core.Sandbox do
   that cannot honour a grant must refuse, never silently widen.
 
     * `:network` — may the process use the network (default false).
-    * `:git_write` — may the process write `.git` (default false).
+    * `:change_vcs` — may the process change the repository's version
+      control state: the git index, objects and refs (default false). The
+      working tree is already writable — this grant is about the VCS
+      metadata, which for a linked worktree or a subdirectory session
+      lives OUTSIDE the scope root and is bound read-only by default.
     * `:root_ro` — bind the scope root READ-ONLY (default false). An agent
       with only read tools sets this so `shell` cannot bypass the file-tool
       deny (`echo > f`). An implementation that cannot make the root
@@ -41,7 +45,7 @@ defmodule CodingAgent.Core.Sandbox do
   @type profile :: %{
           required(:root) => String.t(),
           optional(:network) => boolean(),
-          optional(:git_write) => boolean(),
+          optional(:change_vcs) => boolean(),
           optional(:root_ro) => boolean(),
           optional(:session_id) => String.t() | nil,
           optional(:scratch) => String.t() | nil,

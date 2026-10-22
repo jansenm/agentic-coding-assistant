@@ -435,7 +435,7 @@ written** — ``git add`` in a release script being the live case::
 
 So the honest spelling would be steered away and the wrapped one would
 reach the human and run. The row must therefore be escapable through the
-mechanism the caller already has: **state an escalation** (``git_write:
+mechanism the caller already has: **state an escalation** (``change_vcs:
 true`` / ``network: true``, each with its ``reason``) and the call is left
 alone and goes to the gate like any other escalated call. ``Shell.redirect/1``
 returns ``:ok`` for it, so the hint is advice and can always be walked,
@@ -450,7 +450,7 @@ gate).
 
 The ``git`` row itself: shell ``git`` duplicates the dedicated tool, which
 is allow-by-default and may write ``.git``. The hint names both the tool
-and the escape (``git_write: true`` with a reason, on a script that
+and the escape (``change_vcs: true`` with a reason, on a script that
 **changes** the repository) — which is also where P5's "escalations are
 only discoverable by failing" is answered: the message tells the model the
 way out instead of leaving it to deduce one from EROFS.

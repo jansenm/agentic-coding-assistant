@@ -1,6 +1,6 @@
 defmodule CodingAgent.Core.Tools.Escalation do
   @moduledoc """
-  The coarse **escalations** of ADR 015: `network` and `git_write`.
+  The coarse **escalations** of ADR 015: `network` and `change_vcs`.
 
   A tool call may state them as booleans; each widens the sandbox profile
   beyond what the scope already grants, so each re-enables the permission
@@ -14,17 +14,24 @@ defmodule CodingAgent.Core.Tools.Escalation do
   request answerable? A second escalation-carrying tool must not mean a
   second copy of "the reason is required" in the gate.
 
-  `shell` states both. The `git` tool grants `.git` write unconditionally
+  `shell` states both. The `git` tool grants `change_vcs` unconditionally
   (ADR 015 decision 4), so the same keyword there widens only the network —
   which is what `git fetch`/`clone`/`push` need. The verdict does not care:
   a call that states an escalation without a reason is refused wherever it
   came from.
+
+  Named `change_vcs`, not `git_write` (2026-10-22): the grant is about the
+  repository's VERSION CONTROL state — index, objects, refs — which is
+  already phrased VCS-neutrally in the sandbox profile, and which for a
+  worktree or a subdirectory session is not "the `.git` in the scope" at
+  all. A future second VCS then widens the same grant rather than adding a
+  synonym.
   """
 
-  @escalations [:network, :git_write]
+  @escalations [:network, :change_vcs]
 
   @typedoc "An escalation keyword as it appears in a tool's parameter schema."
-  @type name :: :network | :git_write
+  @type name :: :network | :change_vcs
 
   @doc "Every escalation keyword, in schema order."
   @spec all() :: [name()]
@@ -40,7 +47,7 @@ defmodule CodingAgent.Core.Tools.Escalation do
   def of(_schema), do: []
 
   @doc """
-  The escalations a call states, e.g. `[:network, :git_write]`. Coarse
+  The escalations a call states, e.g. `[:network, :change_vcs]`. Coarse
   booleans only: `false`, `nil` and a missing key all mean "not requested".
   """
   @spec requested(term(), [name()]) :: [name()]

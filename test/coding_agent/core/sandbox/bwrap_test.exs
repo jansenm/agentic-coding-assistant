@@ -66,9 +66,9 @@ defmodule CodingAgent.Core.Sandbox.BwrapTest do
       assert triple_in(argv, {"--ro-bind", git, git})
     end
 
-    test "leaves .git writable when git_write is granted", %{root: root} do
+    test "leaves .git writable when change_vcs is granted", %{root: root} do
       init_git!(root)
-      argv = Bwrap.argv(root, {:shell, "echo hi"}, %{root: root, git_write: true})
+      argv = Bwrap.argv(root, {:shell, "echo hi"}, %{root: root, change_vcs: true})
       git = Path.join(root, ".git")
 
       assert triple_in(argv, {"--bind", git, git})
@@ -82,7 +82,7 @@ defmodule CodingAgent.Core.Sandbox.BwrapTest do
       File.mkdir_p!(sub)
       git = Path.join(root, ".git")
 
-      argv = Bwrap.argv(sub, {:shell, "echo hi"}, %{root: sub, git_write: true})
+      argv = Bwrap.argv(sub, {:shell, "echo hi"}, %{root: sub, change_vcs: true})
 
       # the git dir (outside the scope) is bound explicitly
       assert triple_in(argv, {"--bind", git, git})
@@ -114,9 +114,9 @@ defmodule CodingAgent.Core.Sandbox.BwrapTest do
       assert triple_in(argv, {"--bind", root, root})
     end
 
-    test "root_ro keeps .git read-only (and git_write cannot widen it)", %{root: root} do
+    test "root_ro keeps .git read-only (and change_vcs cannot widen it)", %{root: root} do
       init_git!(root)
-      argv = Bwrap.argv(root, {:shell, "echo hi"}, %{root: root, root_ro: true, git_write: true})
+      argv = Bwrap.argv(root, {:shell, "echo hi"}, %{root: root, root_ro: true, change_vcs: true})
       git = Path.join(root, ".git")
 
       assert triple_in(argv, {"--ro-bind", root, root})
@@ -124,12 +124,12 @@ defmodule CodingAgent.Core.Sandbox.BwrapTest do
       refute triple_in(argv, {"--bind", git, git})
     end
 
-    test "a git worktree binds its gitdir AND common dir read-write (git_write)", %{root: root} do
+    test "a git worktree binds its gitdir AND common dir read-write (change_vcs)", %{root: root} do
       # A worktree's `.git` is a gitfile pointing OUTSIDE the scope root;
       # a commit also writes objects/refs in the shared common dir. Both
       # must be bound or git dies on index.lock (found live).
       {wt, common} = init_worktree!(root)
-      argv = Bwrap.argv(wt, {:exec, "git", ["commit"]}, %{root: wt, git_write: true})
+      argv = Bwrap.argv(wt, {:exec, "git", ["commit"]}, %{root: wt, change_vcs: true})
 
       assert triple_in(
                argv,
@@ -299,11 +299,49 @@ defmodule CodingAgent.Core.Sandbox.BwrapTest do
 
         assert {:ok, out} =
                  ReqLLM.Tool.execute(tool, %{
-                   "command" => "echo v2 > app.txt && git commit -am x 2>&1 | tail -1"
+                   "command" => "echo v2 > app.txt && git commit -am x"
                  })
 
         assert out =~ "Read-only file system"
+        # P5, fourth path: the failure now names the missing grant and the
+        # tool that has it, instead of leaving the model to deduce EROFS.
+        assert out =~ "note: a write hit a read-only path"
+        assert out =~ "without change_vcs"
+        assert out =~ "use the git tool"
         assert File.read!(Path.join(root, "app.txt")) == "v2\n"
+      end
+    end
+
+    test "a read-only agent's EROFS note names the policy, not a missing flag",
+         %{
+           root: root
+         } = ctx do
+      if ctx[:skip] do
+        :ok
+      else
+        put_sandbox(Bwrap)
+        tool = Shell.tool(%{root: root, shell_mode: :ro})
+
+        assert {:ok, out} = ReqLLM.Tool.execute(tool, %{"command" => "echo x > blocked.txt"})
+        assert out =~ "Read-only file system"
+        assert out =~ "bound read-only (shell_mode: :ro)"
+        # `change_vcs` cannot re-open a read-only root, so the note must not
+        # send the agent after a lever it does not have.
+        refute out =~ "change_vcs"
+        refute File.exists?(Path.join(root, "blocked.txt"))
+      end
+    end
+
+    test "a failure that is not EROFS gets no note", %{root: root} = ctx do
+      if ctx[:skip] do
+        :ok
+      else
+        put_sandbox(Bwrap)
+        tool = Shell.tool(%{root: root})
+
+        assert {:ok, out} = ReqLLM.Tool.execute(tool, %{"command" => "ls no-such-file"})
+        assert out =~ "exit"
+        refute out =~ "note: a write hit a read-only path"
       end
     end
 
@@ -320,7 +358,7 @@ defmodule CodingAgent.Core.Sandbox.BwrapTest do
       end
     end
 
-    test "the git tool commits under bwrap (git_write profile)", %{root: root} = ctx do
+    test "the git tool commits under bwrap (change_vcs profile)", %{root: root} = ctx do
       if ctx[:skip] do
         :ok
       else
@@ -393,7 +431,7 @@ defmodule CodingAgent.Core.Sandbox.BwrapTest do
       end
     end
 
-    test "the git tool commits inside a linked worktree (git_write binds both gitdirs)",
+    test "the git tool commits inside a linked worktree (change_vcs binds both gitdirs)",
          %{root: root} = ctx do
       if ctx[:skip] do
         :ok

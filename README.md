@@ -40,7 +40,7 @@ confining sandbox is available):
 - State-changing: `shell`, `git`, `webfetch`, `task` (delegation).
 
 `shell`/`git` are allow-by-default inside the profile — a stated
-escalation (`network`, `git_write`) still asks, and every call can be
+escalation (`network`, `change_vcs`) still asks, and every call can be
 made ask/deny by policy. `shell` runs through `/bin/sh` with
 model-supplied `timeout_secs` (default 300 s, hard cap 1800 s).
 `grep`/`glob` use `rg`/`fd` (required; there is no unconfined fallback).

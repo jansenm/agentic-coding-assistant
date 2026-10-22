@@ -11,7 +11,10 @@ defmodule CodingAgent.Core.Sandbox.Bwrap do
       formatter/build/codegen writes the real tree immediately — there is
       no overlay and no delta (ADR 015 decision 2);
     * `.git` is re-bound read-only *over* that bind unless the profile
-      grants `git_write`, so plain shell cannot rewrite history;
+      grants `change_vcs`, so plain shell cannot rewrite history — for a
+      worktree that is the MAIN repository's `.git/worktrees/<name>` (and
+      its commondir), which is why the sentence is about VCS state and
+      not about a path inside the scope;
     * configured cache paths are read-write binds, shared with the host as
       today (ADR 015 decision 3);
     * `/tmp` is a tmpfs; the network is off (`--unshare-all`, no
@@ -231,7 +234,7 @@ defmodule CodingAgent.Core.Sandbox.Bwrap do
     ]
 
     network = Map.get(profile, :network, false)
-    git_write = Map.get(profile, :git_write, false)
+    change_vcs = Map.get(profile, :change_vcs, false)
     root_ro = Map.get(profile, :root_ro, false)
 
     # Order matters: scratch first, then the scope bind *over* it, so a
@@ -239,15 +242,15 @@ defmodule CodingAgent.Core.Sandbox.Bwrap do
     # scratch is the lower layer for the rest of /tmp). With `root_ro` the
     # scope is bound read-only: an agent that denies the write tools gets a
     # shell that cannot write the source either (`echo > f` bypass).
-    # A read-only root keeps .git read-only too: `git_write` is an
+    # A read-only root keeps .git read-only too: `change_vcs` is an
     # escalation that re-binds `.git` writable OVER the root, so allowing
     # it here would re-open the very path `root_ro` closes. The narrower
-    # grant wins (a read-only agent cannot write .git, period).
+    # grant wins (a read-only agent cannot change the repository, period).
     base ++
       scratch_args(profile) ++
       rw_args(profile) ++
       [root_bind(root_ro), root, root] ++
-      git_args(root, git_write and not root_ro) ++
+      git_args(root, change_vcs and not root_ro) ++
       ro_args(profile) ++
       hide_args(profile) ++
       ["--dev", "/dev", "--proc", "/proc"] ++
@@ -320,10 +323,10 @@ defmodule CodingAgent.Core.Sandbox.Bwrap do
   # `../..`), which is likewise outside the scope. Resolve both from the
   # filesystem only (gitfile + commondir), no git invocation, so `argv/3`
   # stays pure and cheap.
-  defp git_args(root, git_write) do
+  defp git_args(root, change_vcs) do
     root
     |> git_dirs()
-    |> Enum.flat_map(fn dir -> [git_bind(git_write), dir, dir] end)
+    |> Enum.flat_map(fn dir -> [git_bind(change_vcs), dir, dir] end)
   end
 
   defp git_bind(true), do: "--bind"

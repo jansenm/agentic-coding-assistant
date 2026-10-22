@@ -134,7 +134,7 @@ defmodule CodingAgent.Core.Session.GateTest do
       escalated =
         call("shell", %{
           "command" => "git add -A",
-          "git_write" => true,
+          "change_vcs" => true,
           "reason" => "release script stages the tree"
         })
 
@@ -164,9 +164,9 @@ defmodule CodingAgent.Core.Session.GateTest do
       plan = Gate.classify("s", policy(), @tmp_root, [plain])
       assert length(plan.auto) == 1
 
-      # `git_write` is granted unconditionally to this tool, so stating it
+      # `change_vcs` is granted unconditionally to this tool, so stating it
       # is not an escalation the tool offers and must not cost a keystroke
-      write = call("git", %{"args" => ["commit", "-am", "x"], "git_write" => true})
+      write = call("git", %{"args" => ["commit", "-am", "x"], "change_vcs" => true})
       plan = Gate.classify("s", policy(), @tmp_root, [write])
       assert length(plan.auto) == 1
       assert plan.pending == []

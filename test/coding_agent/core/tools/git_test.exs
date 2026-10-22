@@ -83,12 +83,12 @@ defmodule CodingAgent.Core.Tools.GitTest do
   end
 
   describe "profile/2" do
-    test "grants git_write, and the network only from the CALL's args", %{root: root} do
+    test "grants change_vcs, and the network only from the CALL's args", %{root: root} do
       scope = %{root: root, mounts: %{rw: ["/rw"], ro: [], hide: []}}
 
       # no args at all is the checkpoint's internal call — must stay offline
       profile = Git.profile(scope)
-      assert profile.git_write == true
+      assert profile.change_vcs == true
       assert profile.network == false
       assert profile.rw == ["/rw"]
 

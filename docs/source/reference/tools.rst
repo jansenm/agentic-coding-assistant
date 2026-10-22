@@ -83,10 +83,12 @@ confined, so ``shell``/``git`` are allowed by default; a stated escalation
    * - ``shell``
      - Run a command through ``/bin/sh`` in the scope root; captures
        stdout+stderr and the exit code. Default timeout 300 s, hard cap
-       1800 s.
+       1800 s. Git commands that change the repository fail with
+       ``index.lock: Read-only file system`` unless the call requests
+       ``change_vcs``.
    * - ``git``
-     - Run a git subcommand (arguments as a list); may write ``.git``
-       (commit/tag/reset) through its own sandbox profile.
+     - Run a git subcommand (arguments as a list); may change the
+       repository (add/commit/tag/reset) through its own sandbox profile.
    * - ``webfetch``
      - Fetch a public http(s) page, HTML stripped to text, body capped;
        local/private addresses are refused.

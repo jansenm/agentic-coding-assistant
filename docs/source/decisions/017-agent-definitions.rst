@@ -101,7 +101,7 @@ properties carry over unchanged:
 
 ### Escalations are part of the definition, not a runtime question
 
-An escalation (network access, ``git_write``) is a conversation with a
+An escalation (network access, ``change_vcs``) is a conversation with a
 human: it needs a stated reason and a decision. A **subagent has no
 human channel** — it runs inside the ``task`` call and reports a summary.
 

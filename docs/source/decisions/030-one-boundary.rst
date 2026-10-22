@@ -190,7 +190,7 @@ malicious one; data-loss avoidance is the metric, not secrecy. This ADR
 does not widen that goal — it removes a *second, incomplete* mechanism
 that made the guarantee impossible to state. ADR 015's ``None``
 fallback paragraph is **superseded** for production; the rest of ADR 015
-(one static profile, mounts as data, escalations for network/``git_write``)
+(one static profile, mounts as data, escalations for network/``change_vcs``)
 is unchanged.
 
 Open questions
