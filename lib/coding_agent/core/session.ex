@@ -55,6 +55,7 @@ defmodule CodingAgent.Core.Session do
 
   alias CodingAgent.Core.Session.{
     Compactor,
+    ContextBudget,
     Gate,
     Prompt,
     Request,
@@ -2766,28 +2767,20 @@ defmodule CodingAgent.Core.Session do
   end
 
   # The numbers the budget block shows the model: the projected context
-  # size and the two auto-summary lines, read from the SAME state the
-  # sidebar mirrors and the compaction decision uses (ADR 029). A session
-  # with no resolved window (a hand-built test state) sends no block.
-  defp budget_info(%State{} = state) do
-    %{
-      used: Compactor.projected_tokens(state),
-      window: Compactor.window(state),
-      soft: Compactor.soft_limit(state),
-      hard: Compactor.hard_limit(state),
-      # the model gets its advice at the SAME number the human's approaching
-      # note fires on (`Compactor.warn_approaching/1`), read through the one
-      # predicate that owns it — a second 0.8 in this file would be the drift
-      # ADR 029 forbids (review of the 2026-10-22 amendment).
-      warn_at: Compactor.warn_threshold(state),
-      # the tool-round budget the guard checks (ADR 025), so the model can
-      # see "turn 54 of 200" instead of decoding its own state blob. Read
-      # through `tool_budget/1` — the SAME function `gate_tools` uses — so
-      # the number shown and the number enforced cannot drift (review N66).
-      rounds: state.tool_rounds,
-      max_rounds: tool_budget(state)
-    }
-  end
+  # size, the window, the two auto-summary lines and the approaching
+  # threshold, read from the SAME state the sidebar mirrors and the
+  # compaction decision uses (ADR 029). A session with no resolved window
+  # (a hand-built test state) sends no block.
+  #
+  # A struct, not a map: every field is required, so a field added to the
+  # block cannot be forgotten here without failing to compile. The ONE fact
+  # the state does not hold is `max_rounds` — the tool-round budget the
+  # guard checks (ADR 025), resolved agent → session → config by
+  # `tool_budget/1` — so it is passed in; the SAME function `gate_tools`
+  # uses, so the number shown and the number enforced cannot drift (review
+  # N66).
+  defp budget_info(%State{} = state),
+    do: ContextBudget.from_state(state, tool_budget(state))
 
   # What this session CANNOT do, read from the SAME state the tool
   # assembly and the gate use: the difference between the full registry

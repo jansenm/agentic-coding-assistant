@@ -214,9 +214,11 @@ must earn its tokens.
 already uses for the human's note — passed into the block as
 ``warn_at``. The model's advice and the human's note therefore fire at
 the same number by construction (ADR 029), instead of a ``0.8`` in the
-prompt module that would drift from a ``0.8`` in the compactor. A caller
-that supplies no ``warn_at`` gets no band advice (the threshold is the
-caller's fact, not the formatter's).
+prompt module that would drift from a ``0.8`` in the compactor. The
+threshold is the caller's fact, not the formatter's: it arrives in the
+``%ContextBudget{}`` and the formatter never derives one (second
+amendment below — the field is required, so it cannot be silently
+absent either).
 
 **4. The framework prompt says ACT AT A STEP BOUNDARY, not "when you pass
 the line".** The old instruction only described behaviour past the line,
@@ -250,4 +252,44 @@ Open question (new)
    keeps working through the band and gets summarised mid-step is a
    negative result, and the next lever is the mechanism (a round-boundary
    soft pass, still open question 2) rather than more text.
+
+Amendment 2026-10-22 (2): the block's facts are a struct, not a map
+-------------------------------------------------------------------
+
+**Status: Accepted (amendment to the accepted ADR 040); implemented with
+this record.**
+
+The block's seven numbers (``used``, ``window``, ``soft``, ``hard``,
+``warn_at``, ``rounds``, ``max_rounds``) travelled from
+``Session.budget_info/1`` to ``Prompt.with_budget/2`` as a bare map that
+the formatter matched field by field. Every field was optional at compile
+time. The first amendment made that a real defect rather than a latent
+one: ``warn_at`` was added, and a producer that forgot it did not fail —
+the band advice simply did not appear, which is indistinguishable from
+"the session is below the threshold". A renamed key is the same failure
+with a missing clause: ``"Older messages are summarized automatically at
+when your turn ends"`` compiles and ships.
+
+``CodingAgent.Core.Session.ContextBudget`` states the seven fields once,
+with ``@enforce_keys`` on all of them and a type that forbids the values
+that would render a lie (``window: 0``, a negative ``used``,
+``max_rounds: :infinity``). ``ContextBudget.from_state/2`` is the
+production constructor: it reads everything from the state the sidebar
+mirrors and the decision uses (ADR 029), and takes ``max_rounds`` as an
+argument because that number is resolved agent → session → config by
+``Session.tool_budget/1``, not held in the state.
+
+Consequences:
+
+- A field added to the block is a compile error at every producer until it
+  is supplied. A field removed is a compile error in the formatter.
+- The ``:infinity`` tool-round variant disappears with the map: the guard
+  always resolves a real budget (``Config.max_tool_rounds/1`` has a
+  built-in default), and the old branch had no reachable production case —
+  only a test constructed one. The block now always states
+  ``n / max``.
+- ``Prompt.with_budget/2`` keeps a no-op clause for a non-struct argument.
+  That is not a second producer: a caller with no resolved window (a
+  hand-built test state) has no block to send, and refusing loudly there
+  would fail a request over a display detail.
 

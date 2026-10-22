@@ -219,8 +219,9 @@ defmodule CodingAgent.Core.Session.TurnBudgetTest do
 
       # the band advice is only reachable when the session supplies `warn_at`
       # (ADR 040 amendment): set the projected size into the band and see the
-      # sentence, so the wiring between `budget_info/1` and `Prompt` is pinned
-      # rather than assumed.
+      # sentence, so the wiring between `ContextBudget.from_state/2` and
+      # `Prompt` is pinned rather than assumed — the struct makes a missing
+      # field a compile error, but not a WRONG field.
       soft = CodingAgent.Core.Session.Compactor.soft_limit(s)
       warn_at = CodingAgent.Core.Session.Compactor.warn_threshold(s)
       assert warn_at < soft

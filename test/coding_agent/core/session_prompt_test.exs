@@ -6,7 +6,7 @@ defmodule CodingAgent.Core.Session.PromptTest do
   """
   use ExUnit.Case, async: true
 
-  alias CodingAgent.Core.Session.Prompt
+  alias CodingAgent.Core.Session.{Compactor, ContextBudget, Prompt, State, Usage}
 
   setup do
     root = System.tmp_dir!() |> Path.join("prompt-#{System.unique_integer()}")
@@ -380,10 +380,31 @@ defmodule CodingAgent.Core.Session.PromptTest do
   end
 
   describe "with_budget/2" do
+    # The block is built from a %ContextBudget{} (ADR 040): every field is
+    # required, so a producer that forgets one fails to compile instead of
+    # silently dropping a clause. These tests therefore state the whole
+    # value, and `budget/1` keeps the defaults of one realistic session
+    # (500k window, 50% soft ratio, 64k reserve) in ONE place.
+    defp budget(overrides) do
+      struct!(
+        ContextBudget,
+        Keyword.merge(
+          [
+            used: 100_000,
+            window: 500_000,
+            soft: 250_000,
+            hard: 436_000,
+            warn_at: 200_000,
+            rounds: 1,
+            max_rounds: 200
+          ],
+          overrides
+        )
+      )
+    end
+
     test "states the usage, the window, and both limits" do
-      text =
-        Prompt.with_budget(base(), %{used: 350_000, window: 500_000, soft: 250_000, hard: 436_000})
-        |> system_text()
+      text = Prompt.with_budget(base(), budget(used: 350_000)) |> system_text()
 
       assert text =~ "350k / 500k"
       assert text =~ "70%"
@@ -392,18 +413,14 @@ defmodule CodingAgent.Core.Session.PromptTest do
     end
 
     test "hints past the soft line, and says notes survive summarization" do
-      text =
-        Prompt.with_budget(base(), %{used: 300_000, window: 500_000, soft: 250_000, hard: 436_000})
-        |> system_text()
+      text = Prompt.with_budget(base(), budget(used: 300_000)) |> system_text()
 
       assert text =~ "past the auto-summary line"
       assert text =~ "notes"
     end
 
     test "is calm (no hint) when there is room" do
-      text =
-        Prompt.with_budget(base(), %{used: 100_000, window: 500_000, soft: 250_000, hard: 436_000})
-        |> system_text()
+      text = Prompt.with_budget(base(), budget(used: 100_000)) |> system_text()
 
       assert text =~ "100k / 500k"
       refute text =~ "past the auto-summary line"
@@ -411,97 +428,43 @@ defmodule CodingAgent.Core.Session.PromptTest do
     end
 
     test "at the hard limit it says summarization is imminent" do
-      text =
-        Prompt.with_budget(base(), %{used: 440_000, window: 500_000, soft: 250_000, hard: 436_000})
-        |> system_text()
+      text = Prompt.with_budget(base(), budget(used: 440_000)) |> system_text()
 
       assert text =~ "hard limit"
     end
 
-    test "no window means no block" do
-      assert Prompt.with_budget(base(), %{used: 1, window: nil}) == base()
-      assert Prompt.with_budget(base(), %{}) == base()
+    test "a non-budget argument is a no-op (the block is built, never guessed)" do
+      assert Prompt.with_budget(base(), nil) == base()
+      assert Prompt.with_budget(base(), %{used: 1, window: 500_000}) == base()
     end
 
     test "names the compact tool as a lever, calm and past the lines (ADR 040 OQ1)" do
-      calm =
-        Prompt.with_budget(base(), %{used: 100_000, window: 500_000, soft: 250_000, hard: 436_000})
-        |> system_text()
-
-      past_soft =
-        Prompt.with_budget(base(), %{used: 300_000, window: 500_000, soft: 250_000, hard: 436_000})
-        |> system_text()
-
-      at_hard =
-        Prompt.with_budget(base(), %{used: 440_000, window: 500_000, soft: 250_000, hard: 436_000})
-        |> system_text()
-
-      for text <- [calm, past_soft, at_hard] do
-        assert text =~ "`compact` tool"
+      for used <- [100_000, 300_000, 440_000] do
+        assert Prompt.with_budget(base(), budget(used: used)) |> system_text() =~ "`compact` tool"
       end
     end
 
-    test "names the tool-round budget when the caller supplies it" do
-      text =
-        Prompt.with_budget(base(), %{
-          used: 1,
-          window: 500_000,
-          soft: 250_000,
-          hard: 436_000,
-          rounds: 54,
-          max_rounds: 200
-        })
-        |> system_text()
+    test "names the tool-round budget the guard checks" do
+      text = Prompt.with_budget(base(), budget(rounds: 54, max_rounds: 200)) |> system_text()
 
       assert text =~ "Tool rounds this turn: 54 / 200."
-
-      # an unbounded budget reads plainly too
-      unbounded =
-        Prompt.with_budget(base(), %{
-          used: 1,
-          window: 500_000,
-          soft: 250_000,
-          hard: 436_000,
-          rounds: 7,
-          max_rounds: :infinity
-        })
-        |> system_text()
-
-      assert unbounded =~ "Tool rounds this turn: 7."
-    end
-
-    test "omits the rounds line when the caller does not supply it" do
-      text =
-        Prompt.with_budget(base(), %{used: 1, window: 500_000, soft: 250_000, hard: 436_000})
-        |> system_text()
-
-      refute text =~ "Tool rounds"
     end
 
     test "states the distance to each line, which is the operative denominator" do
-      calm =
-        Prompt.with_budget(base(), %{used: 100_000, window: 500_000, soft: 250_000, hard: 436_000})
-        |> system_text()
-
+      calm = Prompt.with_budget(base(), budget(used: 100_000)) |> system_text()
       assert calm =~ "Soft line 250k (150k away), hard 436k (336k away)."
 
-      past =
-        Prompt.with_budget(base(), %{used: 300_000, window: 500_000, soft: 250_000, hard: 436_000})
-        |> system_text()
-
+      past = Prompt.with_budget(base(), budget(used: 300_000)) |> system_text()
       assert past =~ "Soft line 250k (passed), hard 436k (136k away)."
     end
 
     test "an absolute soft ceiling is not hidden behind the window percentage" do
       # the live shape the amendment was written for: 1M window, 140k soft
       text =
-        Prompt.with_budget(base(), %{
-          used: 120_000,
-          window: 1_048_576,
-          soft: 140_000,
-          hard: 150_000,
-          warn_at: 112_000
-        })
+        Prompt.with_budget(
+          base(),
+          budget(used: 120_000, window: 1_048_576, soft: 140_000, hard: 150_000, warn_at: 112_000)
+        )
         |> system_text()
 
       # the percentage is the window's and reads calm …
@@ -512,15 +475,7 @@ defmodule CodingAgent.Core.Session.PromptTest do
     end
 
     test "advises in the band between the approaching threshold and the soft line" do
-      text =
-        Prompt.with_budget(base(), %{
-          used: 210_000,
-          window: 500_000,
-          soft: 250_000,
-          hard: 436_000,
-          warn_at: 200_000
-        })
-        |> system_text()
+      text = Prompt.with_budget(base(), budget(used: 210_000, warn_at: 200_000)) |> system_text()
 
       assert text =~ "40k below the soft line"
       assert text =~ "end your turn at a step boundary"
@@ -530,27 +485,49 @@ defmodule CodingAgent.Core.Session.PromptTest do
     end
 
     test "stays calm below the approaching threshold" do
-      text =
-        Prompt.with_budget(base(), %{
-          used: 100_000,
-          window: 500_000,
-          soft: 250_000,
-          hard: 436_000,
-          warn_at: 200_000
-        })
-        |> system_text()
+      text = Prompt.with_budget(base(), budget(used: 100_000, warn_at: 200_000)) |> system_text()
 
       refute text =~ "below the soft line"
       refute text =~ "past the auto-summary line"
       refute text =~ "hard limit"
     end
+  end
 
-    test "no warn_at supplied means no band advice (the caller owns the threshold)" do
-      text =
-        Prompt.with_budget(base(), %{used: 210_000, window: 500_000, soft: 250_000, hard: 436_000})
-        |> system_text()
+  describe "ContextBudget.from_state/2" do
+    test "reads every number from the state the decision and the sidebar use" do
+      state = %State{
+        id: "budget",
+        context: ReqLLM.Context.new(),
+        model: "ollama:test",
+        status: :idle,
+        context_window: 500_000,
+        compaction_soft_limit: 250_000,
+        compaction_hard_limit: 436_000,
+        tool_rounds: 12,
+        usage: %Usage{last_input_tokens: 210_000}
+      }
 
-      refute text =~ "below the soft line"
+      budget = ContextBudget.from_state(state, 200)
+
+      assert %ContextBudget{
+               used: 210_000,
+               window: 500_000,
+               soft: 250_000,
+               hard: 436_000,
+               warn_at: 200_000,
+               rounds: 12,
+               max_rounds: 200
+             } = budget
+
+      # `warn_at` comes from `Compactor.warn_threshold/1`, so the model's
+      # advice and the human's note fire on the same number (ADR 029).
+      assert budget.warn_at == Compactor.warn_threshold(state)
+    end
+
+    test "refuses a non-positive round budget (the guard always has a real one)" do
+      state = %State{id: "budget", context: ReqLLM.Context.new(), model: "m", status: :idle}
+
+      assert_raise FunctionClauseError, fn -> ContextBudget.from_state(state, 0) end
     end
   end
 end

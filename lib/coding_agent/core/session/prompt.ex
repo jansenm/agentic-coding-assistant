@@ -21,8 +21,9 @@ defmodule CodingAgent.Core.Session.Prompt do
       it;
     * the **budget block** (`with_budget/2`) — how full the context window
       is and where the two auto-summary lines sit, rebuilt per call for
-      the same reason. Visibility only: it does not change when
-      summarization happens;
+      the same reason. It is a `%ContextBudget{}`, not a map: the numbers
+      it renders are all required, so a producer that omits one fails to
+      compile instead of silently dropping a clause from the block;
     * the **capability block** (`with_capabilities/2`) — what this
       session may NOT do: the tools the policy/agent removed from the
       registry and whether the shell root is read-only. The tool list
@@ -36,6 +37,8 @@ defmodule CodingAgent.Core.Session.Prompt do
   This module is pure string work — it reads prompt files and composes
   strings; it touches no session state and no clock beyond the date.
   """
+
+  alias CodingAgent.Core.Session.ContextBudget
 
   @prompts_dir_path "coding-agent/prompts"
 
@@ -236,9 +239,14 @@ defmodule CodingAgent.Core.Session.Prompt do
   the model can summarize NOW instead of only ending its turn. The lever
   is mentioned in the calm case too, so
   the model knows the verb exists before it is at a wall.
+
+  Takes a `%ContextBudget{}`, not a map: seven numbers travel from
+  `Session` to this module and every one of them is required to render a
+  truthful line, so a missing one is a compile error at the producer
+  instead of a number that quietly disappears from the block.
   """
-  @spec with_budget(ReqLLM.Context.t(), map()) :: ReqLLM.Context.t()
-  def with_budget(context, %{window: window} = budget) when is_integer(window) and window > 0 do
+  @spec with_budget(ReqLLM.Context.t(), ContextBudget.t()) :: ReqLLM.Context.t()
+  def with_budget(context, %ContextBudget{window: window} = budget) when window > 0 do
     append_system_block(context, budget_block(budget))
   end
 
@@ -372,8 +380,9 @@ defmodule CodingAgent.Core.Session.Prompt do
   # uses); soft is the turn-end trigger, hard the pre-call one. `rounds` /
   # `max_rounds` name the TOOL-ROUND budget the guard checks (ADR 025); the
   # model could not see that number, only its own decoded state blob
-  # (harness feedback, 2026-10-01). `max_rounds` may be `:infinity`.
-  defp budget_block(%{used: used, window: window, soft: soft, hard: hard} = budget) do
+  # (harness feedback, 2026-10-01). All of it comes from one
+  # `%ContextBudget{}`, so a missing field cannot render as a missing clause.
+  defp budget_block(%ContextBudget{used: used, window: window, soft: soft, hard: hard} = budget) do
     pct = trunc(used * 100 / max(window, 1))
 
     base =
@@ -386,7 +395,7 @@ defmodule CodingAgent.Core.Session.Prompt do
 
     base = base <> rounds_clause(budget)
 
-    case guidance(used, soft, hard, Map.get(budget, :warn_at)) do
+    case guidance(used, soft, hard, budget.warn_at) do
       nil -> base
       guidance -> base <> "\n" <> guidance
     end
@@ -406,17 +415,12 @@ defmodule CodingAgent.Core.Session.Prompt do
   defp distance_clause(used, limit) when used >= limit, do: " (passed)"
   defp distance_clause(used, limit), do: " (#{k(limit - used)} away)"
 
-  # The tool-round line, only when the caller supplies it (a resumed/older
-  # turn may not). It names the guard the model cannot otherwise see.
-  defp rounds_clause(%{rounds: rounds, max_rounds: max}) when is_integer(rounds) do
-    case max do
-      :infinity -> " Tool rounds this turn: #{rounds}."
-      n when is_integer(n) -> " Tool rounds this turn: #{rounds} / #{n}."
-      _ -> " Tool rounds this turn: #{rounds}."
-    end
-  end
-
-  defp rounds_clause(_), do: ""
+  # The tool-round line: the guard the model cannot otherwise see (ADR 025).
+  # Both numbers are required fields now, so there is no "no line" case and
+  # no unbounded variant: `max_rounds` always resolves through
+  # `Config.max_tool_rounds/1`, which has a built-in default.
+  defp rounds_clause(%ContextBudget{rounds: rounds, max_rounds: max}),
+    do: " Tool rounds this turn: #{rounds} / #{max}."
 
   # The action hint, only once the model is actually near a line. Keeping it
   # out of the calm case avoids nagging a session that has room.
@@ -442,7 +446,7 @@ defmodule CodingAgent.Core.Session.Prompt do
           "(paths, numbers, decisions) in a todo's `notes` first; notes survive " <>
           "summarization."
 
-      is_integer(warn_at) and used >= warn_at ->
+      used >= warn_at ->
         "You are #{k(soft - used)} below the soft line. Two ways to act before the " <>
           "hard limit forces it: end your turn at a step boundary (the idle pass then " <>
           "summarizes with headroom, at no latency cost to your next prompt), or call " <>
