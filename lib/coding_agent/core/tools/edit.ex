@@ -11,9 +11,11 @@ defmodule CodingAgent.Core.Tools.Edit do
   Fail-closed semantics are unchanged: the callback *declines to act*
   unless the old string occurs exactly once in the file — an ambiguous or
   stale match is an error for the model to resolve by re-reading, never a
-  guess. The file's type and existence are probed through the same
-  confined executor, so the shape check obeys the profile too (a hidden
-  path reads as missing; a read-only bind fails at the write).
+  guess. The ambiguity error names the matching lines (the first ten,
+  then "possibly more lines") so widening is one step rather than a
+  whole-file re-read. The file's type and existence are probed through
+  the same confined executor, so the shape check obeys the profile too (a
+  hidden path reads as missing; a read-only bind fails at the write).
 
   Empty `old_string` on a non-existent file creates the file with
   `new_string` as content (the one sanctioned create path); anything
@@ -24,6 +26,10 @@ defmodule CodingAgent.Core.Tools.Edit do
 
   @max_bytes 256 * 1024
   @timeout_secs 30
+  # How many matching lines the ambiguity error names before it stops
+  # and says "possibly more": enough to see the shape, short enough to
+  # stay one error message.
+  @listed_matches 10
 
   @spec tool(Tools.scope()) :: ReqLLM.Tool.t()
   def tool(scope) do
@@ -110,7 +116,7 @@ defmodule CodingAgent.Core.Tools.Edit do
 
     with {:ok, content} <- content_result,
          count <- occurrences(content, old),
-         :ok <- uniqueness_ok?(path, count) do
+         :ok <- uniqueness_ok?(path, content, old, count) do
       updated = String.replace(content, old, new, global: false)
 
       case Tools.FileExec.write(scope, path, updated, @timeout_secs) do
@@ -125,24 +131,42 @@ defmodule CodingAgent.Core.Tools.Edit do
 
   # The fail-closed gate: 0 matches is a stale match; 2+ is ambiguous.
   # Both refuse — the model must re-read and widen, never the tool guess.
-  defp uniqueness_ok?(path, count) do
-    cond do
-      count == 0 ->
-        Tools.error(
-          "old_string not found in #{inspect(path)}; re-read the file and match the " <>
-            "exact text including whitespace"
-        )
+  # The ambiguity error names where the matches are, so widening is one
+  # step instead of a whole-file re-read; past @listed_matches it stops
+  # and says so rather than printing every line of a generated or
+  # minified file.
+  defp uniqueness_ok?(_path, _content, _old, 1), do: :ok
 
-      count > 1 ->
-        Tools.error(
-          "old_string is ambiguous in #{inspect(path)}: #{count} matches; include more " <>
-            "surrounding text to make it unique"
-        )
-
-      true ->
-        :ok
-    end
+  defp uniqueness_ok?(path, _content, _old, 0) do
+    Tools.error(
+      "old_string not found in #{inspect(path)}; re-read the file and match the " <>
+        "exact text including whitespace"
+    )
   end
+
+  defp uniqueness_ok?(path, content, old, count) do
+    listed = content |> match_lines(old) |> Enum.take(@listed_matches)
+
+    more = if count > @listed_matches, do: ", possibly more lines", else: ""
+
+    Tools.error(
+      "old_string is ambiguous in #{inspect(path)}: #{count} matches on lines " <>
+        "#{Enum.join(listed, ", ")}#{more}; include more surrounding text to make it unique"
+    )
+  end
+
+  # 1-based line number of each match's start. `:binary.matches/2` is
+  # non-overlapping, the same set `occurrences/2` counts; overlapping
+  # matches are not matches. Only the first @listed_matches are resolved
+  # (each needs the newlines before it), so a single-word old_string in a
+  # big file costs a linear scan, not one scan per match.
+  defp match_lines(content, old) do
+    content
+    |> :binary.matches(old)
+    |> Stream.map(fn {offset, _len} -> 1 + newlines(binary_part(content, 0, offset)) end)
+  end
+
+  defp newlines(prefix), do: prefix |> :binary.matches("\n") |> length()
 
   # split-1 == count of non-overlapping occurrences
   defp occurrences(content, old), do: content |> String.split(old) |> length() |> Kernel.-(1)

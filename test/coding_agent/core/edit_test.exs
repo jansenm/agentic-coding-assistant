@@ -44,9 +44,67 @@ defmodule CodingAgent.Core.Tools.EditTest do
 
       assert msg =~ "ambiguous"
       assert msg =~ "2 matches"
+      # the matching lines, so the model widens without a re-read
+      assert msg =~ "on lines 3, 4"
       # file untouched
       assert File.read!(Path.join(@root, "code.ex")) =~ "def two, do: 2"
       assert File.read!(Path.join(@root, "code.ex")) =~ "def two_again, do: 22"
+    end
+
+    test "ambiguity lists the matching lines in order", %{tool: tool} do
+      File.write!(Path.join(@root, "many.txt"), "x\nax\nb\nax\nc\nax\n")
+
+      {:error, msg} =
+        ReqLLM.Tool.execute(tool, %{
+          "path" => "many.txt",
+          "old_string" => "ax",
+          "new_string" => "y"
+        })
+
+      assert msg =~ "3 matches on lines 2, 4, 6"
+    end
+
+    test "ambiguity stops at ten lines and says possibly more", %{tool: tool} do
+      File.write!(Path.join(@root, "twelve.txt"), String.duplicate("ax\n", 12))
+
+      {:error, msg} =
+        ReqLLM.Tool.execute(tool, %{
+          "path" => "twelve.txt",
+          "old_string" => "ax",
+          "new_string" => "y"
+        })
+
+      assert msg =~ "12 matches on lines 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, possibly more lines"
+      refute msg =~ "11,"
+    end
+
+    test "ambiguity at exactly ten lines does not claim more", %{tool: tool} do
+      File.write!(Path.join(@root, "ten.txt"), String.duplicate("ax\n", 10))
+
+      {:error, msg} =
+        ReqLLM.Tool.execute(tool, %{
+          "path" => "ten.txt",
+          "old_string" => "ax",
+          "new_string" => "y"
+        })
+
+      assert msg =~ "lines 1, 2, 3, 4, 5, 6, 7, 8, 9, 10;"
+      refute msg =~ "possibly more"
+    end
+
+    test "every refusal leaves the file byte-identical", %{tool: tool} do
+      untouched = File.read!(Path.join(@root, "code.ex"))
+
+      for old <- ["def two", "def nope", "def one, do: 1\n  def one, do: 1"] do
+        assert {:error, _} =
+                 ReqLLM.Tool.execute(tool, %{
+                   "path" => "code.ex",
+                   "old_string" => old,
+                   "new_string" => "z"
+                 })
+      end
+
+      assert File.read!(Path.join(@root, "code.ex")) == untouched
     end
 
     test "missing match refuses with guidance", %{tool: tool} do

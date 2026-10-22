@@ -176,8 +176,12 @@ Editing: targeted replacement (slice 2e)
 
 ``edit`` replaces an exact string: ``old_string`` must occur *exactly
 once*, else the tool refuses — a stale match ("not found") and an
-ambiguous match ("2 matches — include more surrounding text") are both
-errors the model resolves by re-reading and widening. This fail-closed
+ambiguous match ("3 matches on lines 2, 4, 6 — include more surrounding
+text to make it unique") are both errors the model resolves by widening.
+The ambiguity error names the matching lines (the first ten, then
+"possibly more lines") so the model can widen in one step instead of
+re-reading the whole file; it still refuses rather than guessing, and
+the file is left byte-identical. This fail-closed
 posture is why it is safe to approve quickly: the tool cannot guess.
 
 That same posture is why **edit and write_file are allow-by-policy**
