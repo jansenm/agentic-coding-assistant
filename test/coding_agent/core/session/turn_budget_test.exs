@@ -211,6 +211,32 @@ defmodule CodingAgent.Core.Session.TurnBudgetTest do
       assert text =~ "Context budget:"
       assert text =~ "tokens"
     end
+
+    test "wire_request/1 passes the approaching threshold the human's note uses" do
+      id = "budget-wire4-#{System.unique_integer()}"
+      start(id)
+      {:ok, s} = Session.state(id)
+
+      # the band advice is only reachable when the session supplies `warn_at`
+      # (ADR 040 amendment): set the projected size into the band and see the
+      # sentence, so the wiring between `budget_info/1` and `Prompt` is pinned
+      # rather than assumed.
+      soft = CodingAgent.Core.Session.Compactor.soft_limit(s)
+      warn_at = CodingAgent.Core.Session.Compactor.warn_threshold(s)
+      assert warn_at < soft
+
+      in_band = %{
+        s
+        | usage: %{s.usage | last_input_tokens: warn_at + div(soft - warn_at, 2)}
+      }
+
+      {:ok, _input, _opts, ctx} = Session.wire_request(in_band)
+      [%ReqLLM.Message{role: :system} = sys | _] = ReqLLM.Context.to_list(ctx)
+      text = Enum.map_join(sys.content, "", &(&1.text || ""))
+
+      assert text =~ "below the soft line"
+      assert text =~ "Soft line "
+    end
   end
 
   defp message_text(%ReqLLM.Message{content: parts}) when is_list(parts) do

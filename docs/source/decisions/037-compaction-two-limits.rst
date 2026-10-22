@@ -339,9 +339,14 @@ on `ollama_cloud:deepseek-v4.1-flash` (window 1048576, so soft 524288 /
 hard 984576 under the default ratio and reserve): a call at roughly
 150 000 tokens of context costs about **1 cent**; the two calls
 immediately before the last compaction cost about **7 cents** each at
-roughly 270 000 tokens. Cost is therefore superlinear enough that the
-ceiling is a NUMBER, not a share — and the share on this window sits at
-524k, where a call costs several times the 7-cent figure.
+roughly 270 000 tokens, and a call at 180 000 tokens costs about
+**5 cents** during peak hours. Cost is therefore superlinear enough that
+the ceiling is a NUMBER, not a share — and the share on this window sits
+at 524k, where a call costs several times the 7-cent figure. The peak
+figure also says the curve is not a smooth function of context alone
+(the same 180k is cheaper off-peak), which is one reason the key is a
+limit the user sets from experience rather than a price the harness
+computes).
 
 The ratio cannot express the ceiling, and no value of it would do: 0.15 is
 157k on this model and 19k on a 128k one. The same spend limit would mean
@@ -386,6 +391,14 @@ re-derive what the decision uses). The lines a cost ceiling moves are
 therefore the same lines the human was already watching, which is the
 property that makes the setting checkable from the screen.
 
+*Addition 2026-10-22 (same day, found by reading the live block): the
+NUMBERS needed no change, the WORDING did.* Below soft the block's only
+moving quantity was the percentage of the **window**, and while both
+limits are a fraction of it that percentage and the distance to the line
+are one claim. An absolute ceiling separates them: 110k of a 1M window
+reads as "11%" while the 140k soft line is 30k away. The block now states
+the soft line with its distance; see ADR 040, amendment 2026-10-22.
+
 Consequences
 ~~~~~~~~~~~~
 
@@ -418,8 +431,10 @@ Open question (new)
 
 1. **A cost ceiling in currency, not tokens?** A provider prices per
    token and the catalog carries no prices, so 150k tokens is "about a
-   cent" only for the model the owner measured. A `cost_budget` in dollars
-   would need per-model pricing that llm_db does not ship — deferred until
-   the catalog has one, since a currency key computed from a guessed price
-   would be worse than the token ceiling it replaces.
+   cent" only for the model the owner measured — and not even for that
+   one all day: the same 180k context measured ~5 cents in peak hours.
+   A `cost_budget` in dollars would need per-model pricing *and* a notion
+   of peak, neither of which llm_db ships — deferred until the catalog
+   has one, since a currency key computed from a guessed price would be
+   worse than the token ceiling it replaces.
 

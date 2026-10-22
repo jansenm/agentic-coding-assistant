@@ -2775,6 +2775,11 @@ defmodule CodingAgent.Core.Session do
       window: Compactor.window(state),
       soft: Compactor.soft_limit(state),
       hard: Compactor.hard_limit(state),
+      # the model gets its advice at the SAME number the human's approaching
+      # note fires on (`Compactor.warn_approaching/1`), read through the one
+      # predicate that owns it — a second 0.8 in this file would be the drift
+      # ADR 029 forbids (review of the 2026-10-22 amendment).
+      warn_at: Compactor.warn_threshold(state),
       # the tool-round budget the guard checks (ADR 025), so the model can
       # see "turn 54 of 200" instead of decoding its own state blob. Read
       # through `tool_budget/1` — the SAME function `gate_tools` uses — so

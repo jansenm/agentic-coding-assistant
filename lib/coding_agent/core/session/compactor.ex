@@ -766,8 +766,9 @@ defmodule CodingAgent.Core.Session.Compactor do
 
   @doc """
   The token count at which the approaching-compaction warning fires
-  (`#{@warn_fraction}` of the soft limit). Public so the sidebar and
-  `warn_approaching/1` cannot drift apart.
+  (`#{@warn_fraction}` of the soft limit). Public so the human's note
+  (`warn_approaching/1`), the model's budget block (`Session.budget_info/1`)
+  and the sidebar read ONE number instead of three copies of `0.8`.
   """
   @spec warn_threshold(State.t()) :: non_neg_integer()
   def warn_threshold(%State{} = state), do: trunc(soft_limit(state) * @warn_fraction)

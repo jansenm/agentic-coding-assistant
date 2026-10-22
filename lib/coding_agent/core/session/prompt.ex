@@ -378,17 +378,33 @@ defmodule CodingAgent.Core.Session.Prompt do
 
     base =
       "Context budget: ~#{k(used)} / #{k(window)} tokens (#{pct}%). " <>
-        "Older messages are summarized automatically at #{k(soft)} when your turn ends, " <>
-        "and forced at #{k(hard)} before a call; you may also call the `compact` tool " <>
+        "Soft line #{k(soft)}#{distance_clause(used, soft)}, " <>
+        "hard #{k(hard)}#{distance_clause(used, hard)}. " <>
+        "Older messages are summarized automatically at the soft line when your turn ends, " <>
+        "and forced at the hard line before a call; you may also call the `compact` tool " <>
         "any time to summarize the older span now and free room."
 
     base = base <> rounds_clause(budget)
 
-    case guidance(used, soft, hard) do
+    case guidance(used, soft, hard, Map.get(budget, :warn_at)) do
       nil -> base
       guidance -> base <> "\n" <> guidance
     end
   end
+
+  # The DISTANCE to each line, which is the number a decision can be made
+  # on. The percentage above is the window's, and the two are the same
+  # question only while the limits are a fraction of the window: with an
+  # absolute ceiling (`compaction_soft_tokens`) a 1M-window model at 110k
+  # shows "11%", which reads as calm while the soft line is 30k away.
+  # Measured in the model's own words (review of the live store):
+  # "~110k / 1000k tokens (11%). That's misleading: on a 1M-window model
+  # with soft at 140k, 11% sounds calm." Both denominators are stated, and
+  # each line carries its distance — hard's distance is the one that
+  # matters in the band, because there the summary is FORCED (ADR 040,
+  # amendment 2026-10-22).
+  defp distance_clause(used, limit) when used >= limit, do: " (passed)"
+  defp distance_clause(used, limit), do: " (#{k(limit - used)} away)"
 
   # The tool-round line, only when the caller supplies it (a resumed/older
   # turn may not). It names the guard the model cannot otherwise see.
@@ -404,7 +420,16 @@ defmodule CodingAgent.Core.Session.Prompt do
 
   # The action hint, only once the model is actually near a line. Keeping it
   # out of the calm case avoids nagging a session that has room.
-  defp guidance(used, soft, hard) do
+  #
+  # The middle band is the amendment of 2026-10-22: below the soft line there
+  # used to be NO advice at all, and the model still never called `compact`
+  # (measured over 5 135 tool calls in seven stored sessions: zero calls,
+  # while the harness auto-compacted 23 times). It saw the line, quoted it in
+  # its reasoning, and had nothing to act on until the line was already
+  # behind it. `warn_at` is `Compactor.warn_threshold/1` — the SAME function
+  # the human's own approaching note uses, so the advice to the model and the
+  # note to the human cannot fire at different numbers (ADR 029).
+  defp guidance(used, soft, hard, warn_at) do
     cond do
       used >= hard ->
         "You are at the hard limit: older messages will be summarized before your next " <>
@@ -416,6 +441,14 @@ defmodule CodingAgent.Core.Session.Prompt do
           "done to buy headroom without losing your place — and put durable facts " <>
           "(paths, numbers, decisions) in a todo's `notes` first; notes survive " <>
           "summarization."
+
+      is_integer(warn_at) and used >= warn_at ->
+        "You are #{k(soft - used)} below the soft line. Two ways to act before the " <>
+          "hard limit forces it: end your turn at a step boundary (the idle pass then " <>
+          "summarizes with headroom, at no latency cost to your next prompt), or call " <>
+          "`compact` to free room inside this turn. Either way, put durable facts " <>
+          "(paths, numbers, decisions) in a todo's `notes` first — notes survive " <>
+          "summarization, older messages do not."
 
       true ->
         nil

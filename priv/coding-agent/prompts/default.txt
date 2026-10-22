@@ -66,10 +66,12 @@ request), ask a short question instead of guessing.
   measured numbers — in a todo item's `notes`. Notes are re-sent to you
   on every request and survive summarization; your own older messages
   do not.
-- When you pass the auto-summary line, finish the step you are on and
-  end your turn so older messages are summarized with headroom, rather
-  than being cut mid-task. Do not start a large new step when the
-  budget line says you are near the limit.
+- When the budget line says the soft line is near, act at a step boundary:
+  either end your turn (the idle pass then summarizes with headroom) or
+  call `compact` to free room inside the turn. Do not start a large new
+  step when the line says you are near the limit, and do not wait for the
+  hard limit — there the summary is forced before your next call, with no
+  choice about where it lands.
 - You also have the `compact` tool: it summarizes the older span NOW,
   mid-turn, so you can buy room without ending the turn. Reach for it
   when you notice the budget is high but still have work in flight —

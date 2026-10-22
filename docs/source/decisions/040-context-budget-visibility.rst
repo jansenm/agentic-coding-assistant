@@ -126,3 +126,128 @@ Open questions
    model's window. ``Session.recompute_window/1`` now re-resolves on every
    effective-model change, so the block, the sidebar and the decision all
    track the current model.
+
+Amendment 2026-10-22: the line states its own denominator, and the calm band gets advice
+-----------------------------------------------------------------------------------------
+
+**Status: Accepted (amendment to the accepted ADR 040); implemented with
+this record.**
+
+Context
+~~~~~~~
+
+Two measurements made the block's wording wrong in ways the original
+record could not have anticipated.
+
+**The percentage is the window's, the decision is the line's.** Decision 1
+reports ``used / window`` as a percentage, and below soft that percentage
+is the only number that moves. It was correct while both limits were a
+fraction of the window: 70% of the window and 70% of the way to soft were
+the same claim. The absolute keys (ADR 037 amendment, 2026-10-22) break
+that identity. On the owner's model (window 1 048 576, soft 140 000,
+hard 150 000) a context of 110 000 shows ``11%`` — three quarters of the
+way to the soft line, reading as an idle session. The model said so
+itself, in its own reasoning over that very block: *"~110k / 1000k tokens
+(11%). That's misleading: on a 1M-window model with soft at 140k, 11%
+sounds calm."* A statement the reader has to correct is worse than no
+statement: the number was right and the question it answered was not the
+one being decided.
+
+**The lever exists, is named, and is never used.** The open half of open
+question 1 had an answer available in the store: across seven sessions
+(5 135 tool rows), the model called ``compact`` **zero** times, while the
+harness auto-compacted **23** times in the one long session — every one
+of them after a turn had ended (20 after an answer, 3 after an ``esc``
+stop), none of them a mid-turn hard-limit pass. It quoted the budget line
+in its reasoning 27 times. It was not blind to the number; below soft it
+had nothing to act on, and the sessions never reached hard, so the
+mechanism never forced the question either. Cost is what makes this
+expensive rather than merely untidy: the owner measured ~**1 cent** at
+150 000 tokens and ~**5 cents** at 180 000 in peak hours, so the calls a
+timely ``compact`` would have prevented are the ones at the top of that
+curve — and an absolute ceiling (150 000) is exactly the setting that
+turns the hard pass into a mid-turn event.
+
+The owner's framing also matters for what is NOT built here: the
+experiment's target is an agent that plans its work in steps and decides
+to compact at a step boundary, with persistent storage to carry the plan.
+Until that exists, the block can only say what is coming and what the two
+levers are.
+
+Decision
+~~~~~~~~
+
+**1. Both denominators are named, and each line carries its distance.** The
+line states the window, then the soft and hard lines and how far away each
+is::
+
+    Context budget: ~120k / 1.0M tokens (11%). Soft line 140k (20k away),
+    hard 150k (30k away). Older messages are summarized automatically at
+    the soft line when your turn ends, and forced at the hard line before
+    a call; you may also call the `compact` tool any time to summarize the
+    older span now and free room.
+
+Past a line its distance becomes ``(passed)``. The percentage stays —
+it answers "how much of the model's capacity is in use", which the human
+also wants — but it is no longer the only quantity, and the quantities the
+decision uses are stated in the unit the decision uses. The hard distance
+is the one that matters in the band, because past hard the summary is
+forced rather than offered.
+
+**2. The band between the approaching threshold and the soft line gets
+advice.** Decision 2 gave a hint past soft and none below it. The band
+now says the two ways to act *before* the line is forced, and that
+``notes`` is what survives either way::
+
+    You are 40k below the soft line. Two ways to act before the hard
+    limit forces it: end your turn at a step boundary (the idle pass then
+    summarizes with headroom, at no latency cost to your next prompt), or
+    call `compact` to free room inside this turn. Either way, put durable
+    facts (paths, numbers, decisions) in a todo's `notes` first — notes
+    survive summarization, older messages do not.
+
+Below the threshold nothing is added: a sentence sent on every request
+must earn its tokens.
+
+**3. One threshold, not a second copy.** The band's lower bound is
+``Compactor.warn_threshold/1`` — the function ``warn_approaching/1``
+already uses for the human's note — passed into the block as
+``warn_at``. The model's advice and the human's note therefore fire at
+the same number by construction (ADR 029), instead of a ``0.8`` in the
+prompt module that would drift from a ``0.8`` in the compactor. A caller
+that supplies no ``warn_at`` gets no band advice (the threshold is the
+caller's fact, not the formatter's).
+
+**4. The framework prompt says ACT AT A STEP BOUNDARY, not "when you pass
+the line".** The old instruction only described behaviour past the line,
+which is the moment the automatic pass has already begun to compete with
+the model's own plan. Both prompts now name ending the turn and
+``compact`` as the two actions and state why not to wait for hard: there
+the summary is forced before the next call, with no choice about where it
+lands.
+
+Consequences
+~~~~~~~~~~~~
+
+- The block is longer by one clause in every case and one sentence in the
+  band. Both ride every request and are not part of the cached prefix
+  (they change per call, like the environment block).
+- The human's note and the model's advice share a threshold, so a session
+  can be watched for whether the advice at 80 % of soft produces a
+  ``compact`` before the soft line arrives. That is the measurement this
+  amendment is waiting on; it is not claimed here.
+- Nothing about WHEN compaction fires changed. As in the original record,
+  a model that ignores the block behaves exactly as before.
+
+Open question (new)
+~~~~~~~~~~~~~~~~~~~
+
+1. **Does the band advice produce a decision, or just a sentence?** The
+   zero-of-5 135 measurement is the baseline. What would answer it: a
+   session that crosses the band and either (a) calls ``compact`` inside
+   the turn, or (b) ends the turn at a boundary and lets the idle pass do
+   it — counted against the auto-compactions it did not need. A model that
+   keeps working through the band and gets summarised mid-step is a
+   negative result, and the next lever is the mechanism (a round-boundary
+   soft pass, still open question 2) rather than more text.
+

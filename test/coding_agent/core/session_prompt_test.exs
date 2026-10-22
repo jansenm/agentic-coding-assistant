@@ -477,5 +477,80 @@ defmodule CodingAgent.Core.Session.PromptTest do
 
       refute text =~ "Tool rounds"
     end
+
+    test "states the distance to each line, which is the operative denominator" do
+      calm =
+        Prompt.with_budget(base(), %{used: 100_000, window: 500_000, soft: 250_000, hard: 436_000})
+        |> system_text()
+
+      assert calm =~ "Soft line 250k (150k away), hard 436k (336k away)."
+
+      past =
+        Prompt.with_budget(base(), %{used: 300_000, window: 500_000, soft: 250_000, hard: 436_000})
+        |> system_text()
+
+      assert past =~ "Soft line 250k (passed), hard 436k (136k away)."
+    end
+
+    test "an absolute soft ceiling is not hidden behind the window percentage" do
+      # the live shape the amendment was written for: 1M window, 140k soft
+      text =
+        Prompt.with_budget(base(), %{
+          used: 120_000,
+          window: 1_048_576,
+          soft: 140_000,
+          hard: 150_000,
+          warn_at: 112_000
+        })
+        |> system_text()
+
+      # the percentage is the window's and reads calm …
+      assert text =~ "(11%)"
+      # … while the lines state how far away they are
+      assert text =~ "Soft line 140k (20k away), hard 150k (30k away)."
+      refute text =~ "(passed)"
+    end
+
+    test "advises in the band between the approaching threshold and the soft line" do
+      text =
+        Prompt.with_budget(base(), %{
+          used: 210_000,
+          window: 500_000,
+          soft: 250_000,
+          hard: 436_000,
+          warn_at: 200_000
+        })
+        |> system_text()
+
+      assert text =~ "40k below the soft line"
+      assert text =~ "end your turn at a step boundary"
+      assert text =~ "`compact`"
+      # not the past-the-line wording: this is the calm side of the line
+      refute text =~ "past the auto-summary line"
+    end
+
+    test "stays calm below the approaching threshold" do
+      text =
+        Prompt.with_budget(base(), %{
+          used: 100_000,
+          window: 500_000,
+          soft: 250_000,
+          hard: 436_000,
+          warn_at: 200_000
+        })
+        |> system_text()
+
+      refute text =~ "below the soft line"
+      refute text =~ "past the auto-summary line"
+      refute text =~ "hard limit"
+    end
+
+    test "no warn_at supplied means no band advice (the caller owns the threshold)" do
+      text =
+        Prompt.with_budget(base(), %{used: 210_000, window: 500_000, soft: 250_000, hard: 436_000})
+        |> system_text()
+
+      refute text =~ "below the soft line"
+    end
   end
 end

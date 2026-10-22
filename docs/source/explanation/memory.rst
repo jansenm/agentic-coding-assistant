@@ -51,6 +51,15 @@ context. The limits are visible in the sidebar ("soft at 250.0k tok" /
 limit ("· context at 144k tokens — compaction at … will summarize older
 messages") so it is never a silent surprise.
 
+The model sees the same numbers on every request. The budget block
+states both denominators — the percentage of the window, and the soft
+line with the distance to it ("Soft line 140k (20k away), hard 150k") —
+because with an absolute ceiling the percentage answers a different
+question than the one the decision uses: 11% of a 1M window is three
+quarters of the way to a 140k soft line. From 80% of the soft limit the
+block also advises acting at a step boundary — end the turn, or call the
+``compact`` tool — with a note first (ADR 040, amendment 2026-10-22).
+
 The human can also compact **on demand** with ``/compact`` (``ctrl-x
 c``): the older span is summarized now, regardless of the limits, for
 when the context is large but the thresholds have not been crossed (or
