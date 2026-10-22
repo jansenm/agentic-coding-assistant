@@ -21,3 +21,9 @@ config :ex_ratatui, detach_local_input: false
 # suite runs under a confining TEST DOUBLE by default; tests that exercise
 # real bwrap select it explicitly (and self-skip when it is unavailable).
 config :coding_agent, sandbox: CodingAgent.TestSandbox.Stub
+
+# The model catalog must not refresh in a test run: a refresh downloads ~11 MB
+# from llm_db's release host. `Catalog` then never arms its daily check, and
+# the pipeline is exercised directly through `Catalog.Refresh`'s parameterized
+# entry points, with local documents and a local fetcher.
+config :coding_agent, catalog_refresh: [interval_ms: :never]

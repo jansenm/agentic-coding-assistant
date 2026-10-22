@@ -26,6 +26,7 @@ defmodule CodingAgent.UI.Tui do
 
   alias CodingAgent.Core.Session
   alias CodingAgent.Core.Providers.{Catalog, Discovery}
+  alias CodingAgent.Core.Providers.Catalog.Refresh
   alias CodingAgent.Core.ToolCall
   alias CodingAgent.Core.Session.Compactor
   alias CodingAgent.Core.Session.Store
@@ -350,6 +351,12 @@ defmodule CodingAgent.UI.Tui do
       effective_id = (restored && restored.id) || id
 
       Session.subscribe(effective_id)
+
+      # and to the catalog itself, for the outcome of a manual refresh
+      # (`/catalog`): the session listens for the WINDOW re-resolve, but a
+      # failure moves no window, so only this subscriber can report it. A
+      # success needs nothing here — the sidebar follows the session.
+      Catalog.subscribe()
 
       # attach to the CURRENT state, not a stale idle assumption: the
       # session may already be running/interrupted (e.g. attached after
@@ -2451,6 +2458,20 @@ defmodule CodingAgent.UI.Tui do
     end
   end
 
+  # /catalog (ADR 039 amendment 2026-10-18 (2)): fetch llm_db's newest published
+  # snapshot and re-cut it for the installed pin, now. The reply means the
+  # refresh STARTED, not that it finished — it is a ~11 MB download plus a
+  # merge in the catalog process, and the window for a model the old copy did
+  # not know arrives through the existing `{:catalog, :updated}` path, which
+  # the session and this TUI already handle.
+  defp run_command_action(:refresh_catalog, _args, state) do
+    state = %{state | command_popup: nil}
+
+    case Catalog.refresh() do
+      :started -> {:noreply, status_note(state, "refreshing the model catalog…")}
+    end
+  end
+
   # commands whose action is a plain menu action: reuse the one resolver
   defp run_command_action(action, _args, state)
        when action in [
@@ -3480,6 +3501,14 @@ defmodule CodingAgent.UI.Tui do
     # instead of losing the user's y/n.
     state = note_failure(resync_dialog(state), "decision failed", reason)
     {:noreply, %{state | stop_confirm?: false}}
+  end
+
+  # A manual `/catalog` refresh did not land (ADR 039 amendment 2026-10-18
+  # (2)). No window moved — the failed refresh left the loaded copy in place —
+  # so there is nothing to re-resolve; this exists because the human who typed
+  # the command is waiting for an answer, and a silent no-op is not one.
+  def handle_info({:catalog, {:failed, reason}}, state) do
+    {:noreply, status_note(state, "catalog refresh failed: #{Refresh.describe(reason)}")}
   end
 
   # The catch-all MUST stay last: it matches any message, so any clause

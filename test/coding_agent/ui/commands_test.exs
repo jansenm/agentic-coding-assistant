@@ -34,8 +34,13 @@ defmodule CodingAgent.UI.CommandsTest do
 
   test "filter/1 matches by prefix and by summary, empty lists all" do
     assert length(Commands.filter("")) == length(Commands.all())
-    assert Enum.map(Commands.filter("mod"), & &1.name) == ["model"]
+    # by NAME prefix (nothing else is named "undo")
+    assert Enum.map(Commands.filter("und"), & &1.name) == ["undo"]
+    # by SUMMARY substring — "switch session" is in the summary, not the name
     assert "sessions" in Enum.map(Commands.filter("switch session"), & &1.name)
+    # the two combine: `mod` prefix-matches `model` AND matches `catalog`'s
+    # summary ("refresh the model catalog")
+    assert Enum.map(Commands.filter("mod"), & &1.name) == ["model", "catalog"]
     # the first token narrows; the rest is treated as the argument
     assert Enum.map(Commands.filter("model qw"), & &1.name) == ["model"]
   end
@@ -61,6 +66,7 @@ defmodule CodingAgent.UI.CommandsTest do
       :export => :special,
       :undo => :special,
       :compact => :special,
+      :refresh_catalog => :special,
       :switch_session => :menu,
       :switch_model => :menu,
       :subagents => :menu,

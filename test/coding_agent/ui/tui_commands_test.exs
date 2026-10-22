@@ -37,7 +37,8 @@ defmodule CodingAgent.UI.TuiCommandsTest do
     type(pid, "mod")
     popup = sync(pid).command_popup
     assert popup.query == "mod"
-    assert Enum.map(popup.matches, & &1.name) == ["model"]
+    # prefix-matches `model`, and `catalog`'s summary says "model catalog"
+    assert Enum.map(popup.matches, & &1.name) == ["model", "catalog"]
   end
 
   test "the palette renders the usage lines", %{root: root} do

@@ -12,19 +12,25 @@ defmodule CodingAgent.Core.Providers.Catalog do
   is the model's context window (ADR 037), and that is not needed until a
   turn runs.
 
-  This process owns the catalog LIFECYCLE (warm now, refresh later — a
-  timer is deliberately not wired yet) and is the single access point for
+  This process owns the catalog LIFECYCLE and is the single access point for
   our code: nobody calls `LLMDB` directly. Reads are lock-free (they read
-  llm_db's `:persistent_term` snapshot) and never queue behind the warm,
-  so a mount that races the load gets `:loading` and falls back instead of
-  blocking. A refresh (future `Process.send_after`) would call
-  `LLMDB.load/1` again and re-notify subscribers; llm_db swaps the
-  snapshot atomically by digest, so readers keep seeing a consistent one.
+  llm_db's `:persistent_term` snapshot) and never queue behind a load, so a
+  mount that races the warm gets `:loading` and falls back instead of
+  blocking. llm_db swaps the snapshot atomically by digest, so readers keep
+  seeing a consistent one.
+
+  It loads the copy `Catalog.Refresh` owns under `state_dir()` when that copy
+  is loadable, and llm_db's packaged snapshot otherwise (ADR 039 amendment
+  2026-10-18 (2)). The refresh itself — fetch, re-cut for the installed pin,
+  verify, rename — runs here too, on a daily timer and on `/catalog`; it never
+  blocks a mount, because reads do not touch this process.
   """
 
   use GenServer
 
   require Logger
+
+  alias CodingAgent.Core.Providers.Catalog.Refresh
 
   # The same registry the session events use (started by the application),
   # under a global key: the catalog is process-wide, not session-scoped.
@@ -119,39 +125,162 @@ defmodule CodingAgent.Core.Providers.Catalog do
   immediately (the caller re-resolves), so a subscriber never has to race
   the load. Duplicate deliveries are harmless: the consumer re-resolves
   idempotently.
+
+  A failed refresh is published as `{:catalog, {:failed, reason}}` instead
+  (ADR 039 amendment 2026-10-18 (2)): the load on disk is untouched by a
+  failed refresh, so no window moved and nothing needs re-resolving — but
+  the human who asked for the refresh needs the reason, and so does the log.
   """
   @spec subscribe() :: :ok
   def subscribe do
+    # Unregister first, like `Session.subscribe/1`: this key is `:duplicate`, so
+    # a caller that (re)subscribes — the TUI re-mounting on a session switch —
+    # would otherwise hold TWO entries and get every notification twice.
+    _ = Registry.unregister(@registry, @key)
     _ = Registry.register(@registry, @key, nil)
     if ready?(), do: send(self(), {:catalog, :updated})
     :ok
   end
 
+  @doc """
+  Refreshes the catalog copy now, in this process, and reloads from it.
+
+  `:started` means the refresh was queued, not that it finished: the fetch is
+  a ~11 MB download, and the caller (the TUI) must not block on it. The
+  outcome is published to subscribers — `{:catalog, :updated}` when a new copy
+  was written and loaded, `{:catalog, {:failed, reason}}` when it was not.
+  """
+  @spec refresh() :: :started
+  def refresh do
+    GenServer.cast(__MODULE__, :refresh)
+    :started
+  end
+
   @impl true
-  def init(_opts), do: {:ok, %{}, {:continue, :warm}}
+  def init(_opts), do: {:ok, %{timer: nil, armed?: false}, {:continue, :warm}}
 
   @impl true
   def handle_continue(:warm, state) do
     load()
     notify()
-    {:noreply, state}
+    {:noreply, arm(state)}
   end
 
-  # The one loader. A refresh (future timer) calls the same path. A load
-  # failure is logged, not fatal: an empty catalog just means every window
-  # falls back to the configured/default value.
+  # The daily check (ADR 039 amendment 2026-10-18 (2)). `Refresh.run/1` decides
+  # whether anything is due; when it is, `load/0` republishes the catalog and
+  # subscribers re-resolve. A failure is reported, never fatal: the catalog on
+  # disk is still the one that loaded.
+  @impl true
+  def handle_info(:refresh, state) do
+    {:noreply, attempt(state, force: false)}
+  end
+
+  def handle_info(_msg, state), do: {:noreply, state}
+
+  @impl true
+  def handle_cast(:refresh, state) do
+    {:noreply, attempt(state, force: true)}
+  end
+
+  # The timer does not force: a copy the human refreshed by hand two hours
+  # before the tick is younger than the interval, `Refresh.due?/2` says so, and
+  # the tick costs a `File.stat/1` instead of an 11 MB download for a cut we
+  # already have. The verb (`/catalog`) does force: a human who typed the
+  # command wants the copy updated now, not the policy re-explained to them.
+  defp attempt(state, opts) do
+    # Whatever timer was pending is spent by the message that got here (or
+    # belongs to a refresh the verb pre-empted): cancel it, so "one live timer"
+    # stays true no matter how the attempt was triggered.
+    if state.timer, do: Process.cancel_timer(state.timer)
+    state = %{state | timer: nil}
+
+    case Refresh.run(opts) do
+      {:ok, :updated} ->
+        load()
+        notify()
+        arm(state)
+
+      {:ok, _unchanged_or_skipped} ->
+        arm(state)
+
+      {:error, reason} ->
+        Logger.warning("model catalog refresh failed: #{Refresh.describe(reason)}")
+        notify_failed(reason)
+        arm(state)
+    end
+  end
+
+  # The timer is armed from ONE place, after every attempt: a failure must not
+  # leave the catalog without a next check, and the ref is kept so a refresh that
+  # arrives first cancels it instead of stacking a second one.
+  defp arm(state) do
+    case Refresh.interval_ms() do
+      :never ->
+        state
+
+      ms ->
+        delay = if state.armed?, do: ms, else: min(ms, Refresh.first_check_ms())
+        %{state | timer: Process.send_after(self(), :refresh, delay), armed?: true}
+    end
+  end
+
+  # The one loader. A refresh calls the same path. The artifact is tried FIRST
+  # and the packaged snapshot second, with the reason logged: a copy that does
+  # not load would otherwise leave llm_db's store empty, and the next read
+  # would pay llm_db's own lazy load — the blocking load ADR 039 exists to get
+  # off the mount path. A load failure is logged, not fatal: an empty catalog
+  # just means every window falls back to the configured/default value.
   defp load do
-    case LLMDB.load() do
-      {:ok, _snapshot} -> Logger.debug("model catalog loaded")
-      {:error, reason} -> Logger.warning("model catalog load failed: #{inspect(reason)}")
+    case load_source(Refresh.source(Refresh.artifact_path())) do
+      :ok -> :ok
+      :error -> load_source(:packaged)
+    end
+  end
+
+  defp load_source(artifact = {:file, _path}) do
+    case LLMDB.load(snapshot_source: artifact) do
+      {:ok, _snapshot} ->
+        Logger.debug("model catalog loaded from #{inspect(artifact)}")
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "model catalog: #{Refresh.describe(reason)} — falling back to the packaged snapshot"
+        )
+
+        :error
     end
   rescue
-    e -> Logger.warning("model catalog load crashed: #{Exception.message(e)}")
+    e ->
+      Logger.warning("model catalog load crashed: #{Exception.message(e)}")
+      :error
+  end
+
+  defp load_source(:packaged) do
+    case LLMDB.load(snapshot_source: :packaged) do
+      {:ok, _snapshot} ->
+        Logger.debug("model catalog loaded from the packaged snapshot")
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("packaged model catalog load failed: #{Refresh.describe(reason)}")
+        :error
+    end
+  rescue
+    e ->
+      Logger.warning("packaged model catalog load crashed: #{Exception.message(e)}")
+      :error
   end
 
   defp notify do
     Registry.dispatch(@registry, @key, fn entries ->
       for {pid, _} <- entries, do: send(pid, {:catalog, :updated})
+    end)
+  end
+
+  defp notify_failed(reason) do
+    Registry.dispatch(@registry, @key, fn entries ->
+      for {pid, _} <- entries, do: send(pid, {:catalog, {:failed, reason}})
     end)
   end
 
