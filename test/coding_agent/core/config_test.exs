@@ -226,6 +226,77 @@ defmodule CodingAgent.Core.ConfigTest do
       assert Config.compaction_limits(snapshot, nil) == {200_000, 100_000, 150_000}
     end
 
+    test "the absolute token limits default to nil (the ratio keys govern)" do
+      empty = %Config{config: %{}}
+      assert Config.compaction_soft_tokens(empty) == nil
+      assert Config.compaction_hard_tokens(empty) == nil
+    end
+
+    test "an absolute hard limit bounds the cost of a long turn (amendment 2026-10-22)" do
+      # A 1M window at the default 50% would summarize an idle session at
+      # 500k; the owner pays ~1 cent below 150k and 7 cents at ~270k, so
+      # the ceiling is the number that matters, not the fraction of the
+      # window. Soft collapses onto it (the order must not invert), so a
+      # lone hard ceiling moves BOTH lines — set the soft key too when the
+      # idle trigger should stay higher.
+      snapshot = %Config{
+        config: %{"context_window" => 1_000_000, "compaction_hard_tokens" => 150_000}
+      }
+
+      assert Config.compaction_limits(snapshot, nil) == {1_000_000, 150_000, 150_000}
+    end
+
+    test "both absolute limits bound a large window independently" do
+      snapshot = %Config{
+        config: %{
+          "context_window" => 1_000_000,
+          "compaction_soft_tokens" => 140_000,
+          "compaction_hard_tokens" => 150_000
+        }
+      }
+
+      assert Config.compaction_limits(snapshot, nil) == {1_000_000, 140_000, 150_000}
+    end
+
+    test "an absolute soft limit lowers only the idle trigger" do
+      snapshot = %Config{
+        config: %{"context_window" => 400_000, "compaction_soft_tokens" => 120_000}
+      }
+
+      # derived: soft 200k, hard 336k; the ceiling moves soft alone
+      assert Config.compaction_limits(snapshot, nil) == {400_000, 120_000, 336_000}
+    end
+
+    test "an absolute limit never RAISES a derived one past what the window holds" do
+      # 900k on a 400k window is a no-op dressed as a setting, not a
+      # licence to send beyond the window.
+      snapshot = %Config{
+        config: %{
+          "context_window" => 400_000,
+          "compaction_soft_tokens" => 900_000,
+          "compaction_hard_tokens" => 900_000
+        }
+      }
+
+      assert Config.compaction_limits(snapshot, nil) == {400_000, 200_000, 336_000}
+    end
+
+    test "a hard ceiling below the soft one collapses soft onto it (order never inverts)" do
+      snapshot = %Config{
+        config: %{"context_window" => 1_000_000, "compaction_hard_tokens" => 100_000}
+      }
+
+      assert Config.compaction_limits(snapshot, nil) == {1_000_000, 100_000, 100_000}
+    end
+
+    test "the absolute limits honour config.toml and ignore a non-positive value" do
+      assert Config.compaction_soft_tokens(%Config{config: %{"compaction_soft_tokens" => 90_000}}) ==
+               90_000
+
+      assert Config.compaction_hard_tokens(%Config{config: %{"compaction_hard_tokens" => 0}}) ==
+               nil
+    end
+
     test "context_window honours a config.toml value over the catalog/default" do
       snapshot = %Config{config: %{"context_window" => 123_456}}
       assert Config.context_window(snapshot, "ollama:whatever") == 123_456

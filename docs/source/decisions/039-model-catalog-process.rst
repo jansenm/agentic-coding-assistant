@@ -181,7 +181,7 @@ It is a reasonable *refresh* source behind the same ``Catalog`` seam (Open
 question 1), not a replacement for the packaged read.
 
 Amendment 2026-10-18 (2): the catalog refreshes a copy it owns under ``$HOME``
------------------------------------------------------------------------------
+-------------------------------------------------------------------------------
 
 **Status: Accepted (amendment to the accepted ADR 039).**
 

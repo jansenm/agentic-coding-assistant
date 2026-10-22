@@ -247,6 +247,45 @@ defmodule CodingAgent.Core.Config do
   def compaction_hard_reserve_tokens(scope_root),
     do: compaction_hard_reserve_tokens(snapshot(scope_root))
 
+  @doc """
+  An ABSOLUTE soft limit in tokens (ADR 037, amendment 2026-10-22), or
+  `nil` when unset.
+
+  The ratio keys above describe what the model can HOLD; a per-token
+  price makes what a request may COST a separate bound the user owns.
+  `compaction_soft_ratio` cannot express it: 0.15 is 157k on a 1M window
+  and 19k on a 128k one, so the same spend ceiling would mean different
+  things per model. This key is the number itself.
+
+  Composed by `min` with the window-derived limit (`compaction_limits/2`):
+  a configured ceiling LOWERS a limit, never raises it past what the
+  window can hold.
+  """
+  @spec compaction_soft_tokens(String.t() | nil | t()) :: pos_integer() | nil
+  def compaction_soft_tokens, do: compaction_soft_tokens(nil)
+
+  def compaction_soft_tokens(%__MODULE__{} = snapshot),
+    do: configured_positive_count(snapshot, "compaction_soft_tokens")
+
+  def compaction_soft_tokens(scope_root), do: compaction_soft_tokens(snapshot(scope_root))
+
+  @doc """
+  An ABSOLUTE hard limit in tokens (ADR 037, amendment 2026-10-22), or
+  `nil` when unset — the pre-call ceiling: no request is sent past it.
+
+  This is the key that bounds the cost of a long turn, because the hard
+  pass runs pre-call, busy or not; the soft key only decides when an
+  IDLE session summarizes. See `compaction_soft_tokens/1` for why the
+  ratio cannot express it, and for the `min` composition.
+  """
+  @spec compaction_hard_tokens(String.t() | nil | t()) :: pos_integer() | nil
+  def compaction_hard_tokens, do: compaction_hard_tokens(nil)
+
+  def compaction_hard_tokens(%__MODULE__{} = snapshot),
+    do: configured_positive_count(snapshot, "compaction_hard_tokens")
+
+  def compaction_hard_tokens(scope_root), do: compaction_hard_tokens(snapshot(scope_root))
+
   # A positive float (or integer) ratio in the layered config, else nil.
   defp configured_ratio(%__MODULE__{config: config}, key) do
     case config[key] do
@@ -356,6 +395,19 @@ defmodule CodingAgent.Core.Config do
   layered config per frame (the CPU-storm lesson). ``soft`` is clamped
   to ``hard`` so the order never inverts on a small window.
 
+  Two kinds of key compose here, both `min`-ed (amendment 2026-10-22):
+
+    * the RATIO keys describe what the window can HOLD —
+      ``soft = round(window * compaction_soft_ratio)`` and
+      ``hard = window - compaction_hard_reserve_tokens``;
+    * the ABSOLUTE keys describe what a request may COST —
+      ``compaction_soft_tokens`` / ``compaction_hard_tokens``. A price
+      per token makes cost linear in the context, and a ratio cannot
+      express a ceiling: 0.15 is 157k on a 1M window and 19k on a 128k
+      one. An absolute key LOWERS a limit and never raises it past what
+      the window holds, so configuring one on a large model is a cost
+      bound, not a correctness risk.
+
   The hard limit is ``window - reserve`` but ALSO floored at
   ``window * @hard_window_floor_ratio`` (0.75). Without the floor a
   window smaller than the reserve collapses ``hard`` to 1 — the reserve
@@ -397,10 +449,28 @@ defmodule CodingAgent.Core.Config do
   defp limits_for_window(%__MODULE__{} = snapshot, window) do
     reserve = compaction_hard_reserve_tokens(snapshot)
     floor = round(window * @hard_window_floor_ratio)
-    hard = max(window - reserve, floor)
+    hard = min(max(window - reserve, floor), absolute(snapshot, :hard, window))
     ratio = compaction_soft_ratio(snapshot)
-    soft = min(round(window * ratio), hard)
+    soft = min(min(round(window * ratio), absolute(snapshot, :soft, window)), hard)
     {window, max(soft, 1), max(hard, 1)}
+  end
+
+  # An absolute ceiling from config (`compaction_soft_tokens` /
+  # `compaction_hard_tokens`), or the window itself when unset — so `min`
+  # leaves the derived limit alone. Clamped to the window: a ceiling
+  # ABOVE it would be a no-op dressed as a setting.
+  defp absolute(%__MODULE__{} = snapshot, :soft, window) do
+    case compaction_soft_tokens(snapshot) do
+      nil -> window
+      tokens -> min(tokens, window)
+    end
+  end
+
+  defp absolute(%__MODULE__{} = snapshot, :hard, window) do
+    case compaction_hard_tokens(snapshot) do
+      nil -> window
+      tokens -> min(tokens, window)
+    end
   end
 
   @doc """

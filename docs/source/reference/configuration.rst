@@ -151,6 +151,22 @@ naming the file (ADR 014).
      - ``64000``
      - Tokens held back under the window for the hard (pre-call)
        compaction limit (ADR 037): ``hard = window - reserve``.
+   * - ``compaction_soft_tokens``
+     - integer
+     - *unset*
+     - An ABSOLUTE soft limit in tokens (ADR 037, amendment 2026-10-22):
+       an idle session summarizes at this size, whatever the window.
+       Composed with the ratio by ``min`` — it can only LOWER the
+       derived limit. Use it to bound what a request may COST. A value
+       above the window is clamped to the window.
+   * - ``compaction_hard_tokens``
+     - integer
+     - *unset*
+     - An ABSOLUTE hard limit in tokens (ADR 037, amendment 2026-10-22):
+       no request is sent past it, busy or not, so it is the ceiling
+       that bounds a long turn's cost. Composed with the reserve by
+       ``min`` (it can only lower it); ``soft`` collapses onto it if the
+       two cross. A value above the window is clamped to the window.
    * - ``store``
      - string
      - *unset*

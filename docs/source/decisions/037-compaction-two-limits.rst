@@ -20,6 +20,10 @@ Compaction: a soft idle limit, a hard reserve, and lossless summaries
    **pre-call, busy or not**. Decision 5 (a fixed summary template and a
    carried-forward prior summary) was added 2026-09-30 after reading a
    sibling implementation; see :doc:`../explanation/compaction-strategies`.
+   The amendment of 2026-10-22 adds two ABSOLUTE token keys
+   (``compaction_soft_tokens`` / ``compaction_hard_tokens``) so the same
+   two limits can express a COST ceiling: a fraction of the window says
+   what the model can hold, not what a request may cost.
 
 Context
 -------
@@ -227,6 +231,13 @@ Mechanism
   is replaced by ``soft_limit/1`` / ``hard_limit/1`` computed from the
   resolved window. One reader stays (``Session.Compactor``), and the
   sidebar renders those.
+- **``compaction_soft_tokens`` / ``compaction_hard_tokens`` (amendment
+  2026-10-22)** are two more layered keys, read in ``limits_for_window/2``
+  where they cap the derived numbers with ``min`` (and are clamped to the
+  window, so a value above it is a visible no-op rather than a licence to
+  exceed it). No new code path: ``Compactor.soft_limit/1`` and
+  ``hard_limit/1`` return the capped numbers, and the sidebar, the budget
+  block, the trigger and the trim fallback read them unchanged.
 - ``Session.State`` carries the resolved ``context_window`` and the
   derived limits, so a resume does not re-read config the way
   ``max_tool_rounds``/``reasoning_effort`` already do not.
@@ -311,3 +322,104 @@ Open questions
    cap. If the cap changes (or a provider's own output ceiling differs),
    the reserve must follow; is the reserve better expressed as
    ``exec_cap_bytes / 4`` than as a free-standing token count?
+
+Amendment 2026-10-22: two limits can be a COST ceiling, not only a fraction of the window
+--------------------------------------------------------------------------------------------
+
+**Status: Accepted (amendment to the accepted ADR 037); implemented with
+this record.**
+
+Context
+~~~~~~~
+
+Both limits in this ADR are expressed as a fraction of the model window,
+because the question they answered was "what can the model *hold*". The
+owner's question is a different one: what a request may **cost**. Measured
+on `ollama_cloud:deepseek-v4.1-flash` (window 1048576, so soft 524288 /
+hard 984576 under the default ratio and reserve): a call at roughly
+150 000 tokens of context costs about **1 cent**; the two calls
+immediately before the last compaction cost about **7 cents** each at
+roughly 270 000 tokens. Cost is therefore superlinear enough that the
+ceiling is a NUMBER, not a share — and the share on this window sits at
+524k, where a call costs several times the 7-cent figure.
+
+The ratio cannot express the ceiling, and no value of it would do: 0.15 is
+157k on this model and 19k on a 128k one. The same spend limit would mean
+two different things, and switching models would silently move it. What is
+wanted is the number itself, in `config.toml`, where the price is knowable.
+
+Decision
+~~~~~~~~
+
+**1. Two absolute keys, `min`-composed with the derived limits.**
+`compaction_soft_tokens` and `compaction_hard_tokens` (layered, project
+over global) each cap their limit::
+
+    hard = min(max(window - reserve, window * 0.75), compaction_hard_tokens)
+    soft = min(round(window * soft_ratio), compaction_soft_tokens, hard)
+
+`min`, never `max`: a configured ceiling LOWERS a limit. It cannot raise
+one past what the window holds, so setting `compaction_hard_tokens =
+150000` on a 128k model is not a way to send 150k into a 128k window —
+the window branch still governs, and the key is clamped to the window
+outright so a value above it is visibly a no-op rather than a surprise.
+The two kinds of key answer the two different questions side by side, and
+a user who sets neither keeps today's behaviour exactly (verified: every
+existing limits test passes unchanged).
+
+**2. `hard` is the key that bounds a turn's cost.** The hard limit is the
+only one of the two that runs **pre-call, busy or not** (decision 3), so
+it is the one that stops a long turn: every request past it is summarized
+down first, and if the summarize fails, trimmed. `soft` only decides when
+an IDLE session spends provider time summarizing, so on its own it bounds
+nothing about a running turn — the 7-cent calls happened inside one.
+Setting both is therefore the honest configuration (measured example:
+`compaction_soft_tokens = 140000`, `compaction_hard_tokens = 150000`), and
+setting only `hard` moves `soft` with it, because `soft` is clamped to
+`hard` so the order never inverts — a deliberate consequence, since a soft
+pass that fires above the hard ceiling could never fire at all.
+
+**3. The sidebar and the prompt block need no change.** Both already read
+`Compactor.soft_limit/1` / `hard_limit/1`, which read the numbers the
+session resolved at init (decision 2 of this ADR: the display must not
+re-derive what the decision uses). The lines a cost ceiling moves are
+therefore the same lines the human was already watching, which is the
+property that makes the setting checkable from the screen.
+
+Consequences
+~~~~~~~~~~~~
+
+- A user who pays per token can now bound a session by money instead of by
+  a fraction of a window they may not even know.
+- Compaction fires EARLIER on a large-window model than the ratio alone
+  would decide — a 1M window with a 150k hard ceiling summarizes before
+  every call past 150k. That is more compaction per session (each pass
+  losing some detail) in exchange for a cost ceiling; the trade is the
+  user's to make, which is why both keys default to unset.
+- Nothing about the failure paths changes: the hard pass's trim fallback,
+  the backoff and the idle fingerprint guard all operate on whatever
+  number `hard_limit/1` returns.
+- **A tight ceiling makes the summarize calls themselves a share of the
+  spend.** Each summarize request sends the rendered old span, capped at
+  300 000 chars (~75k tokens, `Compaction.render/2`), so at a 150k
+  ceiling one compaction costs roughly half of what the avoided call
+  would have cost at 270k. Summarizing therefore pays off when the
+  context would have grown well past the ceiling before the next
+  boundary, and it costs when a session hovers at the line and compacts
+  every turn. The soft key is the lever: keep it below the hard one (so
+  the idle pass does the work once with headroom) and the pre-call pass
+  stays a safety net instead of the routine.
+- The reference table is checked against the code by
+  `test/coding_agent/docs/config_reference_test.exs`, so the two new keys
+  are documented or the suite fails.
+
+Open question (new)
+~~~~~~~~~~~~~~~~~~~
+
+1. **A cost ceiling in currency, not tokens?** A provider prices per
+   token and the catalog carries no prices, so 150k tokens is "about a
+   cent" only for the model the owner measured. A `cost_budget` in dollars
+   would need per-model pricing that llm_db does not ship — deferred until
+   the catalog has one, since a currency key computed from a guessed price
+   would be worse than the token ceiling it replaces.
+

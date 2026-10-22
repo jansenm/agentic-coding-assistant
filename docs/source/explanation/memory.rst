@@ -23,6 +23,16 @@ applied **pre-call, busy or not**, so a single big tool result cannot
 overflow the window mid-turn. If the window is so small that hard would
 fall at or below soft, soft collapses onto hard.
 
+Either limit can additionally be capped by an **absolute** token count
+(``compaction_soft_tokens`` / ``compaction_hard_tokens``, amendment
+2026-10-22). A fraction of the window says what the model can *hold*; a
+price per token makes what a request may *cost* a separate bound, and
+cost is linear in the context while the window can be ten times larger
+than the point where a call stops being cheap. The absolute keys compose
+by ``min`` — they lower a limit and never raise it past the window — and
+``hard`` is the one that bounds a running turn, because it is the one
+checked before every call.
+
 The window is resolved once at session init: the layered
 ``context_window`` in ``config.toml``, then the catalog (llm_db) window
 for the model, then a 500k fallback. A cloud model absent from the
