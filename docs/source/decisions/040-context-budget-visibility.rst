@@ -293,3 +293,52 @@ Consequences:
   hand-built test state) has no block to send, and refusing loudly there
   would fail a request over a display detail.
 
+
+Amendment 2026-10-24: the block speaks in bands, because numbers cost the cache
+-------------------------------------------------------------------------------
+
+**Status: Accepted (amendment to the accepted ADR 040); implemented with
+this record.**
+
+The block carried every number a decision could be made on — projected
+size, window percentage, distance to each line, the tool-round counter —
+and it is appended to the *system message*, i.e. ahead of every other
+byte of the request. Two of those numbers move on every round of a turn
+(``used`` grows, ``rounds`` increments), so the first message differed
+between round 1 and round 2, and a provider that caches on the exact
+prefix could never hit.
+
+Measured on this harness's own call path, 9 049-token prompt, one
+variable:
+
+- stable system message (warm): 8 960 of 9 049 tokens cached — 99 %
+- the same request plus one line in the first message,
+  ``Tool rounds this turn: 2 / 100``: **0 of 9 059** — 0 %
+- the stable system message again: 8 960 of 9 049 — 99 %
+
+One line cost the entire prefix and removing it restored it. At this
+provider's prices the difference is roughly sevenfold per call on a long
+context (200k tokens: ~$0.004 cached versus ~$0.030 uncached), paid on
+every round of every turn.
+
+The block now states a BAND and no number: room, approaching the soft
+line, past it, at the hard limit. The tool-round budget is stated only
+when most of it is used. Within a band the text is byte-identical, so the
+first message is stable for most of a turn and the prefix cache hits; a
+band flip costs one miss per turn instead of one per round.
+
+Consequences:
+
+- The model loses the exact distances. It keeps the decision ADR 040
+  asked for — act at a step boundary before the hard line forces the
+  summary — and the human keeps the numbers, which is where ADR 029's
+  "the display must not show a different value than the decision uses"
+  still applies: the sidebar reads the same state the band does.
+- The calm case still names the ``compact`` tool (OQ1). A constant line
+  costs no cache, so the lever stays in front of the model before it is
+  at a wall.
+- ``ContextBudget`` keeps all seven fields. The struct's guarantee is
+  unchanged — a missing field is still a compile error — even though
+  ``window`` now only feeds the "is there a block at all" guard.
+- The prompt files (``default.txt``, ``claude.txt``) describe the line as
+  a band; the old sentence promised "how full the window is".

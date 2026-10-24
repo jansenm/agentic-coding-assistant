@@ -223,31 +223,35 @@ defmodule CodingAgent.Core.Session.Prompt do
   environment and todo blocks: rebuilt from live session state every
   request, so it is always current and compaction cannot eat it.
 
-  The model gets the SAME numbers the human sees in the sidebar (ADR 029
-  — the display must not show a different value than the decision uses):
-  the projected context size, the window, and the two auto-summary lines.
+  The block speaks in BANDS, never in numbers. The soft/hard passes fire
+  on the same numbers as before, and the block tells the model which line
+  it is near so it can choose to finish a step and end its turn (which
+  triggers the soft pass) rather than have it happen mid-think.
 
-  The automatic policy is unchanged: the soft/hard passes fire on the
-  same numbers as before, and the block tells the model when they happen
-  so it can choose to finish a step and end its turn (which triggers the
-  soft pass) rather than have it happen mid-think. When nothing is near a
-  limit the block is still sent — one constant-size line per request — so
-  the model learns the metric instead of meeting it only at the wall.
+  It used to carry the exact counts — projected size, window percentage,
+  distance to each line, the round counter — and those moved on every
+  round of a turn. Because the block sits in the system message, ahead of
+  every other byte of the request, a provider caching on the exact prefix
+  could never hit: measured at 8 960 of 9 049 tokens cached with a stable
+  first message and 0 with one line changed. The numbers still exist, in
+  the sidebar, for the human (ADR 029); the model acts on the band.
 
   It is not purely "visibility" any more: since the `compact` tool exists
   (ADR 040 OQ1, answered 2026-09-30) the block also names that lever, so
   the model can summarize NOW instead of only ending its turn. The lever
-  is mentioned in the calm case too, so
-  the model knows the verb exists before it is at a wall.
+  is mentioned in the calm case too — one line that never changes costs
+  no cache — so the model knows the verb exists before it is at a wall.
 
-  Takes a `%ContextBudget{}`, not a map: seven numbers travel from
-  `Session` to this module and every one of them is required to render a
-  truthful line, so a missing one is a compile error at the producer
-  instead of a number that quietly disappears from the block.
+  Takes a `%ContextBudget{}`, not a map: every field travels from
+  `Session` to this module, so a missing one is a compile error at the
+  producer instead of a band that silently never fires.
   """
   @spec with_budget(ReqLLM.Context.t(), ContextBudget.t()) :: ReqLLM.Context.t()
   def with_budget(context, %ContextBudget{window: window} = budget) when window > 0 do
-    append_system_block(context, budget_block(budget))
+    case budget_block(budget) do
+      "" -> context
+      block -> append_system_block(context, block)
+    end
   end
 
   def with_budget(context, _), do: context
@@ -375,65 +379,30 @@ defmodule CodingAgent.Core.Session.Prompt do
 
   defp ask_block(_), do: nil
 
-  # The budget block text. `used` is the projected tokens (provider count or
-  # chars/4, whichever is larger — the same value the compaction decision
-  # uses); soft is the turn-end trigger, hard the pre-call one. `rounds` /
-  # `max_rounds` name the TOOL-ROUND budget the guard checks (ADR 025); the
-  # model could not see that number, only its own decoded state blob
-  # (harness feedback, 2026-10-01). All of it comes from one
-  # `%ContextBudget{}`, so a missing field cannot render as a missing clause.
-  defp budget_block(%ContextBudget{used: used, window: window, soft: soft, hard: hard} = budget) do
-    pct = trunc(used * 100 / max(window, 1))
-
-    base =
-      "Context budget: ~#{k(used)} / #{k(window)} tokens (#{pct}%). " <>
-        "Soft line #{k(soft)}#{distance_clause(used, soft)}, " <>
-        "hard #{k(hard)}#{distance_clause(used, hard)}. " <>
-        "Older messages are summarized automatically at the soft line when your turn ends, " <>
-        "and forced at the hard line before a call; you may also call the `compact` tool " <>
-        "any time to summarize the older span now and free room."
-
-    base = base <> rounds_clause(budget)
-
-    case guidance(used, soft, hard, budget.warn_at) do
-      nil -> base
-      guidance -> base <> "\n" <> guidance
-    end
+  # The budget block, as a BAND. `used` is the projected tokens (provider
+  # count or chars/4, whichever is larger — the same value the compaction
+  # decision uses); soft is the turn-end trigger, hard the pre-call one.
+  # `rounds`/`max_rounds` are the TOOL-ROUND budget the guard checks
+  # (ADR 025).
+  #
+  # Every number left this text (ADR 040, amendment 2026-10-24). They
+  # moved on every round of a turn, and the block sits in the system
+  # message — ahead of every other byte — so a provider caching on the
+  # exact prefix could never hit: measured 8 960 of 9 049 tokens cached
+  # with a stable first message, 0 with one line changed. The numbers are
+  # still in the sidebar for the human (ADR 029); the model acts on the
+  # band, which is the same decision ADR 040 asked for.
+  defp budget_block(%ContextBudget{} = budget) do
+    [context_band(budget), rounds_band(budget)]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join("\n")
   end
 
-  # The DISTANCE to each line, which is the number a decision can be made
-  # on. The percentage above is the window's, and the two are the same
-  # question only while the limits are a fraction of the window: with an
-  # absolute ceiling (`compaction_soft_tokens`) a 1M-window model at 110k
-  # shows "11%", which reads as calm while the soft line is 30k away.
-  # Measured in the model's own words (review of the live store):
-  # "~110k / 1000k tokens (11%). That's misleading: on a 1M-window model
-  # with soft at 140k, 11% sounds calm." Both denominators are stated, and
-  # each line carries its distance — hard's distance is the one that
-  # matters in the band, because there the summary is FORCED (ADR 040,
-  # amendment 2026-10-22).
-  defp distance_clause(used, limit) when used >= limit, do: " (passed)"
-  defp distance_clause(used, limit), do: " (#{k(limit - used)} away)"
-
-  # The tool-round line: the guard the model cannot otherwise see (ADR 025).
-  # Both numbers are required fields now, so there is no "no line" case and
-  # no unbounded variant: `max_rounds` always resolves through
-  # `Config.max_tool_rounds/1`, which has a built-in default.
-  defp rounds_clause(%ContextBudget{rounds: rounds, max_rounds: max}),
-    do: " Tool rounds this turn: #{rounds} / #{max}."
-
-  # The action hint, only once the model is actually near a line. Keeping it
-  # out of the calm case avoids nagging a session that has room.
-  #
-  # The middle band is the amendment of 2026-10-22: below the soft line there
-  # used to be NO advice at all, and the model still never called `compact`
-  # (measured over 5 135 tool calls in seven stored sessions: zero calls,
-  # while the harness auto-compacted 23 times). It saw the line, quoted it in
-  # its reasoning, and had nothing to act on until the line was already
-  # behind it. `warn_at` is `Compactor.warn_threshold/1` — the SAME function
-  # the human's own approaching note uses, so the advice to the model and the
-  # note to the human cannot fire at different numbers (ADR 029).
-  defp guidance(used, soft, hard, warn_at) do
+  # The calm line still names the lever (ADR 040 OQ1: the model should
+  # know the verb exists before it is at a wall) — and being constant, it
+  # costs no cache. Below the warn line it is the ONLY line, which is what
+  # makes the first message byte-stable for most of a turn.
+  defp context_band(%ContextBudget{used: used, soft: soft, hard: hard, warn_at: warn_at}) do
     cond do
       used >= hard ->
         "You are at the hard limit: older messages will be summarized before your next " <>
@@ -447,21 +416,39 @@ defmodule CodingAgent.Core.Session.Prompt do
           "summarization."
 
       used >= warn_at ->
-        "You are #{k(soft - used)} below the soft line. Two ways to act before the " <>
-          "hard limit forces it: end your turn at a step boundary (the idle pass then " <>
-          "summarizes with headroom, at no latency cost to your next prompt), or call " <>
-          "`compact` to free room inside this turn. Either way, put durable facts " <>
-          "(paths, numbers, decisions) in a todo's `notes` first — notes survive " <>
+        "You are approaching the soft line. Two ways to act before the hard limit " <>
+          "forces it: end your turn at a step boundary (the idle pass then summarizes " <>
+          "with headroom, at no latency cost to your next prompt), or call `compact` " <>
+          "to free room inside this turn. Either way, put durable facts (paths, " <>
+          "numbers, decisions) in a todo's `notes` first — notes survive " <>
           "summarization, older messages do not."
+
+      true ->
+        "Context budget: there is room. The `compact` tool summarizes the older span " <>
+          "when a step needs more headroom."
+    end
+  end
+
+  # The tool-round band: the guard the model cannot otherwise see (ADR 025),
+  # now stated only when it matters. One flip near the end of a long turn is
+  # one cache miss; a counter on every round was one per round.
+  @round_band_fraction 0.8
+
+  defp rounds_band(%ContextBudget{rounds: rounds, max_rounds: max}) when max > 0 do
+    cond do
+      rounds >= max ->
+        "This turn has reached its tool-round budget; the harness wraps the turn up now."
+
+      rounds >= ceil(max * @round_band_fraction) ->
+        "This turn has used most of its tool-round budget; finish the current step " <>
+          "rather than opening a new one."
 
       true ->
         nil
     end
   end
 
-  defp k(n) when n >= 1_000_000, do: "#{Float.round(n / 1_000_000, 1)}M"
-  defp k(n) when n >= 1_000, do: "#{div(n, 1_000)}k"
-  defp k(n), do: to_string(n)
+  defp rounds_band(_), do: nil
 
   # The upkeep rule, ON THE BLOCK ITSELF and only when a list exists. It is
   # the ONE sentence the tool description does not carry: that a FINISHED

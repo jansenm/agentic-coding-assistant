@@ -209,7 +209,7 @@ defmodule CodingAgent.Core.Session.TurnBudgetTest do
       [%ReqLLM.Message{role: :system} = sys | _] = ReqLLM.Context.to_list(ctx)
       text = Enum.map_join(sys.content, "", &(&1.text || ""))
       assert text =~ "Context budget:"
-      assert text =~ "tokens"
+      assert text =~ "there is room"
     end
 
     test "wire_request/1 passes the approaching threshold the human's note uses" do
@@ -235,8 +235,8 @@ defmodule CodingAgent.Core.Session.TurnBudgetTest do
       [%ReqLLM.Message{role: :system} = sys | _] = ReqLLM.Context.to_list(ctx)
       text = Enum.map_join(sys.content, "", &(&1.text || ""))
 
-      assert text =~ "below the soft line"
-      assert text =~ "Soft line "
+      assert text =~ "approaching the soft line"
+      refute text =~ "Soft line "
     end
   end
 

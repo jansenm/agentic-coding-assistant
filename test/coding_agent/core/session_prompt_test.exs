@@ -403,13 +403,15 @@ defmodule CodingAgent.Core.Session.PromptTest do
       )
     end
 
-    test "states the usage, the window, and both limits" do
+    test "states the band, and no number at all" do
       text = Prompt.with_budget(base(), budget(used: 350_000)) |> system_text()
 
-      assert text =~ "350k / 500k"
-      assert text =~ "70%"
-      assert text =~ "250k"
-      assert text =~ "436k"
+      # 350k of 436k hard: past the soft line, before the hard one
+      assert text =~ "past the auto-summary line"
+      refute text =~ "350k"
+      refute text =~ "70%"
+      refute text =~ "250k"
+      refute text =~ "436k"
     end
 
     test "hints past the soft line, and says notes survive summarization" do
@@ -422,7 +424,7 @@ defmodule CodingAgent.Core.Session.PromptTest do
     test "is calm (no hint) when there is room" do
       text = Prompt.with_budget(base(), budget(used: 100_000)) |> system_text()
 
-      assert text =~ "100k / 500k"
+      assert text =~ "there is room"
       refute text =~ "past the auto-summary line"
       refute text =~ "hard limit"
     end
@@ -440,44 +442,55 @@ defmodule CodingAgent.Core.Session.PromptTest do
 
     test "names the compact tool as a lever, calm and past the lines (ADR 040 OQ1)" do
       for used <- [100_000, 300_000, 440_000] do
-        assert Prompt.with_budget(base(), budget(used: used)) |> system_text() =~ "`compact` tool"
+        assert Prompt.with_budget(base(), budget(used: used)) |> system_text() =~ "`compact`"
       end
-    end
 
-    test "names the tool-round budget the guard checks" do
-      text = Prompt.with_budget(base(), budget(rounds: 54, max_rounds: 200)) |> system_text()
-
-      assert text =~ "Tool rounds this turn: 54 / 200."
-    end
-
-    test "states the distance to each line, which is the operative denominator" do
+      # the calm line names the TOOL, so the verb exists before the wall
       calm = Prompt.with_budget(base(), budget(used: 100_000)) |> system_text()
-      assert calm =~ "Soft line 250k (150k away), hard 436k (336k away)."
-
-      past = Prompt.with_budget(base(), budget(used: 300_000)) |> system_text()
-      assert past =~ "Soft line 250k (passed), hard 436k (136k away)."
+      assert calm =~ "`compact` tool"
     end
 
-    test "an absolute soft ceiling is not hidden behind the window percentage" do
-      # the live shape the amendment was written for: 1M window, 140k soft
-      text =
+    test "the tool-round budget is stated as a band, not as a counter" do
+      # 54 of 200 is quiet …
+      text = Prompt.with_budget(base(), budget(rounds: 54, max_rounds: 200)) |> system_text()
+      refute text =~ "tool-round budget"
+
+      # … 170 of 200 is not
+      text = Prompt.with_budget(base(), budget(rounds: 170, max_rounds: 200)) |> system_text()
+      assert text =~ "most of its tool-round budget"
+
+      # … and the last round says the harness acts
+      text = Prompt.with_budget(base(), budget(rounds: 200, max_rounds: 200)) |> system_text()
+      assert text =~ "reached its tool-round budget"
+    end
+
+    test "no number reaches the prompt: the block is byte-stable across rounds" do
+      # the whole point of the band (measured: 8 960/9 049 cached tokens
+      # became 0 when one line of the first message changed)
+      calm = Prompt.with_budget(base(), budget(used: 100_000, rounds: 3)) |> system_text()
+      later = Prompt.with_budget(base(), budget(used: 149_000, rounds: 40)) |> system_text()
+
+      assert calm == later
+      refute calm =~ ~r/\d+k|\d+\.\d+M|\d+%/
+    end
+
+    test "the band is chosen by the limit, not by the window share" do
+      # a 1M window at 120k used reads calm by percentage but is in the band
+      in_band =
         Prompt.with_budget(
           base(),
           budget(used: 120_000, window: 1_048_576, soft: 140_000, hard: 150_000, warn_at: 112_000)
         )
         |> system_text()
 
-      # the percentage is the window's and reads calm …
-      assert text =~ "(11%)"
-      # … while the lines state how far away they are
-      assert text =~ "Soft line 140k (20k away), hard 150k (30k away)."
-      refute text =~ "(passed)"
+      assert in_band =~ "approaching the soft line"
+      refute in_band =~ "past the auto-summary line"
     end
 
     test "advises in the band between the approaching threshold and the soft line" do
       text = Prompt.with_budget(base(), budget(used: 210_000, warn_at: 200_000)) |> system_text()
 
-      assert text =~ "40k below the soft line"
+      assert text =~ "approaching the soft line"
       assert text =~ "end your turn at a step boundary"
       assert text =~ "`compact`"
       # not the past-the-line wording: this is the calm side of the line
@@ -487,7 +500,8 @@ defmodule CodingAgent.Core.Session.PromptTest do
     test "stays calm below the approaching threshold" do
       text = Prompt.with_budget(base(), budget(used: 100_000, warn_at: 200_000)) |> system_text()
 
-      refute text =~ "below the soft line"
+      assert text =~ "there is room"
+      refute text =~ "approaching the soft line"
       refute text =~ "past the auto-summary line"
       refute text =~ "hard limit"
     end

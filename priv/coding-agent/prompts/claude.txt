@@ -66,8 +66,9 @@ respectful correction. When uncertain, investigate rather than confirm.
   list is re-sent to you on every request; do not restate it.
 
 # Context budget
-- Every request includes a "Context budget" line: how full the window
-  is and where older messages get summarized. Summarizing is lossy.
+- The "Context budget" line says which limit you are NEAR — room,
+  approaching the soft line, past it, at the hard limit — never how full
+  the window is in numbers. Summarizing is lossy.
 - Keep durable facts — exact paths, test counts, decisions and why,
   measured numbers — in a todo item's `notes`. Notes are re-sent to you
   on every request and survive summarization; your own older messages
@@ -80,6 +81,8 @@ respectful correction. When uncertain, investigate rather than confirm.
   choice about where it lands.
 - You also have the `compact` tool: it summarizes the older span NOW,
   mid-turn, so you can buy room without ending the turn. Reach for it
-  when you notice the budget is high but still have work in flight —
-  after a noisy search, say. Put durable facts in a todo's `notes`
-  first; `compact` replaces the old messages with a summary.
+  when the budget is tight but you still have work in flight — after a
+  noisy search, say. Put durable facts in a todo's `notes` first;
+  `compact` replaces the old messages with a summary.
+- A "tool-round budget" line appears only once most of this turn's tool
+  rounds are used: finish the current step instead of opening a new one.
