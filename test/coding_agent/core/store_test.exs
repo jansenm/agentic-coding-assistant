@@ -941,4 +941,35 @@ defmodule CodingAgent.Core.Session.StoreTest do
       assert [] = Store.list()
     end
   end
+
+  # -- the persisted-struct evolution rule (see Store's moduledoc) -----------
+
+  describe "persisted struct shapes" do
+    test "a field added to %Usage{} is pinned here, and only additive changes are free" do
+      expected = [
+        :__struct__,
+        :balance,
+        :cached_tokens,
+        :cost,
+        :cost_basis,
+        :input_tokens,
+        :last_input_tokens,
+        :marker,
+        :output_tokens
+      ]
+
+      assert CodingAgent.Core.Session.Usage.new() |> Map.keys() |> Enum.sort() == expected, """
+      %Usage{} changed shape.
+
+      Additive (a new field WITH A DEFAULT): add its name above and stop —
+      `Usage.from_map/1` heals snapshots written before it, and the format
+      version stays.
+
+      Anything else (remove, rename, retype, reinterpret): bump
+      `Store.@format_version`. Every older snapshot then fails closed with
+      "not a session file", which is the honest outcome — a fresh session,
+      not a half-understood one.
+      """
+    end
+  end
 end

@@ -44,6 +44,29 @@ defmodule CodingAgent.Core.Session.Store do
   closed on load, so a pre-3b-ii session is deleted, not silently read
   with an empty context (one user, unreleased).
 
+  ## Evolving a persisted struct
+
+  The version covers the payload's shape, not the shapes INSIDE it: a
+  ``%State{}`` carrying a ``%Usage{}`` that gained a field is still
+  version 2, and `binary_to_term/1` hands back the old field set with no
+  warning. Two rules, both cheap to follow:
+
+    * **Additive is free.** A new persisted field WITH A DEFAULT is healed
+      on read by the struct's `from_map/1` (it compares the key count with
+      the current shape and fills what an older build did not write). Pin
+      the new name in `store_test`'s shape lock and do NOT bump the
+      version.
+    * **Anything else costs a version.** Removing, renaming, retyping or
+      changing the MEANING of a persisted field is a format change: bump
+      ``@format_version``, and every older snapshot fails closed at load
+      with "not a session file". That is the honest outcome — the picker
+      offers a fresh session instead of resuming half-understood state.
+
+  This rule exists because of one bug: `%Usage{}` gained `cached_tokens`
+  and `from_map/1`'s fast path kept returning the old four-key struct, so
+  the sidebar raised `KeyError` on every frame while the session itself
+  was intact. Additive fields are cheap; silence about them is not.
+
   ## Fail-closed
 
   A missing row, a foreign DB, a corrupt/too-new BLOB, or a wrong format
@@ -64,6 +87,12 @@ defmodule CodingAgent.Core.Session.Store do
   # there is no compatibility reader — a pre-v2 session is deleted, not
   # migrated (one user, unreleased). The messages' own encoding is that
   # message's term_to_binary, versioned by this same constant.
+  #
+  # EVOLUTION RULE (see "Evolving a persisted struct" in the moduledoc):
+  # a new field with a default inside a persisted struct is healed by
+  # `from_map/1` and does NOT bump this; any other change to a persisted
+  # struct's shape (remove, rename, retype, reinterpret) DOES. A bump makes
+  # every older snapshot fail closed — which is the point.
   @format_version 2
 
   # Columns read for a listing; deliberately no `state`.
