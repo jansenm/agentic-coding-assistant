@@ -267,8 +267,8 @@ defmodule CodingAgent.Core.Session do
   @doc """
   Stops a live session process. Used by the subagent seam to retire a
   finished child (it ran once, its summary is extracted, and it must not
-  linger idle under the supervisor: `restart: :transient` means a normal
-  stop is not restarted). Best effort — an already-gone child is fine.
+  linger idle under the supervisor — no session is restarted, ADR 047).
+  Best effort — an already-gone child is fine.
   """
   @spec stop(String.t()) :: :ok
   def stop(id) do

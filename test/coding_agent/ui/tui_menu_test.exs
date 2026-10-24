@@ -287,6 +287,22 @@ defmodule CodingAgent.UI.TuiMenuTest do
     assert Enum.any?(st.transcript, &match?({:info, "✖" <> _}, &1))
   end
 
+  test "a dead session's failure names the state and the way back (ADR 047)", %{
+    root: tmp_root
+  } do
+    pid = start_tui(tmp_root)
+
+    send(pid, {:__ran__, {:error, :not_found}})
+    text = sync(pid).transcript |> Enum.map(&elem(&1, 1)) |> Enum.join("\n")
+
+    # The old text was the generic provider hint ("check the provider")
+    # for a session that had simply stopped — the reader went after the
+    # wrong cause. The session is gone, the store is not.
+    assert text =~ "session process is gone"
+    assert text =~ "/sessions"
+    refute text =~ "check the provider"
+  end
+
   test "a run refusal reconciles the optimistic :running (N96)", %{root: tmp_root} do
     id = seed_session("run-refused", tmp_root)
     pid = start_tui(tmp_root, session_id: id)

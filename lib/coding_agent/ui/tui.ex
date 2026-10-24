@@ -813,6 +813,15 @@ defmodule CodingAgent.UI.Tui do
   defp error_text(%ReqLLM.Error.API.Timeout{} = err), do: Exception.message(err)
   defp error_text({:empty_provider_response, _n}), do: "provider returned no content"
 
+  # A session that is gone is not a turn failure to diagnose: it stopped or
+  # crashed, and (ADR 047) it is not restarted behind the driver's back. The
+  # saved conversation is intact up to the last turn boundary, and reopening
+  # it is the human's verb. Bare `:not_found` read as a bug in the turn.
+  defp error_text(:not_found),
+    do:
+      "the session process is gone (it stopped or crashed) — the saved conversation is " <>
+        "intact; /sessions reopens it"
+
   defp error_text(%{reason: reason}) when is_binary(reason), do: shorten(reason)
   defp error_text(reason) when is_binary(reason), do: shorten(reason)
   defp error_text(reason) when is_atom(reason), do: inspect(reason)

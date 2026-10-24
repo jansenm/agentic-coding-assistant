@@ -23,6 +23,8 @@ Key properties
   approval decision are plain structs — serializable, so a session can be
   saved and resumed at any point in the loop.
 - **The loop is a process.** One session runs in one supervised OTP
-  process; a crash never loses the persisted state.
+  process; a crash never loses the persisted state — and the process is
+  not restarted (ADR 047): the session is gone, the last boundary in the
+  store is what remains, and reopening it is a verb of the driver.
 - **Interruption is a state, not an exception.** Human-in-the-loop approval
   is modelled as a saved, resumable state of the loop.
