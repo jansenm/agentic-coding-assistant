@@ -4887,13 +4887,15 @@ defmodule CodingAgent.UI.Tui do
           {"hard at", {:decimal, fmt_k(hard), " tok"}, pct_role}
         ] ++ catalog_row(source, fallback?)
 
+    # What the provider says was spent — never tokens × a local rate
+    # (`CodingAgent.Core.Costs`). "(billed)" marks a DELTA of the
+    # provider's own account figure; without it the number came priced
+    # with the response. Both rows are absent until there is something to
+    # say: a fresh session has a baseline, not a cost.
     cost_line =
-      case usage.cost do
-        c when is_number(c) and c > 0 ->
-          Styles.definition_list([{"cost", "$#{Float.round(c, 4)}"}], :sidebar)
-
-        _ ->
-          []
+      case money_rows(usage) do
+        [] -> []
+        rows -> Styles.definition_list(rows, :sidebar)
       end
 
     help = [
@@ -5070,6 +5072,46 @@ defmodule CodingAgent.UI.Tui do
 
   defp fmt_k(n) when n < 1000, do: "#{n}"
   defp fmt_k(n), do: "#{trunc(n / 100) / 10}k"
+
+  # The money rows: what was spent and what is left, or nothing at all.
+  # A cost of 0 means "no baseline yet" (the first account sample only
+  # re-bases), so it is not shown — the sidebar never claims a measured
+  # zero.
+  defp money_rows(usage) do
+    spent =
+      case usage.cost do
+        c when is_number(c) and c > 0 ->
+          [{"cost", money(c) <> basis_suffix(usage.cost_basis)}]
+
+        _ ->
+          []
+      end
+
+    left =
+      case usage.balance do
+        %{remaining: r} = b when is_number(r) ->
+          [{"credits", money(r) <> allowance_suffix(b)}]
+
+        _ ->
+          []
+      end
+
+    spent ++ left
+  end
+
+  defp basis_suffix(:billed), do: " (billed)"
+  defp basis_suffix(_), do: ""
+
+  defp allowance_suffix(%{allowance: a}) when is_number(a) and a > 0, do: " / #{money(a)}"
+  defp allowance_suffix(_), do: ""
+
+  # Sub-cent amounts are the interesting ones here (a cached 200k call is
+  # $0.004), so the precision follows the magnitude instead of a fixed
+  # four decimals that would print "$0.0000" for a real cost.
+  defp money(n) do
+    decimals = if n < 0.01, do: 5, else: if(n < 1, do: 4, else: 2)
+    "$" <> :erlang.float_to_binary(n * 1.0, decimals: decimals)
+  end
 
   # The prompt-cache row, or nothing at all. Zero means "no hit or the
   # provider does not report caching" — the two are indistinguishable, so

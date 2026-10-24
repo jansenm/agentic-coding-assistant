@@ -96,4 +96,43 @@ defmodule CodingAgent.Core.Session.UsageTest do
     # exceed input; a naive division would claim >100 % cached
     assert Usage.cache_hit_ratio(%{input_tokens: 100, cached_tokens: 900}) == nil
   end
+
+  test "the first account snapshot is a baseline, not a cost" do
+    u = Usage.apply_snapshot(Usage.new(), %{usd: 10.0, requests: 100})
+
+    assert u.cost == nil
+    assert u.cost_basis == nil
+    assert Usage.marker(u) == %{usd: 10.0, requests: 100}
+  end
+
+  test "later snapshots add money actually spent, and re-base the marker" do
+    u = Usage.apply_snapshot(Usage.new(), %{usd: 10.0, requests: 100})
+    u = Usage.apply_snapshot(u, %{usd: 10.0041, requests: 101})
+
+    assert_in_delta u.cost, 0.0041, 1.0e-9
+    assert u.cost_basis == :billed
+    assert Usage.marker(u) == %{usd: 10.0041, requests: 101}
+
+    u = Usage.apply_snapshot(u, %{usd: 10.0082, requests: 102})
+    assert_in_delta u.cost, 0.0082, 1.0e-9
+  end
+
+  test "a shrinking account figure never subtracts from the session" do
+    # the 24 h window slides: a delta can come back negative, and a
+    # negative cost would be a lie about what was spent
+    u = Usage.apply_snapshot(Usage.new(), %{usd: 10.0, requests: 100})
+    u = Usage.apply_snapshot(u, %{usd: 9.5, requests: 101})
+
+    assert u.cost == 0.0
+    assert Usage.marker(u).usd == 9.5
+  end
+
+  test "a balance rides along and survives a map round trip" do
+    balance = %{remaining: 7.2, allowance: 60.0, purchased: 0.0, from: "a", until: "b"}
+    u = Usage.set_balance(Usage.new(), balance)
+
+    assert u.balance == balance
+    assert Usage.from_map(Map.from_struct(u)).balance == balance
+    assert Usage.set_balance(u, nil).balance == nil
+  end
 end

@@ -47,6 +47,7 @@ defmodule CodingAgent.Core.Session do
   alias CodingAgent.Core.Compaction
   alias CodingAgent.Core.Config
   alias CodingAgent.Core.Checkpoint
+  alias CodingAgent.Core.Costs
   alias CodingAgent.Core.Events
   alias CodingAgent.Core.Interrupt
   alias CodingAgent.Core.Permissions
@@ -3223,7 +3224,42 @@ defmodule CodingAgent.Core.Session do
     broadcast(state, {:llm_message, text})
     broadcast(state, {:status_changed, :idle})
     persist(state)
-    state
+    sample_costs(state)
+  end
+
+  # What the provider says was spent, sampled once per turn.
+  #
+  # Deliberately AFTER the idle broadcast and the snapshot save: the turn
+  # is visibly over before two HTTP reads happen, and both are bounded at
+  # 1.5 s. The number is the DELTA of the provider's own account figure
+  # (`CodingAgent.Core.Costs`) — never tokens × a local rate, which would
+  # be wrong for every model but the one it was written for, and wrong half
+  # the day where the provider bills peak rates. No probe, no credential or
+  # an unexpected body leaves the accounting untouched: no number is better
+  # than a wrong one.
+  defp sample_costs(state) do
+    case Costs.snapshot(effective_model(state), state.provider_config) do
+      {:ok, snapshot} ->
+        usage =
+          state.usage
+          |> Usage.apply_snapshot(snapshot)
+          |> apply_balance(state)
+
+        state = %{state | usage: usage}
+        broadcast(state, {:usage_updated, usage})
+        persist(state)
+        state
+
+      _ ->
+        state
+    end
+  end
+
+  defp apply_balance(usage, state) do
+    case Costs.balance(effective_model(state), state.provider_config) do
+      {:ok, balance} -> Usage.set_balance(usage, balance)
+      _ -> usage
+    end
   end
 
   # Append the streamed reasoning/answer blocks in order. Reasoning is the

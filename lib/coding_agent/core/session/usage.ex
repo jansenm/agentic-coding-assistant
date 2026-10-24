@@ -38,14 +38,35 @@ defmodule CodingAgent.Core.Session.Usage do
             output_tokens: 0,
             cached_tokens: 0,
             last_input_tokens: 0,
-            cost: nil
+            cost: nil,
+            cost_basis: nil,
+            balance: nil,
+            marker: nil
+
+  @typedoc """
+  Where the cost came from: `:priced` when the provider returned a cost
+  with the response (a catalogued model), `:billed` when it is the DELTA
+  of the provider's own account figure (`CodingAgent.Core.Costs`).
+  """
+  @type cost_basis :: :priced | :billed | nil
+
+  @type balance :: %{
+          remaining: float(),
+          allowance: float() | nil,
+          purchased: float(),
+          from: String.t() | nil,
+          until: String.t() | nil
+        }
 
   @type t :: %__MODULE__{
           input_tokens: non_neg_integer(),
           output_tokens: non_neg_integer(),
           cached_tokens: non_neg_integer(),
           last_input_tokens: non_neg_integer(),
-          cost: number() | nil
+          cost: number() | nil,
+          cost_basis: cost_basis(),
+          balance: balance() | nil,
+          marker: map() | nil
         }
 
   @doc "Fresh, all-zero usage (the single default)."
@@ -67,7 +88,10 @@ defmodule CodingAgent.Core.Session.Usage do
       output_tokens: Map.get(map, :output_tokens, 0),
       cached_tokens: Map.get(map, :cached_tokens, 0),
       last_input_tokens: Map.get(map, :last_input_tokens, 0),
-      cost: Map.get(map, :cost)
+      cost: Map.get(map, :cost),
+      cost_basis: Map.get(map, :cost_basis),
+      balance: Map.get(map, :balance),
+      marker: Map.get(map, :marker)
     }
   end
 
@@ -144,4 +168,39 @@ defmodule CodingAgent.Core.Session.Usage do
 
   defp sum_cost(nil, nil), do: nil
   defp sum_cost(a, b), do: (a || 0.0) + (b || 0.0)
+
+  @doc """
+  Folds one account snapshot into the accounting.
+
+  The FIRST snapshot only becomes the baseline: there is no delta to
+  report, so no number appears yet (a "$0.0000" on a fresh session would
+  be a claim the harness cannot make). Every later snapshot adds the
+  positive difference — money actually spent since the previous sample,
+  peak pricing and discounts included — and re-bases the marker.
+  """
+  @spec apply_snapshot(t() | map() | nil, %{required(:usd) => number()}) :: t()
+  def apply_snapshot(usage, %{usd: usd} = snapshot) when is_number(usd) do
+    u = from_map(usage)
+
+    case u.marker do
+      %{usd: previous} when is_number(previous) ->
+        %{
+          u
+          | cost: (u.cost || 0.0) + max(usd - previous, 0.0),
+            cost_basis: :billed,
+            marker: snapshot
+        }
+
+      _ ->
+        %{u | marker: snapshot}
+    end
+  end
+
+  @doc "The provider's remaining credits, when it reports dollars."
+  @spec set_balance(t() | map() | nil, balance() | nil) :: t()
+  def set_balance(usage, balance), do: %{from_map(usage) | balance: balance}
+
+  @doc "The last account sample this session was based on (`nil` before one)."
+  @spec marker(t() | map() | nil) :: map() | nil
+  def marker(usage), do: from_map(usage).marker
 end

@@ -318,17 +318,31 @@ per-client instrument.
    turn, per-round input/cached/output, tool calls, tool wall time, cache
    hit ratio. A `/stats` slash command fits the TUI convention better
    than a debug log and stays out of the model's context.
-4. **Cost, if wanted in the same pass.** Two sources, different jobs:
-   the provider's response has **no** cost field, so per-round cost is
-   local arithmetic — `ReqLLM.Usage.Cost.apply/3` does it from LLMDB
-   pricing and returns nothing for a model it does not know, which is
-   every `ollama_cloud` model (`config/config.exs:31` suppresses the
-   unverified-model warning for exactly this reason). A local
-   `[pricing."<provider>:<model>"]` table (`$/Mtok` input, output, cached
-   read), used only when ReqLLM returns nil and never invented, covers
-   that. For *reconciliation*, `GET https://ollama.com/api/usage?range=24h`
-   returns hourly `usage_usd` for the account — good for "is the sidebar's
-   number sane", useless for attributing a round.
+4. **Cost — landed 2026-10-24, and not the way this item first proposed.**
+   A local `[pricing."<provider>:<model>"]` table was rejected: it is
+   wrong for the next model, wrong for the cached rate, and wrong for the
+   hours the provider bills at peak rates — ollama.com publishes exactly
+   that two-tier schedule (`deepseek-v4.1-flash` at $0.30/$0.006/$1.20 per
+   Mtok in peak hours, half off-peak). The catalog's per-model `cost` is
+   no help either: it has no `ollama` provider at all, input/output only,
+   and one rate.
+
+   What the harness shows now is the provider's own accounting
+   (`CodingAgent.Core.Costs`): `GET /api/usage?range=24h` sampled once per
+   turn, and the **delta** of `usage_usd` is money actually spent —
+   peak pricing, discounts and per-model rates already inside it. The
+   first sample is only a baseline, so a fresh session shows no cost. A
+   second read, `GET /api/balance`, gives the remaining credits for the
+   period ($7.17 of $60 at the time of writing, which is why this was not
+   an "eventually" item).
+
+   Both are derived from the **host** of the provider's `base_url` — no
+   config field, no new credential; a local daemon is silent. Portability
+   is a capability, not an endpoint: a provider whose billing API stops
+   following its wire (OpenRouter) earns a `usage = "<dialect>"` field
+   shaped like `discover`, when that second implementation exists.
+   Granularity is per turn, not per round; the account is per key, so the
+   number is the session's only with a dedicated key.
 
 **Exit criterion:** one real turn yields a table of rounds with a hit
 ratio and a time split. Do not proceed on vibes.
