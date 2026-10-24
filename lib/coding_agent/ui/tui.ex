@@ -4877,12 +4877,15 @@ defmodule CodingAgent.UI.Tui do
     stats =
       [
         {"effort", effort_name(effort)},
-        {"tokens in", {:decimal, fmt_k(Usage.input_tokens(usage)), nil}},
-        {"tokens out", {:decimal, fmt_k(Usage.output_tokens(usage)), nil}},
-        {"context", {:decimal, fmt_k(last_in), " (#{pct}% win)"}, pct_role},
-        {"soft at", {:decimal, fmt_k(soft), soft_suffix}, soft_role},
-        {"hard at", {:decimal, fmt_k(hard), " tok"}, pct_role}
-      ] ++ catalog_row(source, fallback?)
+        {"tokens in", {:decimal, fmt_k(Usage.input_tokens(usage)), nil}}
+      ] ++
+        cached_rows(usage) ++
+        [
+          {"tokens out", {:decimal, fmt_k(Usage.output_tokens(usage)), nil}},
+          {"context", {:decimal, fmt_k(last_in), " (#{pct}% win)"}, pct_role},
+          {"soft at", {:decimal, fmt_k(soft), soft_suffix}, soft_role},
+          {"hard at", {:decimal, fmt_k(hard), " tok"}, pct_role}
+        ] ++ catalog_row(source, fallback?)
 
     cost_line =
       case usage.cost do
@@ -5067,6 +5070,28 @@ defmodule CodingAgent.UI.Tui do
 
   defp fmt_k(n) when n < 1000, do: "#{n}"
   defp fmt_k(n), do: "#{trunc(n / 100) / 10}k"
+
+  # The prompt-cache row, or nothing at all. Zero means "no hit or the
+  # provider does not report caching" — the two are indistinguishable, so
+  # the row stays hidden instead of claiming a measured 0 %. The
+  # percentage comes from Usage.cache_hit_ratio/1, which is nil when the
+  # provider reports cached tokens outside the input (Anthropic); there
+  # the count is still worth showing, the share is not derivable.
+  defp cached_rows(usage) do
+    case Usage.cached_tokens(usage) do
+      0 ->
+        []
+
+      cached ->
+        suffix =
+          case Usage.cache_hit_ratio(usage) do
+            nil -> nil
+            ratio -> " (#{round(ratio * 100)}% hit)"
+          end
+
+        [{"cached in", {:decimal, fmt_k(cached), suffix}}]
+    end
+  end
 
   # The reasoning-effort label for the sidebar (ADR 029). The session
   # stores req_llm's canonical atom; `nil` means no override on the wire,

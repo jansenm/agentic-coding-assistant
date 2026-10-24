@@ -12,6 +12,7 @@ defmodule CodingAgent.Core.Session.UsageTest do
     assert Usage.new() == %Usage{
              input_tokens: 0,
              output_tokens: 0,
+             cached_tokens: 0,
              last_input_tokens: 0,
              cost: nil
            }
@@ -66,5 +67,33 @@ defmodule CodingAgent.Core.Session.UsageTest do
     assert Usage.last_input_tokens(nil) == 0
     assert Usage.last_input_tokens(%{input_tokens: 1, last_input_tokens: 42}) == 42
     assert Usage.last_input_tokens(%Usage{last_input_tokens: 7}) == 7
+  end
+
+  test "cached_tokens accumulates from the provider's canonical field" do
+    u1 = Usage.add(Usage.new(), %{input_tokens: 1_000, cached_tokens: 800, output_tokens: 5})
+    u2 = Usage.add(u1, %{input_tokens: 2_000, cached_tokens: 1_500, output_tokens: 7})
+
+    assert u2.input_tokens == 3_000
+    assert u2.cached_tokens == 2_300
+    # a turn without the key (a provider that does not report caching) adds 0
+    assert Usage.add(u2, %{input_tokens: 10, output_tokens: 1}).cached_tokens == 2_300
+  end
+
+  test "cached_tokens is a subset of input_tokens, and its ratio is the cache hit rate" do
+    u = Usage.add(Usage.new(), %{input_tokens: 1_000, cached_tokens: 250, output_tokens: 5})
+
+    assert Usage.cached_tokens(u) == 250
+    assert_in_delta Usage.cache_hit_ratio(u), 0.25, 1.0e-9
+    # readers heal a legacy map that never had the field
+    assert Usage.cached_tokens(%{input_tokens: 10}) == 0
+  end
+
+  test "cache_hit_ratio/1 is nil when it would lie, not 0 or above 1" do
+    # nothing counted yet: a ratio of nothing is not "0 %"
+    assert Usage.cache_hit_ratio(Usage.new()) == nil
+    assert Usage.cache_hit_ratio(nil) == nil
+    # Anthropic reports cache reads as a SEPARATE bucket, so cached can
+    # exceed input; a naive division would claim >100 % cached
+    assert Usage.cache_hit_ratio(%{input_tokens: 100, cached_tokens: 900}) == nil
   end
 end

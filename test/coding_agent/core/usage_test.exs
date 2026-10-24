@@ -18,13 +18,24 @@ defmodule CodingAgent.Core.UsageTest do
     s0 = state()
 
     s1 =
-      Session.add_usage(s0, %{input_tokens: 100, output_tokens: 10, total_cost: 0.01})
+      Session.add_usage(s0, %{
+        input_tokens: 100,
+        output_tokens: 10,
+        cached_tokens: 80,
+        total_cost: 0.01
+      })
 
     s2 =
-      Session.add_usage(s1, %{input_tokens: 250, output_tokens: 40, total_cost: 0.02})
+      Session.add_usage(s1, %{
+        input_tokens: 250,
+        output_tokens: 40,
+        cached_tokens: 200,
+        total_cost: 0.02
+      })
 
     assert s2.usage.input_tokens == 350
     assert s2.usage.output_tokens == 50
+    assert s2.usage.cached_tokens == 280
     assert s2.usage.cost == 0.030000000000000002 or abs(s2.usage.cost - 0.03) < 1.0e-9
     assert s2.usage.last_input_tokens == 250
   end
@@ -48,6 +59,7 @@ defmodule CodingAgent.Core.UsageTest do
 
     assert loaded.usage.input_tokens == 1234
     assert loaded.usage.last_input_tokens == 1000
+    assert loaded.usage.cached_tokens == 0
     Store.delete(s.id)
   end
 
