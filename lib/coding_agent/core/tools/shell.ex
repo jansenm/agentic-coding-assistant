@@ -359,15 +359,28 @@ defmodule CodingAgent.Core.Tools.Shell do
           "a missing flag, so no tool can write here."
 
       Map.get(profile, :change_vcs, false) ->
-        "Only the scope root and the configured cache mounts are writable."
+        writable_roots() <> outside()
 
       true ->
-        "Only the scope root and the configured cache mounts are writable. This call " <>
-          "ran without change_vcs, so the repository's git state (index, objects, refs) " <>
-          "was read-only too — if that is what failed, use the git tool (it always has " <>
-          "the grant) or change_vcs: true with a reason."
+        writable_roots() <>
+          "This call ran without change_vcs, so the repository's git state (index, " <>
+          "objects, refs) was read-only too — if that is what failed, use the git " <>
+          "tool (it always has the grant) or change_vcs: true with a reason." <>
+          outside()
     end
   end
+
+  defp writable_roots,
+    do: "Only the scope root and the configured cache mounts are writable. "
+
+  # Said unconditionally, because it is true of every profile: no grant in
+  # the mount table widens the filesystem (review N115). Without it the note
+  # offers `change_vcs` for a path outside the scope root — measured by
+  # deleting a file in the OTHER worktree, which no tool can write.
+  defp outside,
+    do:
+      "A path outside them is not writable by any grant — change_vcs widens the " <>
+        "repository's git state, not the filesystem."
 
   defp coerce(secs) when is_integer(secs), do: {:ok, secs}
   defp coerce(secs) when is_float(secs), do: {:ok, trunc(secs)}
