@@ -40,6 +40,7 @@ defmodule CodingAgent.Core.Config do
   @hard_window_floor_ratio 0.75
   @default_compaction_wall_clock_ms 300_000
   @default_compaction_inactivity_ms 120_000
+  @default_compaction_prefill_tokens_per_sec 1_000
   @default_provider_retries 3
   @default_provider_retry_delay_ms 5_000
   @default_provider_receive_timeout_ms 120_000
@@ -305,6 +306,22 @@ defmodule CodingAgent.Core.Config do
   @spec compaction_inactivity_ms() :: pos_integer()
   def compaction_inactivity_ms,
     do: app(:compaction_inactivity_ms, @default_compaction_inactivity_ms)
+
+  @doc """
+  The prefill rate the summarize input budget assumes, in tokens per
+  second.
+
+  The budget (`Compaction.input_budget/3`) caps the span at
+  `inactivity_ms / 1000 × this`, because a prefill that runs longer than
+  the inactivity timeout emits no byte while it works and the transport
+  kills the call before the first token. It is a PROVIDER property, not a
+  policy one: a local model on a fast box may prefills two or three times
+  faster, a busy shared endpoint slower. 1 000 is the conservative
+  default; raise it only with evidence from a real summarize call.
+  """
+  @spec compaction_prefill_tokens_per_sec() :: pos_integer()
+  def compaction_prefill_tokens_per_sec,
+    do: app(:compaction_prefill_tokens_per_sec, @default_compaction_prefill_tokens_per_sec)
 
   @doc """
   The model's context window in tokens, resolved (ADR 037). Resolution,

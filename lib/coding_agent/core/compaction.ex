@@ -29,7 +29,7 @@ defmodule CodingAgent.Core.Compaction do
     Cutting at a message count could put a `:tool` result in the tail
     whose declaring assistant call was summarized away, or vice versa
     (found live: the kept tail began with a `:tool` message).
-  - **Fact-carrying summary**: `render/1` keeps tool NAMES and call
+  - **Fact-carrying summary**: `render/2` keeps tool NAMES and call
     arguments, not just text parts. The old render dropped `tool_calls`
     (assistant calls are text-empty) and `msg.name`, so the summary could
     not say *which* file was read or *which* command ran — the resumed
@@ -53,18 +53,61 @@ defmodule CodingAgent.Core.Compaction do
   # A result longer than this is truncated in the rendered span (the
   # marker is explicit, never a silent drop); the summarizer does not
   # need a full 200 KB tool dump to record "ran the suite, 922 passed".
-  @render_result_chars 2_000
+  # 8 000 comes from this repo's own store: over 6 113 tool results the
+  # median is 976 chars, p90 3 728, p95 5 301, p99 11 883. At 2 000 the
+  # cap clipped 26 % of results carrying 71 % of all result bytes; at
+  # 8 000 it clips 2.4 %, and doubling again buys 1.8 % of results for
+  # twice the span.
+  @render_result_chars 8_000
 
-  # The summarizer input is bounded: one giant old span (measured at
-  # 193 messages / ~42k tokens) became a minutes-long non-streaming
-  # call. A hard cap keeps the summarize call predictable; the marker
-  # makes the truncation honest. It is the DEFAULT cap; a caller may pass
-  # a smaller one when the summarizer model has a smaller window (ADR 044).
-  @max_summary_input_chars 300_000
+  # A tool CALL's arguments are rendered too — and they are unbounded
+  # (`write_file` carries a whole file). Capping the result but not the
+  # call was an asymmetry that let one call dominate the span.
+  @render_call_chars 2_000
 
-  @doc "The default byte cap on the rendered summarize span."
-  @spec max_input_chars() :: pos_integer()
-  def max_input_chars, do: @max_summary_input_chars
+  # The summarize input budget is DERIVED (see `input_budget/3`): a share
+  # of the summarizer's window and a share of the inactivity timeout,
+  # whichever binds first, converted at the session's OWN chars-per-token.
+  # It used to be a 300 000-char constant — which was really
+  # 120 s × ~1 000 tok/s × ~2.5 chars/token written down without its
+  # units, and below the soft line it serves. A constant cannot scale with
+  # a bigger model window or a longer timeout; this does, and when it is
+  # still too small the span is CHUNKED rather than truncated.
+  @default_chars_per_token 4.0
+
+  @doc "The chars-per-token assumed before a session has measured its own."
+  @spec default_chars_per_token() :: float()
+  def default_chars_per_token, do: @default_chars_per_token
+
+  @doc """
+  The summarize input budget in chars, from what the call can actually do.
+
+  Two ceilings, whichever binds first:
+
+    * **hold** — `span_fraction` of the summarizer's context window: the
+      call has to fit, with room for the template, the prior summary and
+      the output;
+    * **prefill** — `inactivity_ms / 1000 × prefill_tokens_per_sec`. This
+      is the one that binds in practice: a prefix that prefills for longer
+      than the inactivity timeout emits no byte while it works, so the
+      transport kills the call before the first token. At ~1 000 tok/s a
+      120 s budget is ~120k tokens — which is exactly where the old
+      300 000-char constant sat, so this derives that value instead of
+      contradicting it.
+
+  `chars_per_token` is the session's measured ratio (`Compactor`), not 4:
+  this repo's transcripts run ~2.5, and assuming 4 would hand the
+  summarizer 60 % more tokens than the timeout pays for.
+  """
+  @spec input_budget(pos_integer(), number(), keyword()) :: pos_integer()
+  def input_budget(window_tokens, chars_per_token, opts) do
+    hold = window_tokens * Keyword.fetch!(opts, :span_fraction)
+
+    prefill =
+      Keyword.fetch!(opts, :inactivity_ms) / 1000 * Keyword.fetch!(opts, :prefill_tokens_per_sec)
+
+    round(min(hold, prefill) * chars_per_token)
+  end
 
   @doc "Minimum number of recent messages a compaction keeps verbatim."
   @spec min_keep() :: pos_integer()
@@ -187,9 +230,9 @@ defmodule CodingAgent.Core.Compaction do
   #   * the system message is the framework/agent prompt — nobody
   #     summarizes it;
   #   * the summary is already the compacted state. Excluding it here (not
-  #     just from `render/1`) is what makes the rolling model correct
+  #     just from `render/2`) is what makes the rolling model correct
   #     (review N16): otherwise `split/1` could pick a span consisting of
-  #     nothing but the summary, `render/1` would empty it, and a provider
+  #     nothing but the summary, `render/2` would empty it, and a provider
   #     call would replace the summary with a summary of nothing. It also
   #     keeps the summary pinned through `trim/1` (review N20b), so the
   #     last-resort trim can no longer eat it.
@@ -325,31 +368,25 @@ defmodule CodingAgent.Core.Compaction do
   Renders the summary span as one text block for the summarizer model —
   the only place message text is flattened for an LLM call. Tool calls
   and their arguments, and tool-result names, are included so the
-  summary can preserve *what was done*, not just prose. The result is
-  bounded by `@max_summary_input_chars`, with an explicit marker.
+  summary can preserve *what was done*, not just prose.
+
+  `max_chars` is the caller's budget (`input_budget/3`), and it is the
+  only bound: there is no built-in default to fall back to, because a
+  default is a number that one day is too low. Over the budget the span
+  is head+tail truncated with an explicit marker; the caller that can
+  afford a bigger call chunks instead.
 
   A prior summary message is SKIPPED: it is carried forward separately
   (`prior_summary/1`) and re-rendering it as conversation would duplicate
   it and let the model summarize its own prior summary as if it were new
   material.
   """
-  @spec render(list()) :: String.t()
-  def render(msgs), do: render(msgs, @max_summary_input_chars)
-
-  @doc """
-  `render/1` with an explicit byte cap. The summarizer model may have a
-  smaller window than the default cap assumes (ADR 044), so the caller
-  passes `min(default, model_window_chars)`. Never LARGER than the
-  default — a bigger model does not need a bigger span.
-  """
   @spec render(list(), pos_integer()) :: String.t()
   def render(msgs, max_chars) do
-    rendered =
-      msgs
-      |> Enum.reject(&summary_message?/1)
-      |> Enum.map_join("\n\n", &render_message/1)
-
-    bound_input(rendered, min(max_chars, @max_summary_input_chars))
+    msgs
+    |> Enum.reject(&summary_message?/1)
+    |> Enum.map_join("\n\n", &render_message/1)
+    |> bound_input(max_chars)
   end
 
   @doc """
@@ -499,7 +536,7 @@ defmodule CodingAgent.Core.Compaction do
 
     case args do
       m when map_size(m) == 0 -> name
-      m -> "#{name}(#{Jason.encode!(m)})"
+      m -> "#{name}(#{truncate(Jason.encode!(m), @render_call_chars)})"
     end
   end
 
@@ -514,28 +551,56 @@ defmodule CodingAgent.Core.Compaction do
   defp text_of(%ReqLLM.Message{content: c}) when is_binary(c), do: c
   defp text_of(_), do: ""
 
+  # UTF-8-safe byte slices. A plain `binary_part/3` can cut a codepoint in
+  # half, and one invalid byte in the request body is the "Failed to build
+  # streaming request" failure class (`Failure.@local_markers`) — a
+  # summarizer input must never be able to cause it. Backing off by one
+  # byte is enough: a codepoint is at most four.
+  defp utf8_prefix(text, bytes) do
+    text |> binary_part(0, min(bytes, byte_size(text))) |> valid_prefix()
+  end
+
+  defp valid_prefix(part) do
+    if String.valid?(part) or byte_size(part) == 0,
+      do: part,
+      else: valid_prefix(binary_part(part, 0, byte_size(part) - 1))
+  end
+
+  defp utf8_suffix(text, bytes) do
+    size = byte_size(text)
+    text |> binary_part(max(size - bytes, 0), min(bytes, size)) |> valid_suffix()
+  end
+
+  defp valid_suffix(part) do
+    if String.valid?(part) or byte_size(part) == 0,
+      do: part,
+      else: valid_suffix(binary_part(part, 1, byte_size(part) - 1))
+  end
+
   defp truncate(text, max) when byte_size(text) <= max, do: text
 
   defp truncate(text, max) do
-    head = String.slice(text, 0, max)
+    # Head AND tail: the verdict of a test run, the last line of a git
+    # log, the end of a diff — the informative half of a long result is
+    # often its end, and head-only kept the compile noise instead.
+    half = div(max, 2)
 
-    head <>
-      "\n\n[... truncated for the summary: #{byte_size(text)} chars total, showing first #{max} ...]"
+    utf8_prefix(text, half) <>
+      "\n\n[... truncated for the summary: #{byte_size(text)} chars total, " <>
+      "showing first and last #{half} ...]\n\n" <> utf8_suffix(text, half)
   end
 
   defp bound_input(text, max) when byte_size(text) <= max, do: text
 
   defp bound_input(text, max) do
-    # Keep the head (the older, already-summarized context is often
-    # repetitive) and the tail (the most recent, most relevant facts)
-    # roughly evenly; the marker makes the loss honest.
+    # Keep the head (the objective and the early decisions) and the tail
+    # (the most recent state) roughly evenly; the marker makes the loss
+    # honest. The caller that can afford a bigger call chunks instead.
     half = div(max, 2)
-    head = binary_part(text, 0, half)
-    tail = binary_part(text, byte_size(text) - half, half)
 
-    head <>
+    utf8_prefix(text, half) <>
       "\n\n[... summarize input truncated: #{byte_size(text)} chars total; " <>
-      "showing first and last #{half} ...]\n\n" <> tail
+      "showing first and last #{half} ...]\n\n" <> utf8_suffix(text, half)
   end
 
   @doc """

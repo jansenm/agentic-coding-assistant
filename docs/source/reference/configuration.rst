@@ -210,6 +210,13 @@ built-in default. They are listed here so the surface is complete.
    * - ``:compaction_inactivity_ms``
      - ``120000``
      - Inactivity bound inside the summarize call.
+   * - ``:compaction_prefill_tokens_per_sec``
+     - ``1000``
+     - The prefill rate the summarize input budget assumes: the span is
+       capped at ``inactivity_ms / 1000 × this`` (see
+       :meth:`CodingAgent.Core.Compaction.input_budget/3`). A provider
+       property, not a policy one; raise it only with evidence from a real
+       summarize call.
    * - ``:context_window_tokens``
      - ``500000``
      - Fallback context window (ADR 037) when neither ``config.toml`` nor

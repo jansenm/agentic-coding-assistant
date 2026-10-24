@@ -384,7 +384,7 @@ defmodule CodingAgent.Core.Session.Compactor do
     span = Compaction.render(old, cap)
 
     # An empty rendered span means there is nothing NEW to summarize: the
-    # only "old" message is the prior summary itself, which `render/1`
+    # only "old" message is the prior summary itself, which `render/2`
     # skips by design (review N16). Calling the provider would ask it to
     # summarize nothing and then REPLACE the prior summary with the
     # answer — losing facts for no gain, plus a needless call. The prior
@@ -398,10 +398,22 @@ defmodule CodingAgent.Core.Session.Compactor do
       # not narrate a model it never used.
       state = note_pin_dropped(state, drop_reason)
 
-      broadcast(state, {:info, "· compacting context (this can take a while)…"})
+      broadcast(state, {:info, compaction_note(Compaction.span_chars(old), cap)})
       do_compact(state, span, summarize_fn, kind, @summarize_retries)
     end
   end
+
+  # The human learns what the summarizer did NOT see. The truncation
+  # marker only reaches the model; "it compacted and forgot the middle"
+  # is otherwise indistinguishable from "it compacted". Measured: seven
+  # of nine compactions in one day's log were at the cap, all of them
+  # narrated as a plain "compacting context".
+  defp compaction_note(span_chars, cap) when span_chars > cap do
+    "· compacting context (#{div(span_chars, 1000)}k chars, " <>
+      "#{div(cap, 1000)}k summarized — the middle is elided)…"
+  end
+
+  defp compaction_note(_span_chars, _cap), do: "· compacting context (this can take a while)…"
 
   defp do_compact(state, span, summarize_fn, kind, retries_left) do
     Logger.debug("compacting context (#{byte_size(span)} chars rendered)")
@@ -557,7 +569,7 @@ defmodule CodingAgent.Core.Session.Compactor do
 
   # The default summarizer. Sees the OLD span only (the keep span is
   # excluded — the model would otherwise copy it into the summary),
-  # rendered by `Compaction.render/1`. Everything is CONTAINED: a
+  # rendered by `Compaction.render/2`. Everything is CONTAINED: a
   # raise, exit or throw inside req_llm or a provider adapter must
   # surface as {:error, _}, never as a linked crash.
   #
@@ -614,15 +626,15 @@ defmodule CodingAgent.Core.Session.Compactor do
 
   def compaction_model(state, _agent), do: State.effective_model(state)
 
-  # The summarizer model AND the byte cap for the rendered span, resolved
-  # together (ADR 044 caveat). A pinned compaction model must be able to
-  # HOLD the span; rather than fail on a small model, the span is bounded
-  # to a fraction of that model's window. When the window is NOT known
-  # (`:loading`/`:unknown`, review N58) the pin cannot be verified as big
-  # enough, so the SESSION model — already known good — summarizes with the
-  # default cap instead of handing an unverified small model the full span.
-  # If the window is KNOWN and too small for a useful span, the pin is
-  # dropped for the same reason.
+  # The summarizer model AND the byte budget for the rendered span,
+  # resolved together (ADR 044 caveat). A pinned compaction model must be
+  # able to HOLD the span; rather than fail on a small model, the span is
+  # bounded to a fraction of that model's window. When the window is NOT
+  # known (`:loading`/`:unknown`, review N58) the pin cannot be verified
+  # as big enough, so the SESSION model — already known good — summarizes
+  # with its own budget instead of handing an unverified small model the
+  # full span. If the window is KNOWN and too small for a useful span, the
+  # pin is dropped for the same reason.
   #
   # The WHY is returned, not swallowed (review N67): the third element is
   # the reason the pin did not summarize, so the caller can say it. A drop
@@ -630,12 +642,12 @@ defmodule CodingAgent.Core.Session.Compactor do
   # and it used to be invisible — which made the N58 guard untestable in
   # practice and unobservable in a live session.
   #
-  # Fraction and floor: half the window goes to the old span, leaving room
-  # for the system body, the template, the kept tail and the output. Below
-  # `@min_viable_span_chars` a model cannot summarize usefully, so a pin
-  # that small is ignored.
+  # Capacity is checked in TOKENS, not chars: "can this model hold a
+  # useful span" is a property of the window, while "how much can we
+  # afford to prefill" is a property of the timeout. One char cap used to
+  # express both, and a constant cannot scale with either.
   @span_window_fraction 0.5
-  @min_viable_span_chars 20_000
+  @min_viable_span_tokens 8_000
 
   @doc false
   @spec compaction_target(State.t()) :: {String.t() | nil, pos_integer(), drop_reason()}
@@ -644,30 +656,82 @@ defmodule CodingAgent.Core.Session.Compactor do
     session = State.effective_model(state)
     pinned = compaction_model(state, agent)
 
-    window =
+    pin_window =
       case pinned do
         m when m == session -> :session
         m -> Catalog.context_window(m)
       end
 
-    resolve_target(session, pinned, window)
+    {model, window, reason} = resolve_target(session, pinned, pin_window)
+    {model, input_budget(state, window), reason}
+  end
+
+  # The budget in chars for a window in tokens, from what the call can do
+  # (`Compaction.input_budget/3`): the window share, the prefill the
+  # inactivity timeout pays for, and this session's own chars-per-token.
+  @doc false
+  @spec input_budget(State.t(), pos_integer() | :session) :: pos_integer()
+  def input_budget(state, :session), do: input_budget(state, session_window(state))
+
+  def input_budget(state, window_tokens) do
+    Compaction.input_budget(window_tokens, chars_per_token(state),
+      span_fraction: @span_window_fraction,
+      inactivity_ms: inactivity(),
+      prefill_tokens_per_sec: Config.compaction_prefill_tokens_per_sec()
+    )
+  end
+
+  # The window the SESSION model has, resolved exactly as the sidebar and
+  # the compaction decision resolve it (configured → catalog → fallback),
+  # so the budget cannot disagree with the line that triggers compaction.
+  defp session_window(state) do
+    Config.context_window(state.scope_root, State.effective_model(state))
+  end
+
+  @min_chars_per_token 2.0
+  @max_chars_per_token 4.0
+
+  # The chars-per-token of THIS session, measured from the last prompt the
+  # provider actually counted. Code is denser than prose (this repo's
+  # transcripts run ~2.5, not 4), and a 4-char assumption would hand the
+  # summarizer ~60 % more tokens than the prefill budget pays for.
+  #
+  # The ratio is clamped to 2.0..4.0, and both ends are the SAFE
+  # direction: denser text than 2.0 gets a smaller char budget than its
+  # token count would allow, and prose above 4.0 gets a slightly smaller
+  # one too. Neither can overrun the timeout by more than the clamp
+  # allows. `last_input_tokens` is the last prompt's count while the
+  # context has grown since, which biases the ratio UP — the clamp is what
+  # keeps that bias bounded.
+  @doc false
+  @spec chars_per_token(State.t()) :: float()
+  def chars_per_token(%State{} = state) do
+    case Usage.last_input_tokens(state.usage) do
+      seen when is_integer(seen) and seen > 0 ->
+        state.context.messages
+        |> Compaction.total_chars()
+        |> Kernel./(seen)
+        |> min(@max_chars_per_token)
+        |> max(@min_chars_per_token)
+
+      _ ->
+        Compaction.default_chars_per_token()
+    end
   end
 
   @doc false
   @spec resolve_target(String.t() | nil, String.t() | nil, term()) ::
-          {String.t() | nil, pos_integer(), drop_reason()}
-  def resolve_target(session, session, _), do: {session, Compaction.max_input_chars(), :none}
+          {String.t() | nil, pos_integer() | :session, drop_reason()}
+  def resolve_target(session, session, _), do: {session, :session, :none}
 
   def resolve_target(session, pinned, {:ok, tokens}) do
-    cap = round(tokens * 4 * @span_window_fraction) |> min(Compaction.max_input_chars())
-
-    if cap < @min_viable_span_chars,
-      do: {session, Compaction.max_input_chars(), :too_small},
-      else: {pinned, cap, :none}
+    if tokens * @span_window_fraction < @min_viable_span_tokens,
+      do: {session, :session, :too_small},
+      else: {pinned, tokens, :none}
   end
 
   # unknown / loading: the pin's window cannot be verified, so fall back to
-  # the SESSION model (known good) with the default cap rather than trust an
+  # the SESSION model (known good) with its own budget rather than trust an
   # unverified small model with the full span (review N58 — the branch a
   # first over-limit turn hits, because the catalog warms in the background).
   #
@@ -675,10 +739,10 @@ defmodule CodingAgent.Core.Session.Compactor do
   # catalog signals ready, `:unknown` never will. One word for both would
   # have the transcript promise a resolution that does not come.
   def resolve_target(session, _pinned, :loading),
-    do: {session, Compaction.max_input_chars(), :loading}
+    do: {session, :session, :loading}
 
   def resolve_target(session, _pinned, _),
-    do: {session, Compaction.max_input_chars(), :unknown}
+    do: {session, :session, :unknown}
 
   # GLM on an 80K-char context takes minutes; without an inactivity cap
   # a hung summary stalls every turn's start (found live).

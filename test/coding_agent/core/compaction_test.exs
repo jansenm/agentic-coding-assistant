@@ -150,7 +150,7 @@ defmodule CodingAgent.Core.CompactionTest do
 
   test "render skips a prior summary (it is carried forward separately)" do
     compacted = Compaction.apply(ctx(30), "unique-prior-marker")
-    rendered = Compaction.render(ReqLLM.Context.to_list(compacted))
+    rendered = Compaction.render(ReqLLM.Context.to_list(compacted), 1_000_000)
     refute rendered =~ "unique-prior-marker"
   end
 
@@ -315,7 +315,7 @@ defmodule CodingAgent.Core.CompactionTest do
   end
 
   test "render flattens text blocks with roles" do
-    rendered = Compaction.render([msg("hello"), msg("world", :assistant)])
+    rendered = Compaction.render([msg("hello"), msg("world", :assistant)], 10_000)
     assert rendered == "[user] hello\n\n[assistant] world"
   end
 
@@ -325,15 +325,29 @@ defmodule CodingAgent.Core.CompactionTest do
       tool_msg("read_file", "defmodule Foo")
     ]
 
-    rendered = Compaction.render(msgs)
+    rendered = Compaction.render(msgs, 10_000)
     assert rendered =~ "read_file"
     assert rendered =~ "lib/foo.ex"
     assert rendered =~ "[tool:read_file]"
   end
 
-  test "render truncates a huge tool result with a marker" do
-    rendered = Compaction.render([tool_msg("shell", String.duplicate("x", 5_000))])
+  test "a tool result is kept whole to 8k chars, then kept head AND tail" do
+    under = Compaction.render([tool_msg("shell", String.duplicate("x", 8_000))], 100_000)
+    refute under =~ "truncated for the summary"
+
+    # the verdict of a test run lives at the END; head-only truncation
+    # kept the compile noise and dropped it
+    body = String.duplicate("x", 30_000) <> " VERDICT 922 passed"
+    out = Compaction.render([tool_msg("shell", body)], 100_000)
+    assert out =~ "truncated for the summary"
+    assert out =~ "922 passed"
+  end
+
+  test "call arguments are bounded too, not only results" do
+    big = assistant_call("write_file", %{path: "a.ex", content: String.duplicate("y", 20_000)})
+    rendered = Compaction.render([big], 100_000)
     assert rendered =~ "truncated for the summary"
+    assert byte_size(rendered) < 5_000
   end
 
   test "trim drops oldest complete exchanges, keeps the system message" do
@@ -444,40 +458,33 @@ defmodule CodingAgent.Core.CompactionTest do
   # so each case is testable without a catalog. The third element is the
   # WHY (review N67): the caller says the drop in the transcript, so the
   # reason is part of the contract, not an implementation detail.
+  #
+  # The second element is the WINDOW the budget is computed from, not a
+  # char cap: capacity is a token question and the char budget is a
+  # separate, measured conversion (`input_budget/2`).
   describe "resolve_target/3 (the pinned-model window guard)" do
-    @default 300_000
-
-    test "no pin: session model, default cap" do
+    test "no pin: session model, the session's own window" do
       assert Compactor.resolve_target("ollama:session", "ollama:session", :session) ==
-               {"ollama:session", @default, :none}
+               {"ollama:session", :session, :none}
     end
 
-    test "a pinned model with a big window gets the default cap (never larger)" do
-      # 200k tokens -> 400k chars, clamped to the 300k default
+    test "a pinned model with a big window keeps its window as the budget input" do
+      # no 300k ceiling any more: the budget derives from this window
       assert Compactor.resolve_target("ollama:session", "openai:gpt-4o", {:ok, 200_000}) ==
-               {"openai:gpt-4o", @default, :none}
-    end
-
-    test "a pinned model with a modest window gets a proportionally smaller span" do
-      # 16385 tokens -> ~32.7k chars (half the window in chars)
-      assert {"openai:gpt-3.5-turbo", cap, :none} =
-               Compactor.resolve_target("ollama:session", "openai:gpt-3.5-turbo", {:ok, 16_385})
-
-      assert cap == round(16_385 * 4 * 0.5)
-      assert cap < @default
+               {"openai:gpt-4o", 200_000, :none}
     end
 
     test "a KNOWN too-small pinned window falls back to the session model" do
-      # 2000 tokens -> 4000 chars < the 20k floor: not a viable summarizer
+      # 2 000 tokens -> 1 000 usable tokens, under the 8 000 floor
       assert Compactor.resolve_target("ollama:session", "tiny:model", {:ok, 2_000}) ==
-               {"ollama:session", @default, :too_small}
+               {"ollama:session", :session, :too_small}
     end
 
     test "an UNKNOWN window falls back to the session model (review N58)" do
       # The pin's window cannot be verified as big enough, so it must not be
       # handed the full span; the session model (known good) summarizes.
       assert Compactor.resolve_target("ollama:session", "ollama:cheap", :unknown) ==
-               {"ollama:session", @default, :unknown}
+               {"ollama:session", :session, :unknown}
     end
 
     # review N67: `:loading` and `:unknown` are the same fallback with
@@ -485,15 +492,60 @@ defmodule CodingAgent.Core.CompactionTest do
     # reason must not collapse them, or the transcript promises a resolution
     # that `:unknown` cannot deliver.
     test "a LOADING window is a different reason than an UNKNOWN one (review N67)" do
-      assert {"ollama:session", @default, :loading} =
+      assert {"ollama:session", :session, :loading} =
                Compactor.resolve_target("ollama:session", "ollama:cheap", :loading)
     end
   end
 
-  describe "render/2 (bounded to a cap)" do
-    test "under the cap is unchanged; over it is head+tail truncated with a marker" do
+  describe "input_budget/3 (derived, not a constant)" do
+    defp budget(window, overrides \\ []) do
+      Compaction.input_budget(
+        window,
+        Keyword.get(overrides, :ratio, 2.5),
+        span_fraction: 0.5,
+        inactivity_ms: Keyword.get(overrides, :inactivity_ms, 120_000),
+        prefill_tokens_per_sec: Keyword.get(overrides, :prefill_tps, 1_000)
+      )
+    end
+
+    test "reproduces the old 300k constant at 1k tok/s and a 2.5 ratio" do
+      # 120 s × 1 000 tok/s = 120k tokens, × 2.5 = 300k chars — the constant
+      # was this budget all along, written without its units
+      assert budget(500_000) == 300_000
+    end
+
+    test "the prefill budget binds on a window that could hold far more" do
+      assert budget(1_000_000) == 300_000
+      assert budget(4_000_000) == 300_000
+    end
+
+    test "a smaller window binds instead of the prefill budget" do
+      # 200k tokens -> half = 100k tokens, × 2.5
+      assert budget(200_000) == 250_000
+      # 16k tokens -> half = 8k tokens, × 2.5
+      assert budget(16_000) == 20_000
+    end
+
+    test "a longer inactivity budget raises the span with no code change" do
+      assert budget(1_000_000, inactivity_ms: 300_000) == 750_000
+    end
+
+    test "a faster provider prefill raises the span with no code change" do
+      assert budget(1_000_000, prefill_tps: 2_000) == 600_000
+    end
+
+    test "the measured ratio converts tokens to chars, 4 is not assumed" do
+      # 120k tokens: 2.5 chars/token (this repo) vs 4 (prose)
+      assert budget(1_000_000) == 300_000
+      assert budget(1_000_000, ratio: 4.0) == 480_000
+      assert budget(1_000_000, ratio: 2.0) == 240_000
+    end
+  end
+
+  describe "render/2 (bounded to the caller's budget)" do
+    test "under the budget is unchanged; over it is head+tail truncated with a marker" do
       small = [msg("hello"), msg("world", :assistant)]
-      assert Compaction.render(small, 1_000) == Compaction.render(small)
+      assert Compaction.render(small, 1_000) == "[user] hello\n\n[assistant] world"
 
       big = [msg(String.duplicate("x", 5_000))]
       out = Compaction.render(big, 1_000)
@@ -501,10 +553,47 @@ defmodule CodingAgent.Core.CompactionTest do
       assert byte_size(out) < 1_500
     end
 
-    test "never exceeds the default even when asked for more" do
-      big = [msg(String.duplicate("x", Compaction.max_input_chars() + 5_000))]
-      # asking for more than the default still clamps to the default
-      assert Compaction.render(big, 10_000_000) == Compaction.render(big)
+    test "there is no built-in default to fall back to" do
+      big = [msg(String.duplicate("x", 50_000))]
+      assert byte_size(Compaction.render(big, 1_000_000)) > 50_000
+    end
+
+    test "a truncation boundary never splits a UTF-8 codepoint" do
+      # one invalid byte in the body is the "Failed to build streaming
+      # request" failure class; an odd budget forces the split
+      text = String.duplicate("é", 5_000) <> String.duplicate("x", 10)
+      out = Compaction.render([msg(text)], 1_003)
+
+      assert out =~ "summarize input truncated"
+      assert String.valid?(out)
+    end
+  end
+
+  describe "chars_per_token/1 (the session's own ratio)" do
+    defp ratio_state(chars, seen_tokens) do
+      %State{
+        id: "ratio",
+        context: ReqLLM.Context.new([ReqLLM.Context.user(String.duplicate("x", chars))]),
+        model: "m",
+        status: :idle,
+        usage: %Usage{last_input_tokens: seen_tokens}
+      }
+    end
+
+    test "measures from the last prompt instead of assuming 4" do
+      assert Compactor.chars_per_token(ratio_state(2_500, 1_000)) == 2.5
+    end
+
+    test "clamps both ends into the safe direction" do
+      # denser than 2 chars/token: a smaller budget than the tokens allow
+      assert Compactor.chars_per_token(ratio_state(1_000, 1_000)) == 2.0
+      # prose-like: still capped at 4, never above
+      assert Compactor.chars_per_token(ratio_state(8_000, 1_000)) == 4.0
+    end
+
+    test "falls back to the documented default before any prompt was counted" do
+      assert Compactor.chars_per_token(ratio_state(2_500, 0)) ==
+               Compaction.default_chars_per_token()
     end
   end
 
