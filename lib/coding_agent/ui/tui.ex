@@ -3319,8 +3319,9 @@ defmodule CodingAgent.UI.Tui do
     {:noreply, state}
   end
 
-  def handle_info({:agent, {:context_compacted, _keep}}, state) do
-    {:noreply, %{state | transcript: state.transcript ++ [{:info, "· context compacted"}]}}
+  def handle_info({:agent, {:context_compacted, _keep, trigger}}, state) do
+    {:noreply,
+     %{state | transcript: state.transcript ++ [{:info, Compactor.compacted_text(trigger)}]}}
   end
 
   # The model updated its todo list (ADR 031): mirror it for the sidebar's

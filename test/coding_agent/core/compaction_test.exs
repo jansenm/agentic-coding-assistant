@@ -393,7 +393,7 @@ defmodule CodingAgent.Core.CompactionTest do
     assert Compactor.decide(s, Compactor.soft_limit(s)) == :none
 
     {s2, :changed} =
-      Compactor.compact_now(s, fn _state, span -> {:ok, "sum of #{byte_size(span)}"} end)
+      Compactor.compact_now(s, :user, fn _state, span -> {:ok, "sum of #{byte_size(span)}"} end)
 
     msgs = ReqLLM.Context.to_list(s2.context)
     assert hd(msgs).role == :system
@@ -534,13 +534,19 @@ defmodule CodingAgent.Core.CompactionTest do
 
   test "compact_now is :nothing when there is nothing to summarize" do
     s = state(context: ctx(3))
-    {s2, :nothing} = Compactor.compact_now(s, fn _state, _span -> flunk("must not summarize") end)
+
+    {s2, :nothing} =
+      Compactor.compact_now(s, :user, fn _state, _span -> flunk("must not summarize") end)
+
     assert s2 == s
   end
 
   test "compact_now is structurally inert in test_mode" do
     s = state(test_mode: true)
-    {s2, :nothing} = Compactor.compact_now(s, fn _state, _span -> flunk("must not summarize") end)
+
+    {s2, :nothing} =
+      Compactor.compact_now(s, :user, fn _state, _span -> flunk("must not summarize") end)
+
     assert s2 == s
   end
 
@@ -552,7 +558,7 @@ defmodule CodingAgent.Core.CompactionTest do
     log =
       capture_log(fn ->
         assert {s2, {:failed, :timeout}} =
-                 Compactor.compact_now(s, fn _state, _span -> {:error, :timeout} end)
+                 Compactor.compact_now(s, :user, fn _state, _span -> {:error, :timeout} end)
 
         assert s2.compaction_backoff == 3
       end)
@@ -564,7 +570,7 @@ defmodule CodingAgent.Core.CompactionTest do
     s = state(usage: %{last_input_tokens: 1_000}, compaction_backoff: 2)
 
     assert {^s, {:failed, :backoff}} =
-             Compactor.compact_now(s, fn _state, _span -> flunk("must not summarize") end)
+             Compactor.compact_now(s, :user, fn _state, _span -> flunk("must not summarize") end)
   end
 
   # review N43: a stop during the summarize cancels it and reports
@@ -575,7 +581,7 @@ defmodule CodingAgent.Core.CompactionTest do
 
     task =
       Task.async(fn ->
-        Compactor.compact_now(s, fn _state, _span ->
+        Compactor.compact_now(s, :user, fn _state, _span ->
           Process.sleep(3_000)
           {:ok, "too late"}
         end)
@@ -587,6 +593,114 @@ defmodule CodingAgent.Core.CompactionTest do
     assert {^s, :interrupted} = Task.await(task, 2_000)
     assert s.compaction_backoff == 0
     Interrupt.clear(s.id)
+  end
+
+  # -- the trigger is visible (owner report 2026-10-24) -------------------------
+  #
+  # Four causes, one string, until 2026-10-24: `hard`, `soft`, `agent`,
+  # `user` all printed "· compacting context (this can take a while)…" and
+  # "· context compacted". Answering "why did that just happen?" needed the
+  # store, the message BLOBs and the log timestamps. The lines now name the
+  # cause, and BOTH the store row and the transcript read the same function.
+
+  describe "the trigger names itself" do
+    defp drain(id, n \\ 8) do
+      Enum.flat_map(1..n, fn _ ->
+        receive do
+          {:agent, ^id, event} -> [event]
+        after
+          0 -> []
+        end
+      end)
+    end
+
+    test "the four causes read differently, and none is the old generic line" do
+      texts = for t <- [:hard, :soft, :agent, :user], do: Compactor.note_text(t)
+
+      assert length(Enum.uniq(texts)) == 4
+      assert Enum.at(texts, 0) =~ "hard limit reached"
+      assert Enum.at(texts, 1) =~ "soft limit while idle"
+      assert Enum.at(texts, 2) =~ "the agent asked"
+      assert Enum.at(texts, 3) =~ "you asked"
+      refute Enum.any?(texts, &(&1 =~ "compacting context (this"))
+    end
+
+    test "compacted_text/1 differs per cause and stays one line" do
+      for t <- [:hard, :soft, :agent, :user] do
+        line = Compactor.compacted_text(t)
+        assert line =~ "context compacted"
+        refute line =~ "\n"
+      end
+
+      assert Compactor.compacted_text(:agent) != Compactor.compacted_text(:user)
+    end
+
+    test "a hard pass announces itself as hard, in the event and in the store row" do
+      id = "trigger-hard-#{System.unique_integer([:positive])}"
+      _ = Registry.register(CodingAgent.EventRegistry, {Events.key(), id}, nil)
+
+      s = state(id: id, usage: %{last_input_tokens: 136_000})
+      {_s2, true} = Compactor.maybe_compact(s, fn _state, _span -> {:ok, "summary"} end)
+
+      events = drain(id)
+
+      assert Enum.any?(events, fn
+               {:info, text} -> text =~ "hard limit reached"
+               _ -> false
+             end)
+
+      assert Enum.any?(events, fn
+               {:context_compacted, _keep, :hard} -> true
+               _ -> false
+             end)
+
+      rows = CodingAgent.Core.Session.Store.display(id)
+      assert Enum.any?(rows, &(&1.kind == :info and &1.text =~ "context compacted — hard"))
+    end
+
+    test "the agent's tool and the human's /compact are told apart" do
+      for {trigger, expected} <- [agent: "the agent asked", user: "you asked"] do
+        id = "trigger-#{trigger}-#{System.unique_integer([:positive])}"
+        _ = Registry.register(CodingAgent.EventRegistry, {Events.key(), id}, nil)
+
+        s = state(id: id, usage: %{last_input_tokens: 1_000})
+        {_s2, :changed} = Compactor.compact_now(s, trigger, fn _s, _span -> {:ok, "sum"} end)
+
+        events = drain(id)
+
+        assert Enum.any?(events, fn
+                 {:info, text} -> text =~ expected
+                 _ -> false
+               end),
+               "#{trigger} did not announce itself: #{inspect(events)}"
+
+        assert Enum.any?(events, fn
+                 {:context_compacted, _keep, ^trigger} -> true
+                 _ -> false
+               end)
+      end
+    end
+
+    test "the idle pass says soft, not hard" do
+      id = "trigger-soft-#{System.unique_integer([:positive])}"
+      _ = Registry.register(CodingAgent.EventRegistry, {Events.key(), id}, nil)
+
+      # between soft (100k) and hard (136k)
+      s = state(id: id, usage: %{last_input_tokens: 101_000})
+      {_s2, true} = Compactor.maybe_compact_idle(s, fn _s, _span -> {:ok, "sum"} end)
+
+      events = drain(id)
+
+      assert Enum.any?(events, fn
+               {:info, text} -> text =~ "soft limit while idle"
+               _ -> false
+             end)
+
+      assert Enum.any?(events, fn
+               {:context_compacted, _keep, :soft} -> true
+               _ -> false
+             end)
+    end
   end
 
   # -- warn-once ----------------------------------------------------------------

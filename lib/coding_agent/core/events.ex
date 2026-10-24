@@ -51,9 +51,12 @@ defmodule CodingAgent.Core.Events do
       them, so an export can say *what* a tool was asked to do)
     * `{:usage_updated, usage}` — cumulative token/cost accounting
     * `{:info, text}` — a dim one-line note (compaction, notices)
-    * `{:context_compacted, min_keep}` — a compaction replaced the old
-      span with a summary; the payload is how many recent messages were
-      kept verbatim
+    * `{:context_compacted, min_keep, trigger}` — a compaction replaced the
+      old span with a summary; the payload is how many recent messages were
+      kept verbatim, and WHO caused it: `:hard` (the pre-call limit forced
+      it), `:soft` (the idle pass), `:agent` (the model's `compact` tool) or
+      `:user` (`/compact`). The trigger is part of the event because every
+      cause used to print the same line (owner report 2026-10-24).
     * `{:provider_status, :up}` / `{:provider_status, :down, reason}`
     * `{:context_window, window, soft, hard}` — the session re-resolved
       its compaction window/limits (ADR 039: the catalog finished
