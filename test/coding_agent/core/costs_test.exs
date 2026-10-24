@@ -80,13 +80,17 @@ defmodule CodingAgent.Core.CostsTest do
                  get: get_returning(200, @usage)
                )
 
-      assert snap == %{
+      assert %{
                usd: 11.71848,
                input: 128_179_185,
                cached: 56_873_460,
                output: 1_411_059,
                requests: 1_084
-             }
+             } = snap
+
+      # the wall clock rides along, so a caller can tell a fresh sample from
+      # a stale one without asking the provider again
+      assert is_integer(snap.at)
     end
 
     test "asks the billing origin, not the chat path, with the session's key" do

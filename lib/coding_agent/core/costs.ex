@@ -40,7 +40,8 @@ defmodule CodingAgent.Core.Costs do
           input: non_neg_integer(),
           cached: non_neg_integer(),
           output: non_neg_integer(),
-          requests: non_neg_integer()
+          requests: non_neg_integer(),
+          at: integer()
         }
 
   @type balance :: %{
@@ -173,7 +174,10 @@ defmodule CodingAgent.Core.Costs do
        input: input,
        cached: cached,
        output: output,
-       requests: requests
+       requests: requests,
+       # wall clock, so a caller can tell a fresh sample from a stale one
+       # without asking the provider again
+       at: System.system_time(:millisecond)
      }}
   end
 

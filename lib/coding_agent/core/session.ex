@@ -3209,6 +3209,7 @@ defmodule CodingAgent.Core.Session do
     else
       state = %{state | usage: next}
       broadcast(state, {:usage_updated, next})
+      maybe_sample_costs(state)
       state
     end
   end
@@ -3231,16 +3232,28 @@ defmodule CodingAgent.Core.Session do
     sample_costs(state)
   end
 
-  # What the provider says was spent, sampled once per turn.
+  # The cost probe runs at ROUND boundaries, not only at the turn's end.
+  # A run can be one long turn (hours of tool rounds); tying the sample to
+  # `complete_turn` meant a long turn showed no cost at all — measured on
+  # the owner's session: hours of work, `marker: nil`, an empty cost row.
+  # The interval keeps a busy turn from turning into an API poll.
+  @cost_sample_ms 30_000
+
+  defp maybe_sample_costs(state) do
+    if Usage.sample_due?(state.usage, @cost_sample_ms), do: sample_costs(state), else: state
+  end
+
+  # What the provider says was spent, sampled once per turn end and (gated)
+  # per round.
   #
-  # Deliberately AFTER the idle broadcast and the snapshot save: the turn
-  # is visibly over before two HTTP reads happen, and both are bounded at
-  # 1.5 s. The number is the DELTA of the provider's own account figure
-  # (`CodingAgent.Core.Costs`) — never tokens × a local rate, which would
-  # be wrong for every model but the one it was written for, and wrong half
-  # the day where the provider bills peak rates. No probe, no credential or
-  # an unexpected body leaves the accounting untouched: no number is better
-  # than a wrong one.
+  # Deliberately AFTER the idle broadcast and the snapshot save at a turn
+  # end: the turn is visibly over before two HTTP reads happen, and both
+  # are bounded at 1.5 s. The number is the DELTA of the provider's own
+  # account figure (`CodingAgent.Core.Costs`) — never tokens × a local
+  # rate, which would be wrong for every model but the one it was written
+  # for, and wrong half the day where the provider bills peak rates. No
+  # probe, no credential or an unexpected body leaves the accounting
+  # untouched: no number is better than a wrong one.
   defp sample_costs(state) do
     case Costs.snapshot(effective_model(state), state.provider_config) do
       {:ok, snapshot} ->

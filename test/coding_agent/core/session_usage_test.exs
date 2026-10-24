@@ -160,4 +160,17 @@ defmodule CodingAgent.Core.Session.UsageTest do
     assert Usage.from_map(Map.from_struct(u)).balance == balance
     assert Usage.set_balance(u, nil).balance == nil
   end
+
+  test "a sample is due when there is no marker, or when the marker is old" do
+    now = 1_000_000
+
+    # no baseline yet: sample immediately
+    assert Usage.sample_due?(Usage.new(), 30_000, now)
+
+    old = Usage.apply_snapshot(Usage.new(), %{usd: 1.0, requests: 1, at: now - 30_000})
+    assert Usage.sample_due?(old, 30_000, now)
+
+    fresh = Usage.apply_snapshot(Usage.new(), %{usd: 1.0, requests: 1, at: now - 29_000})
+    refute Usage.sample_due?(fresh, 30_000, now)
+  end
 end

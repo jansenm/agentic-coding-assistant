@@ -223,4 +223,20 @@ defmodule CodingAgent.Core.Session.Usage do
   @doc "The last account sample this session was based on (`nil` before one)."
   @spec marker(t() | map() | nil) :: map() | nil
   def marker(usage), do: from_map(usage).marker
+
+  @doc """
+  Whether a fresh account sample is due, given the minimum interval.
+
+  The probe costs an HTTP round trip, and a busy turn makes dozens of
+  provider calls; sampling every one of them would be noise on the
+  provider's API and a stall between rounds. `now` is injectable so the
+  rule is testable without sleeping.
+  """
+  @spec sample_due?(t() | map() | nil, non_neg_integer(), integer()) :: boolean()
+  def sample_due?(usage, every_ms, now \\ System.system_time(:millisecond)) do
+    case marker(usage) do
+      %{at: at} when is_integer(at) -> now - at >= every_ms
+      _ -> true
+    end
+  end
 end
