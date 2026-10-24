@@ -150,7 +150,10 @@ defmodule CodingAgent.Core.CompactionTest do
 
   test "render skips a prior summary (it is carried forward separately)" do
     compacted = Compaction.apply(ctx(30), "unique-prior-marker")
-    rendered = Compaction.render(ReqLLM.Context.to_list(compacted), 1_000_000)
+
+    rendered =
+      Compaction.render_chunks(ReqLLM.Context.to_list(compacted), 1_000_000) |> Enum.join("\n\n")
+
     refute rendered =~ "unique-prior-marker"
   end
 
@@ -315,7 +318,10 @@ defmodule CodingAgent.Core.CompactionTest do
   end
 
   test "render flattens text blocks with roles" do
-    rendered = Compaction.render([msg("hello"), msg("world", :assistant)], 10_000)
+    rendered =
+      Compaction.render_chunks([msg("hello"), msg("world", :assistant)], 10_000)
+      |> Enum.join("\n\n")
+
     assert rendered == "[user] hello\n\n[assistant] world"
   end
 
@@ -325,27 +331,30 @@ defmodule CodingAgent.Core.CompactionTest do
       tool_msg("read_file", "defmodule Foo")
     ]
 
-    rendered = Compaction.render(msgs, 10_000)
+    rendered = Compaction.render_chunks(msgs, 10_000) |> Enum.join("\n\n")
     assert rendered =~ "read_file"
     assert rendered =~ "lib/foo.ex"
     assert rendered =~ "[tool:read_file]"
   end
 
   test "a tool result is kept whole to 8k chars, then kept head AND tail" do
-    under = Compaction.render([tool_msg("shell", String.duplicate("x", 8_000))], 100_000)
+    under =
+      Compaction.render_chunks([tool_msg("shell", String.duplicate("x", 8_000))], 100_000)
+      |> Enum.join()
+
     refute under =~ "truncated for the summary"
 
     # the verdict of a test run lives at the END; head-only truncation
     # kept the compile noise and dropped it
     body = String.duplicate("x", 30_000) <> " VERDICT 922 passed"
-    out = Compaction.render([tool_msg("shell", body)], 100_000)
+    out = Compaction.render_chunks([tool_msg("shell", body)], 100_000) |> Enum.join()
     assert out =~ "truncated for the summary"
     assert out =~ "922 passed"
   end
 
   test "call arguments are bounded too, not only results" do
     big = assistant_call("write_file", %{path: "a.ex", content: String.duplicate("y", 20_000)})
-    rendered = Compaction.render([big], 100_000)
+    rendered = Compaction.render_chunks([big], 100_000) |> Enum.join()
     assert rendered =~ "truncated for the summary"
     assert byte_size(rendered) < 5_000
   end
@@ -407,7 +416,9 @@ defmodule CodingAgent.Core.CompactionTest do
     assert Compactor.decide(s, Compactor.soft_limit(s)) == :none
 
     {s2, :changed} =
-      Compactor.compact_now(s, :user, fn _state, span -> {:ok, "sum of #{byte_size(span)}"} end)
+      Compactor.compact_now(s, :user, fn _state, span, _prior ->
+        {:ok, "sum of #{byte_size(span)}"}
+      end)
 
     msgs = ReqLLM.Context.to_list(s2.context)
     assert hd(msgs).role == :system
@@ -542,30 +553,73 @@ defmodule CodingAgent.Core.CompactionTest do
     end
   end
 
-  describe "render/2 (bounded to the caller's budget)" do
+  describe "render_chunks/2 (a span over budget becomes slices)" do
     test "under the budget is unchanged; over it is head+tail truncated with a marker" do
       small = [msg("hello"), msg("world", :assistant)]
-      assert Compaction.render(small, 1_000) == "[user] hello\n\n[assistant] world"
+      assert Compaction.render_chunks(small, 1_000) == ["[user] hello\n\n[assistant] world"]
 
       big = [msg(String.duplicate("x", 5_000))]
-      out = Compaction.render(big, 1_000)
+      out = hd(Compaction.render_chunks(big, 1_000))
       assert out =~ "summarize input truncated"
       assert byte_size(out) < 1_500
     end
 
     test "there is no built-in default to fall back to" do
       big = [msg(String.duplicate("x", 50_000))]
-      assert byte_size(Compaction.render(big, 1_000_000)) > 50_000
+      assert big |> Compaction.render_chunks(1_000_000) |> hd() |> byte_size() > 50_000
     end
 
     test "a truncation boundary never splits a UTF-8 codepoint" do
       # one invalid byte in the body is the "Failed to build streaming
       # request" failure class; an odd budget forces the split
       text = String.duplicate("é", 5_000) <> String.duplicate("x", 10)
-      out = Compaction.render([msg(text)], 1_003)
+      out = hd(Compaction.render_chunks([msg(text)], 1_003))
 
       assert out =~ "summarize input truncated"
       assert String.valid?(out)
+    end
+  end
+
+  describe "chunked summary (the fold)" do
+    test "packs in order, never above the budget, never splitting a message" do
+      msgs = for i <- 1..6, do: msg(String.duplicate("#{i}", 1_000), :assistant)
+
+      chunks = Compaction.render_chunks(msgs, 2_500)
+
+      assert length(chunks) > 1
+      assert Enum.all?(chunks, &(byte_size(&1) <= 2_500))
+      # order preserved: the first slice holds the first message, not the last
+      assert hd(chunks) =~ String.duplicate("1", 1_000)
+      refute hd(chunks) =~ String.duplicate("6", 1_000)
+    end
+
+    test "one summarize call per slice, each folding the previous answer" do
+      # 16 × 60k chars, keep 6 -> the OLD span is ~600k; the derived
+      # budget for a session with no measured ratio is
+      # min(250k, 120k) × 4.0 = 480k chars -> two slices
+      s = state(context: ctx(16, 60_000), usage: %{last_input_tokens: 1_000})
+      parent = self()
+
+      summarizer = fn _state, span, prior ->
+        send(parent, {:slice, byte_size(span), prior})
+        {:ok, "summary-#{byte_size(span)}"}
+      end
+
+      {s2, :changed} = Compactor.compact_now(s, :user, summarizer)
+
+      assert_received {:slice, first_size, nil}
+      assert_received {:slice, second_size, "summary-" <> _}
+      assert first_size <= 480_000
+      assert second_size <= 480_000
+
+      # the LAST answer is what is stored: a small budget costs calls, not
+      # memories
+      assert Compaction.prior_summary(s2.context) == "summary-#{second_size}"
+    end
+
+    test "the transcript says how many parts, so a chunked compaction is not silent" do
+      assert Compactor.note_text(:hard, 900_000, 2) =~ "in 2 parts"
+      refute Compactor.note_text(:hard, 900_000, 1) =~ "parts"
     end
   end
 
@@ -625,7 +679,7 @@ defmodule CodingAgent.Core.CompactionTest do
     s = state(context: ctx(3))
 
     {s2, :nothing} =
-      Compactor.compact_now(s, :user, fn _state, _span -> flunk("must not summarize") end)
+      Compactor.compact_now(s, :user, fn _state, _span, _prior -> flunk("must not summarize") end)
 
     assert s2 == s
   end
@@ -634,7 +688,7 @@ defmodule CodingAgent.Core.CompactionTest do
     s = state(test_mode: true)
 
     {s2, :nothing} =
-      Compactor.compact_now(s, :user, fn _state, _span -> flunk("must not summarize") end)
+      Compactor.compact_now(s, :user, fn _state, _span, _prior -> flunk("must not summarize") end)
 
     assert s2 == s
   end
@@ -647,7 +701,9 @@ defmodule CodingAgent.Core.CompactionTest do
     log =
       capture_log(fn ->
         assert {s2, {:failed, :timeout}} =
-                 Compactor.compact_now(s, :user, fn _state, _span -> {:error, :timeout} end)
+                 Compactor.compact_now(s, :user, fn _state, _span, _prior ->
+                   {:error, :timeout}
+                 end)
 
         assert s2.compaction_backoff == 3
       end)
@@ -659,7 +715,9 @@ defmodule CodingAgent.Core.CompactionTest do
     s = state(usage: %{last_input_tokens: 1_000}, compaction_backoff: 2)
 
     assert {^s, {:failed, :backoff}} =
-             Compactor.compact_now(s, :user, fn _state, _span -> flunk("must not summarize") end)
+             Compactor.compact_now(s, :user, fn _state, _span, _prior ->
+               flunk("must not summarize")
+             end)
   end
 
   # review N43: a stop during the summarize cancels it and reports
@@ -670,7 +728,7 @@ defmodule CodingAgent.Core.CompactionTest do
 
     task =
       Task.async(fn ->
-        Compactor.compact_now(s, :user, fn _state, _span ->
+        Compactor.compact_now(s, :user, fn _state, _span, _prior ->
           Process.sleep(3_000)
           {:ok, "too late"}
         end)
@@ -729,7 +787,7 @@ defmodule CodingAgent.Core.CompactionTest do
       _ = Registry.register(CodingAgent.EventRegistry, {Events.key(), id}, nil)
 
       s = state(id: id, usage: %{last_input_tokens: 136_000})
-      {_s2, true} = Compactor.maybe_compact(s, fn _state, _span -> {:ok, "summary"} end)
+      {_s2, true} = Compactor.maybe_compact(s, fn _state, _span, _prior -> {:ok, "summary"} end)
 
       events = drain(id)
 
@@ -753,7 +811,9 @@ defmodule CodingAgent.Core.CompactionTest do
         _ = Registry.register(CodingAgent.EventRegistry, {Events.key(), id}, nil)
 
         s = state(id: id, usage: %{last_input_tokens: 1_000})
-        {_s2, :changed} = Compactor.compact_now(s, trigger, fn _s, _span -> {:ok, "sum"} end)
+
+        {_s2, :changed} =
+          Compactor.compact_now(s, trigger, fn _s, _span, _prior -> {:ok, "sum"} end)
 
         events = drain(id)
 
@@ -776,7 +836,7 @@ defmodule CodingAgent.Core.CompactionTest do
 
       # between soft (100k) and hard (136k)
       s = state(id: id, usage: %{last_input_tokens: 101_000})
-      {_s2, true} = Compactor.maybe_compact_idle(s, fn _s, _span -> {:ok, "sum"} end)
+      {_s2, true} = Compactor.maybe_compact_idle(s, fn _s, _span, _prior -> {:ok, "sum"} end)
 
       events = drain(id)
 
@@ -820,7 +880,9 @@ defmodule CodingAgent.Core.CompactionTest do
     s = state(usage: %{last_input_tokens: 136_000})
 
     {s2, true} =
-      Compactor.maybe_compact(s, fn _state, span -> {:ok, "summary of #{byte_size(span)}"} end)
+      Compactor.maybe_compact(s, fn _state, span, _prior ->
+        {:ok, "summary of #{byte_size(span)}"}
+      end)
 
     msgs = ReqLLM.Context.to_list(s2.context)
     # system + summary + tail
@@ -839,7 +901,7 @@ defmodule CodingAgent.Core.CompactionTest do
     s = state(id: id, usage: %{last_input_tokens: 136_000})
     {:ok, counter} = Agent.start_link(fn -> 0 end)
 
-    summarizer = fn _state, _span ->
+    summarizer = fn _state, _span, _prior ->
       n = Agent.get_and_update(counter, fn n -> {n + 1, n + 1} end)
       if n == 1, do: {:error, :empty_summary}, else: {:ok, "recovered"}
     end
@@ -957,7 +1019,7 @@ defmodule CodingAgent.Core.CompactionTest do
 
       s = pinned_state(id, usage: %{last_input_tokens: 136_000})
 
-      {s2, true} = Compactor.maybe_compact(s, fn _state, _span -> {:ok, "a summary"} end)
+      {s2, true} = Compactor.maybe_compact(s, fn _state, _span, _prior -> {:ok, "a summary"} end)
 
       assert s2.compaction_pin_dropped in [:loading, :unknown]
 
@@ -986,7 +1048,8 @@ defmodule CodingAgent.Core.CompactionTest do
     s = state(usage: %{last_input_tokens: 136_000})
     assert Usage.last_input_tokens(s.usage) == 136_000
 
-    {s2, true} = Compactor.maybe_compact(s, fn _state, _span -> {:ok, "a short summary"} end)
+    {s2, true} =
+      Compactor.maybe_compact(s, fn _state, _span, _prior -> {:ok, "a short summary"} end)
 
     # the count now reflects the compacted context, not the old 136k
     assert Usage.last_input_tokens(s2.usage) < 136_000
@@ -1006,12 +1069,16 @@ defmodule CodingAgent.Core.CompactionTest do
     assert Compactor.decide(s, Compactor.hard_limit(s)) == :none
     assert {:ok, _} = Compactor.decide(s, Compactor.soft_limit(s))
 
-    {_s2, true} = Compactor.maybe_compact_idle(s, fn _state, _span -> {:ok, "idle summary"} end)
+    {_s2, true} =
+      Compactor.maybe_compact_idle(s, fn _state, _span, _prior -> {:ok, "idle summary"} end)
   end
 
   test "maybe_compact_idle below the soft limit does nothing" do
     s = state(usage: %{last_input_tokens: 50_000})
-    {s2, false} = Compactor.maybe_compact_idle(s, fn _state, _span -> flunk("must not") end)
+
+    {s2, false} =
+      Compactor.maybe_compact_idle(s, fn _state, _span, _prior -> flunk("must not") end)
+
     assert s2 == s
   end
 
@@ -1019,7 +1086,7 @@ defmodule CodingAgent.Core.CompactionTest do
     s = state(usage: %{last_input_tokens: 136_000})
     {:ok, counter} = Agent.start_link(fn -> 0 end)
 
-    summarizer = fn _state, _span ->
+    summarizer = fn _state, _span, _prior ->
       n = Agent.get_and_update(counter, fn n -> {n + 1, n + 1} end)
 
       # first call empty, second succeeds
@@ -1036,7 +1103,7 @@ defmodule CodingAgent.Core.CompactionTest do
     s = state(usage: %{last_input_tokens: 136_000})
     {:ok, counter} = Agent.start_link(fn -> 0 end)
 
-    summarizer = fn _state, _span ->
+    summarizer = fn _state, _span, _prior ->
       Agent.update(counter, &(&1 + 1))
       {:error, :empty_summary}
     end
@@ -1056,7 +1123,8 @@ defmodule CodingAgent.Core.CompactionTest do
 
     log =
       capture_log(fn ->
-        {s2, false} = Compactor.maybe_compact(s, fn _state, _span -> {:error, :provider_down} end)
+        {s2, false} =
+          Compactor.maybe_compact(s, fn _state, _span, _prior -> {:error, :provider_down} end)
 
         assert s2.context == s.context
         assert s2.compaction_backoff == 3
@@ -1072,7 +1140,7 @@ defmodule CodingAgent.Core.CompactionTest do
     log =
       capture_log(fn ->
         {s2, false} =
-          Compactor.maybe_compact(s, fn _state, _span -> raise "summarizer boom" end)
+          Compactor.maybe_compact(s, fn _state, _span, _prior -> raise "summarizer boom" end)
 
         assert s2.context == s.context
         assert s2.compaction_backoff == 3
@@ -1091,7 +1159,7 @@ defmodule CodingAgent.Core.CompactionTest do
       log =
         capture_log(fn ->
           {s2, false} =
-            Compactor.maybe_compact(s, fn _state, _span -> Process.sleep(5_000) end)
+            Compactor.maybe_compact(s, fn _state, _span, _prior -> Process.sleep(5_000) end)
 
           assert s2.context == s.context
           assert s2.compaction_backoff == 3
@@ -1105,7 +1173,10 @@ defmodule CodingAgent.Core.CompactionTest do
 
   test "maybe_compact during backoff skips and counts down (under the hard limit)" do
     s = state(usage: %{last_input_tokens: 101_000}, compaction_backoff: 2)
-    {s2, false} = Compactor.maybe_compact(s, fn _state, _span -> flunk("must not summarize") end)
+
+    {s2, false} =
+      Compactor.maybe_compact(s, fn _state, _span, _prior -> flunk("must not summarize") end)
+
     assert s2.compaction_backoff == 1
   end
 
@@ -1123,16 +1194,24 @@ defmodule CodingAgent.Core.CompactionTest do
 
   test "maybe_compact in test mode is a structural skip" do
     s = state(usage: %{last_input_tokens: 136_000}, test_mode: true)
-    {s2, false} = Compactor.maybe_compact(s, fn _state, _span -> flunk("must not summarize") end)
+
+    {s2, false} =
+      Compactor.maybe_compact(s, fn _state, _span, _prior -> flunk("must not summarize") end)
+
     assert s2 == s
   end
 
   test "maybe_compact below the limit only warns once" do
     s = state(usage: %{last_input_tokens: 90_000})
-    {s1, true} = Compactor.maybe_compact(s, fn _state, _span -> flunk("must not summarize") end)
+
+    {s1, true} =
+      Compactor.maybe_compact(s, fn _state, _span, _prior -> flunk("must not summarize") end)
+
     assert s1.compaction_warned == true
 
-    {s2, false} = Compactor.maybe_compact(s1, fn _state, _span -> flunk("must not summarize") end)
+    {s2, false} =
+      Compactor.maybe_compact(s1, fn _state, _span, _prior -> flunk("must not summarize") end)
+
     assert s2 == s1
   end
 

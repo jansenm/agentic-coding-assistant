@@ -365,28 +365,55 @@ defmodule CodingAgent.Core.Compaction do
   defp trim_leading(<<>>), do: <<>>
 
   @doc """
-  Renders the summary span as one text block for the summarizer model —
-  the only place message text is flattened for an LLM call. Tool calls
-  and their arguments, and tool-result names, are included so the
+  Renders the summary span as one or more text blocks for the summarizer
+  model — the only place message text is flattened for an LLM call. Tool
+  calls and their arguments, and tool-result names, are included so the
   summary can preserve *what was done*, not just prose.
 
   `max_chars` is the caller's budget (`input_budget/3`), and it is the
   only bound: there is no built-in default to fall back to, because a
-  default is a number that one day is too low. Over the budget the span
-  is head+tail truncated with an explicit marker; the caller that can
-  afford a bigger call chunks instead.
+  default is a number that one day is too low.
+
+  **Over the budget the span is summarized in SLICES, not truncated.**
+  The caller runs one summarize call per block and folds each summary into
+  the next as the prior, so a budget that turns out too small costs extra
+  calls and never lost facts — which is what makes a derived budget safe.
+  Messages are never split across blocks; a single MESSAGE larger than the
+  budget is bounded head+tail inside its own block (the explicit marker in
+  `bound_input/2`), and that is the only truncation left.
 
   A prior summary message is SKIPPED: it is carried forward separately
   (`prior_summary/1`) and re-rendering it as conversation would duplicate
   it and let the model summarize its own prior summary as if it were new
   material.
   """
-  @spec render(list(), pos_integer()) :: String.t()
-  def render(msgs, max_chars) do
+  @spec render_chunks(list(), pos_integer()) :: [String.t()]
+  def render_chunks(msgs, max_chars) when is_integer(max_chars) and max_chars > 0 do
     msgs
     |> Enum.reject(&summary_message?/1)
-    |> Enum.map_join("\n\n", &render_message/1)
-    |> bound_input(max_chars)
+    |> Enum.map(&render_message/1)
+    |> Enum.reject(&(&1 == ""))
+    |> pack(max_chars)
+    |> Enum.map(&bound_input(&1, max_chars))
+  end
+
+  # Greedy pack, in order: append while the block still fits, open a new
+  # one when it does not. The separator counts, so every block is within
+  # the budget it was packed for.
+  defp pack(rendered, max) do
+    rendered
+    |> Enum.reduce([], fn message, acc ->
+      case acc do
+        [] ->
+          [message]
+
+        [current | rest] ->
+          if byte_size(current) + 2 + byte_size(message) <= max,
+            do: [current <> "\n\n" <> message | rest],
+            else: [message, current | rest]
+      end
+    end)
+    |> Enum.reverse()
   end
 
   @doc """

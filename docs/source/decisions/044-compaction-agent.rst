@@ -124,3 +124,65 @@ Open questions
 3. **Does a custom body help?** Same experiment stance as ADR 040: the
    default body is a hypothesis; the next long runs show whether user
    bodies measurably improve the resumed agent's accuracy.
+
+Amendment 2026-10-24: the span cap is derived, and an over-budget span is sliced
+--------------------------------------------------------------------------------
+
+**Status: Accepted (amendment to the accepted ADR 044); implemented with
+this record.**
+
+The cap this ADR described was a 300 000-char constant, and the constant
+was really a *prefill budget* with its units left out:
+``120 000 ms ÷ 1000 × ~1 000 tok/s × ~2.5 chars/token ≈ 300 000``. Written
+as a constant it could not move when the model window, the timeout or the
+provider's prefill rate moved — and it sat *below* the span that the soft
+line (150k tokens ≈ 300–375k chars at this repo's measured density)
+produces. Seven of nine compactions in one day's log reported
+``300090 chars rendered``: the cap, not the span. The summarizer was
+reading a truncated view (head and tail, middle elided) and the model
+then re-explored what it had lost.
+
+Two changes:
+
+1. **The cap is computed** (``Compaction.input_budget/3``):
+
+   ``min(span_fraction × window_tokens, inactivity_ms / 1000 ×
+   prefill_tokens_per_sec) × chars_per_token``
+
+   The second ceiling is the one that binds in practice: a prefix that
+   prefills longer than the inactivity timeout emits no byte while it
+   works, so the transport kills the call before the first token.
+   ``prefill_tokens_per_sec`` is a provider property, so it is a config
+   key (default 1 000), not a source constant. ``chars_per_token`` is
+   measured per session from the last prompt the provider counted
+   (clamped 2.0–4.0, both ends safe), never assumed to be 4 — this
+   repo's transcripts run ~2.5.
+
+   At the defaults this reproduces 300 000 for a 500k window, so the
+   change is behaviour-preserving until a window, timeout or rate moves
+   — and then the budget moves with them. Capacity ("can this model hold
+   a span") is now checked in tokens; affordability ("how much can we
+   prefill") is the timeout term. The old char cap conflated both.
+
+2. **An over-budget span is sliced, not truncated.**
+   ``Compaction.render_chunks/2`` packs messages into blocks of at most
+   the budget (never splitting a message), and ``Compactor`` summarizes
+   one block per call, folding each answer into the next as the prior
+   summary. A budget that turns out too small therefore costs extra
+   calls, never lost facts — which is what makes a *derived* budget safe
+   to be wrong. The wall clock bounds the whole sequence, not each call.
+
+   The only truncation left is a single MESSAGE larger than the whole
+   budget, bounded head+tail inside its own block with the explicit
+   marker. The transcript note now says "in N parts" when a compaction
+   slices, so a chunked run is not silent.
+
+Consequences:
+
+- ``Compaction.render/2`` is gone; ``render_chunks/2`` is the one
+  rendering path, and its tests pin order, the budget and the no-split
+  rule.
+- The summarize seam (``summarize_fn``) takes the prior summary as its
+  third argument, because a chunked run has no other way to fold.
+- ``note_text/3`` carries the slice count; ``note_text/1`` stays the
+  plain line.

@@ -124,25 +124,23 @@ defmodule CodingAgent.Core.Session.Compactor do
   row and the TUI transcript must be the same string — the row is written
   by `broadcast/2` and the transcript by the UI, and two literals drift.
 
-  `note_text/3` is the same line plus what the summarizer will NOT see
-  when the span does not fit: the truncation marker inside the span only
-  reaches the MODEL, so "it compacted and forgot the middle" is otherwise
-  indistinguishable from "it compacted" in the transcript (measured: seven
-  of nine compactions in one day's log were at the cap, all narrated as a
-  plain "compacting context").
+  `note_text/3` adds the slice count when the span does not fit the
+  budget: it is summarized in parts rather than truncated, and "in 2
+  parts" is what tells the human why this compaction takes longer than
+  the last one.
   """
   @spec note_text(trigger()) :: String.t()
   def note_text(trigger) do
     "· compacting context — #{trigger_text(trigger)} (this can take a while)…"
   end
 
-  @spec note_text(trigger(), non_neg_integer(), non_neg_integer()) :: String.t()
-  def note_text(trigger, span_chars, cap) when span_chars > cap do
-    "· compacting context — #{trigger_text(trigger)}: #{div(span_chars, 1000)}k chars, " <>
-      "#{div(cap, 1000)}k summarized — the middle is elided…"
+  @spec note_text(trigger(), non_neg_integer(), pos_integer()) :: String.t()
+  def note_text(trigger, span_chars, parts) when parts > 1 do
+    "· compacting context — #{trigger_text(trigger)}: #{div(span_chars, 1000)}k chars " <>
+      "in #{parts} parts (this takes longer)…"
   end
 
-  def note_text(trigger, _span_chars, _cap), do: note_text(trigger)
+  def note_text(trigger, _span_chars, _parts), do: note_text(trigger)
 
   @doc """
   The "context compacted" line, naming the trigger. Same reason as
@@ -187,7 +185,7 @@ defmodule CodingAgent.Core.Session.Compactor do
     end
   end
 
-  def maybe_compact(%State{} = state, nil), do: maybe_compact(state, &summarize/2)
+  def maybe_compact(%State{} = state, nil), do: maybe_compact(state, &summarize/3)
 
   def maybe_compact(%State{} = state, summarize_fn) do
     limit = hard_limit(state)
@@ -214,7 +212,7 @@ defmodule CodingAgent.Core.Session.Compactor do
     {%{state | compaction_backoff: backoff - 1}, false}
   end
 
-  def maybe_compact_idle(%State{} = state, nil), do: maybe_compact_idle(state, &summarize/2)
+  def maybe_compact_idle(%State{} = state, nil), do: maybe_compact_idle(state, &summarize/3)
 
   def maybe_compact_idle(%State{} = state, summarize_fn) do
     limit = soft_limit(state)
@@ -277,7 +275,7 @@ defmodule CodingAgent.Core.Session.Compactor do
   def compact_now(%State{test_mode: true} = state, _trigger, _summarize_fn),
     do: {state, :nothing}
 
-  def compact_now(%State{} = state, trigger, nil), do: compact_now(state, trigger, &summarize/2)
+  def compact_now(%State{} = state, trigger, nil), do: compact_now(state, trigger, &summarize/3)
 
   def compact_now(%State{} = state, trigger, summarize_fn) do
     if state.compaction_backoff > 0 do
@@ -431,20 +429,26 @@ defmodule CodingAgent.Core.Session.Compactor do
   # the provider stack would then kill the whole session process before
   # the wait could ever observe it (verified: a raising summarizer takes
   # the linked caller down; the {:exit, _} clause never fires).
-  defp compact(state, old, summarize_fn, kind) do
-    # Render bounded to the SUMMARIZER model's window (ADR 044): a pinned
-    # cheap model with a small window gets a proportionally smaller span,
-    # so it is not handed more than it can hold.
-    {_model, cap, drop_reason} = compaction_target(state)
-    span = Compaction.render(old, cap)
+  # A chunk is never given less than this, even when the wall clock is
+  # almost spent: a sub-second provider call is a guaranteed failure, and
+  # a failed chunk loses the whole compaction.
+  @min_chunk_ms 1_000
 
-    # An empty rendered span means there is nothing NEW to summarize: the
-    # only "old" message is the prior summary itself, which `render/2`
+  defp compact(state, old, summarize_fn, kind) do
+    # The budget comes from the SUMMARIZER model's window AND the prefill
+    # the inactivity timeout pays for (ADR 044 caveat): a pinned cheap
+    # model gets a proportionally smaller one, and a slow provider gets a
+    # smaller one too, without either being a constant.
+    {_model, budget, drop_reason} = compaction_target(state)
+    chunks = Compaction.render_chunks(old, budget)
+
+    # An empty render means there is nothing NEW to summarize: the only
+    # "old" message is the prior summary itself, which `render_chunks/2`
     # skips by design (review N16). Calling the provider would ask it to
     # summarize nothing and then REPLACE the prior summary with the
     # answer — losing facts for no gain, plus a needless call. The prior
     # summary already IS the compacted state, so this is `:nothing`.
-    if String.trim(span) == "" do
+    if chunks == [] or Enum.all?(chunks, &(String.trim(&1) == "")) do
       {state, :nothing}
     else
       # Say WHO summarizes and WHY not the pin, before the call (review
@@ -453,49 +457,81 @@ defmodule CodingAgent.Core.Session.Compactor do
       # not narrate a model it never used.
       state = note_pin_dropped(state, drop_reason)
 
-      broadcast(state, {:info, note_text(kind, Compaction.span_chars(old), cap)})
-      do_compact(state, span, summarize_fn, kind, @summarize_retries)
+      broadcast(state, {:info, note_text(kind, Compaction.span_chars(old), length(chunks))})
+      do_compact(state, chunks, summarize_fn, kind, @summarize_retries)
     end
   end
 
-  defp do_compact(state, span, summarize_fn, kind, retries_left) do
-    Logger.debug("compacting context (#{byte_size(span)} chars rendered, trigger: #{kind})")
+  # One summarize call per block, in order, folding each answer into the
+  # next as the prior summary; the LAST answer is what gets stored. A
+  # budget that turns out too small therefore costs calls, not memories —
+  # which is what makes a derived budget safe to get wrong.
+  #
+  # The wall clock bounds the WHOLE sequence, not each call: every chunk
+  # gets what is left of it, so three chunks cannot take three times the
+  # budget.
+  defp do_compact(state, chunks, summarize_fn, kind, retries_left) do
+    prior = Compaction.prior_summary(state.context)
+    deadline = System.monotonic_time(:millisecond) + wall_clock()
+
+    result =
+      Enum.reduce_while(chunks, {:ok, prior}, fn chunk, {:ok, prior} ->
+        budget = max(deadline - System.monotonic_time(:millisecond), @min_chunk_ms)
+
+        case summarize_chunk(state, chunk, prior, summarize_fn, kind, retries_left, budget) do
+          {:ok, summary} -> {:cont, {:ok, summary}}
+          other -> {:halt, other}
+        end
+      end)
+
+    case result do
+      {:ok, summary} -> apply_summary(state, summary, kind)
+      {:error, reason} -> compaction_failed(state, reason, kind)
+      :interrupted -> {state, :interrupted}
+    end
+  end
+
+  defp summarize_chunk(state, span, prior, summarize_fn, kind, retries_left, budget) do
+    Logger.debug(
+      "compacting context (#{byte_size(span)} chars rendered, trigger: #{kind}, " <>
+        "rolling: #{prior != nil})"
+    )
 
     task =
       Task.Supervisor.async_nolink(task_supervisor(), fn ->
-        summarize_fn.(state, span)
+        summarize_fn.(state, span, prior)
       end)
 
-    case await(task, wall_clock(), state.id) do
+    case await(task, budget, state.id) do
       {:ok, {:ok, summary_text}} ->
-        apply_summary(state, summary_text, kind)
+        {:ok, summary_text}
 
       {:ok, {:error, :empty_summary}} when retries_left > 0 ->
         Logger.warning("summarizer returned an empty answer; retrying once")
-        do_compact(state, span, summarize_fn, kind, retries_left - 1)
+        summarize_chunk(state, span, prior, summarize_fn, kind, retries_left - 1, budget)
 
       {:ok, {:error, reason}} ->
-        compaction_failed(state, reason, kind)
+        {:error, reason}
 
       {:exit, reason} ->
-        compaction_failed(state, {:summarize_task_exit, reason}, kind)
+        {:error, {:summarize_task_exit, reason}}
 
       {:ok, other} ->
-        compaction_failed(state, {:unexpected_summarizer_result, other}, kind)
+        {:error, {:unexpected_summarizer_result, other}}
 
       :timeout ->
         Logger.warning(
           "compaction summarize exceeded #{div(wall_clock(), 1000)}s, keeping full context"
         )
 
-        compaction_failed(state, :wall_clock_exceeded, kind)
+        {:error, :wall_clock_exceeded}
 
       :interrupted ->
         # the user stopped the turn while the summary ran (review N43).
         # Kill the task (it holds a live provider call) and report the
         # stop; the context is untouched and NO backoff is set — the
         # human asked, it is not a provider failure.
-        {state, :interrupted}
+        :interrupted
     end
   end
 
@@ -619,7 +655,12 @@ defmodule CodingAgent.Core.Session.Compactor do
   @doc false
   @spec summarize(State.t(), String.t()) :: {:ok, String.t()} | {:error, term()}
   def summarize(state, old_span_text) do
-    prior = Compaction.prior_summary(state.context)
+    summarize(state, old_span_text, Compaction.prior_summary(state.context))
+  end
+
+  @doc false
+  @spec summarize(State.t(), String.t(), String.t() | nil) :: {:ok, String.t()} | {:error, term()}
+  def summarize(state, old_span_text, prior) do
     agent = compaction_agent(state)
     {model, _cap, _reason} = compaction_target(state)
 
