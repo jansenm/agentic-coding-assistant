@@ -103,7 +103,8 @@ permission layer's allow class beside ``list_dir``/``read_file``) —
 searches never pause at the gate. They are the context-economy tools: is-grep-enough-style
 evidence says text search wins on trivial lookups and dies on deep
 traces — these tools are the cheap baseline tier; the structural tier
-(outlines, call graphs) stays on the roadmap's "Later" list.
+(outlines, call graphs) stays on the roadmap's "Later" list
+(:doc:`agentic-ecosystem` maps that layer).
 
 ``rg``/``fd`` are **required** since ADR 030: the retired Elixir walk
 was a second, unconfined boundary, so a missing binary is a clear error

@@ -15,6 +15,10 @@ is treated as a security metric, protocol plumbing delegates to
 battle-tested libraries (req, ex_termbox), and all domain logic — agent
 loop, HITL, memory, tools — is owned code.
 
+The protocols this stack sits inside — and which of them the harness
+speaks, plans to speak, or deliberately does not — are mapped in
+:doc:`agentic-ecosystem`.
+
 Fixed by project constraints
 ----------------------------
 

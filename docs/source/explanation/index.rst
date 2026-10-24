@@ -13,6 +13,7 @@ constraints that follow from the project's trust goals.
    memory
    compaction-strategies
    stack
+   agentic-ecosystem
    about-tools
    about-req-llm
    configuration-landscape

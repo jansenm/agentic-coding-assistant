@@ -243,6 +243,10 @@ TUI wish-list (user's own list, keyboard-first, from the live sessions):
 | `question` | ✅ (ADR 027) | model-invoked stop-and-ask: the gate intercepts the call, the session parks, the TUI shows a wizard; a non-interactive driver gets an "unavailable" result |
 | code-intelligence queries (`outline` / `symbols` / `source-by-symbol` / `callers` / `check`) | one day | "structural sight" (cf. grove + `is-grep-enough`): returns *answers*, never raw AST. For Elixir via `Code.string_to_quoted` + `Code.Typespec` + compile tracer — semantic-grade where tree-sitter tools are name-based. **Benchmark context quality first** before building the tier. LSP only if rename-references are demanded; an MCP *server* exporting these queries is the phase-7 edition |
 
+The protocol landscape around these rows — ACP, MCP, LSP/DAP, A2A, AG-UI,
+A2UI, and which of them this harness speaks — is mapped in
+`docs/source/explanation/agentic-ecosystem.rst`.
+
 Beyond tools — the trajectory after dogfooding, roughly:
 
 1. **Get it running for dogfooding** (milestone above).
