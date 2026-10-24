@@ -30,18 +30,27 @@ defmodule CodingAgent.Core.Session.Usage do
 
   Older snapshots stored a plain map. `from_map/1` normalizes a loaded
   map (or a struct, or nil) into a `%Usage{}`, so the struct is a
-  wire-compatible upgrade — no snapshot migration needed.
+  wire-compatible upgrade — no snapshot migration needed. A struct from an
+  OLDER build needs that too: the store round-trips it through
+  `binary_to_term/1`, which does not know about fields added since.
   """
 
   @enforce_keys []
-  defstruct input_tokens: 0,
-            output_tokens: 0,
-            cached_tokens: 0,
-            last_input_tokens: 0,
-            cost: nil,
-            cost_basis: nil,
-            balance: nil,
-            marker: nil
+  @fields [
+    input_tokens: 0,
+    output_tokens: 0,
+    cached_tokens: 0,
+    last_input_tokens: 0,
+    cost: nil,
+    cost_basis: nil,
+    balance: nil,
+    marker: nil
+  ]
+  defstruct @fields
+
+  # A current struct has one key per field plus `:__struct__`; anything
+  # else came from an older build and needs `struct/2` to gain the rest.
+  @shape length(@fields) + 1
 
   @typedoc """
   Where the cost came from: `:priced` when the provider returned a cost
@@ -74,11 +83,22 @@ defmodule CodingAgent.Core.Session.Usage do
   def new, do: %__MODULE__{}
 
   @doc """
-  Normalizes a persisted/loose value into a `%Usage{}`: a `%Usage{}` is
-  returned as-is, a map is read with defaults, nil/missing gives `new/0`.
+  Normalizes a persisted/loose value into a `%Usage{}`: nil/missing gives
+  `new/0`, a map is read with defaults.
+
+  A `%Usage{}` is returned as-is **only when its shape is current**. The
+  store deserializes state with `binary_to_term/1`, which does not know
+  about struct fields: a `%Usage{}` written by an older build comes back
+  with the keys it had then and none of the ones added since, and a
+  direct field read on it raises `KeyError` (found live: opening a
+  session in the TUI raised on `cached_tokens` and the panel rendered an
+  error every frame). `struct/2` fills the missing keys from the defaults;
+  the count check keeps the no-copy fast path for the common case.
   """
   @spec from_map(t() | map() | nil) :: t()
-  def from_map(%__MODULE__{} = usage), do: usage
+  def from_map(%__MODULE__{} = usage) do
+    if map_size(usage) == @shape, do: usage, else: struct(__MODULE__, Map.from_struct(usage))
+  end
 
   def from_map(nil), do: new()
 

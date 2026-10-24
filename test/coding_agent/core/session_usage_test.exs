@@ -127,6 +127,31 @@ defmodule CodingAgent.Core.Session.UsageTest do
     assert Usage.marker(u).usd == 9.5
   end
 
+  test "a struct from an older build is healed, not trusted" do
+    # the store deserializes state with binary_to_term/1: a %Usage{}
+    # written before `cached_tokens` existed comes back with four keys and
+    # `__struct__` intact. Returning it as-is made every new reader raise
+    # KeyError — found live, the TUI could not open a session.
+    legacy =
+      %Usage{input_tokens: 661_523_905, output_tokens: 6_214_558, last_input_tokens: 32_751}
+      |> Map.from_struct()
+      |> Map.take([:input_tokens, :output_tokens, :last_input_tokens, :cost])
+      |> Map.put(:__struct__, Usage)
+
+    assert is_struct(legacy, Usage)
+    refute Map.has_key?(legacy, :cached_tokens)
+
+    healed = Usage.from_map(legacy)
+
+    assert healed.input_tokens == 661_523_905
+    assert healed.cached_tokens == 0
+    assert healed.cost_basis == nil
+    assert healed.balance == nil
+    assert healed.marker == nil
+    # the reader that used to raise
+    assert Usage.cached_tokens(legacy) == 0
+  end
+
   test "a balance rides along and survives a map round trip" do
     balance = %{remaining: 7.2, allowance: 60.0, purchased: 0.0, from: "a", until: "b"}
     u = Usage.set_balance(Usage.new(), balance)
