@@ -307,6 +307,21 @@ minutes-long summarize call — found live). The session warns once at 80%
 of the soft limit ("· context at 144k tokens — compaction at … will
 summarize older messages") so it is never a silent surprise.
 
+**The transcript says WHICH cause.** There are four ways a compaction
+can start, and they are not interchangeable to a reader: the pre-call
+**hard** limit (forced, mid-turn), the idle **soft** pass, the model's
+own ``compact`` tool, and the human's ``/compact``. Until 2026-10-24 all
+four printed the same two lines, so "why did that just happen?" could
+not be answered from the screen, the store or the log (found live — the
+owner had to ask; answering it took a store query, a message-BLOB dump
+and log timestamps). Both lines now name the cause
+("· compacting context — hard limit reached …", "· context compacted —
+the agent asked"), ``Compactor.note_text/1`` and
+``Compactor.compacted_text/1`` are the single source for the store row
+and the transcript, and the log line carries ``trigger:`` as well. The
+``{:context_compacted, min_keep, trigger}`` event carries it too, so a
+subscriber never has to guess from timing.
+
 **The summarize path preserves facts.** The span is rendered with tool
 **names and call arguments** (`Compaction.render/1`), not just text
 parts: an assistant call is text-empty, so the old render dropped

@@ -589,4 +589,16 @@ harness knows exactly:
   removes.
 * a failure with no EROFS in it gets no note. The note is bounded: no
   heuristic on command text, no diagnosis of anything but the profile.
+* the standing sentence says what no grant can do, too (2026-10-24): "a
+  path outside them is not writable by ANY grant — ``change_vcs`` widens
+  the repository's git state, not the filesystem". Measured by deleting a
+  file in the neighbouring worktree from this one: EROFS, and the note
+  offered ``change_vcs``, which binds ``.git/worktrees/<name>`` and the
+  commondir (that amendment's first half), not another checkout's files.
+  ``Mounts`` has only ``rw``/``ro``/``hide``, and the scope root is the
+  working directory (owner ruling), so there is no grant to offer. The
+  sentence is unconditional rather than conditional because it is true of
+  every profile — and reading the path out of the error line to decide
+  whether the sentence applies would hang the note on a program's prose,
+  which is the one thing the kernel-string trigger avoids.
 

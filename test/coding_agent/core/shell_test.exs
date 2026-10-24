@@ -190,8 +190,21 @@ defmodule CodingAgent.Core.Tools.ShellTest do
       note = Shell.note(profile, "git: Read-only file system\n")
 
       assert note =~ "Only the scope root and the configured cache mounts are writable"
-      refute note =~ "change_vcs"
+      refute note =~ "without change_vcs"
       refute note =~ "the git tool"
+    end
+
+    test "note/2: no grant widens a path outside the scope root (N115)" do
+      # Measured: deleting a file in the OTHER worktree from this one — the
+      # note offered `change_vcs`, which cannot bind another tree's files.
+      erofs = "mv: cannot remove 'x': Read-only file system\n"
+
+      for args <- [%{}, %{"change_vcs" => true}] do
+        note = Shell.note(Shell.profile(%{root: @tmp_root}, args), erofs)
+
+        assert note =~ "not writable by any grant"
+        assert note =~ "change_vcs widens the repository's git state, not the filesystem"
+      end
     end
 
     test "note/2: root_ro wins — a policy is named, and no flag is offered" do

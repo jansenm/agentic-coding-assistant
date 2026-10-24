@@ -308,6 +308,9 @@ defmodule CodingAgent.Core.Sandbox.BwrapTest do
         assert out =~ "note: a write hit a read-only path"
         assert out =~ "without change_vcs"
         assert out =~ "use the git tool"
+        # N115: the standing sentence, in real output — no grant widens the
+        # filesystem, so the note must not read as "get the flag and write".
+        assert out =~ "not writable by any grant"
         assert File.read!(Path.join(root, "app.txt")) == "v2\n"
       end
     end

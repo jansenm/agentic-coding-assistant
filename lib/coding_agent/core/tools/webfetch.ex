@@ -173,7 +173,14 @@ defmodule CodingAgent.Core.Tools.WebFetch do
            redirect: false,
            receive_timeout: @timeout_ms,
            max_retries: 0,
-           retry: :safe_transient
+           retry: :safe_transient,
+           # Req's default decoder turns `application/json` into a Map.
+           # Everything below this line is defined on bytes: `to_text/2`
+           # matches on the content type, `cap/2` measures and slices.
+           # A decoded Map ran `byte_size/1` inside the callback and
+           # killed the tool with "not an iodata term" (P29) — and the
+           # model wants the document, not an inspected term.
+           decode_body: false
          ) do
       {:ok, %Req.Response{status: status, headers: headers}}
       when status in @redirect_statuses ->
@@ -181,21 +188,36 @@ defmodule CodingAgent.Core.Tools.WebFetch do
 
       {:ok, %Req.Response{status: status, headers: headers, body: body}}
       when status in 200..299 ->
-        content_type = content_type(headers)
-
-        cond do
-          text?(content_type) ->
-            {:ok, body |> to_text(content_type) |> cap(scope)}
-
-          true ->
-            Tools.error("refusing content type #{inspect(content_type)} — text only")
-        end
+        render(headers, body, scope)
 
       {:ok, %Req.Response{status: status}} ->
         Tools.error("HTTP #{status}")
 
       {:error, err} ->
         Tools.error("fetch failed: #{Exception.message(err)}")
+    end
+  end
+
+  # The body -> result mapping. Public for tests (@doc false): this is
+  # where the JSON crash lived, and it is reachable without a socket.
+  @doc false
+  @spec render(list(), term(), Tools.scope()) :: {:ok, String.t()} | {:error, String.t()}
+  def render(headers, body, scope) do
+    type = content_type(headers)
+
+    cond do
+      not text?(type) ->
+        Tools.error("refusing content type #{inspect(type)} — text only")
+
+      # Unreachable while `decode_body: false` holds — which is the
+      # point: the guard turns "a decoder ran where bytes are expected"
+      # into a sentence naming the type, instead of Req's callback
+      # dying with "not an iodata term" (P29).
+      not is_binary(body) ->
+        Tools.error("#{inspect(type)} arrived decoded — this tool returns text")
+
+      true ->
+        {:ok, body |> to_text(type) |> cap(scope)}
     end
   end
 
@@ -251,9 +273,15 @@ defmodule CodingAgent.Core.Tools.WebFetch do
     end
   end
 
+  # `text/*`, the two XML forms, JSON — and every `+json` type: RFC 6839
+  # makes the suffix the registration, so `application/problem+json` and
+  # `application/vnd.oai.openapi+json` are JSON documents, not archives
+  # (P30). An exact-type list cannot say that; it refused the OpenAPI
+  # document of llmcatalog.dev while accepting `application/json`.
   defp text?(type) do
     String.starts_with?(type, "text/") or
-      type in ["application/json", "application/xml", "application/xhtml+xml"]
+      type in ["application/json", "application/xml", "application/xhtml+xml"] or
+      String.ends_with?(type, "+json")
   end
 
   defp to_text(body, "text/html"), do: strip_html(body)

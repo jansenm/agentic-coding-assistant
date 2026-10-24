@@ -268,8 +268,8 @@ defmodule CodingAgent.Core.Session do
   @doc """
   Stops a live session process. Used by the subagent seam to retire a
   finished child (it ran once, its summary is extracted, and it must not
-  linger idle under the supervisor: `restart: :transient` means a normal
-  stop is not restarted). Best effort — an already-gone child is fine.
+  linger idle under the supervisor — no session is restarted, ADR 047).
+  Best effort — an already-gone child is fine.
   """
   @spec stop(String.t()) :: :ok
   def stop(id) do
@@ -874,7 +874,7 @@ defmodule CodingAgent.Core.Session do
   def handle_call(:compact, _from, state) do
     if Compactor.can_compact?(state) do
       fp = context_fingerprint(state)
-      ref = spawn_compaction(state, :manual)
+      ref = spawn_compaction(state, :user)
 
       {:reply, :started, %{state | idle_compaction_ref: ref, idle_compaction_fp: fp}}
     else
@@ -2385,12 +2385,16 @@ defmodule CodingAgent.Core.Session do
   # The in-turn compaction body. The `idle_compaction_runner` seam (kept
   # in the worker snapshot) is reused so a test can drive the shrink
   # without a provider, exactly as the background pass does; otherwise
-  # `compact_now/2` runs the real summarizer synchronously. Public for
+  # `compact_now/3` runs the real summarizer synchronously. Public for
   # tests (the result shape is core behavior).
+  #
+  # The trigger is `:agent`: the model called the tool. That is the whole
+  # difference from the human's `/compact` (`:user`) — both ignore the
+  # limits, so the trigger changes only what the transcript says.
   @doc false
   def run_compact(state) do
     case state.idle_compaction_runner do
-      nil -> Compactor.compact_now(state)
+      nil -> Compactor.compact_now(state, :agent)
       fun -> fun.(state)
     end
   end
@@ -3321,9 +3325,9 @@ defmodule CodingAgent.Core.Session do
 
   defp start_idle_compaction(state), do: state
 
-  # One background slot for both passes: the idle soft limit (`:soft`) and
-  # the manual `/compact` (`:manual`). The runner seam replaces the body
-  # either way, so a test drives a compaction without a provider.
+  # One background slot for the two background passes: the idle soft limit
+  # (`:soft`) and the human's `/compact` (`:user`). The runner seam replaces
+  # the body either way, so a test drives a compaction without a provider.
   defp spawn_compaction(state, mode) do
     snapshot = worker_snapshot(state)
     runner = state.idle_compaction_runner
@@ -3338,7 +3342,7 @@ defmodule CodingAgent.Core.Session do
   end
 
   defp default_compact(state, :soft), do: Compactor.maybe_compact_idle(state)
-  defp default_compact(state, :manual), do: Compactor.compact_now(state)
+  defp default_compact(state, :user), do: Compactor.compact_now(state, :user)
 
   # A cheap, exact identity of the context the task was started for.
   # `:erlang.phash2/1` over the message list is stable for equal content

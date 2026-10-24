@@ -107,6 +107,55 @@ defmodule CodingAgent.Core.Session.Compactor do
   @typedoc "Injected summarizer: session state and rendered old span in, summary text out."
   @type summarize_fn :: (State.t(), String.t() -> {:ok, String.t()} | {:error, term()})
 
+  @typedoc """
+  WHY a compaction runs. Four causes, and until 2026-10-24 the transcript
+  and the store row said one word for all of them, so a reader could not
+  tell a forced compaction from one an agent asked for:
+
+    * `:hard` — the pre-call pass found the context over the hard limit;
+    * `:soft` — the session went idle over the soft limit;
+    * `:agent` — the model called the `compact` tool;
+    * `:user` — the human ran `/compact`.
+  """
+  @type trigger :: :hard | :soft | :agent | :user
+
+  @doc """
+  The "compacting…" line, naming the trigger. Public because the store
+  row and the TUI transcript must be the same string — the row is written
+  by `broadcast/2` and the transcript by the UI, and two literals drift.
+
+  `note_text/3` is the same line plus what the summarizer will NOT see
+  when the span does not fit: the truncation marker inside the span only
+  reaches the MODEL, so "it compacted and forgot the middle" is otherwise
+  indistinguishable from "it compacted" in the transcript (measured: seven
+  of nine compactions in one day's log were at the cap, all narrated as a
+  plain "compacting context").
+  """
+  @spec note_text(trigger()) :: String.t()
+  def note_text(trigger) do
+    "· compacting context — #{trigger_text(trigger)} (this can take a while)…"
+  end
+
+  @spec note_text(trigger(), non_neg_integer(), non_neg_integer()) :: String.t()
+  def note_text(trigger, span_chars, cap) when span_chars > cap do
+    "· compacting context — #{trigger_text(trigger)}: #{div(span_chars, 1000)}k chars, " <>
+      "#{div(cap, 1000)}k summarized — the middle is elided…"
+  end
+
+  def note_text(trigger, _span_chars, _cap), do: note_text(trigger)
+
+  @doc """
+  The "context compacted" line, naming the trigger. Same reason as
+  `note_text/1`: one string for the store row and the transcript.
+  """
+  @spec compacted_text(trigger()) :: String.t()
+  def compacted_text(trigger), do: "· context compacted — #{trigger_text(trigger)}"
+
+  defp trigger_text(:hard), do: "hard limit reached"
+  defp trigger_text(:soft), do: "over the soft limit while idle"
+  defp trigger_text(:agent), do: "the agent asked"
+  defp trigger_text(:user), do: "you asked"
+
   @doc """
   The HARD, pre-call compaction check (ADR 037). Runs before an LLM call,
   busy or not. Returns `{state, changed?}` — the caller persists when
@@ -202,6 +251,11 @@ defmodule CodingAgent.Core.Session.Compactor do
   the `compact` tool, both ignoring the soft/hard limits). Returns
   `{state, outcome}` (see `t:outcome/0`).
 
+  The `trigger` says who asked (`:agent` for the tool, `:user` for
+  `/compact`) and is carried into the transcript line, so a reader can
+  tell the two apart — the limits are ignored either way, so the trigger
+  changes nothing about WHAT happens, only about who to thank for it.
+
   Two callers, two shapes:
 
   - the human's `/compact` and the background soft pass run it in a
@@ -217,14 +271,15 @@ defmodule CodingAgent.Core.Session.Compactor do
   `{:failed, reason}`, never `:nothing` (review N41 — the two were one
   value, so a timeout was reported to the model as "nothing to compact").
   """
-  @spec compact_now(State.t(), summarize_fn() | nil) :: {State.t(), outcome()}
-  def compact_now(state, summarize_fn \\ nil)
+  @spec compact_now(State.t(), trigger(), summarize_fn() | nil) :: {State.t(), outcome()}
+  def compact_now(state, trigger, summarize_fn \\ nil)
 
-  def compact_now(%State{test_mode: true} = state, _summarize_fn), do: {state, :nothing}
+  def compact_now(%State{test_mode: true} = state, _trigger, _summarize_fn),
+    do: {state, :nothing}
 
-  def compact_now(%State{} = state, nil), do: compact_now(state, &summarize/2)
+  def compact_now(%State{} = state, trigger, nil), do: compact_now(state, trigger, &summarize/2)
 
-  def compact_now(%State{} = state, summarize_fn) do
+  def compact_now(%State{} = state, trigger, summarize_fn) do
     if state.compaction_backoff > 0 do
       # review N41: a model that calls `compact` repeatedly on a flaky
       # provider must not re-arm a provider call each round. Honor the
@@ -234,7 +289,7 @@ defmodule CodingAgent.Core.Session.Compactor do
       {state, {:failed, :backoff}}
     else
       case Compaction.split(state.context.messages) do
-        {:ok, old, _keep} -> compact(state, old, summarize_fn, :manual)
+        {:ok, old, _keep} -> compact(state, old, summarize_fn, trigger)
         :none -> {state, :nothing}
       end
     end
@@ -398,25 +453,13 @@ defmodule CodingAgent.Core.Session.Compactor do
       # not narrate a model it never used.
       state = note_pin_dropped(state, drop_reason)
 
-      broadcast(state, {:info, compaction_note(Compaction.span_chars(old), cap)})
+      broadcast(state, {:info, note_text(kind, Compaction.span_chars(old), cap)})
       do_compact(state, span, summarize_fn, kind, @summarize_retries)
     end
   end
 
-  # The human learns what the summarizer did NOT see. The truncation
-  # marker only reaches the model; "it compacted and forgot the middle"
-  # is otherwise indistinguishable from "it compacted". Measured: seven
-  # of nine compactions in one day's log were at the cap, all of them
-  # narrated as a plain "compacting context".
-  defp compaction_note(span_chars, cap) when span_chars > cap do
-    "· compacting context (#{div(span_chars, 1000)}k chars, " <>
-      "#{div(cap, 1000)}k summarized — the middle is elided)…"
-  end
-
-  defp compaction_note(_span_chars, _cap), do: "· compacting context (this can take a while)…"
-
   defp do_compact(state, span, summarize_fn, kind, retries_left) do
-    Logger.debug("compacting context (#{byte_size(span)} chars rendered)")
+    Logger.debug("compacting context (#{byte_size(span)} chars rendered, trigger: #{kind})")
 
     task =
       Task.Supervisor.async_nolink(task_supervisor(), fn ->
@@ -425,7 +468,7 @@ defmodule CodingAgent.Core.Session.Compactor do
 
     case await(task, wall_clock(), state.id) do
       {:ok, {:ok, summary_text}} ->
-        apply_summary(state, summary_text)
+        apply_summary(state, summary_text, kind)
 
       {:ok, {:error, :empty_summary}} when retries_left > 0 ->
         Logger.warning("summarizer returned an empty answer; retrying once")
@@ -486,14 +529,14 @@ defmodule CodingAgent.Core.Session.Compactor do
     end
   end
 
-  defp apply_summary(state, summary_text) do
+  defp apply_summary(state, summary_text, kind) do
     context = Compaction.apply(state.context, summary_text)
 
     # compaction_warned resets with the new context: the NEXT approach
     # to the trigger deserves its warning again (warn-once per approach)
     state = %{state | context: context, compaction_backoff: 0, compaction_warned: false}
     state = note_shrunk_context(state)
-    broadcast(state, {:context_compacted, Compaction.min_keep()})
+    broadcast(state, {:context_compacted, Compaction.min_keep(), kind})
     {state, :changed}
   end
 
@@ -870,8 +913,13 @@ defmodule CodingAgent.Core.Session.Compactor do
       {:info, text} ->
         _ = CodingAgent.Core.Session.Store.append_display(state.id, :info, text)
 
-      {:context_compacted, _keep} ->
-        _ = CodingAgent.Core.Session.Store.append_display(state.id, :info, "· context compacted")
+      {:context_compacted, _keep, trigger} ->
+        _ =
+          CodingAgent.Core.Session.Store.append_display(
+            state.id,
+            :info,
+            compacted_text(trigger)
+          )
 
       _ ->
         :ok
