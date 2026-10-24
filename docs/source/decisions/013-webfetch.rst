@@ -71,3 +71,32 @@ Consequences
   risk, revisit if the tool becomes allow-listable).
 - No HTML-to-markdown conversion yet: the model sees de-tagged text.
   Ugly but faithful; a parser dep (`floki`) is the natural follow-up.
+
+Amendment 2026-10-24 — what "text" means, and what the body is
+---------------------------------------------------------------
+
+Decision 4 admitted `application/json` by name and everything else as
+`text/*`. Two things were wrong with that, both measured live:
+
+* **The body was not the body.** `Req.get/2` runs its `decode_body`
+  step with `decoders: [:json, :json_api]` by default, so an
+  `application/json` response reached this module as a **Map**, not
+  bytes. `to_text/2` passed it through (its catch-all returns the
+  value) and `cap/2` ran `byte_size/1` on it — inside Req's callback,
+  so the model got
+  ``%ReqLLM.Error.Unknown.Unknown{error: "Callback execution failed: …
+  not an iodata term"}``: no URL, no type, no tool name. The tool now
+  passes `decode_body: false`. Every step after the request is defined
+  on bytes (measure, slice, de-tag, spill), and the model wants the
+  document, not an inspected term. A non-binary body is still guarded
+  and refused with a sentence naming the content type — belt and
+  braces, because the option is one line away from being removed.
+* **The suffix IS the type.** RFC 6839 registers `+json` so that
+  `application/problem+json` and `application/vnd.oai.openapi+json` are
+  JSON documents; an exact-type list cannot express that. Measured:
+  `https://llmcatalog.dev/openapi.json` answers
+  `application/vnd.oai.openapi+json` and was refused as a binary file —
+  the document the agent needed, rejected for its spelling. `text?/1`
+  now also accepts the `+json` suffix. The refusal itself keeps naming
+  the type; the allowlist was the problem, not the message.
+

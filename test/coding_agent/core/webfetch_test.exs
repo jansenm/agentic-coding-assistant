@@ -177,6 +177,52 @@ defmodule CodingAgent.Core.Tools.WebFetchTest do
     end
   end
 
+  describe "content types and the body seam (no network)" do
+    # render/3 is the body -> result mapping and the exact place P29
+    # died: a decoded Map reached `byte_size/1` inside cap/2.
+    defp render(type, body, scope \\ %{root: @tmp_root}) do
+      apply_private(:render, [[{"content-type", [type]}], body, scope])
+    end
+
+    test "a JSON body is returned as text, verbatim" do
+      json = ~s({"events":[{"id":1}],"next":null})
+
+      assert {:ok, ^json} = render("application/json", json)
+    end
+
+    test "every +json type is text, not a binary file (P30)" do
+      json = ~s({"openapi":"3.1.0"})
+
+      for type <- [
+            "application/problem+json",
+            "application/vnd.oai.openapi+json",
+            "application/ld+json"
+          ] do
+        assert {:ok, ^json} = render(type, json)
+      end
+    end
+
+    test "a decoded body is an error naming the type, never a crash" do
+      # Unreachable while `decode_body: false` holds; the point is that
+      # removing that option buys a sentence, not Req's callback dying
+      # with "not an iodata term".
+      assert {:error, msg} = render("application/json", %{"events" => []})
+      assert msg =~ ~s("application/json")
+      assert msg =~ "decoded"
+    end
+
+    test "a binary type is refused with the type in the message" do
+      assert {:error, msg} = render("image/png", <<137, 80, 78, 71>>)
+      assert msg =~ ~s("image/png")
+      assert msg =~ "text only"
+    end
+
+    test "HTML is still de-tagged on the way out" do
+      assert {:ok, text} = render("text/html; charset=utf-8", "<p>A &amp; B</p>")
+      assert text == "A & B"
+    end
+  end
+
   defp apply_private(fun, args), do: :erlang.apply(CodingAgent.Core.Tools.WebFetch, fun, args)
 
   # The redirect loop follows Location MANUALLY and re-runs the host
