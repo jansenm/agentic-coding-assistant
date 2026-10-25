@@ -167,6 +167,21 @@ defmodule CodingAgent.Core.Tools.FileToolsTest do
       assert msg =~ "parents"
     end
 
+    test "a large failed write is an error, not a dead turn (review N107)", %{scope: scope} do
+      tool = find_tool("write_file", scope)
+
+      # 300 KiB is past the pipe buffer: `dd` exits without reading stdin
+      # when the output cannot be opened, so the write end saw EPIPE and
+      # the turn worker got `EXIT :epipe` instead of a tool result.
+      payload = String.duplicate("x", 300_000)
+
+      assert {:error, msg} =
+               ReqLLM.Tool.execute(tool, %{"path" => "no/such/dir.txt", "content" => payload})
+
+      assert msg =~ "no/such/dir.txt"
+      assert msg =~ "does not exist"
+    end
+
     test "a failed write never repeats the payload back", %{scope: scope} do
       tool = find_tool("write_file", scope)
       payload = String.duplicate("A", 200) <> "END_OF_PAYLOAD"

@@ -91,7 +91,8 @@ defmodule CodingAgent.Core.Exec do
       cannot signal EOF, so `run/5` wraps the spec as
       `{:stdin, byte_size, spec}`: the sandbox pipes exactly those bytes
       from `head -c N` and the pipe close is the child's EOF (ADR 030,
-      `write_file` as a confined `tee`).
+      `write_file` as a confined `tee`). A stdin call runs in its own
+      port owner; see `in_port_owner/1` for why.
     * `:env` — environment overrides (`{name, value}` string pairs),
       merged over the inherited environment. Used to neutralize
       interactive tools (`GIT_EDITOR=true`; ADR 030 / review F7).
@@ -115,6 +116,14 @@ defmodule CodingAgent.Core.Exec do
   """
   @spec run(Sandbox.spec(), String.t(), pos_integer(), Sandbox.profile(), keyword()) :: outcome()
   def run(spec, cwd, secs, profile, opts \\ []) do
+    if Keyword.get(opts, :stdin) do
+      in_port_owner(fn -> do_run(spec, cwd, secs, profile, opts) end)
+    else
+      do_run(spec, cwd, secs, profile, opts)
+    end
+  end
+
+  defp do_run(spec, cwd, secs, profile, opts) do
     stdin = Keyword.get(opts, :stdin)
     env = Keyword.get(opts, :env, [])
     truncate? = Keyword.get(opts, :truncate, true)
@@ -141,6 +150,43 @@ defmodule CodingAgent.Core.Exec do
 
       {:error, reason} ->
         {:sandbox_error, reason}
+    end
+  end
+
+  # A port's `:epipe` is an EXIT signal to the port's OWNER, and the owner
+  # of a port is the process that opened it — here, the caller. An unread
+  # payload therefore kills the CALLER, not the command: `dd` opens its
+  # output first and exits without draining stdin when that open fails, so
+  # a large `write_file` into an unwritable path took the whole turn with
+  # it and the model never saw the reason (review N107; measured: a 10 KiB
+  # payload lands as an exit status with the message, 300 KiB as
+  # `EXIT :epipe` — the pipe buffer decides).
+  #
+  # A stdin call therefore opens its port in a throwaway owner that traps
+  # exits: the signal becomes a message `collect/5` finishes with, and the
+  # child's own stderr is the outcome. The helper is unlinked (a caller
+  # that goes away cannot signal into it) and lives at most the command's
+  # own deadline — one payload, not a session — so nothing needs to abort
+  # it when the caller dies.
+  defp in_port_owner(fun) do
+    caller = self()
+    ref = make_ref()
+
+    {pid, mon} =
+      spawn_monitor(fn ->
+        Process.flag(:trap_exit, true)
+        send(caller, {ref, fun.()})
+      end)
+
+    receive do
+      {^ref, result} ->
+        Process.demonitor(mon, [:flush])
+        result
+
+      # the helper only raises where the caller would have: surface the
+      # same exit instead of swallowing it
+      {:DOWN, ^mon, :process, ^pid, reason} ->
+        exit(reason)
     end
   end
 
@@ -172,9 +218,16 @@ defmodule CodingAgent.Core.Exec do
   defp deliver_stdin(port, data) do
     Port.command(port, data)
     :ok
+  rescue
+    # the child was gone before we wrote a byte; `collect/5` has the
+    # outcome (an exit signal or a close), so a raise here would only
+    # replace a readable error with a crash
+    ArgumentError -> :ok
   end
 
-  # Ports deliver :exit_status then :closed. We never Port.close/1 by
+  # Ports deliver :exit_status then :closed — or, to an owner that traps
+  # exits (a stdin call's helper, `in_port_owner/1`), an exit signal
+  # instead of `:closed`. We never Port.close/1 by
   # hand on a live port: once the os process ends, the port closes
   # itself, and closing an already-closed port raises :badarg.
   #
@@ -225,6 +278,14 @@ defmodule CodingAgent.Core.Exec do
         # os process died without a status delivery (e.g. killed by us
         # earlier or exec failure) — treat as failure signal
         {:ok, finish(acc, cut), 1}
+
+      {:EXIT, ^port, reason} ->
+        # the port died with a non-normal reason instead of reporting a
+        # status: the child closed the reading end of a stdin payload
+        # (`:epipe`, see `in_port_owner/1`) or was signalled. Whatever it
+        # printed before that is the evidence; name the signal only when
+        # it printed nothing.
+        {:ok, death_note(finish(acc, cut), reason), 1}
     after
       wake_timeout(deadline, session_id) ->
         check_stop(port, deadline, acc, cut, session_id)
@@ -331,6 +392,14 @@ defmodule CodingAgent.Core.Exec do
   defp path_note(nil), do: ""
   defp path_note(path), do: "; full output at #{path}"
 
+  # A port that died without a status leaves whatever it printed; when
+  # that is nothing, say what the signal means rather than returning an
+  # empty "operation failed".
+  defp death_note("", reason),
+    do: "the command exited before reading its input (#{inspect(reason)})"
+
+  defp death_note(output, _reason), do: output
+
   # Wake at the poll interval, or at the deadline if that is sooner. With
   # no session to watch there is nothing to check, so wait the whole
   # deadline (a bare test, Checkpoint's own git calls).
@@ -357,12 +426,18 @@ defmodule CodingAgent.Core.Exec do
     end
   end
 
-  # After :exit_status the port sends :closed on its own; give it a
-  # moment so the next collect iteration doesn't see a dead port, but
-  # never block indefinitely.
+  # After :exit_status the port closes on its own; give it a moment so the
+  # next collect iteration doesn't see a dead port, but never block
+  # indefinitely. A TRAPPING owner gets an exit signal INSTEAD of
+  # `:closed` (the stdin path's owner, `in_port_owner/1`), so both are
+  # accepted — without the second clause every stdin call would pay the
+  # full 50 ms.
   defp wait_closed(port) do
     receive do
       {^port, :closed} ->
+        :ok
+
+      {:EXIT, ^port, _reason} ->
         :ok
 
       {^port, {:data, _data}} ->
@@ -392,6 +467,9 @@ defmodule CodingAgent.Core.Exec do
             wait_closed(port)
 
           {^port, :closed} ->
+            :ok
+
+          {:EXIT, ^port, _reason} ->
             :ok
         after
           250 ->

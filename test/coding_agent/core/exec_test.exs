@@ -74,6 +74,28 @@ defmodule CodingAgent.Core.ExecTest do
 
       assert File.read!(file) == content
     end
+
+    test "a child that dies before draining the payload is an outcome, not an exit",
+         %{profile: profile} do
+      # `dd` opens its output first and exits WITHOUT reading stdin when
+      # the open fails. Past the pipe buffer (~64 KiB) the write end then
+      # sees EPIPE, which the VM delivers as an EXIT signal to the port's
+      # owner — the CALLER. That killed the turn and the model never saw
+      # the reason (review N107); 10 KiB lands as an exit status, 300 KiB
+      # as `EXIT :epipe`, so the size decides.
+      missing = tmp("missing/out.txt")
+      content = :crypto.strong_rand_bytes(300_000)
+
+      assert {:ok, output, 1} =
+               Exec.run({:exec, "dd", ["of=#{missing}", "status=none"]}, @tmp_root, 30, profile,
+                 stdin: content
+               )
+
+      # the child's own stderr is the outcome
+      assert output =~ "failed to open"
+      assert output =~ "missing/out.txt"
+      refute File.exists?(missing)
+    end
   end
 
   describe "run/5 env" do

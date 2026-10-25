@@ -39,6 +39,17 @@ One boundary: the sandbox enforces reach, and a confining sandbox is required to
    a failed write handed the model back its own content; the write is a
    confined ``dd``.
 
+   **Amended 2026-10-25 (review N107).** A stdin call opens its port in a
+   throwaway owner that traps exits. A port's ``:epipe`` is an EXIT
+   signal to the process that opened the port — the TURN worker — and
+   ``dd`` opens its output before reading stdin, so a write into an
+   unwritable path of more than a pipe buffer killed the turn instead of
+   returning the error (measured: 10 KiB came back as an exit status
+   with the message, 300 KiB as ``EXIT :epipe``; the buffer size decided
+   the shape). The signal is now a message the collector finishes with,
+   and the child's own stderr is the tool result. Confinement is
+   unchanged: the port and the sandbox around it are the same.
+
 Context
 -------
 
