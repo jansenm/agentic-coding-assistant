@@ -1,6 +1,8 @@
 defmodule CodingAgent.UI.TuiBudgetTest do
   use CodingAgent.TuiCase, async: true
 
+  import ExUnit.CaptureLog
+
   alias CodingAgent.UI.Tui
 
   # The budget prompt (ADR 025): an INTERACTIVE session pauses at the
@@ -31,21 +33,38 @@ defmodule CodingAgent.UI.TuiBudgetTest do
     assert sync(pid).budget_prompt == nil
 
     # trip the budget: debug_gate with rounds at the default 100
-    :ok =
-      CodingAgent.Core.Session.debug_gate(
-        sid,
-        [%{id: "b1", name: "write_file", arguments: %{"path" => "held.txt", "content" => "x"}}],
-        rounds: 100
-      )
+    log =
+      capture_log(fn ->
+        :ok =
+          CodingAgent.Core.Session.debug_gate(
+            sid,
+            [
+              %{
+                id: "b1",
+                name: "write_file",
+                arguments: %{"path" => "held.txt", "content" => "x"}
+              }
+            ],
+            rounds: 100
+          )
+      end)
+
+    # the pause is a logged event (the dialog is the human-facing half)
+    assert log =~ "tool-round budget reached: 100 (asking)"
 
     wait_until(fn -> sync(pid).budget_prompt != nil end)
     assert sync(pid).budget_prompt.budget == 100
     assert sync(pid).status == :interrupted
 
-    # n = stop: the held round is discarded and the turn wraps up
-    key(pid, "n")
+    # n = stop: the held round is discarded and the turn wraps up — and the
+    # wrap-up says so in the log
+    log =
+      capture_log(fn ->
+        key(pid, "n")
+        wait_until(fn -> sync(pid).budget_prompt == nil and sync(pid).status == :idle end)
+      end)
 
-    wait_until(fn -> sync(pid).budget_prompt == nil and sync(pid).status == :idle end)
+    assert log =~ "tool-round budget reached: 100"
     refute File.exists?(Path.join(root, "held.txt"))
   end
 
@@ -70,17 +89,34 @@ defmodule CodingAgent.UI.TuiBudgetTest do
         {Tui, [name: nil, test_mode: {80, 24}, session_id: sid, scope_root: root]}
       )
 
-    :ok =
-      CodingAgent.Core.Session.debug_gate(
-        sid,
-        [%{id: "b2", name: "write_file", arguments: %{"path" => "cont.txt", "content" => "y"}}],
-        rounds: 100
-      )
+    log =
+      capture_log(fn ->
+        :ok =
+          CodingAgent.Core.Session.debug_gate(
+            sid,
+            [
+              %{
+                id: "b2",
+                name: "write_file",
+                arguments: %{"path" => "cont.txt", "content" => "y"}
+              }
+            ],
+            rounds: 100
+          )
 
-    wait_until(fn -> sync(pid).budget_prompt != nil end)
+        wait_until(fn -> sync(pid).budget_prompt != nil end)
+      end)
 
-    key(pid, "y")
-    wait_until(fn -> File.exists?(Path.join(root, "cont.txt")) end)
+    assert log =~ "tool-round budget reached: 100 (asking)"
+
+    log =
+      capture_log(fn ->
+        key(pid, "y")
+        wait_until(fn -> File.exists?(Path.join(root, "cont.txt")) end)
+      end)
+
+    # the continuation itself is not a budget event (only the trip is)
+    refute log =~ "tool-round budget reached"
     assert File.read!(Path.join(root, "cont.txt")) == "y"
   end
 

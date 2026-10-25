@@ -5,6 +5,8 @@ defmodule CodingAgent.Core.Session.CheckpointUndoTest do
   """
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog
+
   alias CodingAgent.Core.Session
 
   @root System.tmp_dir!() |> Path.join("agent-undo-#{System.unique_integer([:positive])}")
@@ -99,17 +101,28 @@ defmodule CodingAgent.Core.Session.CheckpointUndoTest do
 
     start(id, fn state -> {state, {:ok, state}} end)
     :ok = Session.subscribe(id)
-    {:ok, _} = Session.run(id, "do the thing")
 
-    assert_receive {:agent, ^id, {:info, note}}, 1000
+    log =
+      capture_log(fn ->
+        {:ok, _} = Session.run(id, "do the thing")
+        assert_receive {:agent, ^id, {:info, note}}, 1000
+        send(self(), {:note, note})
+
+        {:ok, st} = Session.state(id)
+        send(self(), {:state, st})
+
+        # a second turn does not repeat the NOTE; the log still names why
+        # each snapshot failed — that is what a log is for
+        {:ok, _} = Session.run(id, "again")
+      end)
+
+    assert_received {:note, note}
+    assert_received {:state, st}
+    # the note is the human-facing half; the log carries the git reason
+    assert log =~ "checkpoint failed for #{id}"
     assert note =~ "checkpoint failed"
     assert note =~ "/undo"
-
-    {:ok, st} = Session.state(id)
     assert st.checkpoint_warned == true
-
-    # a second turn does not repeat the note
-    {:ok, _} = Session.run(id, "again")
     refute_received {:agent, ^id, {:info, _}}
   end
 

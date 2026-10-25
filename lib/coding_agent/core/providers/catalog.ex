@@ -172,7 +172,16 @@ defmodule CodingAgent.Core.Providers.Catalog do
   # disk is still the one that loaded.
   @impl true
   def handle_info(:refresh, state) do
-    {:noreply, attempt(state, force: false)}
+    # A timer armed under an OLD interval must not fire after the policy
+    # says `:never` — the interval is read at FIRE time, like every other
+    # scheduled decision. Found live in the suite: a test armed 300ms, set
+    # `:never`, and the stale tick ran a refresh against the next test's
+    # failing transport, logging a 503 into an unrelated test.
+    if Refresh.interval_ms() == :never do
+      {:noreply, %{state | timer: nil, armed?: false}}
+    else
+      {:noreply, attempt(state, force: false)}
+    end
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
@@ -214,9 +223,11 @@ defmodule CodingAgent.Core.Providers.Catalog do
   # leave the catalog without a next check, and the ref is kept so a refresh that
   # arrives first cancels it instead of stacking a second one.
   defp arm(state) do
+    if state.timer, do: Process.cancel_timer(state.timer)
+
     case Refresh.interval_ms() do
       :never ->
-        state
+        %{state | timer: nil, armed?: false}
 
       ms ->
         delay = if state.armed?, do: ms, else: min(ms, Refresh.first_check_ms())

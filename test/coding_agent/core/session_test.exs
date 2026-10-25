@@ -1,6 +1,8 @@
 defmodule CodingAgent.Core.SessionTest do
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog
+
   alias CodingAgent.Core.Session
   alias CodingAgent.Core.Session.State
 
@@ -403,7 +405,10 @@ defmodule CodingAgent.Core.SessionTest do
       # `complete_round`, which broadcasts NOTHING — the state a failing
       # tool call leaves behind). The turn then ends idle over that state.
       broken = %{parked | context: ReqLLM.Context.new([ReqLLM.Context.user("orphan")])}
-      ended = Session.debug_fail_turn(broken, :tool_commit_failed)
+      {ended, log} = with_log(fn -> Session.debug_fail_turn(broken, :tool_commit_failed) end)
+
+      # the drop is loud: a held round that vanishes must not be silent
+      assert log =~ "ended a turn holding 1 undecided call(s); dropping the held round"
 
       assert ended.status == :error
       assert ended.pending_tool_calls == []

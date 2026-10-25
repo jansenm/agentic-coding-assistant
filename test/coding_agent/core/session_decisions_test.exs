@@ -16,6 +16,7 @@ defmodule CodingAgent.Core.Session.DecisionsTest do
   setup do
     File.rm_rf!(@tmp_root)
     File.mkdir_p!(@tmp_root)
+    CodingAgent.TestScope.declare_window!(@tmp_root)
 
     %{
       policy: ask_write_policy(),

@@ -906,7 +906,9 @@ defmodule CodingAgent.Core.CompactionTest do
       if n == 1, do: {:error, :empty_summary}, else: {:ok, "recovered"}
     end
 
-    {_s2, true} = Compactor.maybe_compact(s, summarizer)
+    # the retry logs its reason; the NOTE is what this test asserts
+    {{_s2, true}, log} = with_log(fn -> Compactor.maybe_compact(s, summarizer) end)
+    assert log =~ "summarizer returned an empty answer; retrying once"
 
     notes =
       Enum.count(1..5, fn _ ->
@@ -1093,7 +1095,10 @@ defmodule CodingAgent.Core.CompactionTest do
       if n == 1, do: {:error, :empty_summary}, else: {:ok, "recovered summary"}
     end
 
-    {s2, true} = Compactor.maybe_compact(s, summarizer)
+    # the retry is a logged event: an empty answer is a provider oddity the
+    # owner should be able to see, not a silent re-run
+    {{s2, true}, log} = with_log(fn -> Compactor.maybe_compact(s, summarizer) end)
+    assert log =~ "summarizer returned an empty answer; retrying once"
     assert Agent.get(counter, & &1) == 2
     assert s2.compaction_backoff == 0
     assert s2.context != s.context

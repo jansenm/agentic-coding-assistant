@@ -1,6 +1,8 @@
 defmodule CodingAgent.Core.Session.QuestionTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias CodingAgent.Core.Permissions
   alias CodingAgent.Core.Session
   alias CodingAgent.Core.Tools.Question
@@ -104,7 +106,10 @@ defmodule CodingAgent.Core.Session.QuestionTest do
       id = "q-noninteractive-#{System.unique_integer()}"
       start(id, interactive: false)
 
-      :ok = Session.debug_gate(id, [question_call()])
+      log = capture_log(fn -> :ok = Session.debug_gate(id, [question_call()]) end)
+
+      # a question with no human channel is answered synthetically and LOGGED
+      assert log =~ "question asked with no interactive driver"
 
       {:ok, state} = Session.state(id)
       refute state.status == :interrupted

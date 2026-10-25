@@ -1,6 +1,8 @@
 defmodule CodingAgent.Core.Session.DoomLoopTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias CodingAgent.Core.Permissions
   alias CodingAgent.Core.Session
 
@@ -162,9 +164,15 @@ defmodule CodingAgent.Core.Session.DoomLoopTest do
       id = "doom-silent-#{System.unique_integer()}"
       start(id, interactive: false)
 
-      for i <- 1..3 do
-        :ok = Session.debug_gate(id, [read_call("s#{i}")])
-      end
+      log =
+        capture_log(fn ->
+          for i <- 1..3 do
+            :ok = Session.debug_gate(id, [read_call("s#{i}")])
+          end
+        end)
+
+      # the silent steer IS the behaviour: it is logged, not shown to a human
+      assert log =~ "doom loop steered (non-interactive)"
 
       {:ok, state} = Session.state(id)
       refute state.status == :interrupted

@@ -14,6 +14,8 @@ defmodule CodingAgent.Core.Session.StreamCloseTest do
   """
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias CodingAgent.Core.Session
 
   defp start_stub do
@@ -66,7 +68,7 @@ defmodule CodingAgent.Core.Session.StreamCloseTest do
 
     File.write!(
       Path.join(root, ".coding-agent/config.toml"),
-      "[providers.local]\nprovider = \"openai\"\nbase_url = \"http://127.0.0.1:#{stub.port}/v1\"\n"
+      "context_window = 500000\n[providers.local]\nprovider = \"openai\"\nbase_url = \"http://127.0.0.1:#{stub.port}/v1\"\n"
     )
 
     Application.put_env(:coding_agent, :provider_receive_timeout_ms, 400)
@@ -89,7 +91,11 @@ defmodule CodingAgent.Core.Session.StreamCloseTest do
         model: "local:test-model"
       )
 
-    assert {:error, _} = Session.run(id, "hi")
+    # every retry is logged — the log IS the evidence that the session
+    # retried, the socket count is the evidence that it stopped
+    {result, log} = with_log(fn -> Session.run(id, "hi") end)
+    assert {:error, _} = result
+    assert log =~ "provider timeout; retry 1/3"
 
     # Settle: any abandoned transport retry would open more sockets here.
     Process.sleep(2_000)
@@ -153,7 +159,7 @@ defmodule CodingAgent.Core.Session.StreamCloseTest do
 
     File.write!(
       Path.join(root, ".coding-agent/config.toml"),
-      "[providers.local]\nprovider = \"openai\"\nbase_url = \"http://127.0.0.1:#{stub.port}/v1\"\n"
+      "context_window = 500000\n[providers.local]\nprovider = \"openai\"\nbase_url = \"http://127.0.0.1:#{stub.port}/v1\"\n"
     )
 
     Application.put_env(:coding_agent, :provider_receive_timeout_ms, 400)

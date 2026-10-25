@@ -1,6 +1,8 @@
 defmodule CodingAgent.UI.TuiQuestionTest do
   use CodingAgent.TuiCase, async: true
 
+  import ExUnit.CaptureLog
+
   alias CodingAgent.UI.Tui
 
   # The question wizard (ADR 027): the agent asks, the TUI shows a dialog,
@@ -472,12 +474,17 @@ defmodule CodingAgent.UI.TuiQuestionTest do
     key(pid, "esc")
     wait_until(fn -> sync(pid).question_prompt == nil end)
 
-    :ok =
-      CodingAgent.Core.Session.debug_gate(
-        sid,
-        [%{id: "b1", name: "write_file", arguments: %{"path" => "p.txt", "content" => "x"}}],
-        rounds: 100
-      )
+    log =
+      capture_log(fn ->
+        :ok =
+          CodingAgent.Core.Session.debug_gate(
+            sid,
+            [%{id: "b1", name: "write_file", arguments: %{"path" => "p.txt", "content" => "x"}}],
+            rounds: 100
+          )
+      end)
+
+    assert log =~ "tool-round budget reached: 100 (asking)"
 
     wait_until(fn -> sync(pid).budget_prompt != nil end)
 

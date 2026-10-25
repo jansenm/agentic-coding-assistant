@@ -29,6 +29,8 @@ defmodule CodingAgent.Core.Providers.CatalogLifecycleTest do
   """
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias CodingAgent.Core.Providers.Catalog
 
   @release_cut "2026-10-17T00:00:00Z"
@@ -192,6 +194,10 @@ defmodule CodingAgent.Core.Providers.CatalogLifecycleTest do
     assert :ok = Catalog.subscribe()
     assert_receive {:catalog, :updated}, 1_000
 
+    # the failure's LOG is asserted by the automatic-check test below (it can
+    # be captured deterministically there); here the EVENT is the contract —
+    # a `capture_log` around the manual verb cannot reliably see the async
+    # task's cast, so asserting it here would flake instead of documenting
     assert :started = Catalog.refresh()
     assert_receive {:catalog, {:failed, {:http_status, 503, "down"}}}, 3_000
     assert Catalog.ready?()
@@ -199,6 +205,31 @@ defmodule CodingAgent.Core.Providers.CatalogLifecycleTest do
   end
 
   # -- the automatic check ----------------------------------------------------
+
+  test "a tick armed under an old interval does not run after the policy says never" do
+    # the interval is a POLICY, read when the tick FIRES — a message already
+    # in the mailbox must not refresh against a decision that changed
+    CodingAgent.TestCatalogFetch.respond({:error, {:http_status, 503, "down"}})
+    configure(interval_ms: 60_000)
+    :ok = Catalog.subscribe()
+
+    # one failing check (which arms the next one), then the policy off
+    log =
+      capture_log(fn ->
+        tick()
+        assert_receive {:catalog, {:failed, {:http_status, 503, "down"}}}, 3_000
+        _ = :sys.get_state(Catalog)
+        Logger.flush()
+      end)
+
+    assert log =~ "model catalog refresh failed"
+
+    configure(interval_ms: :never)
+    tick()
+
+    # without the guard this second tick would attempt and fail again
+    refute_receive {:catalog, {:failed, _}}, 300
+  end
 
   test "the daily check replaces a copy that will not load, and keeps checking",
        %{artifact: artifact, dir: dir} do
@@ -231,14 +262,21 @@ defmodule CodingAgent.Core.Providers.CatalogLifecycleTest do
 
   test "a failing automatic check reports the reason, keep its schedule and stays serving" do
     CodingAgent.TestCatalogFetch.respond({:error, {:http_status, 503, "down"}})
-    configure(interval_ms: 300)
-    tick()
+    configure(interval_ms: 60_000)
 
-    assert :ok = Catalog.subscribe()
+    log =
+      capture_log(fn ->
+        tick()
 
-    # the failure is published WITH its reason — the note in the composer needs
-    # it — and the catalog keeps serving what it already has
-    assert_receive {:catalog, {:failed, {:http_status, 503, "down"}}}, 3_000
+        assert :ok = Catalog.subscribe()
+
+        # the failure is published WITH its reason — the note in the composer
+        # needs it — and the catalog keeps serving what it already has
+        assert_receive {:catalog, {:failed, {:http_status, 503, "down"}}}, 3_000
+        Logger.flush()
+      end)
+
+    assert log =~ "model catalog refresh failed"
     assert Catalog.ready?()
 
     # and it re-armed: with an interval configured the process holds a live
@@ -250,8 +288,14 @@ defmodule CodingAgent.Core.Providers.CatalogLifecycleTest do
 
     # the second attempt takes the same path, so a transient outage is retried
     # rather than fatal
-    tick()
-    assert_receive {:catalog, {:failed, {:http_status, 503, "down"}}}, 3_000
+    log =
+      capture_log(fn ->
+        tick()
+        assert_receive {:catalog, {:failed, {:http_status, 503, "down"}}}, 3_000
+        Logger.flush()
+      end)
+
+    assert log =~ "model catalog refresh failed"
 
     configure(interval_ms: :never)
   end

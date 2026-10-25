@@ -1,6 +1,8 @@
 defmodule CodingAgent.Core.Session.TurnBudgetTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias CodingAgent.Core.Permissions
   alias CodingAgent.Core.Session
   alias CodingAgent.Core.Session.State
@@ -70,12 +72,18 @@ defmodule CodingAgent.Core.Session.TurnBudgetTest do
 
       # a write the policy WOULD allow (so nothing else can explain the
       # file's absence)
-      :ok =
-        Session.debug_gate(
-          id,
-          [tool_call("w1", "write_file", %{"path" => "never.txt", "content" => "x"})],
-          rounds: 100
-        )
+      log =
+        capture_log(fn ->
+          :ok =
+            Session.debug_gate(
+              id,
+              [tool_call("w1", "write_file", %{"path" => "never.txt", "content" => "x"})],
+              rounds: 100
+            )
+        end)
+
+      # the trip is a logged event, not a silent one: the wrap-up says so
+      assert log =~ "tool-round budget reached: 100"
 
       {:ok, state} = Session.state(id)
 
@@ -118,13 +126,17 @@ defmodule CodingAgent.Core.Session.TurnBudgetTest do
       id = "budget-ask-#{System.unique_integer()}"
       start(id, interactive: true)
 
-      :ok =
-        Session.debug_gate(
-          id,
-          [tool_call("h1", "write_file", %{"path" => "held.txt", "content" => "x"})],
-          rounds: 100
-        )
+      log =
+        capture_log(fn ->
+          :ok =
+            Session.debug_gate(
+              id,
+              [tool_call("h1", "write_file", %{"path" => "held.txt", "content" => "x"})],
+              rounds: 100
+            )
+        end)
 
+      assert log =~ "tool-round budget reached: 100 (asking)"
       {:ok, state} = Session.state(id)
       assert state.status == :interrupted
       assert state.budget_pause.budget == 100
@@ -138,14 +150,22 @@ defmodule CodingAgent.Core.Session.TurnBudgetTest do
       id = "budget-cont-#{System.unique_integer()}"
       start(id, interactive: true)
 
-      :ok =
-        Session.debug_gate(
-          id,
-          [tool_call("h2", "write_file", %{"path" => "cont.txt", "content" => "y"})],
-          rounds: 100
-        )
+      log =
+        capture_log(fn ->
+          :ok =
+            Session.debug_gate(
+              id,
+              [tool_call("h2", "write_file", %{"path" => "cont.txt", "content" => "y"})],
+              rounds: 100
+            )
 
-      {:ok, _} = Session.budget_decision(id, :continue)
+          {:ok, _} = Session.budget_decision(id, :continue)
+        end)
+
+      # both halves are logged: the question, then the wrap-up of the round
+      # that ran under the fresh budget
+      assert log =~ "tool-round budget reached: 100 (asking)"
+      assert log =~ "tool-round budget reached: 100"
       {:ok, state} = Session.state(id)
 
       assert File.read!(Path.join(@tmp_root, "cont.txt")) == "y"
@@ -157,14 +177,19 @@ defmodule CodingAgent.Core.Session.TurnBudgetTest do
       id = "budget-stop-#{System.unique_integer()}"
       start(id, interactive: true)
 
-      :ok =
-        Session.debug_gate(
-          id,
-          [tool_call("h3", "write_file", %{"path" => "stopped.txt", "content" => "z"})],
-          rounds: 100
-        )
+      log =
+        capture_log(fn ->
+          :ok =
+            Session.debug_gate(
+              id,
+              [tool_call("h3", "write_file", %{"path" => "stopped.txt", "content" => "z"})],
+              rounds: 100
+            )
 
-      {:ok, _} = Session.budget_decision(id, :stop)
+          {:ok, _} = Session.budget_decision(id, :stop)
+        end)
+
+      assert log =~ "tool-round budget reached: 100"
       {:ok, state} = Session.state(id)
 
       refute File.exists?(Path.join(@tmp_root, "stopped.txt")), "stop must discard the round"
@@ -180,7 +205,7 @@ defmodule CodingAgent.Core.Session.TurnBudgetTest do
     end
   end
 
-  describe "the wrap-up request withholds tools (ADR 025)" do
+  describe "the wrap-up request (ADR 025)" do
     test "wire_request/2 with tools: [] sends an empty tool list" do
       id = "budget-wire-#{System.unique_integer()}"
       start(id)

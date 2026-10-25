@@ -7,6 +7,8 @@ defmodule CodingAgent.Core.Providers.CatalogTest do
   """
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias CodingAgent.Core.Providers.Catalog
 
   # The catalog warms in a `handle_continue` after app start, so it may
@@ -130,14 +132,27 @@ defmodule CodingAgent.Core.Providers.CatalogTest do
 
     :ok = Session.subscribe(id)
 
-    # mounted while loading: the guess, and the source says it is provisional
+    # mounted while loading: the guess, and the source says it is provisional.
+    # `:loading` is deliberately SILENT — it is provisional and heals.
     assert {:ok, %{context_window: 500_000, context_window_source: :loading}} = Session.state(id)
 
-    # the catalog finishes; the model is NOT in it
-    LLMDB.load()
-    send(pid, {:catalog, :updated})
+    # the catalog finishes; the model is NOT in it, so the fallback is now a
+    # decision the owner should be able to see: the warning is logged once
+    # and is part of this test's contract
+    log =
+      capture_log(fn ->
+        LLMDB.load()
+        send(pid, {:catalog, :updated})
 
-    assert_receive {:agent, ^id, {:context_window, window, soft, hard}}, 2000
+        assert_receive {:agent, ^id, {:context_window, window, soft, hard}}, 2000
+        send(self(), {:numbers, {window, soft, hard}})
+
+        # the event proves the recompute ran; the flush lands its log cast
+        Logger.flush()
+      end)
+
+    assert log =~ "unknown to the model catalog"
+    assert_received {:numbers, {window, soft, hard}}
     # the numbers are the point of the test: they did not move
     assert {window, soft, hard} == {500_000, 250_000, 436_000}
 

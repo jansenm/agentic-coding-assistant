@@ -11,6 +11,7 @@ defmodule CodingAgent.Core.Session.ResumeTest do
   setup do
     File.rm_rf!(@tmp_root)
     File.mkdir_p!(@tmp_root)
+    CodingAgent.TestScope.declare_window!(@tmp_root)
     on_exit(fn -> File.rm_rf!(@tmp_root) end)
     :ok
   end

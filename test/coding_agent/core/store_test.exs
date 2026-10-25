@@ -29,6 +29,7 @@ defmodule CodingAgent.Core.Session.StoreTest do
     Application.put_env(:coding_agent, :store_path, @store_path)
     File.rm_rf!(@tmp_root)
     File.mkdir_p!(@scope_dir)
+    CodingAgent.TestScope.declare_window!(@scope_dir)
 
     on_exit(fn ->
       Application.put_env(:coding_agent, :store_path, @prev_store_dir)
