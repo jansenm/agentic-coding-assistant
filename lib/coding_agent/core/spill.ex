@@ -9,11 +9,16 @@ defmodule CodingAgent.Core.Spill do
   and git —, ``grep``, ``webfetch``):
 
     * host file: ``<scratch>/spill/<label>-<n>``;
-    * the path reported to the model: ``/tmp/spill/<label>-<n>`` — the
-      same file as the sandbox sees it, because ADR 022 binds the scratch
-      over ``/tmp``.
+    * the path reported to the model: whatever the sandbox answers for
+      that host file (``Sandbox.visible_path/2``, ADR 046) — under bwrap
+      ``/tmp/spill/<label>-<n>``, because ADR 022 binds the scratch over
+      ``/tmp``; under a pass-through sandbox the host path itself.
 
-  A scope with no session id has no scratch: ``spill/3`` returns
+  The mapping is asked for, never computed here. This module was the one
+  place that hardcoded ``/tmp``: with ``TMPDIR`` set (ADR 022 allows it)
+  the announced path pointed at a file that did not exist (N99).
+
+  A profile without a session scratch has none: ``spill/3`` returns
   ``:no_scratch`` and the caller keeps its plain truncation. The feature
   degrades to "not available", never to "an unreadable path".
   """
@@ -27,33 +32,35 @@ defmodule CodingAgent.Core.Spill do
 
   @subdir "spill"
 
+  alias CodingAgent.Core.Sandbox
+
   @doc """
   Writes `content` to the session scratch and returns the path the model
-  should read: ``{:ok, "/tmp/spill/<label>-<n>"}``.
+  should read: whatever `Sandbox.visible_path/2` answers for the host
+  file — under bwrap ``{:ok, "/tmp/spill/<label>-<n>"}``, under a
+  pass-through sandbox the host path itself.
 
-  ``scratch`` is the host scratch directory (``Scratch.from_scope/1``);
-  ``nil``/``""`` means no session scratch and the caller keeps its plain
-  truncation (``:no_scratch``).
+  `profile` is the sandbox profile (``Sandbox.profile/0``); its
+  ``:scratch`` is the host scratch directory. No scratch means the caller
+  keeps its plain truncation (``:no_scratch``).
   """
-  @spec spill(iodata(), String.t() | nil, String.t()) ::
+  @spec spill(iodata(), Sandbox.profile(), String.t()) ::
           {:ok, String.t()} | :no_scratch | {:error, term()}
-  def spill(content, scratch, label)
-
-  def spill(_content, scratch, _label) when not is_binary(scratch) or scratch == "",
-    do: :no_scratch
-
-  def spill(content, scratch, label) when is_binary(label) do
+  def spill(content, %{scratch: scratch} = profile, label)
+      when is_binary(scratch) and scratch != "" and is_binary(label) do
     dir = dir(scratch)
 
     with :ok <- File.mkdir_p(dir) do
       host = Path.join(dir, "#{label}-#{System.unique_integer([:positive, :monotonic])}")
 
       case File.write(host, bound(content)) do
-        :ok -> {:ok, sandbox_path(host, scratch)}
+        :ok -> {:ok, visible(host, profile)}
         {:error, reason} -> {:error, reason}
       end
     end
   end
+
+  def spill(_content, _profile, _label), do: :no_scratch
 
   @doc """
   Opens a streaming spill writer: the caller writes the output AS IT
@@ -70,17 +77,14 @@ defmodule CodingAgent.Core.Spill do
   is written as it arrives. Review N35: the first writer dropped the
   tail, so the two spill paths disagreed on the file's shape.
 
-  ``scratch`` ``nil``/``""`` (no session) returns ``:no_scratch``: the
-  caller keeps its plain in-memory truncation.
+  ``profile`` is the sandbox profile (``Sandbox.profile/0``); a profile
+  without a session scratch returns ``:no_scratch`` and the caller keeps
+  its plain in-memory truncation.
   """
-  @spec open_writer(String.t() | nil, String.t()) ::
+  @spec open_writer(Sandbox.profile(), String.t()) ::
           {:ok, writer()} | :no_scratch | {:error, term()}
-  def open_writer(scratch, label)
-
-  def open_writer(scratch, _label) when not is_binary(scratch) or scratch == "",
-    do: :no_scratch
-
-  def open_writer(scratch, label) when is_binary(label) do
+  def open_writer(%{scratch: scratch} = profile, label)
+      when is_binary(scratch) and scratch != "" and is_binary(label) do
     dir = dir(scratch)
 
     with :ok <- File.mkdir_p(dir) do
@@ -92,7 +96,7 @@ defmodule CodingAgent.Core.Spill do
            %{
              io: io,
              host: host,
-             scratch: scratch,
+             profile: profile,
              written: 0,
              total: 0,
              head_cap: @max_bytes - @tail_bytes,
@@ -108,11 +112,13 @@ defmodule CodingAgent.Core.Spill do
     end
   end
 
+  def open_writer(_profile, _label), do: :no_scratch
+
   @typedoc "A streaming spill writer (see `open_writer/2`)."
   @type writer :: %{
           io: File.io_device(),
           host: String.t(),
-          scratch: String.t(),
+          profile: Sandbox.profile(),
           written: non_neg_integer(),
           total: non_neg_integer(),
           head_cap: non_neg_integer(),
@@ -185,7 +191,7 @@ defmodule CodingAgent.Core.Spill do
         %{
           io: io,
           host: host,
-          scratch: scratch,
+          profile: profile,
           tail: tail,
           tail_size: n,
           total: total,
@@ -206,7 +212,7 @@ defmodule CodingAgent.Core.Spill do
 
     if n > 0, do: IO.binwrite(io, tail)
     File.close(io)
-    {:ok, %{writer | path: sandbox_path(host, scratch), tail: [], tail_size: 0}}
+    {:ok, %{writer | path: visible(host, profile), tail: [], tail_size: 0}}
   end
 
   @doc "The host path of a spill writer (for reading the full output back)."
@@ -217,18 +223,14 @@ defmodule CodingAgent.Core.Spill do
   @spec dir(String.t()) :: String.t()
   def dir(scratch), do: Path.join(scratch, @subdir)
 
-  @doc """
-  The sandbox-visible path for a host spill file: the scratch is bound at
-  ``/tmp`` (ADR 022), so the host prefix is rewritten to ``/tmp``.
-  """
-  @spec sandbox_path(String.t(), String.t()) :: String.t()
-  def sandbox_path(host_file, scratch) do
-    "/tmp/" <> Path.relative_to(host_file, Path.expand(scratch))
-  end
-
   @doc "The per-spill byte cap."
   @spec max_bytes() :: pos_integer()
   def max_bytes, do: @max_bytes
+
+  # The announced path is the sandbox's answer, never this module's. With
+  # `TMPDIR` set (ADR 022 allows it) the hardcoded `/tmp/<rel>` pointed
+  # beside the real file (N99).
+  defp visible(host_file, profile), do: Sandbox.visible_path(host_file, profile)
 
   defp bound(content) do
     data = IO.iodata_to_binary(content)

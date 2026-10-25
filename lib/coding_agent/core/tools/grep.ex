@@ -53,6 +53,7 @@ defmodule CodingAgent.Core.Tools.Grep do
   alias CodingAgent.Core.Containment
   alias CodingAgent.Core.Exec
   alias CodingAgent.Core.External
+  alias CodingAgent.Core.Spill
   alias CodingAgent.Core.Tools
   alias CodingAgent.Core.Tools.Glob
 
@@ -424,14 +425,12 @@ defmodule CodingAgent.Core.Tools.Grep do
   # capped view) — the spill recovers dropped matches, not a megabytes-
   # long single line.
   defp spill_matches(results, scope) do
-    scratch = CodingAgent.Core.Session.Scratch.from_scope(scope)
-
     body =
       results
       |> Enum.map(fn {file, line, text} -> "#{file}:#{line}:#{text}" end)
       |> Enum.join("\n")
 
-    CodingAgent.Core.Spill.spill(body, scratch, "grep")
+    Spill.spill(body, Tools.profile(scope), "grep")
   end
 
   defp clip(line) do

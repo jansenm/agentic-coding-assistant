@@ -313,11 +313,7 @@ defmodule CodingAgent.Core.Tools.WebFetch do
 
   defp cap(text, scope) do
     spilled =
-      case CodingAgent.Core.Spill.spill(
-             text,
-             CodingAgent.Core.Session.Scratch.from_scope(scope),
-             "webfetch"
-           ) do
+      case CodingAgent.Core.Spill.spill(text, Tools.profile(scope), "webfetch") do
         {:ok, path} -> " (full text at #{path})"
         _ -> ""
       end

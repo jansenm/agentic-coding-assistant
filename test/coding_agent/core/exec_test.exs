@@ -137,12 +137,13 @@ defmodule CodingAgent.Core.ExecTest do
       assert {:ok, out, 0} = Exec.run({:shell, cmd}, @tmp_root, 10, profile, label: "shell")
 
       assert out =~ "output truncated"
-      assert out =~ "full output at /tmp/spill/shell-"
 
-      # the host file really holds the FULL output
-      host = Path.wildcard(Path.join(scratch, "spill/shell-*")) |> List.first()
-      assert host != nil
-      assert byte_size(File.read!(host)) > 256 * 1024
+      # The named path must be openable (N99): the test sandbox does not
+      # bind the scratch over /tmp, so the announced path is the host path
+      # — asserting a literal "/tmp/spill/…" would pin the fabrication.
+      assert [path] = Regex.run(~r/full output at ([^\s]+)/, out, capture: :all_but_first)
+      assert String.starts_with?(path, Path.expand(scratch))
+      assert byte_size(File.read!(path)) > 256 * 1024
     end
 
     test "the held memory does not grow with the output size (OOM fix, N34)" do

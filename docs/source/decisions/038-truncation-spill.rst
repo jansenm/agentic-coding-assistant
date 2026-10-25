@@ -72,6 +72,10 @@ rule:
   ``Core.Session.Scratch.path/1``);
 - path reported to the model: ``/tmp/spill/<label>-<unique>`` — the
   same file as the sandbox sees it (ADR 022 binds scratch at ``/tmp``);
+  **amended 2026-10-24: the path is whatever the sandbox answers for the
+  host file (``Sandbox.visible_path/2``), which under bwrap is exactly
+  this and under a pass-through sandbox is the host path.** See the
+  second amendment below;
 - ``<label>`` is the tool (``shell``, ``grep``, ``webfetch``), so a
   directory listing is legible.
 
@@ -131,11 +135,11 @@ the spill file, and recorded honestly.
 Mechanism
 ---------
 
-- ``Core.Spill`` (new): ``spill(content, scope, label) :: {:ok, path} |
-  :no_scratch | {:error, reason}``; ``dir/1`` (the host spill dir),
-  ``sandbox_path/1`` (host → the ``/tmp/…`` the model sees), the size cap
-  and the naming rule. ``Scratch.from_scope/1`` is reused — no second
-  scope rule.
+- ``Core.Spill`` (new): ``spill(content, profile, label) :: {:ok, path} |
+  :no_scratch | {:error, reason}``; ``dir/1`` (the host spill dir), the
+  host→visible mapping (``Sandbox.visible_path/2`` — see the second
+  amendment), the size cap and the naming rule. ``Scratch.from_scope/1``
+  is reused by the profile builders — no second scope rule.
 - ``Exec``: ``run/5`` learns ``:label`` (default ``"exec"``). The head
   + tail cut named in the Context above as ``Exec.truncate/1`` now lives
   in the output accumulator (``Exec`` local ``finish/2``, fed by
@@ -235,3 +239,49 @@ cut used ``:memory``, which does not see the refc binaries the output is
 made of, so it was green on the bug): it stays flat (~3-16 MB, mailbox
 backlog included) instead of tracking the full output, and the spill file
 holds the output up to the 16 MiB cap with its in-file marker.
+
+Amendment 2026-10-24: the announced path is the sandbox's answer
+----------------------------------------------------------------
+
+**Status: Accepted; shipped the same day.**
+
+Decision 1 fixed the path at ``/tmp/spill/<label>-<unique>``, hardcoded
+in ``Spill.sandbox_path/2``. That was a second place computing the
+host→sandbox mapping, and ADR 046 (``39a4318``) closed exactly that
+class — ``Checkpoint`` asks ``Sandbox.visible_path/2`` — but left this
+one standing. Measured on a fresh VM with ``TMPDIR`` pointing at
+``/var/tmp``:
+
+    reported path : /tmp/spill/shell-1              exists? false
+    real file     : /var/tmp/.../spill/shell-1      exists? true
+    visible_path  : /var/tmp/.../spill/shell-1
+
+The model was invited to read a file that was not there, one directory
+beside the one that was. Under production defaults (``System.tmp_dir!()``
+= ``/tmp``) the hardcoded path is *accidentally* right, and in a process
+with no session scratch the mapping is the identity — so the same defect
+is silent in the default configuration and visible in a supported one
+(ADR 022 explicitly allows ``TMPDIR``).
+
+The mapping is now asked for, never computed: ``Spill.spill/3`` and
+``Spill.open_writer/2`` take the sandbox **profile** (not a scratch
+string) and return ``Sandbox.visible_path/2``'s answer. Two consequences:
+
+- **The signature is the profile.** The three callers already had it
+  (``Exec``'s ``:label`` path, ``grep``, ``webfetch`` all go through
+  ``Tools.profile/1``), so the change removes a re-derivation instead of
+  adding a parameter. A caller that passes a scratch string is now a
+  compile error, which is the point: the mapping needs the mount layout,
+  and a bare path does not carry it.
+- **No-scratch stays one answer.** ``spill/3`` and ``open_writer/2`` end
+  in a ``:no_scratch`` clause (missing key, ``nil``, ``""``, or a
+  non-binary label), so the "degrade to not available, never to an
+  unreadable path" rule keeps a single exit.
+
+Tests: ``spill_test`` pins that the announced path *is* the file that
+exists (it read the host path back), that all three no-scratch shapes
+answer ``:no_scratch``, and that a finished writer names its own file;
+``exec_test`` and ``search_delegation_test`` extract the path from the
+tool result and ``File.read!/1`` it. None of them asserts the literal
+``/tmp/spill/…`` any more — that literal was the fabrication, and the
+suite's sandbox double (a pass-through) is the cheapest place to see it.

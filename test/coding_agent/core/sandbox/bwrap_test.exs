@@ -434,6 +434,31 @@ defmodule CodingAgent.Core.Sandbox.BwrapTest do
       end
     end
 
+    test "a spilled output is readable at the announced path (N99)", %{root: root} = ctx do
+      if ctx[:skip] do
+        :ok
+      else
+        put_sandbox(Bwrap)
+        session_id = "bwrap-spill-#{System.unique_integer([:positive])}"
+        on_exit(fn -> Scratch.remove(Scratch.path(session_id)) end)
+
+        tool = Shell.tool(%{root: root, session_id: session_id})
+
+        # 300 KiB > Exec's 256 KiB cap, so the overflow spills
+        assert {:ok, out} =
+                 ReqLLM.Tool.execute(tool, %{"command" => "yes xx | head -c 300000"})
+
+        assert [path] = Regex.run(~r/full output at ([^\s]+)/, out, capture: :all_but_first)
+
+        # bwrap binds the scratch over /tmp, so the announced path is the
+        # /tmp one — and a CONFINED `tail` opens it, which is the only
+        # assertion that matters: the model is told to read this path.
+        assert String.starts_with?(path, "/tmp/spill/shell-")
+        assert {:ok, tail} = ReqLLM.Tool.execute(tool, %{"command" => "tail -c 40 #{path}"})
+        assert tail =~ "xx"
+      end
+    end
+
     test "the git tool commits inside a linked worktree (change_vcs binds both gitdirs)",
          %{root: root} = ctx do
       if ctx[:skip] do
