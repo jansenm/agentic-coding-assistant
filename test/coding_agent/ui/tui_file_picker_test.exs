@@ -3,7 +3,13 @@ defmodule CodingAgent.UI.TuiFilePickerTest do
   The `@`-file picker (ADR 032): `@` at a word boundary opens a popup of
   confined fd files, typing filters, enter inserts the path.
   """
-  use CodingAgent.TuiCase, async: true
+  # `async: false` because two tests here flip `External.put(:fd, …)`, a
+  # PROCESS-GLOBAL `:persistent_term` memo. Async, that lie was visible to
+  # any concurrent reader — measured: `GrepGlobTest`'s "skips files over
+  # 1 MiB" lost its "skipped: 1 file(s)" note (the note is built from the
+  # `fd` probe, and `grep` turns a failed probe into "nothing was
+  # skipped") and failed under full-suite load, while passing alone.
+  use CodingAgent.TuiCase, async: false
 
   alias CodingAgent.Core.External
   alias CodingAgent.Core.Permissions
