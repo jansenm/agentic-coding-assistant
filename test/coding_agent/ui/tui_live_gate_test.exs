@@ -115,6 +115,19 @@ defmodule CodingAgent.UI.TuiLiveGateTest do
     # still cding when the test's on_exit removes the scope root
     wait_until(fn -> File.exists?(Path.join(root, "a.txt")) end)
 
+    # The approve reply resyncs the dialog against the SESSION's parked
+    # calls (`resync_dialog/1`), and the fabricated pause below exists only
+    # in this TUI, never in the session. If the reply lands after the
+    # injection it therefore reads "no calls" and clears them (measured:
+    # `state.pending == []` in 2 of 9 full runs, while the file this test
+    # passed alone). The reply is the state update that clears BOTH
+    # `deciding?` and `pending`; waiting for that pair also fails loudly if
+    # the `y` was never accepted instead of racing.
+    wait_until(fn ->
+      state = sync(pid)
+      state.deciding? == false and state.pending == []
+    end)
+
     # The decide path emits no status broadcast, so the park on the NEXT
     # gated call arrives as the only event — no non-:interrupted status in
     # between. The dialog must re-open: `deciding?` is cleared by the park
