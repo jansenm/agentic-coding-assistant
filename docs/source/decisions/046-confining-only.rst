@@ -18,6 +18,16 @@ Confining-only: no unconfined seam, and the sandbox owns its scratch mapping
    which hardcoded the confined path ``/tmp/checkpoint-index`` — now asks
    the sandbox for the path a confined process sees.
 
+   **Amended 2026-10-25 (review P13, owner ruling).** bwrap is a HARD
+   dependency, and the suite says so instead of skipping: ``test_helper.exs``
+   probes ``Bwrap.check/0`` before ``ExUnit.start/0`` and raises with the
+   probe's reason when it is unusable. The four bwrap integration files used
+   to turn "no bwrap" into ``:ok`` inside the test body, so their
+   ``N passed`` was indistinguishable from ``0 checked`` — on a host that is
+   now unsupported, the run refuses rather than reports. ``config/test.exs``
+   still selects the confining pass-through double for the *profile*; the
+   dependency is on the binary, not on running every test under it.
+
 Context
 -------
 

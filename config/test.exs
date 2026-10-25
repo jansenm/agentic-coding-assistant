@@ -15,11 +15,13 @@ config :logger, level: :warning
 # is pure dead time here.
 config :ex_ratatui, detach_local_input: false
 
-# Tests must not depend on the host: the shipped default is bwrap (ADR
-# 015), but a test run must behave identically on a machine without it.
-# ADR 030 makes a confining sandbox a session-start precondition, so the
-# suite runs under a confining TEST DOUBLE by default; tests that exercise
-# real bwrap select it explicitly (and self-skip when it is unavailable).
+# Tests must not depend on the host for the PROFILE: ADR 030 makes a
+# confining sandbox a session-start precondition, so the suite runs under a
+# confining TEST DOUBLE by default, and tests that exercise real bwrap
+# select it explicitly. The bwrap BINARY, however, is a hard dependency
+# (ADR 030/046): a host without it is unsupported, and `test_helper.exs`
+# refuses to start the run rather than let the integration tests report a
+# pass they did not check (review P13).
 config :coding_agent, sandbox: CodingAgent.TestSandbox.Stub
 
 # The model catalog must not refresh in a test run: a refresh downloads ~11 MB

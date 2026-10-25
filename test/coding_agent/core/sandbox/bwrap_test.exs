@@ -264,239 +264,192 @@ defmodule CodingAgent.Core.Sandbox.BwrapTest do
 
   describe "integration (real bwrap)" do
     setup do
-      if Bwrap.available?() do
-        :ok
-      else
-        # Missing binary or no unprivileged userns (hardened host): skip,
-        # not a failure — the suite's default double covers the rest.
-        {:ok, skip: true}
-      end
+      # bwrap is a hard dependency (ADR 030/046) and test_helper.exs
+      # refuses to start the suite without it, so there is nothing to skip
+      # here (review P13).
+      :ok
     end
 
-    test "runs a command confined and sees the scope root", %{root: root} = ctx do
-      if ctx[:skip] do
-        :ok
-      else
-        put_sandbox(Bwrap)
-        tool = Shell.tool(%{root: root})
+    test "runs a command confined and sees the scope root", %{root: root} do
+      put_sandbox(Bwrap)
+      tool = Shell.tool(%{root: root})
 
-        assert {:ok, out} = ReqLLM.Tool.execute(tool, %{"command" => "pwd"})
-        assert out =~ root
-      end
+      assert {:ok, out} = ReqLLM.Tool.execute(tool, %{"command" => "pwd"})
+      assert out =~ root
     end
 
-    test "writes reach the real tree, commits do not", %{root: root} = ctx do
-      if ctx[:skip] do
-        :ok
-      else
-        init_git!(root)
-        File.write!(Path.join(root, "app.txt"), "v1\n")
-        git!(root, ~w(add app.txt))
-        git!(root, ~w(commit -m init))
+    test "writes reach the real tree, commits do not", %{root: root} do
+      init_git!(root)
+      File.write!(Path.join(root, "app.txt"), "v1\n")
+      git!(root, ~w(add app.txt))
+      git!(root, ~w(commit -m init))
 
-        put_sandbox(Bwrap)
-        tool = Shell.tool(%{root: root})
+      put_sandbox(Bwrap)
+      tool = Shell.tool(%{root: root})
 
-        assert {:ok, out} =
-                 ReqLLM.Tool.execute(tool, %{
-                   "command" => "echo v2 > app.txt && git commit -am x"
-                 })
+      assert {:ok, out} =
+               ReqLLM.Tool.execute(tool, %{
+                 "command" => "echo v2 > app.txt && git commit -am x"
+               })
 
-        assert out =~ "Read-only file system"
-        # P5, fourth path: the failure now names the missing grant and the
-        # tool that has it, instead of leaving the model to deduce EROFS.
-        assert out =~ "note: a write hit a read-only path"
-        assert out =~ "without change_vcs"
-        assert out =~ "use the git tool"
-        # N115: the standing sentence, in real output — no grant widens the
-        # filesystem, so the note must not read as "get the flag and write".
-        assert out =~ "not writable by any grant"
-        assert File.read!(Path.join(root, "app.txt")) == "v2\n"
-      end
+      assert out =~ "Read-only file system"
+      # P5, fourth path: the failure now names the missing grant and the
+      # tool that has it, instead of leaving the model to deduce EROFS.
+      assert out =~ "note: a write hit a read-only path"
+      assert out =~ "without change_vcs"
+      assert out =~ "use the git tool"
+      # N115: the standing sentence, in real output — no grant widens the
+      # filesystem, so the note must not read as "get the flag and write".
+      assert out =~ "not writable by any grant"
+      assert File.read!(Path.join(root, "app.txt")) == "v2\n"
     end
 
     test "a read-only agent's EROFS note names the policy, not a missing flag",
          %{
            root: root
-         } = ctx do
-      if ctx[:skip] do
-        :ok
-      else
-        put_sandbox(Bwrap)
-        tool = Shell.tool(%{root: root, shell_mode: :ro})
+         } do
+      put_sandbox(Bwrap)
+      tool = Shell.tool(%{root: root, shell_mode: :ro})
 
-        assert {:ok, out} = ReqLLM.Tool.execute(tool, %{"command" => "echo x > blocked.txt"})
-        assert out =~ "Read-only file system"
-        assert out =~ "bound read-only (shell_mode: :ro)"
-        # `change_vcs` cannot re-open a read-only root, so the note must not
-        # send the agent after a lever it does not have.
-        refute out =~ "change_vcs"
-        refute File.exists?(Path.join(root, "blocked.txt"))
-      end
+      assert {:ok, out} = ReqLLM.Tool.execute(tool, %{"command" => "echo x > blocked.txt"})
+      assert out =~ "Read-only file system"
+      assert out =~ "bound read-only (shell_mode: :ro)"
+      # `change_vcs` cannot re-open a read-only root, so the note must not
+      # send the agent after a lever it does not have.
+      refute out =~ "change_vcs"
+      refute File.exists?(Path.join(root, "blocked.txt"))
     end
 
-    test "a failure that is not EROFS gets no note", %{root: root} = ctx do
-      if ctx[:skip] do
-        :ok
-      else
-        put_sandbox(Bwrap)
-        tool = Shell.tool(%{root: root})
+    test "a failure that is not EROFS gets no note", %{root: root} do
+      put_sandbox(Bwrap)
+      tool = Shell.tool(%{root: root})
 
-        assert {:ok, out} = ReqLLM.Tool.execute(tool, %{"command" => "ls no-such-file"})
-        assert out =~ "exit"
-        refute out =~ "note: a write hit a read-only path"
-      end
+      assert {:ok, out} = ReqLLM.Tool.execute(tool, %{"command" => "ls no-such-file"})
+      assert out =~ "exit"
+      refute out =~ "note: a write hit a read-only path"
     end
 
-    test "root and .git cannot be deleted", %{root: root} = ctx do
-      if ctx[:skip] do
-        :ok
-      else
-        init_git!(root)
-        put_sandbox(Bwrap)
-        tool = Shell.tool(%{root: root})
+    test "root and .git cannot be deleted", %{root: root} do
+      init_git!(root)
+      put_sandbox(Bwrap)
+      tool = Shell.tool(%{root: root})
 
-        assert {:ok, _out} = ReqLLM.Tool.execute(tool, %{"command" => "rm -rf .git"})
-        assert File.dir?(Path.join(root, ".git"))
-      end
+      assert {:ok, _out} = ReqLLM.Tool.execute(tool, %{"command" => "rm -rf .git"})
+      assert File.dir?(Path.join(root, ".git"))
     end
 
-    test "the git tool commits under bwrap (change_vcs profile)", %{root: root} = ctx do
-      if ctx[:skip] do
-        :ok
-      else
-        init_git!(root)
-        File.write!(Path.join(root, "app.txt"), "v1\n")
+    test "the git tool commits under bwrap (change_vcs profile)", %{root: root} do
+      init_git!(root)
+      File.write!(Path.join(root, "app.txt"), "v1\n")
 
-        put_sandbox(Bwrap)
-        tool = CodingAgent.Core.Tools.Git.tool(%{root: root})
+      put_sandbox(Bwrap)
+      tool = CodingAgent.Core.Tools.Git.tool(%{root: root})
 
-        assert {:ok, out} =
-                 ReqLLM.Tool.execute(tool, %{
-                   "args" => ["add", "app.txt"]
-                 })
+      assert {:ok, out} =
+               ReqLLM.Tool.execute(tool, %{
+                 "args" => ["add", "app.txt"]
+               })
 
-        assert out =~ "exit 0"
+      assert out =~ "exit 0"
 
-        assert {:ok, out} =
-                 ReqLLM.Tool.execute(tool, %{
-                   "args" => ["commit", "-m", "by git tool"]
-                 })
+      assert {:ok, out} =
+               ReqLLM.Tool.execute(tool, %{
+                 "args" => ["commit", "-m", "by git tool"]
+               })
 
-        assert out =~ "exit 0"
-        {log, 0} = System.cmd("git", ~w(log --oneline), cd: root, stderr_to_stdout: true)
-        assert log =~ "by git tool"
-      end
+      assert out =~ "exit 0"
+      {log, 0} = System.cmd("git", ~w(log --oneline), cd: root, stderr_to_stdout: true)
+      assert log =~ "by git tool"
     end
 
     test "/tmp persists across separate calls when a session scope is present",
-         %{root: root} = ctx do
-      if ctx[:skip] do
-        :ok
-      else
-        put_sandbox(Bwrap)
-        session_id = "bwrap-scratch-#{System.unique_integer([:positive])}"
-        scope = %{root: root, session_id: session_id}
-        scratch = Scratch.path(session_id)
-        on_exit(fn -> Scratch.remove(scratch) end)
+         %{root: root} do
+      put_sandbox(Bwrap)
+      session_id = "bwrap-scratch-#{System.unique_integer([:positive])}"
+      scope = %{root: root, session_id: session_id}
+      scratch = Scratch.path(session_id)
+      on_exit(fn -> Scratch.remove(scratch) end)
 
-        tool = Shell.tool(scope)
+      tool = Shell.tool(scope)
 
-        # call 1 writes, call 2 (a fresh namespace) reads
-        assert {:ok, _} = ReqLLM.Tool.execute(tool, %{"command" => "echo persisted > /tmp/x"})
+      # call 1 writes, call 2 (a fresh namespace) reads
+      assert {:ok, _} = ReqLLM.Tool.execute(tool, %{"command" => "echo persisted > /tmp/x"})
 
-        assert {:ok, out} = ReqLLM.Tool.execute(tool, %{"command" => "cat /tmp/x"})
-        assert out =~ "persisted"
+      assert {:ok, out} = ReqLLM.Tool.execute(tool, %{"command" => "cat /tmp/x"})
+      assert out =~ "persisted"
 
-        # and TMPDIR agrees with the hardcoded /tmp
-        assert {:ok, out} =
-                 ReqLLM.Tool.execute(tool, %{"command" => "echo v > $TMPDIR/y; cat /tmp/y"})
+      # and TMPDIR agrees with the hardcoded /tmp
+      assert {:ok, out} =
+               ReqLLM.Tool.execute(tool, %{"command" => "echo v > $TMPDIR/y; cat /tmp/y"})
 
-        assert out =~ "v"
-      end
+      assert out =~ "v"
     end
 
-    test "the host's shared /tmp is not visible inside the sandbox", %{root: root} = ctx do
-      if ctx[:skip] do
-        :ok
-      else
-        put_sandbox(Bwrap)
-        host_marker = Path.join(Scratch.base_dir(), "host-only-#{System.unique_integer()}")
-        File.mkdir_p!(Scratch.base_dir())
-        File.write!(host_marker, "secret")
-        on_exit(fn -> File.rm(host_marker) end)
+    test "the host's shared /tmp is not visible inside the sandbox", %{root: root} do
+      put_sandbox(Bwrap)
+      host_marker = Path.join(Scratch.base_dir(), "host-only-#{System.unique_integer()}")
+      File.mkdir_p!(Scratch.base_dir())
+      File.write!(host_marker, "secret")
+      on_exit(fn -> File.rm(host_marker) end)
 
-        tool = Shell.tool(%{root: root, session_id: "isolated"})
-        on_exit(fn -> Scratch.remove(Scratch.path("isolated")) end)
+      tool = Shell.tool(%{root: root, session_id: "isolated"})
+      on_exit(fn -> Scratch.remove(Scratch.path("isolated")) end)
 
-        assert {:ok, out} = ReqLLM.Tool.execute(tool, %{"command" => "ls /tmp"})
-        refute out =~ "host-only-"
-      end
+      assert {:ok, out} = ReqLLM.Tool.execute(tool, %{"command" => "ls /tmp"})
+      refute out =~ "host-only-"
     end
 
-    test "a spilled output is readable at the announced path (N99)", %{root: root} = ctx do
-      if ctx[:skip] do
-        :ok
-      else
-        put_sandbox(Bwrap)
-        session_id = "bwrap-spill-#{System.unique_integer([:positive])}"
-        on_exit(fn -> Scratch.remove(Scratch.path(session_id)) end)
+    test "a spilled output is readable at the announced path (N99)", %{root: root} do
+      put_sandbox(Bwrap)
+      session_id = "bwrap-spill-#{System.unique_integer([:positive])}"
+      on_exit(fn -> Scratch.remove(Scratch.path(session_id)) end)
 
-        tool = Shell.tool(%{root: root, session_id: session_id})
+      tool = Shell.tool(%{root: root, session_id: session_id})
 
-        # 300 KiB > Exec's 256 KiB cap, so the overflow spills
-        assert {:ok, out} =
-                 ReqLLM.Tool.execute(tool, %{"command" => "yes xx | head -c 300000"})
+      # 300 KiB > Exec's 256 KiB cap, so the overflow spills
+      assert {:ok, out} =
+               ReqLLM.Tool.execute(tool, %{"command" => "yes xx | head -c 300000"})
 
-        assert [path] = Regex.run(~r/full output at ([^\s]+)/, out, capture: :all_but_first)
+      assert [path] = Regex.run(~r/full output at ([^\s]+)/, out, capture: :all_but_first)
 
-        # bwrap binds the scratch over /tmp, so the announced path is the
-        # /tmp one — and a CONFINED `tail` opens it, which is the only
-        # assertion that matters: the model is told to read this path.
-        assert String.starts_with?(path, "/tmp/spill/shell-")
-        assert {:ok, tail} = ReqLLM.Tool.execute(tool, %{"command" => "tail -c 40 #{path}"})
-        assert tail =~ "xx"
-      end
+      # bwrap binds the scratch over /tmp, so the announced path is the
+      # /tmp one — and a CONFINED `tail` opens it, which is the only
+      # assertion that matters: the model is told to read this path.
+      assert String.starts_with?(path, "/tmp/spill/shell-")
+      assert {:ok, tail} = ReqLLM.Tool.execute(tool, %{"command" => "tail -c 40 #{path}"})
+      assert tail =~ "xx"
     end
 
     test "the git tool commits inside a linked worktree (change_vcs binds both gitdirs)",
-         %{root: root} = ctx do
-      if ctx[:skip] do
-        :ok
-      else
-        {wt, _repo} = init_worktree!(root)
-        File.write!(Path.join(wt, "b.txt"), "b\n")
+         %{root: root} do
+      {wt, _repo} = init_worktree!(root)
+      File.write!(Path.join(wt, "b.txt"), "b\n")
 
-        put_sandbox(Bwrap)
-        tool = CodingAgent.Core.Tools.Git.tool(%{root: wt})
+      put_sandbox(Bwrap)
+      tool = CodingAgent.Core.Tools.Git.tool(%{root: wt})
 
-        assert {:ok, out} = ReqLLM.Tool.execute(tool, %{"args" => ["add", "b.txt"]})
-        assert out =~ "exit 0"
+      assert {:ok, out} = ReqLLM.Tool.execute(tool, %{"args" => ["add", "b.txt"]})
+      assert out =~ "exit 0"
 
-        assert {:ok, out} = ReqLLM.Tool.execute(tool, %{"args" => ["commit", "-m", "wt commit"]})
-        assert out =~ "exit 0"
+      assert {:ok, out} = ReqLLM.Tool.execute(tool, %{"args" => ["commit", "-m", "wt commit"]})
+      assert out =~ "exit 0"
 
-        {log, 0} = System.cmd("git", ~w(log --oneline), cd: wt, stderr_to_stdout: true)
-        assert log =~ "wt commit"
-      end
+      {log, 0} = System.cmd("git", ~w(log --oneline), cd: wt, stderr_to_stdout: true)
+      assert log =~ "wt commit"
     end
 
-    test "git argv is not re-parsed by a shell inside the sandbox", %{root: root} = ctx do
-      if ctx[:skip] do
-        :ok
-      else
-        init_git!(root)
-        marker = Path.join(root, "injected-#{System.unique_integer()}")
-        put_sandbox(Bwrap)
-        tool = CodingAgent.Core.Tools.Git.tool(%{root: root})
+    test "git argv is not re-parsed by a shell inside the sandbox", %{root: root} do
+      init_git!(root)
+      marker = Path.join(root, "injected-#{System.unique_integer()}")
+      put_sandbox(Bwrap)
+      tool = CodingAgent.Core.Tools.Git.tool(%{root: root})
 
-        assert {:ok, _out} =
-                 ReqLLM.Tool.execute(tool, %{
-                   "args" => ["log", "--oneline", "; touch #{marker}"]
-                 })
+      assert {:ok, _out} =
+               ReqLLM.Tool.execute(tool, %{
+                 "args" => ["log", "--oneline", "; touch #{marker}"]
+               })
 
-        refute File.exists?(marker)
-      end
+      refute File.exists?(marker)
     end
   end
 

@@ -36,4 +36,24 @@ System.put_env("XDG_DATA_HOME", Path.join(test_xdg, "data"))
 
 ExUnit.start()
 
+# bwrap is a HARD dependency (ADR 030/046): without a confining sandbox no
+# session starts, so a host without it is not a supported environment. The
+# integration tests used to turn "no bwrap" into `:ok`, which made their
+# "N passed" indistinguishable from "0 checked" (review P13) — the suite
+# now refuses to start instead.
+case CodingAgent.Core.Sandbox.Bwrap.check() do
+  :ok ->
+    :ok
+
+  {:error, reason} ->
+    raise """
+    bwrap is a hard dependency and is not usable here: #{reason}
+
+    A session cannot start without a confining sandbox (ADR 030/046), and a
+    green run on a host without it would be a lie about the bwrap
+    integration tests (review P13). Install bubblewrap and enable
+    unprivileged user namespaces.
+    """
+end
+
 System.at_exit(fn _status -> File.rm_rf!(run_tmp) end)
