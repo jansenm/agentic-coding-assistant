@@ -84,17 +84,37 @@ defmodule Mix.Tasks.Tui do
   # always nil, so it fell back to `self()` and no `:DOWN` ever arrived:
   # `q` stopped the TUI and the VM lingered at an iex-like prompt — the
   # exact symptom this wait exists to prevent (review N88).
+  #
+  # The application tree is monitored too: it can die while the TUI keeps
+  # painting (the TUI is started by this task, not by the supervisor), and
+  # a UI whose store, sessions and catalog are gone only lies (review
+  # N124). On the tree's `:DOWN` the TUI is stopped FIRST — its `terminate/2`
+  # is what restores the terminal, and `System.halt/1` runs no `at_exit` —
+  # then the reason is printed and the VM exits non-zero.
   @doc false
-  def await_tui(tui, halt \\ &System.halt/1) do
-    ref = Process.monitor(tui)
+  def await_tui(tui, halt \\ &System.halt/1, tree \\ nil) do
+    tree = tree || Process.whereis(CodingAgent.Supervisor)
+    tui_ref = Process.monitor(tui)
+    tree_ref = tree && Process.monitor(tree)
 
     receive do
-      {:DOWN, ^ref, _, _, _} ->
+      {:DOWN, ^tui_ref, _, _, _} ->
         # the TUI stopped (q / ctrl-c): shut the BEAM down. Without this
         # the Mix VM lingers at an iex-like prompt — supervised trees and
         # the logger keep the scheduler alive after the task returns.
         halt.(0)
+
+      {:DOWN, ^tree_ref, _, _, reason} ->
+        stop_tui(tui)
+        IO.puts(:stderr, "the application tree stopped (#{inspect(reason)}) — restart the TUI")
+        halt.(1)
     end
+  end
+
+  defp stop_tui(tui) do
+    GenServer.stop(tui, :normal, 5_000)
+  catch
+    _, _ -> :ok
   end
 
   # Leave whatever state a crashed predecessor left behind, then clear.

@@ -745,15 +745,38 @@ defmodule CodingAgent.Core.Session do
     end)
   end
 
+  # The sweep's keep-set, or `{:error, reason}` when the store cannot be
+  # read. Public (`@doc false`) so the fail-closed rule is pinned by a
+  # test: a store error must skip the sweep — never yield a smaller set,
+  # which would make every persisted ref look like an orphan (review N124).
+  @doc false
+  def checkpoint_keep_set(id) do
+    case Store.ids() do
+      {:ok, persisted} -> {:ok, [id | persisted] ++ live_session_ids()}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   # Collect checkpoint refs whose session is gone (review N54). The keep
   # set is every persisted session id, every LIVE session id, and `id`.
   # Conservative: only refs in the attributable
   # `<store>/<session>/<commit>` form are candidates, so a legacy or
-  # unattributable ref is never deleted.
+  # unattributable ref is never deleted. A keep-set that cannot be built
+  # skips the sweep instead of sweeping with less (review N124).
   defp reconcile_checkpoints(scope_root, id) do
-    known = [id | Store.ids()] ++ live_session_ids()
-    _ = Checkpoint.reconcile(%{root: scope_root}, known)
-    :ok
+    case checkpoint_keep_set(id) do
+      {:ok, known} ->
+        _ = Checkpoint.reconcile(%{root: scope_root}, known)
+        :ok
+
+      {:error, reason} ->
+        # Fail closed: an unreadable store says nothing about which
+        # sessions are gone. Treating it as "no sessions" would sweep every
+        # persisted ref, and a ref is the only copy of a checkpoint's
+        # session attribution (review N124).
+        Logger.debug("checkpoint reconcile skipped: store unreadable (#{inspect(reason)})")
+        :ok
+    end
   rescue
     e ->
       Logger.debug("checkpoint reconcile skipped: #{Exception.message(e)}")

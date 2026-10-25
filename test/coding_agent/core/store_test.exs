@@ -122,6 +122,40 @@ defmodule CodingAgent.Core.Session.StoreTest do
     end
   end
 
+  # Review N124: the state dir is created OUTSIDE `run_fun/2`, so a failing
+  # `mkdir_p` used to raise out of `handle_call/3` — four crashes in five
+  # seconds exhausted the root supervisor's restart budget and took the
+  # whole application tree (registry, catalog, sessions) with it.
+  defp break_store_dir! do
+    # a FILE where the parent of the db would have to be a directory
+    blocker = Path.join(@tmp_root, "not-a-dir")
+    File.write!(blocker, "x")
+    Application.put_env(:coding_agent, :store_path, Path.join([blocker, "sub", "store.db"]))
+    :ok
+  end
+
+  describe "an unopenable store is an error, not a crash (N124)" do
+    test "the open error is returned and the store process survives" do
+      store = Process.whereis(Store)
+      :ok = break_store_dir!()
+
+      for _ <- 1..4 do
+        assert {:error, {:store_open_failed, :enotdir}} = Store.ids()
+      end
+
+      assert Process.whereis(Store) == store
+    end
+
+    test "the checkpoint keep-set is an error, never a smaller set" do
+      :ok = break_store_dir!()
+
+      # Returning `[]`/a partial list here would make every persisted ref
+      # look like an orphan — the sweep would delete checkpoints of
+      # sessions it simply could not read.
+      assert {:error, {:store_open_failed, :enotdir}} = Session.checkpoint_keep_set("n124")
+    end
+  end
+
   describe "fail-closed loading" do
     test "missing file errors" do
       assert {:error, :enoent} = Store.load("never-existed-#{System.unique_integer()}")

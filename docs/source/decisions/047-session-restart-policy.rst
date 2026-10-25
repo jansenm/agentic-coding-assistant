@@ -131,3 +131,46 @@ Open questions
    restores the last boundary; a turn that was in flight when the process
    died is not in that boundary. If that turns out to surprise people,
    the resume notice can name the boundary's timestamp.
+
+Dated amendment (2026-10-25, review N124): the root tree, and an error that
+was a crash
+---------------------------------------------------------------------------
+
+Decision 4's lesson (a policy that never restarts a child cannot exhaust a
+group budget) does **not** transfer to the root supervisor. ``Store`` is a
+singleton: an application tree without its store cannot run, and a store
+crashing four times in five seconds is in a crash *loop*. Taking the tree
+down is then the honest outcome, not a tuning problem, so the root keeps
+OTP's default ``max_restarts: 3, max_seconds: 5``.
+
+What was wrong was **what crashed**. ``Store.open/1`` created the state
+directory with ``File.mkdir_p!`` *outside* ``run_fun/2`` (which wraps only
+the caller's fun), so a state directory that cannot be created (read-only
+``$HOME``, ENOSPC, a file in the way) raised out of ``handle_call/3``
+instead of returning the already-documented
+``{:error, {:store_open_failed, _}}``. Measured on a store path under a
+regular file: four calls in ~180 ms were four restarts, the fifth was
+``:noproc``, and ``CodingAgent.Supervisor`` was ``:DOWN`` with
+``:shutdown`` — registry, event registry, catalog, store, interrupt, both
+task supervisors and every live session gone.
+
+Three changes, one shape: the predictable failure becomes a value, and the
+unpredictable one becomes visible.
+
+1. ``open/1`` returns the ``mkdir_p`` error; the SQLite open and setup move
+   to ``open_db/1`` so the checked mkdir does not nest the rest.
+2. ``Store.ids/0`` is ``{:ok, ids} | {:error, reason}``. It is the
+   checkpoint sweep's keep-set, and "the store cannot be read" must not
+   collapse to "no session exists": that would make every persisted ref an
+   orphan and delete it. ``Session.checkpoint_keep_set/1`` returns the
+   error and the sweep skips — fail closed.
+3. The TUI is started by ``mix tui``, not by the supervisor, so decision
+   3's reporting problem exists one level up. ``Mix.Tasks.Tui.await_tui/3``
+   now monitors the application tree; on its ``:DOWN`` it stops the TUI
+   first (its ``terminate/2`` restores the terminal — ``System.halt/1``
+   runs no ``at_exit``), prints the reason and exits non-zero, instead of
+   painting a screen whose sessions, store and catalog are gone.
+
+Not covered here: the picker's list family still maps a store error to
+``[]``, so an unreadable store reads as an empty session list rather than
+as the error.

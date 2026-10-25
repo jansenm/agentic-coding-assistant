@@ -674,15 +674,15 @@ defmodule CodingAgent.Core.Session.Store do
   Every persisted session id. Used by the checkpoint reconciliation pass
   (review N54): a ref whose session id is not among these (and is not
   live) is an orphan.
+
+  Returns an error when the store cannot be read — never an empty list:
+  the sweep must skip, not conclude that no session exists (review N124).
   """
-  @spec ids() :: [String.t()]
+  @spec ids() :: {:ok, [String.t()]} | {:error, term()}
   def ids do
-    with_db(fn db ->
-      case fetch_all(db, "SELECT id FROM sessions", []) do
-        {:ok, rows} -> Enum.map(rows, fn [id] -> id end)
-        _ -> []
-      end
-    end)
+    with {:ok, rows} <- with_db(fn db -> fetch_all(db, "SELECT id FROM sessions", []) end) do
+      {:ok, Enum.map(rows, fn [id] -> id end)}
+    end
   end
 
   @doc """
@@ -1043,8 +1043,18 @@ defmodule CodingAgent.Core.Session.Store do
   end
 
   defp open(db_path) do
-    File.mkdir_p!(Path.dirname(db_path))
+    # A state directory that cannot be created (read-only $HOME, ENOSPC, a
+    # file in the way) is a store ERROR, not a crash: `ensure_open/1` sits
+    # outside `run_fun/2`, so a raise here exits `handle_call/3`, and four
+    # such crashes in five seconds take the whole application tree down
+    # (review N124).
+    case File.mkdir_p(Path.dirname(db_path)) do
+      :ok -> open_db(db_path)
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
+  defp open_db(db_path) do
     # busy_timeout FIRST: it is per-connection and must be in force before
     # any statement that can block.
     case Sqlite3.open(db_path) do
