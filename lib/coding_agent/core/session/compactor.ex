@@ -671,6 +671,7 @@ defmodule CodingAgent.Core.Session.Compactor do
              model_input,
              summary_context(old_span_text, prior, agent),
              summarize_opts(base_opts)
+             |> Keyword.put(:req_http_options, Request.affinity_http_options(state.id))
            ),
          {:ok, response} <- ReqLLM.StreamResponse.process_stream(stream_response) do
       case ReqLLM.Response.text(response) do

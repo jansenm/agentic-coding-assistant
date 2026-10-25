@@ -71,4 +71,27 @@ defmodule CodingAgent.Core.Session.Request do
         opts
     end
   end
+
+  @doc """
+  The HTTP options that ask a provider to route every call of one session
+  to the same replica (`x-session-affinity`, I6).
+
+  A prompt cache lives on a replica, not in the account: with several
+  replicas behind one endpoint, a request that lands elsewhere is a full
+  cold prefill even though the prefix is unchanged. The header is the
+  only lever a client has, and it is harmless where the provider ignores
+  it — unknown headers are dropped, not rejected.
+
+  Session-scoped on purpose: a subagent starts with an ISOLATED context
+  (never the parent's prefix), so sharing the parent's affinity would
+  warm a cache the child cannot use. A fork (`context: :inherit`, I15)
+  is the case that must share it, and it can override here when it
+  exists. Empty for an unnamed session (a hand-built test state).
+  """
+  @spec affinity_http_options(String.t() | nil) :: keyword()
+  def affinity_http_options(session_id) when is_binary(session_id) and session_id != "" do
+    [headers: [{"x-session-affinity", session_id}]]
+  end
+
+  def affinity_http_options(_session_id), do: []
 end

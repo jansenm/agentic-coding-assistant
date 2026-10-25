@@ -200,3 +200,34 @@ Open questions
 4. Should the user be able to grant "another budget" without answering
    the dialog? **Decided: yes — the ``continue`` affordance** (y at the
    budget prompt). It grants another full budget and runs the held round.
+
+Amendment 2026-10-25: the wrap-up KEEPS its tools and forbids their use
+---------------------------------------------------------------------------
+
+**Status: Accepted (amendment to the accepted ADR 025); implemented with
+this record.** It supersedes open question 2's ``tools: []`` decision.
+
+The wrap-up call was sent with an empty tool list. The tools are not a
+trailing detail of the request body — they sit ahead of the messages, so
+``tools: []`` changes the request at its first bytes. The provider's
+prompt cache is a prefix cache: every token behind that difference is
+re-prefilled. On a 121k-token context that is ~$0.018 for the one call,
+and the wrap-up is the *most* expensive single request of a turn that
+just spent two hundred of them warm.
+
+Decision: the call keeps the tool definitions and adds
+``tool_choice: "none"``. The request is then byte-identical to the round
+before it except for the one field, so the prefix is served from the
+cache. The refusal is structural, not textual: ``finish_wrap_up/1`` never
+executes a call, and a provider that emits one anyway ends the turn on
+the text it produced — no second loop, no tool run, and nothing
+half-appended to the context.
+
+opencode keeps the tools on its final step for exactly this reason
+("Keep tool definitions on the final Step to preserve the provider's
+cached prefix", ``session/runner/llm.ts``) and refuses execution in the
+runner ("Tools are disabled after the maximum agent steps"). It also
+appends an assistant-role ``MAX_STEPS_PROMPT`` on the wire; we do not —
+the wrap-up instruction stays a persisted user message (open question 1
+above), because a resumed session must still read the question its
+summary answered.

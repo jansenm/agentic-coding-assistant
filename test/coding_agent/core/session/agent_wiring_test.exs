@@ -342,6 +342,33 @@ defmodule CodingAgent.Core.Session.AgentWiringTest do
       refute Keyword.has_key?(opts, :reasoning_effort)
     end
 
+    test "the session id rides the request as a cache-affinity header (I6)" do
+      start("wire-affinity", model: "ollama:qwen3")
+      {:ok, s} = Session.state("wire-affinity")
+
+      {:ok, _input, opts, _ctx} = Session.wire_request(s)
+
+      assert opts[:req_http_options] == [
+               headers: [{"x-session-affinity", "wire-affinity"}]
+             ]
+    end
+
+    test "the wrap-up keeps its tools and only forbids using them (N117)" do
+      start("wire-wrapup", model: "ollama:qwen3")
+      {:ok, s} = Session.state("wire-wrapup")
+
+      {:ok, _input, plain, _ctx} = Session.wire_request(s)
+      {:ok, _input, wrap_up, _ctx} = Session.wire_request(s, tool_choice: "none")
+
+      # the tool definitions are part of the cached prefix, so they stay …
+      assert is_list(wrap_up[:tools]) and wrap_up[:tools] != []
+      assert wrap_up[:tools] == plain[:tools]
+      # … and the ONE field that differs is the refusal
+      assert wrap_up[:tool_choice] == "none"
+      assert Keyword.delete(wrap_up, :tool_choice) == plain
+      refute Keyword.has_key?(plain, :tool_choice)
+    end
+
     test "a config.toml reasoning_effort reaches both the state and the wire (ADR 029)" do
       File.mkdir_p!(Path.join(@tmp_root, ".coding-agent"))
 

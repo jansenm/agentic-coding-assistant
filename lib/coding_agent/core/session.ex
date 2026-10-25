@@ -1369,6 +1369,14 @@ defmodule CodingAgent.Core.Session do
 
   defp put_reasoning_effort(opts, _effort), do: opts
 
+  # An optional tool-choice strategy for THIS call (`"none"` for the
+  # wrap-up, I3): the one field that differs between the last request of
+  # a budget-exhausted turn and the round before it. nil sends none.
+  defp put_tool_choice(opts, choice) when is_binary(choice) or is_map(choice),
+    do: Keyword.put(opts, :tool_choice, choice)
+
+  defp put_tool_choice(opts, _choice), do: opts
+
   @impl true
   # The turn worker RETURNED (async_nolink sends {ref, result} before the
   # DOWN): adopt the worker's final state and reply to the caller. This
@@ -2554,9 +2562,11 @@ defmodule CodingAgent.Core.Session do
   # The turn reached its tool-round budget (ADR 025). This is NOT a
   # failure: the round's calls are discarded (never executed, never put
   # on the wire, so the context stays valid), a wrap-up instruction is
-  # appended, ONE final provider call is made WITH TOOLS WITHHELD, and
-  # the resulting summary ends the turn idle. The human keeps a usable
-  # account and can continue with a fresh budget on the next prompt.
+  # appended, ONE final provider call is made WITH THE TOOLS PRESENT BUT
+  # FORBIDDEN (`tool_choice: "none"`, so the prompt cache still hits),
+  # and the resulting summary ends the turn idle. The human keeps a
+  # usable account and can continue with a fresh budget on the next
+  # prompt.
   #
   # A test-mode session (LLM-free) takes the structural skip, like the
   # compactor: the instruction is appended and the turn ends idle, but no
@@ -2591,8 +2601,14 @@ defmodule CodingAgent.Core.Session do
   end
 
   defp finish_wrap_up(state) do
+    # The wrap-up call KEEPS the tool definitions and only forbids using
+    # them (`tool_choice: "none"`). The request prefix — tools included —
+    # is then identical to the round before it, so the provider serves it
+    # from its prompt cache; withholding the tools made this the one call
+    # the budget path spent cold (N117; opencode's `runner/llm.ts` keeps
+    # them for exactly this reason).
     state = %{state | timing: Timing.start(state.timing)}
-    result = call_llm(state, tools: [])
+    result = call_llm(state, tool_choice: "none")
 
     state =
       %{state | timing: Timing.finish_llm(state.timing)}
@@ -2601,9 +2617,10 @@ defmodule CodingAgent.Core.Session do
     case result do
       {:ok, %{type: type, text: text, blocks: blocks, usage: usage}}
       when type in [:final_answer, :tool_calls] ->
-        # :tool_calls should be impossible (tools were withheld); if a
-        # provider emits one anyway, keep the text and end idle — never
-        # loop the wrap-up.
+        # :tool_calls is refused, not executed: the tools are on the wire
+        # only for the cache, `tool_choice: "none"` forbids their use, and
+        # a provider that emits one anyway gets its text kept and the
+        # turn ended idle — never a second loop, never a tool run.
         state = state |> add_usage(usage) |> complete_turn(text, blocks)
         {state, {:ok, state}}
 
@@ -2780,9 +2797,9 @@ defmodule CodingAgent.Core.Session do
   # the per-call environment block (ADR 024) — the stored context is not
   # mutated. Public so a test can assert the assembly without a provider.
   #
-  # `overrides` lets the budget wrap-up (ADR 025) withhold tools
-  # (`tools: []`) and send an alternate context without a second assembly
-  # path.
+  # `overrides` lets the budget wrap-up (ADR 025) forbid tool use
+  # (`tool_choice: "none"`, tools kept for the cache), send an alternate
+  # context, or narrow the tool list — without a second assembly path.
   @doc false
   @spec wire_request(State.t(), keyword()) ::
           {:ok, String.t() | map(), keyword(), ReqLLM.Context.t()} | {:error, term()}
@@ -2796,8 +2813,10 @@ defmodule CodingAgent.Core.Session do
       opts =
         base_opts
         |> Keyword.put(:tools, tools)
+        |> put_tool_choice(Keyword.get(overrides, :tool_choice))
         |> put_temperature(state.agent)
         |> put_reasoning_effort(state.reasoning_effort)
+        |> Keyword.put(:req_http_options, Request.affinity_http_options(state.id))
 
       context = Prompt.with_environment(context, model, state.scope_root, environment_opts(state))
       context = Prompt.with_todos(context, state.todos)
