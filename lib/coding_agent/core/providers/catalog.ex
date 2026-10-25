@@ -130,6 +130,11 @@ defmodule CodingAgent.Core.Providers.Catalog do
   (ADR 039 amendment 2026-10-18 (2)): the load on disk is untouched by a
   failed refresh, so no window moved and nothing needs re-resolving — but
   the human who asked for the refresh needs the reason, and so does the log.
+
+  A FORCED refresh that finds the copy current publishes `{:catalog,
+  :unchanged}`: "nothing to do" is an outcome, and a caller that said
+  "refreshing…" must hear it. The timer's own no-ops stay silent — "no
+  news" once a day is noise.
   """
   @spec subscribe() :: :ok
   def subscribe do
@@ -148,7 +153,9 @@ defmodule CodingAgent.Core.Providers.Catalog do
   `:started` means the refresh was queued, not that it finished: the fetch is
   a ~11 MB download, and the caller (the TUI) must not block on it. The
   outcome is published to subscribers — `{:catalog, :updated}` when a new copy
-  was written and loaded, `{:catalog, {:failed, reason}}` when it was not.
+  was written and loaded, `{:catalog, {:failed, reason}}` when it was not,
+  `{:catalog, :unchanged}` when the copy was already current (a timer tick
+  that finds nothing due publishes nothing at all).
   """
   @spec refresh() :: :started
   def refresh do
@@ -209,7 +216,15 @@ defmodule CodingAgent.Core.Providers.Catalog do
         notify()
         arm(state)
 
-      {:ok, _unchanged_or_skipped} ->
+      {:ok, :unchanged} ->
+        # A forced refresh (`/catalog`) that found the copy current is an
+        # outcome, not silence: the human asked and the TUI said "refreshing
+        # the model catalog…" — without this it never hears the end. The
+        # timer's own no-ops stay silent; "no news" once a day is noise.
+        if opts[:force], do: notify_unchanged()
+        arm(state)
+
+      {:ok, :skipped} ->
         arm(state)
 
       {:error, reason} ->
@@ -292,6 +307,12 @@ defmodule CodingAgent.Core.Providers.Catalog do
   defp notify_failed(reason) do
     Registry.dispatch(@registry, @key, fn entries ->
       for {pid, _} <- entries, do: send(pid, {:catalog, {:failed, reason}})
+    end)
+  end
+
+  defp notify_unchanged do
+    Registry.dispatch(@registry, @key, fn entries ->
+      for {pid, _} <- entries, do: send(pid, {:catalog, :unchanged})
     end)
   end
 

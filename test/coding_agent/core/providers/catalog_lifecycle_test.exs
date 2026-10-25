@@ -184,24 +184,55 @@ defmodule CodingAgent.Core.Providers.CatalogLifecycleTest do
     wait_for(fn -> File.exists?(artifact) end, "the artifact to be written")
     mtime = File.stat!(artifact, time: :posix).mtime
 
+    assert :ok = Catalog.subscribe()
+    # `subscribe/0` answers an already-loaded catalog immediately
+    assert_receive {:catalog, :updated}, 1_000
+
+    # the SAME cut: this refresh writes nothing, and `:unchanged` is its
+    # OUTCOME — the event that used to be silence. Without it a wait on the
+    # loaded cut returns on the FIRST refresh's result, and the queued cast
+    # then runs after the transport swap below and fails against it. That is
+    # exactly what happened: the mtime assertion proved nothing, and the
+    # "one failing refresh" test logged TWO failures.
     assert :started = Catalog.refresh()
-    wait_for(fn -> loaded_cut() == @release_cut end, "the second refresh to land")
+    assert_receive {:catalog, :unchanged}, 3_000
     assert File.stat!(artifact, time: :posix).mtime == mtime
 
     # now the transport fails: the catalog keeps serving what it has, and the
     # failure reaches a subscriber with its reason
     CodingAgent.TestCatalogFetch.respond({:error, {:http_status, 503, "down"}})
-    assert :ok = Catalog.subscribe()
-    assert_receive {:catalog, :updated}, 1_000
 
-    # the failure's LOG is asserted by the automatic-check test below (it can
-    # be captured deterministically there); here the EVENT is the contract —
-    # a `capture_log` around the manual verb cannot reliably see the async
-    # task's cast, so asserting it here would flake instead of documenting
-    assert :started = Catalog.refresh()
-    assert_receive {:catalog, {:failed, {:http_status, 503, "down"}}}, 3_000
+    log =
+      capture_log(fn ->
+        assert :started = Catalog.refresh()
+        assert_receive {:catalog, {:failed, {:http_status, 503, "down"}}}, 3_000
+        Logger.flush()
+      end)
+
+    # the log carries the reason for a crashed TUI's tui.log, exactly once
+    assert log =~ "model catalog refresh failed"
+    assert length(String.split(log, "model catalog refresh failed")) == 2
     assert Catalog.ready?()
     assert File.stat!(artifact, time: :posix).mtime == mtime
+  end
+
+  test "a timer tick that finds nothing new stays silent", %{artifact: artifact} do
+    assert :started = Catalog.refresh()
+    wait_for(fn -> File.exists?(artifact) end, "the artifact to be written")
+
+    :ok = Catalog.subscribe()
+    assert_receive {:catalog, :updated}, 1_000
+
+    # past the 24 h interval the tick is DUE: it runs, finds the same cut, and
+    # is `{:ok, :unchanged}` — with `force: false`, which must NOT publish.
+    # A note once a day for "no news" would overwrite whatever the human is
+    # doing in the hint line.
+    File.touch!(artifact, System.os_time(:second) - 90_000)
+
+    configure(interval_ms: 60_000)
+    tick()
+    refute_receive {:catalog, _}, 300
+    configure(interval_ms: :never)
   end
 
   # -- the automatic check ----------------------------------------------------

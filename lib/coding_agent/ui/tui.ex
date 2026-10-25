@@ -2495,9 +2495,10 @@ defmodule CodingAgent.UI.Tui do
   # /catalog (ADR 039 amendment 2026-10-18 (2)): fetch llm_db's newest published
   # snapshot and re-cut it for the installed pin, now. The reply means the
   # refresh STARTED, not that it finished — it is a ~11 MB download plus a
-  # merge in the catalog process, and the window for a model the old copy did
-  # not know arrives through the existing `{:catalog, :updated}` path, which
-  # the session and this TUI already handle.
+  # merge in the catalog process. The window for a model the old copy did not
+  # know arrives through the existing `{:catalog, :updated}` path (the
+  # session); the outcomes this hint line needs are the failure and the
+  # no-op — without the latter "refreshing the model catalog…" never ended.
   defp run_command_action(:refresh_catalog, _args, state) do
     state = %{state | command_popup: nil}
 
@@ -3551,6 +3552,12 @@ defmodule CodingAgent.UI.Tui do
   # the command is waiting for an answer, and a silent no-op is not one.
   def handle_info({:catalog, {:failed, reason}}, state) do
     {:noreply, status_note(state, "catalog refresh failed: #{Refresh.describe(reason)}")}
+  end
+
+  # a forced refresh that found the copy current: the note from `/catalog`
+  # said "refreshing…", and silence would leave it saying that forever
+  def handle_info({:catalog, :unchanged}, state) do
+    {:noreply, status_note(state, "model catalog is up to date")}
   end
 
   # The catch-all MUST stay last: it matches any message, so any clause

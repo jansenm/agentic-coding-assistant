@@ -367,8 +367,14 @@ untouched; ``due?/2`` is false immediately after a refresh, true past the
 interval, and true for a copy that will not read at all; the sidebar's
 ``catalog`` row moves to the release's date; and the running ``Catalog``
 publishes ``{:catalog, :updated}`` after a refresh, ``{:catalog, {:failed,
-reason}}`` after a failed one, and keeps its schedule either way. The test run
-never arms the timer (``interval_ms: :never``).
+reason}}`` after a failed one, and keeps its schedule either way. A FORCED
+refresh that finds the copy current publishes ``{:catalog, :unchanged}``
+(amendment 2026-10-25, review N121): "nothing to do" is an outcome, and the
+``/catalog`` hint line that said "refreshing…" must hear it — before, that
+case was silence and the note stayed on screen. A timer tick that finds
+nothing due or nothing new publishes nothing; a daily "no news" note would
+overwrite the hint line for a human who did not ask. The test run never arms
+the timer (``interval_ms: :never``).
 
 Open questions
 --------------
