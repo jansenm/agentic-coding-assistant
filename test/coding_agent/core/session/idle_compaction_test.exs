@@ -16,14 +16,6 @@ defmodule CodingAgent.Core.Session.IdleCompactionTest do
 
   setup_all do
     File.mkdir_p!(@tmp_root)
-    on_exit(fn -> File.rm_rf!(@tmp_root) end)
-    :ok
-  end
-
-  setup do
-    File.rm_rf!(@tmp_root)
-    File.mkdir_p!(@tmp_root)
-    CodingAgent.TestScope.declare_window!(@tmp_root)
     :ok
   end
 
@@ -49,10 +41,23 @@ defmodule CodingAgent.Core.Session.IdleCompactionTest do
     {state, {:ok, state}}
   end
 
+  # NO wipe, per test or at module end: every session gets its OWN scope
+  # root (see `start/2`), and a session outlives the test that started it
+  # (it lives in the session supervisor). The checkpoint-reconcile
+  # `Task.start`ed git call (review N54/N63) waits on the shared store
+  # before its first port, so under load it can arrive after the test body
+  # returned; deleting the root under it made `{:cd, root}` fail and
+  # erl_child_setup printed "spawn: Could not cd to …" into the suite's
+  # log — a warning no test asserts (the AGENTS.md rule). The run-scoped
+  # TMPDIR (`test_helper.exs`) owns the tree.
   defp start(id, opts) do
+    root = Path.join(@tmp_root, id)
+    File.mkdir_p!(root)
+    CodingAgent.TestScope.declare_window!(root)
+
     base = [
       id: id,
-      scope_root: @tmp_root,
+      scope_root: root,
       model: "ollama:test",
       test_mode: false,
       turn_runner: &completing_runner/1,

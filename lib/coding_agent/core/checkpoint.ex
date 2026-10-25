@@ -167,18 +167,31 @@ defmodule CodingAgent.Core.Checkpoint do
   @spec reconcile(map(), [String.t()]) :: [String.t()]
   def reconcile(scope, known_sessions) do
     root = Path.expand(scope.root)
-    known = known_sessions |> Enum.map(&ref_name/1) |> MapSet.new()
 
-    case git(scope, root, ["for-each-ref", "--format=%(refname)", ref_prefix()], []) do
-      {:ok, out, 0} ->
-        out
-        |> split_lines()
-        |> Enum.filter(&String.starts_with?(&1, ref_prefix()))
-        |> Enum.filter(&orphan?(&1, store_ns(), known))
-        |> tap(fn refs -> Enum.each(refs, &drop_ref(scope, root, &1)) end)
+    # The sweep runs off the start path (`Session.schedule_checkpoint_reconcile/2`),
+    # so it can race the root's owner: a live session's root may be removed
+    # under it. A root that is gone has no refs to sweep — and asking `git`
+    # anyway makes erl_child_setup print "spawn: Could not cd to …" on the
+    # VM's stderr, where no port collects it and no caller can assert it
+    # (measured in the suite; review N122). The BEAM looks at the root here
+    # only to decide whether the sweep has anything to ask about; no
+    # confinement decision is made (those stay with the profile).
+    if File.dir?(root) do
+      known = known_sessions |> Enum.map(&ref_name/1) |> MapSet.new()
 
-      _ ->
-        []
+      case git(scope, root, ["for-each-ref", "--format=%(refname)", ref_prefix()], []) do
+        {:ok, out, 0} ->
+          out
+          |> split_lines()
+          |> Enum.filter(&String.starts_with?(&1, ref_prefix()))
+          |> Enum.filter(&orphan?(&1, store_ns(), known))
+          |> tap(fn refs -> Enum.each(refs, &drop_ref(scope, root, &1)) end)
+
+        _ ->
+          []
+      end
+    else
+      []
     end
   end
 
