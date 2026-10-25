@@ -494,6 +494,8 @@ defmodule CodingAgent.Core.Session.StoreTest do
 
     # usage heals the missing field into the canonical struct
     assert loaded.usage == CodingAgent.Core.Session.Usage.new()
+    # the round timing did not exist in that snapshot either (I1)
+    assert loaded.timing == CodingAgent.Core.Session.Timing.new()
     assert loaded.status == :idle
     Store.delete(old_shaped.id)
   end
@@ -963,6 +965,33 @@ defmodule CodingAgent.Core.Session.StoreTest do
 
       Additive (a new field WITH A DEFAULT): add its name above and stop —
       `Usage.from_map/1` heals snapshots written before it, and the format
+      version stays.
+
+      Anything else (remove, rename, retype, reinterpret): bump
+      `Store.@format_version`. Every older snapshot then fails closed with
+      "not a session file", which is the honest outcome — a fresh session,
+      not a half-understood one.
+      """
+    end
+
+    test "a field added to %Timing{} is pinned here, and only additive changes are free" do
+      expected = [
+        :__struct__,
+        :last,
+        :llm_ms,
+        :rounds,
+        :started_at,
+        :tool_ms,
+        :turn_llm_ms,
+        :turn_rounds,
+        :turn_tool_ms
+      ]
+
+      assert CodingAgent.Core.Session.Timing.new() |> Map.keys() |> Enum.sort() == expected, """
+      %Timing{} changed shape.
+
+      Additive (a new field WITH A DEFAULT): add its name above and stop —
+      `Timing.restore/1` heals snapshots written before it, and the format
       version stays.
 
       Anything else (remove, rename, retype, reinterpret): bump

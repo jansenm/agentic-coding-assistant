@@ -31,8 +31,9 @@ defmodule CodingAgent.UI.Tui do
   alias CodingAgent.Core.Session.Compactor
   alias CodingAgent.Core.Session.Store
   alias CodingAgent.Core.Session.Supervisor
-  alias CodingAgent.Core.Session.Usage
+  alias CodingAgent.Core.Session.Timing
   alias CodingAgent.Core.Session.ToolRunner
+  alias CodingAgent.Core.Session.Usage
   alias CodingAgent.Core.Tools.ListFiles
 
   alias CodingAgent.UI.{
@@ -194,6 +195,8 @@ defmodule CodingAgent.UI.Tui do
       session_id: nil,
       model: nil,
       session_usage: CodingAgent.Core.Session.Usage.new(),
+      # the last finished round's two durations (I1); nil until one lands
+      last_round: nil,
       status: :idle,
       transcript: [],
       # esc-to-quit confirm: first esc arms, second esc (within
@@ -475,6 +478,8 @@ defmodule CodingAgent.UI.Tui do
         next_agent_model: agent_model(session_scope(effective_id), session_agent(effective_id)),
         session_usage:
           CodingAgent.Core.Session.Usage.from_map(restored && Map.get(restored, :usage)),
+        # the last finished round's two durations (I1); nil until one lands
+        last_round: nil,
         status: status,
         transcript: history,
         # esc-to-quit confirm: first esc arms, second esc (within
@@ -2467,6 +2472,26 @@ defmodule CodingAgent.UI.Tui do
     end
   end
 
+  # `/stats` (I1): where this session's time and money went, from the
+  # SESSION's own aggregates — the same `Timing` the sidebar's round row
+  # shows and the same `Usage` its token rows mirror. A snapshot, built
+  # once per open: reopen to refresh.
+  defp run_command_action(:show_stats, _args, state) do
+    rows =
+      state
+      |> stats_lines()
+      |> Enum.map(fn line -> %{action: {:__info__, line}, key: "", label: ""} end)
+
+    {:noreply,
+     %{
+       state
+       | command_popup: nil,
+         menu_popup: %{id: :stats, title: " stats  (esc=close)", items: rows},
+         menu_popup_id: :stats,
+         menu_index: 0
+     }}
+  end
+
   # /catalog (ADR 039 amendment 2026-10-18 (2)): fetch llm_db's newest published
   # snapshot and re-cut it for the installed pin, now. The reply means the
   # refresh STARTED, not that it finished — it is a ~11 MB download plus a
@@ -3213,6 +3238,13 @@ defmodule CodingAgent.UI.Tui do
 
   def handle_info({:agent, {:usage_updated, usage}}, state) do
     {:noreply, %{state | session_usage: usage}}
+  end
+
+  # One finished round's two durations (I1): the sidebar's "round" row.
+  # Reached through the parent's tagging clause above, so it is always
+  # THIS session's round — a child's rounds go to its tab buffer.
+  def handle_info({:agent, {:round_timing, round}}, state) do
+    {:noreply, %{state | last_round: round}}
   end
 
   # The session re-resolved its compaction window against the now-loaded
@@ -4895,7 +4927,9 @@ defmodule CodingAgent.UI.Tui do
           {"context", {:decimal, fmt_k(last_in), " (#{pct}% win)"}, pct_role},
           {"soft at", {:decimal, fmt_k(soft), soft_suffix}, soft_role},
           {"hard at", {:decimal, fmt_k(hard), " tok"}, pct_role}
-        ] ++ catalog_row(source, fallback?)
+        ] ++
+        last_round_row(Map.get(state, :last_round)) ++
+        catalog_row(source, fallback?)
 
     # What the provider says was spent — never tokens × a local rate
     # (`CodingAgent.Core.Costs`). "(billed)" marks a DELTA of the
@@ -4935,6 +4969,16 @@ defmodule CodingAgent.UI.Tui do
       # column the fill already draws.
       block: Styles.panel(borders: [], surface: :sidebar)
     }
+  end
+
+  # The last finished round's two durations (I1): the provider call and
+  # the work it caused, in that order — the same order `/stats` uses, and
+  # the same number it averages. Absent until this view has seen a round
+  # finish (a freshly attached session shows no row until its next one).
+  defp last_round_row(nil), do: []
+
+  defp last_round_row(round) do
+    [{"round", "#{Timing.format_ms(round.llm_ms)} + #{Timing.format_ms(round.tool_ms)}"}]
   end
 
   # The sidebar's catalog row: which data the window was resolved against,
@@ -5080,8 +5124,67 @@ defmodule CodingAgent.UI.Tui do
 
   defp scope_name(_), do: "—"
 
-  defp fmt_k(n) when n < 1000, do: "#{n}"
-  defp fmt_k(n), do: "#{trunc(n / 100) / 10}k"
+  defp fmt_k(n) when n < 1_000, do: "#{n}"
+  defp fmt_k(n) when n < 1_000_000, do: "#{trunc(n / 100) / 10}k"
+  defp fmt_k(n), do: "#{trunc(n / 100_000) / 10}M"
+
+  # The `/stats` body (I1): one label/value row per fact, padded to the
+  # widest label. `llm` and `tools` are the two halves of a round (see
+  # `Core.Session.Timing`); the per-round average is what makes 33 minutes
+  # legible — 200 rounds at 9 s is the provider, 200 at 9 s with 8 s in the
+  # tools is the harness.
+  defp stats_lines(state) do
+    case Session.state(state.session_id) do
+      {:ok, session} ->
+        timing = Map.get(session, :timing) || Timing.new()
+        usage = Usage.from_map(Map.get(session, :usage))
+        avg = fn ms -> Timing.format_ms(Timing.per_round(ms, timing)) end
+
+        [
+          stat("session", to_string(state.session_id)),
+          stat("rounds", "#{timing.rounds} calls"),
+          stat("llm", "#{Timing.format_ms(timing.llm_ms)}  (#{avg.(timing.llm_ms)}/round)"),
+          stat("tools", "#{Timing.format_ms(timing.tool_ms)}  (#{avg.(timing.tool_ms)}/round)"),
+          stat(
+            "turn",
+            "#{timing.turn_rounds} calls  #{Timing.format_ms(timing.turn_llm_ms + timing.turn_tool_ms)}"
+          )
+        ] ++
+          token_lines(usage) ++
+          money_lines(usage)
+
+      _ ->
+        [" session is gone"]
+    end
+  end
+
+  defp stat(label, value), do: " " <> String.pad_trailing(label, 9) <> value
+
+  defp token_lines(usage) do
+    cached =
+      case Usage.cached_tokens(usage) do
+        0 -> ""
+        n -> "  ·  #{fmt_k(n)} cached#{hit_suffix(usage)}"
+      end
+
+    [
+      stat(
+        "tokens",
+        "#{fmt_k(Usage.input_tokens(usage))} in#{cached}  ·  #{fmt_k(Usage.output_tokens(usage))} out"
+      )
+    ]
+  end
+
+  defp hit_suffix(usage) do
+    case Usage.cache_hit_ratio(usage) do
+      nil -> ""
+      ratio -> " (#{round(ratio * 100)}%)"
+    end
+  end
+
+  defp money_lines(usage) do
+    usage |> money_rows() |> Enum.map(fn {label, value} -> stat(label, value) end)
+  end
 
   # The money rows: what was spent and what is left, or nothing at all.
   # A cost of 0 means "no baseline yet" (the first account sample only

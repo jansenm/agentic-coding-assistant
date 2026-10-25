@@ -65,6 +65,31 @@ defmodule CodingAgent.UI.TuiCommandsTest do
     assert st.menu_popup_id == :keymaps
   end
 
+  test "/stats opens a snapshot of the session's time and spend", %{root: root} do
+    pid = start_tui(root)
+    fire(pid, :__resize_poll__)
+
+    type(pid, "/stats")
+    key(pid, "enter")
+
+    assert sync(pid).menu_popup_id == :stats
+
+    body = Enum.join(buffer(pid), "\n")
+    assert body =~ "rounds"
+    assert body =~ "llm"
+    assert body =~ "tokens"
+  end
+
+  test "a finished round shows in the sidebar as llm + tools (I1)", %{root: root} do
+    pid = start_tui(root)
+    fire(pid, :__resize_poll__)
+
+    agent(pid, {:round_timing, %{round: 1, llm_ms: 4_200, tool_ms: 600}})
+    fire(pid, :__resize_poll__)
+
+    assert Enum.join(buffer(pid), "\n") =~ "4.2 s + 600 ms"
+  end
+
   test "esc closes the palette without running", %{root: root} do
     pid = start_tui(root)
     fire(pid, :__resize_poll__)

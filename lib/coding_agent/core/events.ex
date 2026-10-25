@@ -50,6 +50,10 @@ defmodule CodingAgent.Core.Events do
       with the arguments it was called with (the display view records
       them, so an export can say *what* a tool was asked to do)
     * `{:usage_updated, usage}` — cumulative token/cost accounting
+    * `{:round_timing, %{round, llm_ms, tool_ms}}` — one finished round's
+      two durations: the provider call and the work it caused (I1). The
+      round number is the session's; `tool_ms` is 0 on a final answer.
+      Human wait (a parked gate/question/budget) is not included.
     * `{:info, text}` — a dim one-line note (compaction, notices)
     * `{:context_compacted, min_keep, trigger}` — a compaction replaced the
       old span with a summary; the payload is how many recent messages were

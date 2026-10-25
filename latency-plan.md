@@ -314,10 +314,21 @@ per-client instrument.
 2. **Per-round timing.** Record `llm_ms` and `tool_ms` for each round and
    keep them in session state (or broadcast an `{:round_metrics, ...}`
    event). No network, no disk, no new dependency.
+   **Landed 2026-10-25:** `Core.Session.Timing` on the state (cumulative
+   and per-turn), one `{:round_timing, %{round, llm_ms, tool_ms}}` event
+   per finished round, and a `round` row in the sidebar (`llm + tools`).
+   `llm_ms` is the provider call; `tool_ms` is everything it caused
+   (gate, tools, subagents, todo/compact). A parked round's human wait is
+   excluded — the tool clock starts where the round actually runs.
 3. **Round metrics in the transcript or a `/stats` command**: rounds this
    turn, per-round input/cached/output, tool calls, tool wall time, cache
    hit ratio. A `/stats` slash command fits the TUI convention better
    than a debug log and stays out of the model's context.
+   **Landed 2026-10-25:** `/stats` shows the session's rounds, `llm` and
+   `tools` totals with their per-round averages, the current turn's
+   calls and time, the token counts with the cached share, and what the
+   provider billed. A snapshot per open (the TUI does not re-read per
+   frame).
 4. **Cost — landed 2026-10-24, and not the way this item first proposed.**
    A local `[pricing."<provider>:<model>"]` table was rejected: it is
    wrong for the next model, wrong for the cached rate, and wrong for the
@@ -346,6 +357,13 @@ per-client instrument.
 
 **Exit criterion:** one real turn yields a table of rounds with a hit
 ratio and a time split. Do not proceed on vibes.
+
+**Status 2026-10-25:** the instruments exist (items 1-4); the exit
+criterion is met *in form*, not yet *in use*: no real turn has been read
+through `/stats` since. The next live turn should produce the first
+before/after table (Phase 1) — the numbers to compare against are the
+33-minute, 200-round turn of `tui-15426` (29.0 M input / 27.6 M cached =
+95 %, 351k output, $0.88 for 365 calls).
 
 ---
 

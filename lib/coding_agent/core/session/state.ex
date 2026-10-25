@@ -129,6 +129,12 @@ defmodule CodingAgent.Core.Session.State do
     # shape lives in Core.Session.Usage (P3: one home for the defaults
     # and last_input_tokens semantics).
     usage: CodingAgent.Core.Session.Usage.new(),
+    # wall time per round (I1): the provider call and the work it caused,
+    # cumulative for the session and for the current turn. Durable — the
+    # slow turn is often the one a resumed session continues — so the
+    # totals survive a load; only the in-flight stamp does not. The shape
+    # and the invariants live in Core.Session.Timing.
+    timing: CodingAgent.Core.Session.Timing.new(),
     # set once the 80%-of-trigger warning has been broadcast (once,
     # not every turn)
     compaction_warned: false,
@@ -337,6 +343,10 @@ defmodule CodingAgent.Core.Session.State do
       tool_rounds: 0,
       # usage heals a legacy map into the struct (wire-compatible)
       usage: CodingAgent.Core.Session.Usage.from_map(Map.get(state, :usage)),
+      # the round timing survives a load (the totals are the point); an
+      # older snapshot without the field starts at zero, and the in-flight
+      # stamp never resurrects
+      timing: CodingAgent.Core.Session.Timing.restore(Map.get(state, :timing)),
       compaction_warned: Map.get(state, :compaction_warned, false),
       # re-arm the "pinned compaction model dropped" note (review N67):
       # like `window_warned`, a resumed session re-resolves and must speak

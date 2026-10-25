@@ -62,6 +62,7 @@ defmodule CodingAgent.Core.Session do
     Request,
     State,
     Store,
+    Timing,
     ToolRunner,
     Usage
   }
@@ -1604,6 +1605,9 @@ defmodule CodingAgent.Core.Session do
           tool_rounds: 0,
           # the doom-loop window is per turn (ADR 026)
           recent_calls: [],
+          # the timing's per-turn counters start over here too (I1); the
+          # session totals keep
+          timing: Timing.begin_turn(state.timing),
           turn_agents: state.turn_agents ++ [agent]
       }
 
@@ -1851,9 +1855,23 @@ defmodule CodingAgent.Core.Session do
       {state, changed?} = Compactor.maybe_compact(state)
       if changed?, do: persist(state)
 
-      case call_llm(state) do
+      # One provider call, timed as the round's llm half (I1): the call's
+      # duration is what the sidebar's "round" row and `/stats` average.
+      # The round's tool half is measured around the work it causes
+      # (`execute_round/3` → `complete_round/3`).
+      state = %{state | timing: Timing.start(state.timing)}
+      result = call_llm(state)
+      state = %{state | timing: Timing.finish_llm(state.timing)}
+
+      case result do
         {:ok, %{type: :final_answer, text: text, blocks: blocks, usage: usage}} ->
-          state = state |> add_usage(usage) |> drop_interrupt() |> complete_turn(text, blocks)
+          state =
+            state
+            |> add_usage(usage)
+            |> drop_interrupt()
+            |> broadcast_last_round()
+            |> complete_turn(text, blocks)
+
           {state, {:ok, state}}
 
         {:ok, %{type: :tool_calls, tool_calls: calls, blocks: blocks, usage: usage}} ->
@@ -2158,6 +2176,12 @@ defmodule CodingAgent.Core.Session do
   # `answered` carries question results already obtained (ADR 027) so a
   # resumed question round completes with them alongside the siblings'.
   defp execute_round(state, calls, answered \\ []) do
+    # The tool half of the round is timed from HERE, not from the
+    # provider call: a round parked at the gate, on a question or at the
+    # budget resumes here, and the human's wait is not the machine's
+    # time (see `Core.Session.Timing`).
+    state = %{state | timing: Timing.start(state.timing)}
+
     q_calls = question_calls(calls)
     t_calls = task_calls(calls)
     d_calls = todo_calls(calls)
@@ -2567,7 +2591,14 @@ defmodule CodingAgent.Core.Session do
   end
 
   defp finish_wrap_up(state) do
-    case call_llm(state, tools: []) do
+    state = %{state | timing: Timing.start(state.timing)}
+    result = call_llm(state, tools: [])
+
+    state =
+      %{state | timing: Timing.finish_llm(state.timing)}
+      |> broadcast_last_round()
+
+    case result do
       {:ok, %{type: type, text: text, blocks: blocks, usage: usage}}
       when type in [:final_answer, :tool_calls] ->
         # :tool_calls should be impossible (tools were withheld); if a
@@ -2598,6 +2629,13 @@ defmodule CodingAgent.Core.Session do
   # mis-associate by `tool_call_id` — and the ids of already-run auto
   # calls would otherwise vanish from the model's view entirely.
   defp complete_round(state, calls, results) do
+    # The round's work is over: close the tool clock and publish the round
+    # (I1). `round` is nil when no provider call opened it — a steering or
+    # test-mode round has no llm half to add the time to.
+    {timing, round} = Timing.finish_tools(state.timing)
+    state = %{state | timing: timing}
+    if round, do: broadcast(state, {:round_timing, round})
+
     assistant_msg = assistant_message_for(calls)
 
     result_msgs =
@@ -2627,6 +2665,19 @@ defmodule CodingAgent.Core.Session do
     else
       continue_loop(state)
     end
+  end
+
+  # The round that just finished, published as one event (I1): the
+  # TUI's "round" row and its `/stats` snapshot read it. A final answer's
+  # round has no tool time, so it is broadcast from the loop; a tool round
+  # is broadcast from `complete_round/3`.
+  defp broadcast_last_round(state) do
+    case state.timing.last do
+      nil -> state
+      round -> broadcast(state, {:round_timing, round})
+    end
+
+    state
   end
 
   defp execute_tools(state, calls) do

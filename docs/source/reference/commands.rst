@@ -46,6 +46,12 @@ by ``test/coding_agent/ui/commands_test.exs`` and
        must not be in flight. "Nothing to compact" when the conversation
        is still too short.
      - ``ctrl-x c``
+   * - ``/stats``
+     - Where this session's time and money went: rounds, the model's share
+       and the tools' share (averaged per round), this turn's totals, the
+       token counts, the provider's cached share, and what it billed. A
+       snapshot, not a live view — reopen to refresh.
+     -
    * - ``/catalog``
      - Fetch llm_db's newest published model-catalog snapshot and re-cut it
        for the installed version (ADR 039). The download runs in the

@@ -66,6 +66,7 @@ defmodule CodingAgent.UI.CommandsTest do
       :export => :special,
       :undo => :special,
       :compact => :special,
+      :show_stats => :special,
       :refresh_catalog => :special,
       :switch_session => :menu,
       :switch_model => :menu,
