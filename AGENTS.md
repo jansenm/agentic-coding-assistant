@@ -34,6 +34,19 @@ exactly this way.
 
 If your context does not name a worktree, ask before writing.
 
+## Tests and their log output
+
+A test that triggers a warning must capture and assert it — `capture_log(fn ->
+… end)` plus `assert log =~ "…"` — so the expectation is in the test and a
+moved warning fails it. A test that only trips a warning by accident (an
+uncataloged test model, a fixture that needs a real session) declares what it
+needs instead (`CodingAgent.TestScope.declare_window!/1`).
+
+No run-wide mute (`ExUnit.start(capture_log: true)` was considered and
+rejected): the suite's log output is the signal for a warning nobody
+expected, and a test that warns without saying so is the noise that made a
+green run take two `mix test` invocations to read.
+
 ## Feedback from the agent (wanted)
 
 This repository is both the harness and the product: the program an agent
