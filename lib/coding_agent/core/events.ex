@@ -50,10 +50,15 @@ defmodule CodingAgent.Core.Events do
       with the arguments it was called with (the display view records
       them, so an export can say *what* a tool was asked to do)
     * `{:usage_updated, usage}` — cumulative token/cost accounting
-    * `{:round_timing, %{round, llm_ms, tool_ms}}` — one finished round's
-      two durations: the provider call and the work it caused (I1). The
-      round number is the session's; `tool_ms` is 0 on a final answer.
-      Human wait (a parked gate/question/budget) is not included.
+    * `{:timing, %Timing{}}` — the session's round accounting after a
+      round closed (or a turn began): the two halves of the last round
+      (`llm_ms` the provider call, `tool_ms` the work it caused; 0 on a
+      final answer) plus the session and turn totals (I1). The whole
+      struct rides the event because the TUI mirrors it: `/stats` reads
+      the mirror while a turn is in flight — the session PROCESS's own
+      state is the state the turn STARTED from, so asking it showed a
+      running turn as zeros. Human wait (a parked gate/question/budget)
+      is not included.
     * `{:info, text}` — a dim one-line note (compaction, notices)
     * `{:context_compacted, min_keep, trigger}` — a compaction replaced the
       old span with a summary; the payload is how many recent messages were

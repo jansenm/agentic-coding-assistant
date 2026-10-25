@@ -4,6 +4,8 @@ defmodule CodingAgent.UI.TuiCommandsTest do
   """
   use CodingAgent.TuiCase, async: true
 
+  alias CodingAgent.Core.Session.Timing
+  alias CodingAgent.Core.Session.Usage
   alias CodingAgent.UI.Tui
 
   setup do
@@ -84,10 +86,52 @@ defmodule CodingAgent.UI.TuiCommandsTest do
     pid = start_tui(root)
     fire(pid, :__resize_poll__)
 
-    agent(pid, {:round_timing, %{round: 1, llm_ms: 4_200, tool_ms: 600}})
+    round = %{round: 1, llm_ms: 4_200, tool_ms: 600}
+    agent(pid, {:timing, %Timing{rounds: 1, llm_ms: 4_200, tool_ms: 600, last: round}})
     fire(pid, :__resize_poll__)
 
-    assert Enum.join(buffer(pid), "\n") =~ "4.2 s + 600 ms"
+    body = Enum.join(buffer(pid), "\n")
+    assert body =~ "last round"
+    assert body =~ "4.2 s + 600 ms"
+  end
+
+  test "/stats reads the TUI's mirror, so a running turn is not zeros", %{root: root} do
+    # A turn runs in a worker: the session PROCESS still holds the state the
+    # turn started from, so `Session.state/1` reported a running turn's
+    # rounds and tokens as zero until it returned. `/stats` must read the
+    # events the sidebar already mirrors.
+    pid = start_tui(root)
+    fire(pid, :__resize_poll__)
+
+    round = %{round: 7, llm_ms: 4_200, tool_ms: 600}
+
+    agent(pid, {
+      :timing,
+      %Timing{
+        rounds: 7,
+        llm_ms: 63_000,
+        tool_ms: 12_000,
+        turn_rounds: 2,
+        turn_llm_ms: 9_000,
+        turn_tool_ms: 4_000,
+        last: round
+      }
+    })
+
+    agent(pid, {
+      :usage_updated,
+      %Usage{input_tokens: 121_345, output_tokens: 900, cached_tokens: 96_000}
+    })
+
+    type(pid, "/stats")
+    key(pid, "enter")
+
+    body = Enum.join(buffer(pid), "\n")
+    assert body =~ "7 calls"
+    assert body =~ "1m 03s"
+    assert body =~ "121.3k in"
+    assert body =~ "96.0k cached"
+    assert body =~ "2 calls"
   end
 
   test "esc closes the palette without running", %{root: root} do

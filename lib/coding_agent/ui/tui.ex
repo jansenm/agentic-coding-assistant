@@ -195,8 +195,11 @@ defmodule CodingAgent.UI.Tui do
       session_id: nil,
       model: nil,
       session_usage: CodingAgent.Core.Session.Usage.new(),
-      # the last finished round's two durations (I1); nil until one lands
-      last_round: nil,
+      # the session's round accounting, MIRRORED from `{:timing, …}` (I1).
+      # `/stats` reads this rather than `Session.state/1`: a turn runs in a
+      # worker, so the session process's own state is the one the turn
+      # STARTED from and a running turn read as zeros.
+      timing: Timing.new(),
       status: :idle,
       transcript: [],
       # esc-to-quit confirm: first esc arms, second esc (within
@@ -478,8 +481,9 @@ defmodule CodingAgent.UI.Tui do
         next_agent_model: agent_model(session_scope(effective_id), session_agent(effective_id)),
         session_usage:
           CodingAgent.Core.Session.Usage.from_map(restored && Map.get(restored, :usage)),
-        # the last finished round's two durations (I1); nil until one lands
-        last_round: nil,
+        # the round accounting, seeded from the snapshot and kept current
+        # by `{:timing, …}` (see the picker mount)
+        timing: Timing.restore(restored && Map.get(restored, :timing)),
         status: status,
         transcript: history,
         # esc-to-quit confirm: first esc arms, second esc (within
@@ -1796,7 +1800,7 @@ defmodule CodingAgent.UI.Tui do
     # the popup and the band may not overlap, and the popup can be taller
     # than the room above it: `overlay_rect/4` clamps it (a menu taller
     # than the pane used to be placed at a negative row)
-    w = min(60, area.width - 4)
+    w = min(Map.get(state.menu_popup, :width, 60), area.width - 4)
     rect = overlay_rect(state, area, length(rows) + 3, w)
 
     widget = %Paragraph{
@@ -2486,7 +2490,7 @@ defmodule CodingAgent.UI.Tui do
      %{
        state
        | command_popup: nil,
-         menu_popup: %{id: :stats, title: " stats  (esc=close)", items: rows},
+         menu_popup: %{id: :stats, title: " stats  (esc=close)", items: rows, width: 74},
          menu_popup_id: :stats,
          menu_index: 0
      }}
@@ -3241,11 +3245,12 @@ defmodule CodingAgent.UI.Tui do
     {:noreply, %{state | session_usage: usage}}
   end
 
-  # One finished round's two durations (I1): the sidebar's "round" row.
-  # Reached through the parent's tagging clause above, so it is always
-  # THIS session's round — a child's rounds go to its tab buffer.
-  def handle_info({:agent, {:round_timing, round}}, state) do
-    {:noreply, %{state | last_round: round}}
+  # The session's round accounting (I1). The WHOLE struct rides the event
+  # because `/stats` needs the totals, not only the last round; reached
+  # through the parent's tagging clause above, so it is always THIS
+  # session's timing — a child's rounds go to its tab buffer.
+  def handle_info({:agent, {:timing, timing}}, state) do
+    {:noreply, %{state | timing: timing}}
   end
 
   # The session re-resolved its compaction window against the now-loaded
@@ -4935,7 +4940,7 @@ defmodule CodingAgent.UI.Tui do
           {"soft at", {:decimal, fmt_k(soft), soft_suffix}, soft_role},
           {"hard at", {:decimal, fmt_k(hard), " tok"}, pct_role}
         ] ++
-        last_round_row(Map.get(state, :last_round)) ++
+        last_round_row(Map.get(state, :timing, Timing.new()).last) ++
         catalog_row(source, fallback?)
 
     # What the provider says was spent — never tokens × a local rate
@@ -4985,7 +4990,7 @@ defmodule CodingAgent.UI.Tui do
   defp last_round_row(nil), do: []
 
   defp last_round_row(round) do
-    [{"round", "#{Timing.format_ms(round.llm_ms)} + #{Timing.format_ms(round.tool_ms)}"}]
+    [{"last round", "#{Timing.format_ms(round.llm_ms)} + #{Timing.format_ms(round.tool_ms)}"}]
   end
 
   # The sidebar's catalog row: which data the window was resolved against,
@@ -5140,29 +5145,27 @@ defmodule CodingAgent.UI.Tui do
   # `Core.Session.Timing`); the per-round average is what makes 33 minutes
   # legible — 200 rounds at 9 s is the provider, 200 at 9 s with 8 s in the
   # tools is the harness.
+  # The numbers the TUI has MIRRORED (`{:timing, …}`, `{:usage_updated, …}`),
+  # never `Session.state/1`. A turn runs in a worker with its own copy, so
+  # the session process still holds the state the turn STARTED from: asking
+  # it showed a running turn's stats as zeros until the turn returned.
   defp stats_lines(state) do
-    case Session.state(state.session_id) do
-      {:ok, session} ->
-        timing = Map.get(session, :timing) || Timing.new()
-        usage = Usage.from_map(Map.get(session, :usage))
-        avg = fn ms -> Timing.format_ms(Timing.per_round(ms, timing)) end
+    timing = Map.get(state, :timing) || Timing.new()
+    usage = Usage.from_map(Map.get(state, :session_usage))
+    avg = fn ms -> Timing.format_ms(Timing.per_round(ms, timing)) end
 
-        [
-          stat("session", to_string(state.session_id)),
-          stat("rounds", "#{timing.rounds} calls"),
-          stat("llm", "#{Timing.format_ms(timing.llm_ms)}  (#{avg.(timing.llm_ms)}/round)"),
-          stat("tools", "#{Timing.format_ms(timing.tool_ms)}  (#{avg.(timing.tool_ms)}/round)"),
-          stat(
-            "turn",
-            "#{timing.turn_rounds} calls  #{Timing.format_ms(timing.turn_llm_ms + timing.turn_tool_ms)}"
-          )
-        ] ++
-          token_lines(usage) ++
-          money_lines(usage)
-
-      _ ->
-        [" session is gone"]
-    end
+    [
+      stat("session", to_string(state.session_id)),
+      stat("rounds", "#{timing.rounds} calls"),
+      stat("llm", "#{Timing.format_ms(timing.llm_ms)}  (#{avg.(timing.llm_ms)}/round)"),
+      stat("tools", "#{Timing.format_ms(timing.tool_ms)}  (#{avg.(timing.tool_ms)}/round)"),
+      stat(
+        "turn",
+        "#{timing.turn_rounds} calls  #{Timing.format_ms(timing.turn_llm_ms + timing.turn_tool_ms)}"
+      )
+    ] ++
+      token_lines(usage) ++
+      money_lines(usage)
   end
 
   defp stat(label, value), do: " " <> String.pad_trailing(label, 9) <> value

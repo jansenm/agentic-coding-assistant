@@ -1625,6 +1625,10 @@ defmodule CodingAgent.Core.Session do
 
     broadcast(state, {:turn_started, agent})
     broadcast(state, {:status_changed, :running})
+    # the new turn's per-turn counters are zero and `last` is cleared; the
+    # TUI mirrors this struct, so publish it here or its `/stats` would
+    # keep the previous turn's `turn` line until the first round closed
+    broadcast(state, {:timing, state.timing})
     state
   end
 
@@ -2651,7 +2655,7 @@ defmodule CodingAgent.Core.Session do
     # test-mode round has no llm half to add the time to.
     {timing, round} = Timing.finish_tools(state.timing)
     state = %{state | timing: timing}
-    if round, do: broadcast(state, {:round_timing, round})
+    if round, do: broadcast(state, {:timing, timing})
 
     assistant_msg = assistant_message_for(calls)
 
@@ -2684,14 +2688,15 @@ defmodule CodingAgent.Core.Session do
     end
   end
 
-  # The round that just finished, published as one event (I1): the
-  # TUI's "round" row and its `/stats` snapshot read it. A final answer's
-  # round has no tool time, so it is broadcast from the loop; a tool round
-  # is broadcast from `complete_round/3`.
+  # The round that just finished, published as one event (I1): the whole
+  # `Timing` struct, because the TUI mirrors it (its `/stats` reads the
+  # mirror — the session PROCESS's state is the one the turn started
+  # from). A final answer's round has no tool time, so it is broadcast
+  # from the loop; a tool round is broadcast from `complete_round/3`.
   defp broadcast_last_round(state) do
     case state.timing.last do
       nil -> state
-      round -> broadcast(state, {:round_timing, round})
+      _round -> broadcast(state, {:timing, state.timing})
     end
 
     state
