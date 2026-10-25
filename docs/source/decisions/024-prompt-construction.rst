@@ -270,3 +270,58 @@ Open questions
    rule level — the same *instructions* expressed in our words. That is
    the shape of an adaptation; whether "~90%" is the right number for it
    is not established by this ADR and should not be quoted as if it were.
+
+Amendment 2026-10-25: the per-call blocks ride the TAIL, not the system message
+--------------------------------------------------------------------------------
+
+**Status: Accepted (amendment to the accepted ADR 024); implemented with
+this record.**
+
+This ADR decided that the environment block is per-call and lives on the
+wire only. It did not decide *where* on the wire — and it was the system
+message, the first byte of every request. Every block that followed it
+was appended there too (the todo block, ADR 031; the budget block,
+ADR 040; the capability block), so any one of them changing threw away
+the provider's cached prefix for the whole context behind it.
+
+The band amendment to ADR 040 removed the block that moved on every
+round. It did not remove the others: the **todo block** changes whenever
+the model writes its list, which is what ``todowrite`` is for. Measured on
+a live session (121,345 tokens of context): a full cold re-prefill costs
+$0.018, and two ``todowrite`` calls in one 121k phase were exactly the
+two ~2 ct requests in the provider's usage list — while warm rounds of the
+same turn stayed under 1 ct. Warm rounds pay only their new bytes, so the
+difference is the whole context.
+
+Decision: the per-call blocks are appended to ONE trailing
+``<system-reminder>`` **user** message, merged in call order. The system
+message is session-constant — ``base_prompt`` and the agent body only.
+The trailer carries a lead line stating that it is session state and not
+a message from the human, because it now shares the position a human
+turn would occupy.
+
+The tail is re-sent on every round anyway, so a change there costs the
+tail (a few hundred tokens) instead of the prefix. The per-call contract
+of this ADR is unchanged: the block is built from live state on every
+request and never persisted in the stored context.
+
+opencode arrived at the same rule from the other side: a frozen
+instruction baseline whose changes render as messages (``Today's date is
+now: …``, ``The environment you are running in is now: …``) and a
+mode switch as a synthetic user message, "appending near the tail so the
+cached prefix stays warm" (``session/instruction-state.ts``,
+``plugin/plan.ts``).
+
+Consequences:
+
+- A ``todowrite``, a date rollover, a band flip and a capability change
+  each cost the tail. The prefix survives all of them.
+- The blocks sit after the history instead of ahead of it. They are
+  state and hints — the gate and the sandbox enforce — so a weaker
+  position costs nothing that the prompt was relied on for. The todo
+  list in particular is the model's own most recent write.
+- ``wire_request/1`` keeps its shape: four call sites, one channel.
+- Not addressed: a restart after the provider's cache expiry still
+  re-prefills the context (that is the provider's TTL, not a changed
+  byte), and a model switch still recomposes the system message on
+  purpose.

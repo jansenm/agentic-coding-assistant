@@ -342,3 +342,17 @@ Consequences:
   ``window`` now only feeds the "is there a block at all" guard.
 - The prompt files (``default.txt``, ``claude.txt``) describe the line as
   a band; the old sentence promised "how full the window is".
+
+Amendment 2026-10-25: "appended to the system message" is no longer true
+------------------------------------------------------------------------
+
+**Status: Accepted (amendment to the accepted ADR 040); implemented with
+this record.**
+
+The band amendment above reasoned from the block's *position* — in the
+system message, ahead of every other byte. Since the ADR 024 amendment of
+2026-10-25 every per-call block, this one included, rides a trailing
+``<system-reminder>`` user message. The band decision stands on its own
+(the model should not see numbers that move under it, and the sidebar
+keeps them for the human), and the position now makes even a band flip
+cost the tail instead of the prefix.

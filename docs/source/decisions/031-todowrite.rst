@@ -204,3 +204,18 @@ Open questions
 3. **Per-agent lists (ADR 017).** A plan agent's list and a build agent's
    list are distinct today (per session). If agent switching should carry
    the list across, that is a later decision.
+
+Amendment 2026-10-25: the list rides the tail
+---------------------------------------------
+
+**Status: Accepted (amendment to the accepted ADR 031); implemented with
+this record.**
+
+The block was appended to the system message, so every ``todowrite``
+changed the first byte of the next request and cost a full re-prefill of
+the context — ≈2 ct at 121k tokens against under 1 ct for the same round
+warm. Since 2026-10-25 all per-call blocks ride one trailing
+``<system-reminder>`` message (ADR 024 amendment, 2026-10-25), so a write
+costs the tail. The survival property this ADR relies on is unchanged:
+the list is rebuilt from live session state on every request, so
+compaction still cannot eat it.

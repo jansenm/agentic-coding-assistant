@@ -397,6 +397,22 @@ block to a trailing message after the history (provider-dependent; some
 reject a second system message, so this needs a capability check, not a
 guess).
 
+**Result (2026-10-25).** The band shipped (`8f3951c`, 98.4 % cached on
+rounds 2-3) and the fallback became the shape for *all four* blocks, not
+only the budget one — via a trailing `<system-reminder>` **user** message,
+so no provider has to accept a second system message. Reason: the band
+fixed the block that moved every round, but the **todo block** changes
+whenever the model writes its list, which is by definition a change. On
+the live session (121,345 tokens, a full cold pre-prefill = $0.018) two
+`todowrite` calls in one day were exactly the two ~2 ct requests in the
+provider's usage list, while warm rounds stayed under 1 ct. The same
+mechanism covers the date row (midnight) and a band flip. The system
+message is now session-constant; the tail is re-sent every round anyway,
+so a change there costs the tail. opencode reached the same rule from the
+other side (`session/instruction-state.ts`: freeze the baseline, render
+changes as messages; `plugin/plan.ts`: "appending near the tail so the
+cached prefix stays warm").
+
 **Target:** cache hit ratio > 80 % after round 1; per-round latency flat.
 **Must not regress:** ADR 040's behavior — the model should still act
 before the hard line. Measure compaction-forced-mid-turn count.
