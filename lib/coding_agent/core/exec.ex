@@ -101,8 +101,9 @@ defmodule CodingAgent.Core.Exec do
       path, and parsing it produced a phantom match (review F2/F5).
     * `:label` — the spill label (ADR 038) used when truncation happens:
       the overflow is written to the session scratch (the profile's
-      `:scratch`, ADR 022) and the head+tail marker names the path so the
-      model can read the rest. Defaults to `"exec"`. With no scratch the
+      `:scratch`, ADR 022) and the head+tail marker names the path the
+      SANDBOX sees for it (`Sandbox.visible_path/2`), so the model can
+      read the rest. Defaults to `"exec"`. With no scratch the
       plain head+tail truncation stands. `nil` suppresses the spill
       entirely (a reader that only needs "is it too big?", not the text).
     * `:max_output` — the hard byte ceiling for the `truncate: false`
@@ -119,7 +120,6 @@ defmodule CodingAgent.Core.Exec do
     truncate? = Keyword.get(opts, :truncate, true)
     label = Keyword.get(opts, :label, "exec")
     max_output = Keyword.get(opts, :max_output, @max_raw_bytes)
-    scratch = Map.get(profile, :scratch)
     session_id = Map.get(profile, :session_id)
 
     spec =
@@ -135,7 +135,7 @@ defmodule CodingAgent.Core.Exec do
         deliver_stdin(port, stdin)
 
         deadline = System.monotonic_time(:millisecond) + secs * 1000
-        cut = %{truncate?: truncate?, label: label, scratch: scratch, max_raw: max_output}
+        cut = %{truncate?: truncate?, label: label, profile: profile, max_raw: max_output}
 
         collect(port, deadline, new_acc(cut), cut, session_id)
 
@@ -234,7 +234,7 @@ defmodule CodingAgent.Core.Exec do
   # Two accumulator shapes. `:raw` keeps everything (bounded by
   # `@max_raw_bytes`). `:buffer` holds up to `@max_bytes`; crossing that
   # freezes `:head` and `:tail` and flips to streaming into `:spill`.
-  # `cut` (label + scratch) rides along so the lazy spill can open.
+  # `cut` (label + profile) rides along so the lazy spill can open.
   defp new_acc(cut) do
     if cut.truncate? do
       %{mode: :buffer, buf: [], total: 0, head: nil, tail: <<>>, spill: :unopened, cut: cut}
@@ -259,7 +259,7 @@ defmodule CodingAgent.Core.Exec do
       all = IO.iodata_to_binary([buf | data])
       head = binary_part(all, 0, @head_bytes)
       tail = binary_part(all, byte_size(all) - @tail_bytes, @tail_bytes)
-      spill = cut.scratch |> open_spill(cut.label) |> spill_write(all)
+      spill = open_spill(cut.profile, cut.label) |> spill_write(all)
 
       {:ok, %{acc | mode: :stream, buf: nil, total: total, head: head, tail: tail, spill: spill}}
     end
@@ -290,10 +290,10 @@ defmodule CodingAgent.Core.Exec do
 
   # the spill opens lazily on first overflow; no scratch or no label
   # (a reader that only wants the cap check) => :none
-  defp open_spill(_scratch, label) when not is_binary(label), do: :none
+  defp open_spill(_profile, label) when not is_binary(label), do: :none
 
-  defp open_spill(scratch, label) do
-    case Spill.open_writer(scratch, label) do
+  defp open_spill(profile, label) do
+    case Spill.open_writer(profile, label) do
       {:ok, w} -> w
       _ -> :none
     end

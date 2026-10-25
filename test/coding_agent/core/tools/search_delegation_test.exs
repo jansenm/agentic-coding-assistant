@@ -499,11 +499,13 @@ defmodule CodingAgent.Core.Tools.SearchDelegationTest do
         ReqLLM.Tool.execute(grep(scope), %{"pattern" => "needle", "glob" => "many.txt"})
 
       assert out =~ "capped at 200"
-      assert out =~ "full list at /tmp/spill/grep-"
 
-      host = Path.wildcard(Path.join(scratch, "spill/grep-*")) |> List.first()
-      assert host != nil
-      assert File.read!(host) =~ "needle line 250"
+      # The announced path must be the file that exists (N99): the test
+      # sandbox is a pass-through, so that is the host path — a literal
+      # "/tmp/spill/…" would pin a prefix this module no longer invents.
+      assert [path] = Regex.run(~r/full list at ([^;\s]+)/, out, capture: :all_but_first)
+      assert String.starts_with?(path, Path.expand(scratch))
+      assert File.read!(path) =~ "needle line 250"
     end
   end
 
