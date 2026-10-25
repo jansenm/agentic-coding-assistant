@@ -438,3 +438,75 @@ Open question (new)
    has one, since a currency key computed from a guessed price would be
    worse than the token ceiling it replaces.
 
+
+Amendment 2026-10-24: the cost arithmetic above was measured on a broken cache
+------------------------------------------------------------------------------
+
+**Status: Accepted (correction to the 2026-10-22 amendment); the fix ships
+with `8f3951c`, `b80d23b`, `194c2d1`, `dbe6653`, `7532c64`.**
+
+The 2026-10-22 amendment above priced a call at 150k, 180k and 270k tokens
+and concluded that cost is superlinear enough to make the ceiling a NUMBER.
+The prices were real, the conclusion was not: **every one of those calls
+was billed as fully uncached**, because the request's first message changed
+on every round. The budget block sat in the system message — ahead of every
+other byte — and carried the projected size, the window percentage, the
+distance to each line and the tool-round counter, all of which move per
+round. Measured on this harness's own call path, 9 049-token prompt, one
+variable:
+
+- stable system message (warm): **8 960 of 9 049 tokens cached** — 99 %
+- the same request plus `Tool rounds this turn: 2 / 100`: **0 of 9 059** — 0 %
+- the stable message again: 8 960 of 9 049 — 99 %
+
+So the owner's original question ("why is a 250k context so expensive?") was
+answered by the cache, not by the provider's price policy. At the rates
+`ollama.com` publishes for `deepseek-v4.1-flash` ($0.30 in / $0.006 cached in
+/ $1.20 out per Mtok, peak; half that off-peak), the same 250k request is
+
+    250k uncached   0.25 × $0.30    = $0.075   = 7,5 ct   input only, peak
+    250k cached     0.25 × $0.006   = $0.0015  = 0,15 ct
+    360k cached     0.36 × $0.006   = $0.00216 = 0,2 ct    (owner: "under a cent")
+
+The owner measured ~7 ct per call at ~270k tokens, at peak, output included
+— 0.27 × $0.30 = 8,1 ct of input alone, so the measurement is consistent
+with *nothing* being cached and inconsistent with a price that grows faster
+than the context.
+
+The measured 7 ct was therefore *correct for the broken prefix*, and it was
+never the price of a long context. `8f3951c` removes the moving lines from
+the block (bands instead of numbers, ADR 040's amendment), `dbe6653` puts
+`:cached_tokens` into `%Usage{}` and the hit ratio into the sidebar so this
+cannot go unnoticed again, and `7532c64` shows what the provider actually
+billed instead of a table's guess.
+
+What this changes here:
+
+- **The keys stay, their calibration does not.** A ceiling is still a
+  number the user sets, and cached input still costs 50× less than fresh
+  input rather than nothing: a context that outgrows the window is
+  truncated, and a context that is re-prefilled because a band flipped in
+  the first message costs a full miss. Both are real at any size.
+- **The 1/5/7-cent figures above are per call, uncached.** They are not a
+  reason to hold a session at 150k. The defaults (soft 524288 / hard
+  984576 on a 1M window) are not implicated either — they were chosen from
+  a ratio, not from those prices.
+- **`compaction_soft_tokens = 150000` / `compaction_hard_tokens = 250000`
+  in the owner's `config.toml` were set from the wrong measurement** and
+  are the owner's to revisit; the harness should not silently re-tune a
+  user's cost policy.
+
+And the second half of the same report: the low limits plus the summarize
+cap forced repeated compactions. The cap was 300 000 characters while the
+soft line (150k tokens) produces a 300-375k-character span at this repo's
+measured ~2.5 chars/token, so **seven of nine compactions in one day's log
+reported `300090 chars rendered`** — the cap, not the span. The summarizer
+wrote its summary from a view with the middle elided, the model re-explored
+what it had lost, and the context grew back into the soft line: a loop with
+a lossy read at every turn of it. `b80d23b` derives the budget
+(`min(span_fraction × summarizer_window, inactivity_ms/1000 ×
+prefill_tokens_per_sec)`, with `chars_per_token` measured per session and
+clamped to 2.0..4.0), and `194c2d1` summarizes an over-budget span in
+slices, folding each answer into the next, so a budget that is too small
+costs calls instead of memories. The only remaining truncation is a single
+message larger than the whole budget.
