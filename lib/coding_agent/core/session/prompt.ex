@@ -10,8 +10,9 @@ defmodule CodingAgent.Core.Session.Prompt do
     3. the agent definition's prompt (ADR 017), when one is selected.
 
   Layers 1-3 form the STABLE, persisted prefix (`base_prompt` +
-  agent body), stored in the first context message. Two things are NOT
-  part of it, both per-call (ADR 024):
+  agent body), stored in the first context message. Everything that can
+  change DURING a session is not part of it: it rides ONE trailing
+  `<system-reminder>` message, rebuilt per call (ADR 024):
 
     * the **environment block** (`environment/2`) — the model id, the
       working directory, the platform, the date. Baking that into the
@@ -33,6 +34,15 @@ defmodule CodingAgent.Core.Session.Prompt do
     * the model selection that chose layer 1. A model switch recomposes
       the prefix (see `Session`), so the framework prompt follows the
       model the next turn will actually use.
+
+  The POSITION is the point. A provider caches on the exact request
+  prefix, so a byte that changes at the FRONT throws away the cache for
+  every byte behind it. These blocks used to be appended to the system
+  message — the first byte of the request — so every round whose block
+  changed paid a full re-prefill: a 121k context costs ≈2 ¢ cold, and a
+  `todowrite` changed the todo block, which made a 2 ¢ round out of a
+  round whose new content was a few hundred tokens. At the tail the same
+  change costs only the tail, which is re-sent on every round anyway.
 
   This module is pure string work — it reads prompt files and composes
   strings; it touches no session state and no clock beyond the date.
@@ -188,40 +198,41 @@ defmodule CodingAgent.Core.Session.Prompt do
   end
 
   @doc """
-  Appends the environment block to the system message of `context`,
-  returning a context for ONE call. The stored context is untouched: the
-  block is rebuilt per call so its date and model are current (ADR 024).
+  Rides the trailing state message with the environment block (see the
+  moduledoc). The stored context is untouched: the block is rebuilt per
+  call so its date and model are current (ADR 024).
   """
   @spec with_environment(ReqLLM.Context.t(), String.t() | nil, String.t() | nil, keyword()) ::
           ReqLLM.Context.t()
   def with_environment(context, model, scope_root, opts \\ []) do
-    append_system_block(context, environment(model, scope_root, opts))
+    append_state_block(context, environment(model, scope_root, opts))
   end
 
   @doc """
-  Appends the model's current todo list to the system message of
-  `context`, returning a context for ONE call (ADR 031). An empty list
-  adds nothing, so a session that never plans sends an unchanged
-  request.
+  Rides the trailing state message with the model's current todo list
+  (ADR 031). An empty list adds nothing, so a session that never plans
+  sends an unchanged request.
 
   This is the channel that survives compaction: the list is not an old
   message that can be summarized away, it is rebuilt from live session
   state on every request — the same reason the environment block is
-  per-call (ADR 024).
+  per-call (ADR 024). Riding the TAIL also matters here: the list is what
+  the model itself rewrites, so a `todowrite` changes it mid-turn; at the
+  tail that costs the tail, in the system message it cost the context.
   """
   @spec with_todos(ReqLLM.Context.t(), [map()]) :: ReqLLM.Context.t()
   def with_todos(context, todos) do
     case todos_block(todos) do
       nil -> context
-      block -> append_system_block(context, block)
+      block -> append_state_block(context, block)
     end
   end
 
   @doc """
-  Appends the context-budget block to the system message of `context`,
-  returning a context for ONE call. The same per-call channel as the
-  environment and todo blocks: rebuilt from live session state every
-  request, so it is always current and compaction cannot eat it.
+  Rides the trailing state message with the context-budget block — the
+  same per-call channel as the environment and todo blocks: rebuilt from
+  live session state every request, so it is always current and
+  compaction cannot eat it.
 
   The block speaks in BANDS, never in numbers. The soft/hard passes fire
   on the same numbers as before, and the block tells the model which line
@@ -230,11 +241,13 @@ defmodule CodingAgent.Core.Session.Prompt do
 
   It used to carry the exact counts — projected size, window percentage,
   distance to each line, the round counter — and those moved on every
-  round of a turn. Because the block sits in the system message, ahead of
-  every other byte of the request, a provider caching on the exact prefix
-  could never hit: measured at 8 960 of 9 049 tokens cached with a stable
-  first message and 0 with one line changed. The numbers still exist, in
-  the sidebar, for the human (ADR 029); the model acts on the band.
+  round of a turn. A provider caching on the exact prefix could never
+  hit: measured at 8 960 of 9 049 tokens cached with a stable first
+  message and 0 with one line changed. That was true because the block
+  sat in the system message, AHEAD of every other byte; the band fixed
+  the numbers, and the tail (see the moduledoc) means even a band flip
+  changes only the tail. The numbers still exist, in the sidebar, for
+  the human (ADR 029); the model acts on the band.
 
   It is not purely "visibility" any more: since the `compact` tool exists
   (ADR 040 OQ1, answered 2026-09-30) the block also names that lever, so
@@ -250,17 +263,16 @@ defmodule CodingAgent.Core.Session.Prompt do
   def with_budget(context, %ContextBudget{window: window} = budget) when window > 0 do
     case budget_block(budget) do
       "" -> context
-      block -> append_system_block(context, block)
+      block -> append_state_block(context, block)
     end
   end
 
   def with_budget(context, _), do: context
 
   @doc """
-  Appends the capability block to the system message of `context`,
-  returning a context for ONE call — the same per-call channel as the
-  environment and budget blocks (ADR 024), rebuilt from live policy
-  state so it is always current.
+  Rides the trailing state message with the capability block — the same
+  per-call channel as the environment and budget blocks (ADR 024),
+  rebuilt from live policy state so it is always current.
 
   It states what this session CANNOT do, ahead of any attempt:
 
@@ -297,7 +309,7 @@ defmodule CodingAgent.Core.Session.Prompt do
   def with_capabilities(context, %{missing: missing, shell_mode: shell_mode} = info) do
     case capabilities_block(missing, shell_mode, Map.get(info, :gate)) do
       nil -> context
-      block -> append_system_block(context, block)
+      block -> append_state_block(context, block)
     end
   end
 
@@ -495,29 +507,42 @@ defmodule CodingAgent.Core.Session.Prompt do
     end
   end
 
-  # Appends `block` to the system message (the first message) of
-  # `context`, one blank line between. The stored context is untouched.
-  defp append_system_block(context, block) do
-    case ReqLLM.Context.to_list(context) do
-      [%ReqLLM.Message{role: :system} = sys | rest] ->
-        ReqLLM.Context.new([append_text(sys, block) | rest])
+  # The per-call state channel: ONE trailing user message wrapping every
+  # block, so a block that changes moves only the tail of the request and
+  # the cached prefix is untouched (see the moduledoc). Blocks are merged
+  # in call order into the same message; only we produce this lead, so a
+  # human message can never be mistaken for it.
+  @state_open "<system-reminder>"
+  @state_close "</system-reminder>"
+  @state_lead @state_open <>
+                "\nSession state, updated automatically on every request. " <>
+                "It is not a message from the human; do not reply to it."
+
+  defp append_state_block(context, block) do
+    case List.last(ReqLLM.Context.to_list(context)) do
+      %ReqLLM.Message{role: :user, content: [%ReqLLM.Message.ContentPart{text: text} = part]}
+      when is_binary(text) ->
+        if String.starts_with?(text, @state_lead) do
+          body = String.replace_suffix(text, "\n" <> @state_close, "")
+          replace_last(context, %{part | text: body <> "\n\n" <> block <> "\n" <> @state_close})
+        else
+          push_state(context, block)
+        end
 
       _ ->
-        context
+        push_state(context, block)
     end
   end
 
-  defp append_text(%ReqLLM.Message{content: parts} = msg, block) when is_list(parts) do
-    %{msg | content: parts ++ [ReqLLM.Message.ContentPart.text("\n\n" <> block)]}
+  defp push_state(context, block) do
+    text = @state_lead <> "\n\n" <> block <> "\n" <> @state_close
+    ReqLLM.Context.append(context, ReqLLM.Context.user(text))
   end
 
-  defp append_text(msg, block), do: msg |> ensure_parts() |> append_text(block)
-
-  defp ensure_parts(%ReqLLM.Message{content: text} = msg) when is_binary(text) do
-    %{msg | content: [ReqLLM.Message.ContentPart.text(text)]}
+  defp replace_last(context, part) do
+    {init, [last]} = context |> ReqLLM.Context.to_list() |> Enum.split(-1)
+    ReqLLM.Context.new(init ++ [%{last | content: [part]}])
   end
-
-  defp ensure_parts(msg), do: msg
 
   # -- Prompt files -----------------------------------------------------------
 

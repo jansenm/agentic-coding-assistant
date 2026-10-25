@@ -23,7 +23,39 @@ defmodule CodingAgent.Core.Session.PromptTest do
     Enum.map_join(sys.content, "", &(&1.text || ""))
   end
 
+  # The trailing state message of a per-call context: the LAST message,
+  # where the per-call blocks ride (a change there costs the tail, not the
+  # cached prefix).
+  defp state_text(context) do
+    %ReqLLM.Message{role: :user} = last = List.last(ReqLLM.Context.to_list(context))
+    Enum.map_join(last.content, "", &(&1.text || ""))
+  end
+
   defp base, do: ReqLLM.Context.new() |> ReqLLM.Context.append(ReqLLM.Context.system("BASE"))
+
+  # The block is built from a %ContextBudget{} (ADR 040): every field is
+  # required, so a producer that forgets one fails to compile instead of
+  # silently dropping a clause. These tests therefore state the whole
+  # value, and `budget/1` keeps the defaults of one realistic session
+  # (500k window, 50% soft ratio, 64k reserve) in ONE place — module level,
+  # because the tail-channel tests use it too.
+  defp budget(overrides) do
+    struct!(
+      ContextBudget,
+      Keyword.merge(
+        [
+          used: 100_000,
+          window: 500_000,
+          soft: 250_000,
+          hard: 436_000,
+          warn_at: 200_000,
+          rounds: 1,
+          max_rounds: 200
+        ],
+        overrides
+      )
+    )
+  end
 
   test "base/2 is framework + project memory, in that order", %{root: root} do
     File.write!(Path.join(root, "AGENTS.md"), "PROJECT-RULE")
@@ -220,7 +252,7 @@ defmodule CodingAgent.Core.Session.PromptTest do
   end
 
   describe "with_environment/3" do
-    test "appends the block to the system message, leaving the stored context alone" do
+    test "rides the trailing state message, leaving the stored context alone" do
       context =
         ReqLLM.Context.new()
         |> ReqLLM.Context.append(ReqLLM.Context.system("BASE"))
@@ -228,20 +260,84 @@ defmodule CodingAgent.Core.Session.PromptTest do
 
       on_wire = Prompt.with_environment(context, "ollama:test", "/tmp")
 
-      [%ReqLLM.Message{role: :system} = sys | _] = ReqLLM.Context.to_list(on_wire)
-      text = Enum.map_join(sys.content, "", &(&1.text || ""))
-      assert text =~ "BASE"
-      assert text =~ "<env>"
+      # the system message — the cached prefix — is untouched
+      assert system_text(on_wire) == "BASE"
+      assert state_text(on_wire) =~ "<system-reminder>"
+      assert state_text(on_wire) =~ "<env>"
 
       # the STORED context must not have gained the volatile block
-      [%ReqLLM.Message{content: stored} | _] = ReqLLM.Context.to_list(context)
+      [_sys, %ReqLLM.Message{content: stored}] = ReqLLM.Context.to_list(context)
       refute Enum.map_join(stored, "", &(&1.text || "")) =~ "<env>"
       assert length(ReqLLM.Context.to_list(context)) == 2
     end
 
-    test "is a no-op on a context with no system message" do
+    test "a context without a system message still gets the state block" do
       context = ReqLLM.Context.new() |> ReqLLM.Context.append(ReqLLM.Context.user("hi"))
-      assert Prompt.with_environment(context, "m", "/tmp") == context
+      assert Prompt.with_environment(context, "m", "/tmp") |> state_text() =~ "<env>"
+    end
+  end
+
+  describe "the per-call state channel" do
+    test "every block rides ONE trailing user message" do
+      on_wire =
+        base()
+        |> Prompt.with_environment("m", "/tmp")
+        |> Prompt.with_todos([%{"content" => "step one", "status" => "pending"}])
+        |> Prompt.with_budget(budget(used: 100_000))
+        |> Prompt.with_capabilities(%{missing: ["edit"], shell_mode: :rw})
+
+      assert on_wire |> ReqLLM.Context.to_list() |> Enum.map(& &1.role) == [:system, :user]
+
+      text = state_text(on_wire)
+      assert text =~ "<env>"
+      assert text =~ "step one"
+      assert text =~ "Context budget"
+      assert text =~ "Session capabilities"
+      assert text =~ ~r/\A<system-reminder>\nSession state, updated automatically/
+      assert String.ends_with?(text, "</system-reminder>")
+      assert length(String.split(text, "<system-reminder>")) == 2
+    end
+
+    test "the system message does not change when the state does" do
+      context = base() |> ReqLLM.Context.append(ReqLLM.Context.user("hi"))
+
+      calm = Prompt.with_budget(context, budget(used: 100_000))
+      near = Prompt.with_budget(context, budget(used: 300_000))
+      todos = Prompt.with_todos(context, [%{"content" => "a", "status" => "done"}])
+
+      assert system_text(calm) == "BASE"
+      assert system_text(near) == "BASE"
+      assert system_text(todos) == "BASE"
+    end
+
+    test "a todo write moves the tail and nothing before it" do
+      context = base() |> ReqLLM.Context.append(ReqLLM.Context.user("hi"))
+
+      pending = Prompt.with_todos(context, [%{"content" => "a", "status" => "pending"}])
+      done = Prompt.with_todos(context, [%{"content" => "a", "status" => "done"}])
+
+      # the provider's cache matches the longest common prefix: everything
+      # up to the state message must be byte-identical
+      assert Enum.drop(ReqLLM.Context.to_list(pending), -1) ==
+               Enum.drop(ReqLLM.Context.to_list(done), -1)
+
+      refute state_text(pending) == state_text(done)
+    end
+
+    test "a human message is never mistaken for the state message" do
+      context =
+        base()
+        |> ReqLLM.Context.append(ReqLLM.Context.user("<system-reminder>\nplease look"))
+
+      on_wire = Prompt.with_budget(context, budget(used: 100_000))
+
+      assert length(ReqLLM.Context.to_list(on_wire)) == 3
+      assert state_text(on_wire) =~ "Context budget"
+    end
+
+    test "nothing to say sends the context unchanged" do
+      assert Prompt.with_todos(base(), []) == base()
+      assert Prompt.with_capabilities(base(), %{missing: [], shell_mode: :rw}) == base()
     end
   end
 
@@ -302,7 +398,7 @@ defmodule CodingAgent.Core.Session.PromptTest do
           missing: ["edit", "write_file", "git"],
           shell_mode: :rw
         })
-        |> system_text()
+        |> state_text()
 
       assert text =~ "Session capabilities:"
       assert text =~ "edit, write_file, git"
@@ -313,7 +409,7 @@ defmodule CodingAgent.Core.Session.PromptTest do
     test "a read-only shell is stated even when every tool is present" do
       text =
         Prompt.with_capabilities(base(), %{missing: [], shell_mode: :ro})
-        |> system_text()
+        |> state_text()
 
       assert text =~ "READ-ONLY"
       assert text =~ "read-only filesystem"
@@ -323,7 +419,7 @@ defmodule CodingAgent.Core.Session.PromptTest do
     test "both clauses combine into one block" do
       text =
         Prompt.with_capabilities(base(), %{missing: ["edit"], shell_mode: :ro})
-        |> system_text()
+        |> state_text()
 
       assert text =~ "edit"
       assert text =~ "READ-ONLY"
@@ -338,7 +434,7 @@ defmodule CodingAgent.Core.Session.PromptTest do
           shell_mode: :rw,
           gate: %{"git" => :ask, "shell" => :allow}
         })
-        |> system_text()
+        |> state_text()
 
       assert text =~ "Session capabilities:"
       assert text =~ "git require the human's approval"
@@ -357,7 +453,7 @@ defmodule CodingAgent.Core.Session.PromptTest do
           shell_mode: :ro,
           gate: %{"webfetch" => :ask}
         })
-        |> system_text()
+        |> state_text()
 
       assert text =~ "edit, write_file"
       assert text =~ "READ-ONLY"
@@ -372,39 +468,17 @@ defmodule CodingAgent.Core.Session.PromptTest do
              }) == base()
     end
 
-    test "is a no-op on a context with no system message" do
+    test "states the deficit on a context with no system message too" do
       context = ReqLLM.Context.new() |> ReqLLM.Context.append(ReqLLM.Context.user("hi"))
 
-      assert Prompt.with_capabilities(context, %{missing: ["edit"], shell_mode: :ro}) == context
+      assert Prompt.with_capabilities(context, %{missing: ["edit"], shell_mode: :ro})
+             |> state_text() =~ "READ-ONLY"
     end
   end
 
   describe "with_budget/2" do
-    # The block is built from a %ContextBudget{} (ADR 040): every field is
-    # required, so a producer that forgets one fails to compile instead of
-    # silently dropping a clause. These tests therefore state the whole
-    # value, and `budget/1` keeps the defaults of one realistic session
-    # (500k window, 50% soft ratio, 64k reserve) in ONE place.
-    defp budget(overrides) do
-      struct!(
-        ContextBudget,
-        Keyword.merge(
-          [
-            used: 100_000,
-            window: 500_000,
-            soft: 250_000,
-            hard: 436_000,
-            warn_at: 200_000,
-            rounds: 1,
-            max_rounds: 200
-          ],
-          overrides
-        )
-      )
-    end
-
     test "states the band, and no number at all" do
-      text = Prompt.with_budget(base(), budget(used: 350_000)) |> system_text()
+      text = Prompt.with_budget(base(), budget(used: 350_000)) |> state_text()
 
       # 350k of 436k hard: past the soft line, before the hard one
       assert text =~ "past the auto-summary line"
@@ -415,14 +489,14 @@ defmodule CodingAgent.Core.Session.PromptTest do
     end
 
     test "hints past the soft line, and says notes survive summarization" do
-      text = Prompt.with_budget(base(), budget(used: 300_000)) |> system_text()
+      text = Prompt.with_budget(base(), budget(used: 300_000)) |> state_text()
 
       assert text =~ "past the auto-summary line"
       assert text =~ "notes"
     end
 
     test "is calm (no hint) when there is room" do
-      text = Prompt.with_budget(base(), budget(used: 100_000)) |> system_text()
+      text = Prompt.with_budget(base(), budget(used: 100_000)) |> state_text()
 
       assert text =~ "there is room"
       refute text =~ "past the auto-summary line"
@@ -430,7 +504,7 @@ defmodule CodingAgent.Core.Session.PromptTest do
     end
 
     test "at the hard limit it says summarization is imminent" do
-      text = Prompt.with_budget(base(), budget(used: 440_000)) |> system_text()
+      text = Prompt.with_budget(base(), budget(used: 440_000)) |> state_text()
 
       assert text =~ "hard limit"
     end
@@ -442,33 +516,33 @@ defmodule CodingAgent.Core.Session.PromptTest do
 
     test "names the compact tool as a lever, calm and past the lines (ADR 040 OQ1)" do
       for used <- [100_000, 300_000, 440_000] do
-        assert Prompt.with_budget(base(), budget(used: used)) |> system_text() =~ "`compact`"
+        assert Prompt.with_budget(base(), budget(used: used)) |> state_text() =~ "`compact`"
       end
 
       # the calm line names the TOOL, so the verb exists before the wall
-      calm = Prompt.with_budget(base(), budget(used: 100_000)) |> system_text()
+      calm = Prompt.with_budget(base(), budget(used: 100_000)) |> state_text()
       assert calm =~ "`compact` tool"
     end
 
     test "the tool-round budget is stated as a band, not as a counter" do
       # 54 of 200 is quiet …
-      text = Prompt.with_budget(base(), budget(rounds: 54, max_rounds: 200)) |> system_text()
+      text = Prompt.with_budget(base(), budget(rounds: 54, max_rounds: 200)) |> state_text()
       refute text =~ "tool-round budget"
 
       # … 170 of 200 is not
-      text = Prompt.with_budget(base(), budget(rounds: 170, max_rounds: 200)) |> system_text()
+      text = Prompt.with_budget(base(), budget(rounds: 170, max_rounds: 200)) |> state_text()
       assert text =~ "most of its tool-round budget"
 
       # … and the last round says the harness acts
-      text = Prompt.with_budget(base(), budget(rounds: 200, max_rounds: 200)) |> system_text()
+      text = Prompt.with_budget(base(), budget(rounds: 200, max_rounds: 200)) |> state_text()
       assert text =~ "reached its tool-round budget"
     end
 
     test "no number reaches the prompt: the block is byte-stable across rounds" do
       # the whole point of the band (measured: 8 960/9 049 cached tokens
       # became 0 when one line of the first message changed)
-      calm = Prompt.with_budget(base(), budget(used: 100_000, rounds: 3)) |> system_text()
-      later = Prompt.with_budget(base(), budget(used: 149_000, rounds: 40)) |> system_text()
+      calm = Prompt.with_budget(base(), budget(used: 100_000, rounds: 3)) |> state_text()
+      later = Prompt.with_budget(base(), budget(used: 149_000, rounds: 40)) |> state_text()
 
       assert calm == later
       refute calm =~ ~r/\d+k|\d+\.\d+M|\d+%/
@@ -481,14 +555,14 @@ defmodule CodingAgent.Core.Session.PromptTest do
           base(),
           budget(used: 120_000, window: 1_048_576, soft: 140_000, hard: 150_000, warn_at: 112_000)
         )
-        |> system_text()
+        |> state_text()
 
       assert in_band =~ "approaching the soft line"
       refute in_band =~ "past the auto-summary line"
     end
 
     test "advises in the band between the approaching threshold and the soft line" do
-      text = Prompt.with_budget(base(), budget(used: 210_000, warn_at: 200_000)) |> system_text()
+      text = Prompt.with_budget(base(), budget(used: 210_000, warn_at: 200_000)) |> state_text()
 
       assert text =~ "approaching the soft line"
       assert text =~ "end your turn at a step boundary"
@@ -498,7 +572,7 @@ defmodule CodingAgent.Core.Session.PromptTest do
     end
 
     test "stays calm below the approaching threshold" do
-      text = Prompt.with_budget(base(), budget(used: 100_000, warn_at: 200_000)) |> system_text()
+      text = Prompt.with_budget(base(), budget(used: 100_000, warn_at: 200_000)) |> state_text()
 
       assert text =~ "there is room"
       refute text =~ "approaching the soft line"

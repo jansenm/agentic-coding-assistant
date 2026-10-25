@@ -120,7 +120,7 @@ defmodule CodingAgent.Core.Session.TodoWriteTest do
       assert context_text(state) =~ "todo `status` must be one of"
     end
 
-    test "the current list reaches the next request as a system block" do
+    test "the current list reaches the next request on the tail, not in the prefix" do
       id = "todo-wire-#{System.unique_integer()}"
       start(id)
 
@@ -132,8 +132,13 @@ defmodule CodingAgent.Core.Session.TodoWriteTest do
       {:ok, state} = Session.state(id)
       {:ok, _model, _opts, context} = Session.wire_request(state)
 
-      assert message_text(hd(ReqLLM.Context.to_list(context))) =~
-               "- [in_progress] Ship it"
+      messages = ReqLLM.Context.to_list(context)
+
+      # the cached prefix keeps its bytes: a todowrite must not re-prefill
+      # the context (measured: 121k ≈ 2 ¢ per write when the list was in
+      # the system message)
+      refute message_text(hd(messages)) =~ "Ship it"
+      assert message_text(List.last(messages)) =~ "- [in_progress] Ship it"
     end
 
     test "a todowrite sibling does not park a round with a gated call" do

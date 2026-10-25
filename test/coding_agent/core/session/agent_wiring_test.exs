@@ -265,15 +265,17 @@ defmodule CodingAgent.Core.Session.AgentWiringTest do
   end
 
   describe "wire_request/1 (ADR 024 assembly)" do
-    test "appends the environment block on the wire, not in the stored context" do
+    test "puts the environment block on the wire, not in the stored context" do
       start("wire-env", model: "ollama:qwen3")
       {:ok, s} = Session.state("wire-env")
 
       {:ok, _model_input, _opts, wire_context} = Session.wire_request(s)
 
-      wire_system = wire_context |> ReqLLM.Context.to_list() |> hd()
-      assert system_text(wire_system) =~ "<env>"
-      assert system_text(wire_system) =~ "Model: ollama:qwen3"
+      # the cached prefix (the system message) stays byte-stable …
+      refute wire_context |> ReqLLM.Context.to_list() |> hd() |> system_text() =~ "<env>"
+      # … the block rides the tail
+      assert state_text_of(wire_context) =~ "<env>"
+      assert state_text_of(wire_context) =~ "Model: ollama:qwen3"
 
       # the session's stored context is untouched
       refute system_text_of(s) =~ "<env>"
@@ -284,7 +286,7 @@ defmodule CodingAgent.Core.Session.AgentWiringTest do
       {:ok, s} = Session.state("wire-env-agent")
 
       {:ok, _input, _opts, ctx} = Session.wire_request(s)
-      text = ctx |> ReqLLM.Context.to_list() |> hd() |> system_text()
+      text = state_text_of(ctx)
 
       # the agent row is the session's own definition, not a re-derivation
       assert text =~ "Agent: build"
@@ -298,7 +300,7 @@ defmodule CodingAgent.Core.Session.AgentWiringTest do
       {:ok, s} = Session.state("wire-env-plan")
 
       {:ok, _input, _opts, ctx} = Session.wire_request(s)
-      text = ctx |> ReqLLM.Context.to_list() |> hd() |> system_text()
+      text = state_text_of(ctx)
 
       assert s.agent.name == "plan"
       assert text =~ "Agent: plan"
@@ -366,8 +368,7 @@ defmodule CodingAgent.Core.Session.AgentWiringTest do
       {:ok, s} = Session.state("wire-cap-plan")
       {:ok, _input, _opts, wire_context} = Session.wire_request(s)
 
-      wire_system = wire_context |> ReqLLM.Context.to_list() |> hd()
-      text = system_text(wire_system)
+      text = state_text_of(wire_context)
 
       assert text =~ "Session capabilities:"
       # plan.md's disallowedTools, named ahead of any attempt (the order
@@ -390,7 +391,7 @@ defmodule CodingAgent.Core.Session.AgentWiringTest do
       assert Session.gate_decisions(s)["webfetch"] == :ask
 
       {:ok, _input, _opts, wire_context} = Session.wire_request(s)
-      text = wire_context |> ReqLLM.Context.to_list() |> hd() |> system_text()
+      text = state_text_of(wire_context)
 
       assert text =~ "Session capabilities:"
       assert text =~ "webfetch"
@@ -417,7 +418,7 @@ defmodule CodingAgent.Core.Session.AgentWiringTest do
       assert Session.gate_decisions(s)["git"] == :ask
 
       {:ok, _input, _opts, wire_context} = Session.wire_request(s)
-      text = wire_context |> ReqLLM.Context.to_list() |> hd() |> system_text()
+      text = state_text_of(wire_context)
 
       assert text =~ "git"
       assert text =~ "require the human's approval"
@@ -428,6 +429,15 @@ defmodule CodingAgent.Core.Session.AgentWiringTest do
     state.context
     |> ReqLLM.Context.to_list()
     |> Enum.find(&(&1.role == :system))
+    |> system_text()
+  end
+
+  # The trailing state message of a wire context: the per-call blocks ride
+  # there, after everything that is cached (ADR 024).
+  defp state_text_of(context) do
+    context
+    |> ReqLLM.Context.to_list()
+    |> List.last()
     |> system_text()
   end
 
