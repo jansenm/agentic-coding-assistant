@@ -46,6 +46,39 @@ defmodule CodingAgent.Core.Session.UsageTest do
     assert abs(u2.cost - 0.03) < 1.0e-9
   end
 
+  test "add/2 carries the ACCOUNT fields, so a response does not drop them" do
+    # The credits row vanished after every provider response: `add/2` built
+    # a fresh struct and reset `balance`, `cost_basis` and `marker`. The
+    # marker loss also made `sample_due?/3` true again, so the 30 s billing
+    # gate never held and every round paid two HTTP reads.
+    balance = %{remaining: 6.06, allowance: 60.0, purchased: 0.0, from: nil, until: nil}
+
+    u =
+      %{Usage.new() | balance: balance, cost_basis: :billed, marker: %{usd: 5.0, at: 1_000}}
+
+    u2 = Usage.add(u, %{input_tokens: 10, output_tokens: 1, total_cost: 0.01})
+
+    assert u2.balance == balance
+    assert u2.marker == %{usd: 5.0, at: 1_000}
+    assert u2.cost_basis == :billed
+    # 500 ms after the sample: still inside the 30 s window
+    refute Usage.sample_due?(u2, 30_000, 1_500)
+  end
+
+  test "add/2 marks a priced turn, and a later billed delta keeps that claim" do
+    u = Usage.add(Usage.new(), %{input_tokens: 1, total_cost: 0.02})
+    assert u.cost_basis == :priced
+
+    # once the provider's own account delta is inside `cost`, that is the
+    # stronger claim and a priced turn must not overwrite it
+    based = %{Usage.new() | marker: %{usd: 1.0, at: 1_000}}
+    billed = Usage.apply_snapshot(based, %{usd: 1.1, at: 2_000})
+    assert billed.cost_basis == :billed
+
+    added = Usage.add(billed, %{input_tokens: 1, total_cost: 0.01})
+    assert added.cost_basis == :billed
+  end
+
   test "a nil/zero input count does NOT clobber last_input_tokens" do
     # the honesty rule: a resumed/failed turn must not re-arm the chars
     # fallback by zeroing the only sound compaction measure

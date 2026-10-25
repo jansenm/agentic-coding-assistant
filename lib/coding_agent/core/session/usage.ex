@@ -182,8 +182,29 @@ defmodule CodingAgent.Core.Session.Usage do
       output_tokens: prev.output_tokens + (turn[:output_tokens] || 0),
       cached_tokens: prev.cached_tokens + (turn[:cached_tokens] || 0),
       last_input_tokens: last_in,
-      cost: sum_cost(prev.cost, turn[:total_cost])
+      cost: sum_cost(prev.cost, turn[:total_cost]),
+      # The ACCOUNT fields are not "this turn's": `balance` is what the
+      # provider says is left, `marker` is the last sample the next delta
+      # is measured from, and `cost_basis` says where `cost` came from.
+      # Building a fresh struct reset all three, so every response dropped
+      # the sidebar's credits row until the billing probe refilled it (a
+      # visible jump of the lines below) AND cleared the marker, which
+      # made `sample_due?/3` true again — the 30 s gate never held, so
+      # every round paid two billing HTTP reads. Carry them.
+      cost_basis: cost_basis(prev, turn),
+      balance: prev.balance,
+      marker: prev.marker
     }
+  end
+
+  # A turn that priced itself (ReqLLM's `total_cost`) makes the basis
+  # `:priced` only when nothing was billed yet; once the provider's own
+  # account delta is in the number, that is the stronger claim.
+  defp cost_basis(prev, turn) do
+    case {prev.cost_basis, turn[:total_cost]} do
+      {nil, c} when is_number(c) -> :priced
+      {basis, _} -> basis
+    end
   end
 
   defp sum_cost(nil, nil), do: nil
