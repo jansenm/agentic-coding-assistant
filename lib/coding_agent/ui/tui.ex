@@ -2171,6 +2171,34 @@ defmodule CodingAgent.UI.Tui do
     end
   end
 
+  # P37: the popup is the only place the session totals exist, and its
+  # text cannot be selected (the TUI owns the mouse). `y` copies the
+  # snapshot verbatim: a file beside `tui.log` (the guarantee) and, in a
+  # real terminal, OSC 52 to the clipboard (the convenience — tmux and
+  # some terminals ignore it, which is why the file exists).
+  defp handle_menu_popup_key(%Event.Key{code: code}, %{menu_popup_id: :stats} = state)
+       when code in ["y", "Y"] do
+    text =
+      for %{action: {:__info__, line}} <- state.menu_popup.items, into: "" do
+        line <> "\n"
+      end
+
+    note =
+      case write_stats_file(state.session_id, text) do
+        {:ok, path} -> "stats copied (#{path})"
+        :error -> "stats copied (clipboard only — no file)"
+      end
+
+    osc52_copy(text, state)
+
+    {:noreply,
+     %{
+       state
+       | menu_popup: %{state.menu_popup | title: " stats  (esc=close · copied)"},
+         menu_note: note
+     }}
+  end
+
   # crossterm decodes Esc as "esc" (events.rs:78); accept both spellings
   defp handle_menu_popup_key(%Event.Key{code: code}, state)
        when code in ["esc", "escape"] do
@@ -2490,7 +2518,7 @@ defmodule CodingAgent.UI.Tui do
      %{
        state
        | command_popup: nil,
-         menu_popup: %{id: :stats, title: " stats  (esc=close)", items: rows, width: 74},
+         menu_popup: %{id: :stats, title: " stats  (esc=close · y=copy)", items: rows, width: 74},
          menu_popup_id: :stats,
          menu_index: 0
      }}
@@ -5169,6 +5197,46 @@ defmodule CodingAgent.UI.Tui do
   end
 
   defp stat(label, value), do: " " <> String.pad_trailing(label, 9) <> value
+
+  # P37: the copy target. The state dir is where `tui.log` already lives
+  # ("logs and other non-session state live alongside the store DB"), so
+  # the path in the status line is one the reader can open, tail and paste
+  # from — the file is the part that always works.
+  defp write_stats_file(session_id, text) do
+    path = Path.join(CodingAgent.Core.Config.state_dir(), "stats-#{session_id}.txt")
+
+    with :ok <- File.mkdir_p(Path.dirname(path)),
+         :ok <- File.write(path, text) do
+      {:ok, path}
+    else
+      _ -> :error
+    end
+  rescue
+    _ -> :error
+  end
+
+  # OSC 52 on the controlling tty: `ESC ] 52 ; c ; <base64> BEL`. Written
+  # the way `Mix.Tasks.Tui.reset_terminal/0` writes its sequences, because
+  # stdout belongs to the renderer. Best-effort: terminals and tmux may
+  # ignore it (tmux needs `set-clipboard on`), which is why the file above
+  # exists. Skipped in test_mode — the suite runs on a real tty and must
+  # not put a base64 snapshot on whoever is running it.
+  defp osc52_copy(_text, %{test_mode?: true}), do: :ok
+
+  defp osc52_copy(text, _state) do
+    payload = Base.encode64(text)
+
+    case File.open("/dev/tty", [:write, :raw]) do
+      {:ok, tty} ->
+        IO.binwrite(tty, "\e]52;c;#{payload}\a")
+        File.close(tty)
+
+      {:error, _} ->
+        :ok
+    end
+  rescue
+    _ -> :ok
+  end
 
   defp token_lines(usage) do
     cached =

@@ -82,6 +82,31 @@ defmodule CodingAgent.UI.TuiCommandsTest do
     assert body =~ "tokens"
   end
 
+  test "/stats: y copies the snapshot to a file beside tui.log (P37)", %{root: root} do
+    pid = start_tui(root)
+    fire(pid, :__resize_poll__)
+
+    type(pid, "/stats")
+    key(pid, "enter")
+
+    assert sync(pid).menu_popup.title =~ "y=copy"
+
+    key(pid, "y")
+    st = sync(pid)
+
+    path = Path.join(CodingAgent.Core.Config.state_dir(), "stats-#{st.session_id}.txt")
+
+    assert st.menu_popup.title =~ "copied"
+    assert st.menu_note =~ "stats copied"
+    assert st.menu_note =~ path
+
+    # the file is the copy: same text the popup rendered, one line each
+    text = File.read!(path)
+    assert text =~ "rounds"
+    assert text =~ "llm"
+    assert text =~ "tokens"
+  end
+
   test "a finished round shows in the sidebar as llm + tools (I1)", %{root: root} do
     pid = start_tui(root)
     fire(pid, :__resize_poll__)
