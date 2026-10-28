@@ -365,6 +365,11 @@ before/after table (Phase 1) — the numbers to compare against are the
 33-minute, 200-round turn of `tui-15426` (29.0 M input / 27.6 M cached =
 95 %, 351k output, $0.88 for 365 calls).
 
+**Status 2026-10-28:** read in use. One live session produced the first
+before/after row (the table in §6): 150 rounds, 7.4 s/round, 98 % cached.
+The money row stayed in the popup — it cannot be copied (review P37), so
+the cost half of the comparison is still open.
+
 ---
 
 ## 6. Phase 1 — the A/B, before any fix
@@ -393,6 +398,38 @@ the effect does not reproduce (which is also a result).
 **Caveats to state in the comparison:** opencode is being run *in its own
 repo* here, with a prompt tuned for it; a task in a third repo is the
 fairer setting.
+
+**First live reading (2026-10-28).** One session, read through `/stats`
+by hand (the popup cannot be copied — review P37). The `rounds` line says
+150 and the per-round averages agree (`llm` 628 s / 4.2 s, `tools` 487 s
+/ 3.2 s). The `session` line and the money rows (`cost`, `credits`) were
+readable but not carried over.
+
+| | `tui-15426` (2026-10-25) | 2026-10-28 |
+|---|---|---|
+| rounds | 200 (one turn) | 150 (whole session) |
+| time per round | 9.9 s (turn wall time) | 7.4 s measured (llm 4.2 + tools 3.2) |
+| input per round | 145k | 381k |
+| cached | 27.6 M = 95 % | 55.8 M = 98 % |
+| uncached per round | 7.0k | 8.7k |
+| output per round | 1.8k | 6.2k |
+| cost | $0.88 (365 calls) | not transcribed |
+
+Read: the per-round time is 25 % lower on a *harder* round — 2.6× the
+prefix and 3.5× the output per round — and the in-flight turn ran at
+2.6 s/call (9 calls, 23.3 s). The cache mechanism holds: the uncached
+delta per round is the same order (7.0k → 8.7k), so the 98 % is mostly
+the same tail over a larger prefix, not a second win. Tools are 43 % of
+the round (3.2 of 7.4 s) — the next number to move (H3/H5).
+
+Two honesty notes. The baseline is *wall* time per round; the 7.4 s here
+is `llm_ms + tool_ms`, which excludes compaction, store writes and
+scheduler gaps — so the comparison, if anything, understates the gain.
+And the cost half is still open for a second reason besides the
+transcription: cached tokens are paid every round, and 372k of them per
+round is 2.7× the baseline's 138k. A better hit *ratio* on a larger
+prefix can therefore cost more per round; only the provider's own money
+row decides, and that is the row to carry over next time.
 
 ---
 
