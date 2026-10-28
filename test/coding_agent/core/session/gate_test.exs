@@ -127,15 +127,15 @@ defmodule CodingAgent.Core.Session.GateTest do
     end
 
     test "a stated escalation outranks the redirect: the hint is advice, never a wall" do
-      # `git add` matches the table on its first word, `bash -c 'git add …'`
-      # does not. If the hint were final, the honest spelling would be
-      # steered away while the wrapped one reached the gate — so a stated,
-      # reasoned escalation goes to the human instead.
+      # `grep -rn x lib` matches the redirect on its first word,
+      # `bash -c 'grep …'` does not. If the hint were final, the honest
+      # spelling would be steered away while the wrapped one reached the
+      # gate — so a stated, reasoned escalation goes to the human instead.
       escalated =
         call("shell", %{
-          "command" => "git add -A",
-          "change_vcs" => true,
-          "reason" => "release script stages the tree"
+          "command" => "grep -rn x lib",
+          "network" => true,
+          "reason" => "the search needs a remote index"
         })
 
       assert Shell.redirect(escalated.arguments) == :ok

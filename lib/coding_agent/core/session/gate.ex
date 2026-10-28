@@ -6,8 +6,9 @@ defmodule CodingAgent.Core.Session.Gate do
   Given a policy, a scope root and a round's tool calls, `classify/3`
   sorts every call into one of five buckets:
 
-    * `:redirected` — a shell call whose leading program duplicates a
-      native tool; answered with a one-line hint, no keystroke spent;
+    * `:redirected` — a shell call whose leading program is a PLAIN grep
+      search (the one shape `Shell.redirect/1` covers since 2026-10-28);
+      answered with a one-line hint, no keystroke spent;
     * `:no_reason` — an escalation (`network`/`change_vcs`) without the
       stated reason the human needs to answer the prompt (ADR 015);
     * `:denied` — an explicit policy `deny`; answered in the same round,

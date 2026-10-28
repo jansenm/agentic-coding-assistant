@@ -261,9 +261,110 @@ defmodule CodingAgent.Core.Tools.ShellTest do
     test "a rejected shell call leaves no trace", do: reject_rejected_shell()
   end
 
-  # -- Command redirects (2026-09-15 ADR 010 amendment 2) ---------------------
+  # -- Command redirects ------------------------------------------------------
+  #
+  # EVERYTHING CHECKED FOR IN HERE NEEDS TO BE JUSTIFIED. An assertion in this
+  # block is not "an input the matcher happens to get right" — it is a claim
+  # about a SHAPE, and a shape is only worth a test if a measurement or an
+  # owner ruling put it there. Before adding one, answer: which round did this
+  # cost, or which ruling demands it? "It would be nice to know" is not a
+  # reason — that is exactly how the seven-row table grew, and it is why it
+  # had to be deleted again.
+  #
+  # The evolution, so the same trip is not taken twice:
+  #
+  #   v1  2026-09-15  amendment 2 of ADR 010: a seven-row table — grep, rg,
+  #                   ag, ack, sg, git, timeout. Leading word only.
+  #   v2  2026-10-13  renamed: `blacklisted?` -> `redirect`, `:ok | {:hint,
+  #                   msg}`. The hint became ADVICE, escapable by stating an
+  #                   escalation — a hint may not steer the honest spelling
+  #                   away while `bash -c '…'` reaches the gate and runs.
+  #   v3  2026-10-25  a `cd <path> &&` prefix was to be stripped and what
+  #                   follows judged. MEASURED against the 161 `shell` calls
+  #                   this repo's own store holds: hint firings went 1 -> 79,
+  #                   because 78 of those calls are `cd ~/Projects/… && <prog>`
+  #                   — the ordinary way this caller names its directory.
+  #                   Built, measured, never shipped.
+  #   v4  2026-10-28  the table is gone. One rule: a PLAIN grep search.
+  #
+  # Why v4 looks like this — the two numbers that justify every assertion
+  # below. On that same corpus (8 sessions, 519 display rows, 161 shell calls)
+  # the table fired TWICE, and both firings were a COMPOSED command (`grep … |
+  # head`, `grep … $(…)`) where shell was the RIGHT call, because the
+  # derivation is what keeps the result small: two false positives, zero true
+  # positives, 159 calls untouched. The rule is therefore not "the leading word
+  # is grep" but "the leading word is grep AND the command is not composed" —
+  # and the second half is the load-bearing one. A composed command is never
+  # hinted: the tools have no pipeline, so `grep -rn foo lib | head -40` is
+  # already the cheaper answer and a hint would steer away from it.
+  #
+  # What is checked, and what each assertion stands on:
+  #
+  #   plain grep search        the ONE shape where the tool is strictly better:
+  #                            caps (200 results, 500 chars per line, 1 MiB per
+  #                            file), NAMES the files a walk skipped, spills the
+  #                            full list, says "no matches" in a sentence
+  #                            instead of exiting 1 — and is allow-by-policy
+  #   rg / ag / ack / sg       the same search under another name; sg is
+  #                            sushi-ripgrep's wrapper and the clash with Unix
+  #                            `sg` is accepted (an agent does not set-group a
+  #                            file)
+  #   /usr/bin/grep            a caller naming the path means the same program;
+  #                            basename, never prefix matching
+  #   FOO=1 grep               an env prefix is how a caller passes NO_COLOR or
+  #                            GREP_OPTIONS; the assignments are dropped before
+  #                            the program word is read
+  #   composed -> :ok          the measured false positives; `|`, `&&`, `;`, a
+  #                            redirection, `$(…)`, a backtick
+  #   `cd … && grep` -> :ok    composed by its own `&&`; stripping the prefix
+  #                            is the 1 -> 79 amplifier, not a fix (v3)
+  #   git -> :ok               the row never fired on a git call here: no call in
+  #                            the corpus has `git` as its LEADING word — the
+  #                            33 that mention git do it mid-command (`cd … &&
+  #                            git …`). Where a git WRITE does hit the
+  #                            read-only `.git` it already explains itself:
+  #                            through real bwrap, `git commit` prints
+  #                            "index.lock: Read-only file system" and
+  #                            `Shell.note/2` appends the cause, naming the git
+  #                            tool and `change_vcs: true` plus a reason. Same
+  #                            one round, and a note cannot fire on a call that
+  #                            would have worked
+  #   timeout -> :ok           both parameter schemas already document it
+  #   stated escalation        owner ruling 2026-10-13: advice, never a wall.
+  #                            A REASONLESS escalation is NOT an escape — it
+  #                            must reach the gate and be refused there as
+  #                            `:no_reason`; the pair is what keeps a bare
+  #                            `true` from becoming one
+  #   degenerate input -> :ok  `redirect/1` runs on whatever the model sent; it
+  #                            may not be the thing that crashes a round
+  #
+  # What is deliberately NOT checked, and why (this list is the point — it is
+  # where the table used to grow):
+  #
+  #   * evader spellings (`bash -c 'grep'`, `find -exec grep`, `git grep`,
+  #     `awk`). Catching them is an arms race against spellings that buys
+  #     nothing: the scope root is read-only unless write access is granted, so
+  #     the hint exists to save a ROUND, not to bound anything. Two of them are
+  #     asserted as `:ok` to pin the shallowness itself, not to bless them.
+  #   * `sed -n`, `cat`, `ls` — the old "one-line follow-ups". Each needs its
+  #     own collision check (`cat` the pager alias, `ls` the Lisp interpreter),
+  #     and none is strictly worse than its tool the way a plain search is:
+  #     `cat` of two lines costs one round either way. Their ABSENCE stays
+  #     pinned, so re-adding a row is a test change someone has to argue for.
+  #   * shell quoting. A quoted env value with a space defeats the first-word
+  #     read (`BAR='a b' grep …` runs), and a pattern containing `<` or `>` is
+  #     read as a redirection (also runs). Both are false NEGATIVES, and that
+  #     is the direction this rule is allowed to err in; a shell parser is not
+  #     worth the round it would save.
+  #   * the hint's exact wording. The assertions name the CLAIM ("grep tool",
+  #     "allow-by-policy"), never the sentence: the prose is meant to be
+  #     edited, the claim is not.
+  #   * one gate round trip per shape. A session costs ~4x a unit assertion and
+  #     buys the same claim; the gate's half — hint in, tool result out, no
+  #     keystroke — is asserted once per OUTCOME (redirected, mixed batch, not
+  #     redirected), not once per spelling.
 
-  describe "command redirects (2026-09-15 amendment 2)" do
+  describe "command redirects (ADR 010 amendment 2, narrowed 2026-10-28)" do
     test "shell grep is redirected with a hint to the native grep tool", %{tool: tool} do
       {:hint, hint} = Shell.redirect(%{"command" => "grep -rn handle_call lib/"})
       assert hint =~ "grep tool"
@@ -293,7 +394,9 @@ defmodule CodingAgent.Core.Tools.ShellTest do
     end
 
     test "non-grep leading programs are not redirected: sed, cat, ls, touch, mix" do
-      # deliberately NOT covered yet (one-line follow-ups when wanted)
+      # the old "one-line follow-ups" — see the block comment above, "What is
+      # deliberately NOT checked". Each of these is an assertion that the row
+      # is ABSENT, so re-adding one is a test change someone has to argue for.
       assert :ok = Shell.redirect(%{"command" => "sed -n '1,5p' mix.exs"})
       assert :ok = Shell.redirect(%{"command" => "cat mix.exs"})
       assert :ok = Shell.redirect(%{"command" => "ls lib"})
@@ -301,39 +404,55 @@ defmodule CodingAgent.Core.Tools.ShellTest do
       assert :ok = Shell.redirect(%{"command" => "echo hello"})
     end
 
-    test "deliberately shallow: pipes and evader spellings get no hint" do
+    test "deliberately shallow: pipes, chains and evader spellings get no hint" do
       assert :ok = Shell.redirect(%{"command" => "echo hi | grep hi"})
       assert :ok = Shell.redirect(%{"command" => "bash -c 'grep -rn x lib'"})
       assert :ok = Shell.redirect(%{"command" => "find . -name '*.ex' -exec grep x {} +"})
-      # chained but LEADING: the first word is still grep — redirected. The
-      # shallow check is first-word only, in both directions.
-      assert {:hint, _} = Shell.redirect(%{"command" => "grep -q foo bar && touch marker"})
+
+      # COMPOSED is not a duplicate: the derivation is the reason shell was the
+      # right call (measured 2026-10-28 — both real firings in the corpus were
+      # of this shape, and both were false positives)
+      assert :ok = Shell.redirect(%{"command" => "grep -q foo bar && touch marker"})
+      assert :ok = Shell.redirect(%{"command" => "grep -rn foo lib | head -40"})
+      assert :ok = Shell.redirect(%{"command" => "grep -rc TODO lib | sort -t: -k2 -rn | head"})
+      assert :ok = Shell.redirect(%{"command" => "rg -l 'def handle_call' lib | wc -l"})
+      assert :ok = Shell.redirect(%{"command" => "grep foo > out.txt"})
+      assert :ok = Shell.redirect(%{"command" => "grep foo 2>&1"})
+      assert :ok = Shell.redirect(%{"command" => "grep $(cat pattern) lib"})
+      assert :ok = Shell.redirect(%{"command" => "grep `cat pattern` lib"})
+      assert :ok = Shell.redirect(%{"command" => "cd lib; grep -rn foo"})
     end
 
-    test "shell git is redirected to the git tool, naming the script escape" do
-      {:hint, hint} = Shell.redirect(%{"command" => "git add -A"})
-      assert hint =~ "use your git tool"
-      assert hint =~ "change_vcs: true"
+    test "a `cd <path> &&` prefix makes the call composed, so it runs" do
+      # the shape is still one a caller writes (49% of the shell calls in this
+      # repo's store); it is deliberately NOT stripped: stripping it took the
+      # matcher from 1/161 to 79/161 hint firings on that corpus
+      assert :ok = Shell.redirect(%{"command" => "cd /work/repo && grep -rn handle_call lib"})
+      assert :ok = Shell.redirect(%{"command" => "cd lib && grep -rn foo"})
+    end
 
-      assert {:hint, _} = Shell.redirect(%{"command" => "/usr/bin/git status"})
+    test "git through shell is not redirected: the failure note is the teacher" do
+      # the row was removed 2026-10-28. `git commit` without change_vcs fails
+      # with "index.lock: Read-only file system", and Shell.note/2 appends the
+      # cause naming the git tool and change_vcs — same one round, no false
+      # positives (measured through real bwrap; see Shell's comment).
+      assert :ok = Shell.redirect(%{"command" => "git add -A"})
+      assert :ok = Shell.redirect(%{"command" => "git status"})
+      assert :ok = Shell.redirect(%{"command" => "git log --oneline -20"})
+      assert :ok = Shell.redirect(%{"command" => "/usr/bin/git status"})
+    end
+
+    test "timeout through shell is not redirected: the parameter is documented" do
+      assert :ok = Shell.redirect(%{"command" => "timeout 30 mix test"})
     end
 
     test "a stated escalation makes the redirect advice, not a wall" do
-      # the same command, now asking to run as written: goes to the gate
-      assert :ok =
-               Shell.redirect(%{
-                 "command" => "git add -A",
-                 "change_vcs" => true,
-                 "reason" => "release script stages the tree"
-               })
-
-      # a row whose native tool has no escalation (grep) is bypassed too:
-      # the escape is a property of the call, not of the row
+      # the same plain search, now asking to run as written: goes to the gate
       assert :ok =
                Shell.redirect(%{
                  "command" => "grep -rn x lib",
                  "network" => true,
-                 "reason" => "r"
+                 "reason" => "the search needs a remote index"
                })
 
       # and the gate then refuses the *reasonless* escalation, as before

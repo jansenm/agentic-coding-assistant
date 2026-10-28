@@ -31,13 +31,15 @@ defmodule CodingAgent.Core.Tools.Shell do
   hard cap (#{@max_timeout}s) refuses longer runs and tells the model to
   split the work.
 
-  Command redirects (2026-09-15 amendment 2): the gate's real cost was
-  *y-fatigue* — most gated calls were grep-style read duplicates of
-  native tools. So the gate consults a table of *redirects* before the
-  policy: a shell call whose leading program duplicates a native tool is
-  answered with a one-line hint ("please use the grep tool") instead of
-  a keystroke. Under confinement this is UX steering only, never a
-  boundary — the mount bounds the call, not the command text.
+  Command redirects (2026-09-15 amendment 2, narrowed 2026-10-28): the
+  gate's real cost was *y-fatigue* — most gated calls were grep-style read
+  duplicates of native tools. So the gate consults one rule before the
+  policy: a shell call whose leading program is a PLAIN grep search is
+  answered with a one-line hint ("please use the grep tool") instead of a
+  keystroke. Nothing else is redirected — a composed command (`|`, `&&`,
+  a redirection) is the case where shell was the right call. Under
+  confinement this is UX steering only, never a boundary — the mount
+  bounds the call, not the command text.
 
   Output: stdout+stderr combined (merged through /bin/sh), exit code,
   wall time. On truncation head and tail are kept (tail matters for test
@@ -213,57 +215,63 @@ defmodule CodingAgent.Core.Tools.Shell do
     end
   end
 
-  # -- Command redirects (2026-09-15 ADR 010 amendment 2) ----------------------
+  # -- The one redirect: a PLAIN grep search (2026-09-15 amendment 2, narrowed
+  # 2026-10-28) ----------------------------------------------------------------
   #
-  # Not "these commands are safe", but "this shell spelling duplicates a
-  # native tool — use the tool". The gate (Session.Gate) consults this
-  # BEFORE the policy lookup, so a redirected call never costs a
-  # keystroke and the hint reaches the model in the same round.
-  # Enforcement stays at the gate; the tool callback remains a pure
-  # executor (a direct ReqLLM.Tool execution bypasses this check — the
-  # gate is the policy point).
+  # Not "these commands are safe" — nothing here decides that; the sandbox
+  # profile does — but "this shell spelling is strictly worse than the tool".
+  # Exactly one case qualifies: a PLAIN grep search. The native tool caps the
+  # match list, NAMES the files a walk skipped, spills the full list to a file
+  # and reports "no matches" as a sentence instead of exit 1. `grep -rn foo lib`
+  # gets none of that and the tool never costs more.
   #
-  # The table is ADVICE, never a wall (owner ruling 2026-10-13). Which
-  # spellings it can see is a coincidence of the first word: `git add`
-  # matches a row, `bash -c 'git add …'` does not. So a hint may not be
-  # the last word — it would steer the honest spelling away while the
-  # wrapped one reached the gate and ran. The escape is the one the
-  # caller already has: STATE an escalation (`change_vcs: true`/`network:
-  # true` plus a `reason`), and the call goes to the human instead of
-  # getting advice. See `redirect/1`.
+  # The seven-row table this replaced was narrowed to one row because of what it
+  # cost, measured on this repo's own store on 2026-10-28 (8 sessions, 519
+  # display rows, 161 shell calls): it fired TWICE, and both firings were on a
+  # COMPOSED command — `grep … | head`, `grep … $(…)` — where shell was the right
+  # call, because the derivation is what keeps the context small. Both were
+  # false positives, and the replay of that corpus shows why the cd-prefix
+  # extension below was wrong too: it took the matcher from 1/161 to 79/161.
+  #
+  # The git row went with it, from measurement rather than taste: it never fired
+  # on a git call (all 33 git-through-shell rows were `cd … && git …`), and a git
+  # WRITE that hits the read-only `.git` is already explained in the result it
+  # fails with — through real bwrap, `git commit` prints "fatal: Unable to create
+  # '…/.git/index.lock': Read-only file system" and `Shell.note/2` appends the
+  # cause naming BOTH the git tool and `change_vcs: true` plus a reason. Same one
+  # round either way, and the note cannot fire on a call that would have worked.
+  # The timeout row was a parameter both tools already document.
+  #
+  # So the load-bearing half of the rule is the second condition: a COMPOSED
+  # command is never hinted. `grep -rn foo lib | head -40` answers with 40 lines
+  # instead of 200, and the tools have no pipeline, so a hint there would steer
+  # the caller away from the better call. That is the END of the list (owner
+  # ruling 2026-10-28): enumerating every spelling an agent could use is an arms
+  # race the table cannot win, and does not need to — the scope root is read-only
+  # unless write access is granted, so the hint exists to save a round, not to
+  # bound anything.
+  #
+  # The hint is ADVICE, never a wall (owner ruling 2026-10-13): a call that STATES
+  # an escalation (`network: true` / `change_vcs: true`, each with its `reason`)
+  # is asking to run this command as written by hand and goes to the gate like
+  # any other escalated call — no hint.
+  @grep_programs ~w(grep rg ag ack sg)
 
-  @redirect %{
-    "grep" =>
-      "please use the grep tool instead of shell grep (it is allow-by-policy and returns capped, line-numbered matches)",
-    "rg" => "please use the grep tool instead of shell rg",
-    "ag" => "please use the grep tool instead of shell ag",
-    "ack" => "please use the grep tool instead of shell ack",
-    # sg = sushi-ripgrep's wrapper; the name collision with the Unix
-    # set-group sg is accepted — an agent essentially never wants that
-    "sg" => "please use the grep tool instead of shell sg",
-    "git" =>
-      "please use your git tool instead of shell git (it is allow-by-default, runs git directly and may change the repository) — git inside a script that CHANGES the repository needs the parameter change_vcs: true plus a reason on the shell call",
-    "timeout" => "please set the timeout as a parameter on the tool call"
-  }
+  @grep_hint "please use the grep tool instead of a shell search " <>
+               "(it is allow-by-policy and returns capped, line-numbered matches)"
 
   @doc """
-  The redirect verdict for a shell call's arguments: `{:hint, guidance}` when the leading
-  program duplicates a native tool (the value is the hint for the model), `:ok` otherwise.
+  The redirect verdict for a shell call's arguments: `{:hint, guidance}` for a PLAIN
+  grep-family search (the value is the hint for the model), `:ok` otherwise.
 
   `:ok` is not "this command is safe" — nothing here decides that; the sandbox profile does.
   It means only "nothing to redirect you to". The first return is a hint, not a result, which
   is why it is tagged instead of being a bare `{:ok, message}` next to `:error`.
 
-  **The hint is advice, never a wall.** A call that *states* an escalation (`network: true` /
-  `change_vcs: true`, each with its `reason`) is asking to run this command as written by hand,
-  and goes to the gate like any other escalated call — no hint. Without that, the table's
-  first-word blindness would invert the outcome: the honest `git add` (escalation stated) would
-  be steered away, while `bash -c 'git add …'` reached the human and ran.
-
-  Deliberately shallow, on purpose: the FIRST program word only — basename of an absolute path,
-  after env-var assignments (`FOO=1`). Pipes do not widen the check (`echo hi | grep hi` runs) and
-  neither do evader spellings (`git grep`, `awk`, `find -exec`). This is prompt hygiene, not
-  containment — shell stays ask-at-the-gate for everything not listed.
+  Two conditions, both in `plain_grep?/1`: the FIRST program word is one of `#{inspect(@grep_programs)}`
+  (basename of an absolute path, after env-var assignments — `FOO=1 grep …`), and the command is
+  not composed (`|`, `&&`, `;`, a redirection, `$(…)`, a backtick). The comment above explains why
+  the second one is load-bearing and why everything else left the table.
   """
   @spec redirect(term()) :: :ok | {:hint, String.t()}
   def redirect(args) when is_map(args) do
@@ -274,13 +282,27 @@ defmodule CodingAgent.Core.Tools.Shell do
 
   defp hint_for(args) do
     command = Map.get(args, :command) || Map.get(args, "command")
+    if plain_grep?(command), do: {:hint, @grep_hint}, else: :ok
+  end
 
-    with {:ok, prog} <- leading_program(command),
-         {:ok, hint} <- Map.fetch(@redirect, prog) do
-      {:hint, hint}
+  defp plain_grep?(command) when is_binary(command) do
+    with false <- composed?(command),
+         {:ok, prog} <- leading_program(command) do
+      prog in @grep_programs
     else
-      _ -> :ok
+      _ -> false
     end
+  end
+
+  defp plain_grep?(_command), do: false
+
+  # Deliberately blunt: every operator that turns one command into several, and
+  # every redirection, counts — `grep -rn foo lib 2>&1` and `grep foo > out` are
+  # composed too. The lookarounds only keep ordinary code patterns (`=>`, `->`)
+  # out; a search for `<div>` is read as a redirection, which errs toward RUNNING
+  # the call, and that is the direction this table may err in.
+  defp composed?(command) do
+    Regex.match?(~r/[|;`]|&&|\$\(|(?<![-=<])>(?![=>])|<(?![=<])/, command)
   end
 
   defp leading_program(command) when is_binary(command) do
@@ -295,8 +317,6 @@ defmodule CodingAgent.Core.Tools.Shell do
       [prog | _rest] -> {:ok, Path.basename(prog)}
     end
   end
-
-  defp leading_program(_), do: :error
 
   defp run(scope, command, cwd, secs, args) do
     started = System.monotonic_time(:millisecond)

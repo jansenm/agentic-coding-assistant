@@ -83,7 +83,9 @@ messages, 115 tool calls)::
    total                              112
 
 The redirect table catches 24 (the amendment-2 mechanism; it was named
-a "blacklist" until the 2026-10-13 amendment to ADR 010). The other **88
+a "blacklist" until the 2026-10-13 amendment to ADR 010, and it was
+narrowed to a plain-grep rule on 2026-10-28 — see the last amendment
+there). The other **88
 would each have paused for a
 ``y``** in one session. A user facing that sets ``shell = allow`` or
 reaches for a less nagging tool — the exact rubber-stamp failure the
@@ -567,6 +569,14 @@ the table's blindness is what makes it advice rather than a wall
 sharper reason: enumerating "all the ways a git command can fail on a
 read-only ``.git``" is unbounded, and any list would be wrong within a
 version.
+
+That paragraph stands, and 2026-10-28 settled the same question from the
+other side: the ``git`` row itself is gone (ADR 010, last amendment). It
+never fired on a git call — all 33 git-through-shell calls in the store
+are composed — and a git write that hits the read-only ``.git`` already
+fails into the note below, which names the ``git`` tool and
+``change_vcs: true`` with a reason. The note is the better teacher than
+the hint: it cannot fire on a call that would have worked.
 
 So ``Shell`` appends a note to a shell result whose output contains
 ``Read-only file system`` — ONE kernel string, not a program's prose — and

@@ -459,3 +459,61 @@ Not renamed: ``@redirect`` (already correct), and the historical text
 above keeps the old names — it records what was decided then, and this
 amendment records the correction, rather than pretending the first
 amendment said something it did not.
+
+Amendment 2026-10-28: the table shrinks to the one shape it wins
+-----------------------------------------------------------------
+
+The redirect table is **gone**; what remains is one rule and one hint: a
+**plain** grep-family search is answered with ``@grep_hint``, and nothing
+else is redirected at all. ``Shell.redirect/1`` keeps its shape
+(``:ok | {:hint, message}``) and keeps the escalation escape; the seven
+rows, the ``cd … &&`` prefix handling and the timeout row are deleted.
+
+**What the table cost.** Counted against this repository's own session
+store on 2026-10-28 — 8 sessions, 519 display rows, 161 ``shell`` calls:
+the table fired **twice**, and both firings were on a *composed* command
+(``grep … | head``, ``grep … $(…)``) where shell was the **right** call,
+because the derivation is what keeps the result small. Two false
+positives, zero true positives, and 159 calls on which it did nothing.
+Replaying the same 161 commands against a matcher that stripped a
+``cd <path> &&`` prefix — the shape the 2026-10-25 ruling asked for —
+took the firings from **1 to 79** of 161: 78 of those calls are
+``cd ~/Projects/… && <program>`` because the caller names its directory
+that way, so the prefix strip is a false-positive amplifier, not a fix.
+It was implemented, measured, and removed.
+
+**Why exactly one shape is left.** A hint is only worth a round if the
+native tool is strictly better *for that call*. For a plain search it is:
+``grep`` caps the list (200 results, 500 chars per line, 1 MiB per file),
+**names** the files a walk skipped, spills the full list to a file, and
+reports "no matches" as a sentence instead of exit 1 — and it is
+allow-by-policy, so it costs no keystroke. A composed command gets none of
+that: the tool has no pipeline, so ``grep -rn foo lib | head -40`` is
+already the cheaper answer.
+
+**Why ``git`` left.** Two reasons, both measured rather than argued. The
+row never fired on a git call in that corpus (all 33 git-through-shell
+calls were composed, i.e. ``cd … && git …``). And where a git *write*
+actually needs the grant, the failure already explains itself: through
+real ``bwrap`` with ``change_vcs: false``, ``git commit`` prints
+``fatal: Unable to create '<root>/.git/index.lock': Read-only file
+system`` and ``Shell.note/2`` appends the cause, naming the git tool and
+``change_vcs: true`` with a reason. Same one round to recovery as a hint,
+and a note cannot fire on a call that would have worked. ``git log``,
+``git diff`` and ``git status`` through shell are byte-identical to the
+tool anyway, so there was nothing to win. The timeout row was a parameter
+both tools already document.
+
+**The escape is unchanged** (2026-10-13 (b), still load-bearing): a call
+that states an escalation — ``network: true`` / ``change_vcs: true`` plus
+a ``reason`` — is asking to run this command as written and goes to the
+gate like any other escalated call. The 2026-10-25 ``cd … &&`` widening
+is **withdrawn**; ADR 015's rejection of it stands on better evidence now.
+
+Acceptance: ``test/coding_agent/core/shell_test.exs`` — a plain
+grep-family search (family members, absolute paths, ``FOO=1`` prefixes)
+hints; every composed shape (``|``, ``&&``, ``;``, ``>``, ``2>&1``,
+``$(…)``, a backtick, a ``cd … &&`` prefix) and every non-grep leading
+program (``git``, ``timeout``) runs; degenerate inputs stay ``:ok``; the
+gate-integration tests prove no interruption, the hint as the tool
+result, and the log line.
