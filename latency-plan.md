@@ -401,10 +401,10 @@ repo* here, with a prompt tuned for it; a task in a third repo is the
 fairer setting.
 
 **First live reading (2026-10-28).** One session, read through `/stats`
-by hand (the popup cannot be copied — review P37). The `rounds` line says
-150 and the per-round averages agree (`llm` 628 s / 4.2 s, `tools` 487 s
-/ 3.2 s). The `session` line and the money rows (`cost`, `credits`) were
-readable but not carried over.
+by hand (the popup could not be copied — review P37, fixed in `a8487f4`).
+The `rounds` line says 150 and the per-round averages agree (`llm` 628 s
+/ 4.2 s, `tools` 487 s / 3.2 s). The `session` line and the money rows
+(`cost`, `credits`) were readable but not carried over.
 
 | | `tui-15426` (2026-10-25) | 2026-10-28 |
 |---|---|---|
