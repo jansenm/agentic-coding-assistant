@@ -414,7 +414,14 @@ readable but not carried over.
 | cached | 27.6 M = 95 % | 55.8 M = 98 % |
 | uncached per round | 7.0k | 8.7k |
 | output per round | 1.8k | 6.2k |
-| cost | $0.88 (365 calls) | not transcribed |
+| cost | $0.88 (365 calls) | never appeared (P38, fixed) |
+
+Token caveat: the `input / cached / output` columns are the harness's
+counters (`%Usage{}`), not the provider's. For the same day the key's own
+`/api/usage` reported 23.4 M in / 22.3 M cached / 170.9k out over 24 h —
+the two rows do not reconcile, and the endpoint's hourly buckets do not
+even sum to its own totals (N116). Compare token rows between runs, never
+against the provider; the money row is the provider's.
 
 Read: the per-round time is 25 % lower on a *harder* round — 2.6× the
 prefix and 3.5× the output per round — and the in-flight turn ran at
