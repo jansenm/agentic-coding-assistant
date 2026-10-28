@@ -367,8 +367,9 @@ before/after table (Phase 1) — the numbers to compare against are the
 
 **Status 2026-10-28:** read in use. One live session produced the first
 before/after row (the table in §6): 150 rounds, 7.4 s/round, 98 % cached.
-The money row stayed in the popup — it cannot be copied (review P37), so
-the cost half of the comparison is still open.
+The credits row was readable, the cost row was not — it never appeared,
+because `add_usage/2` discarded the sampled state (review P38, fixed the
+same day). The cost half wants a fresh run.
 
 ---
 
@@ -425,11 +426,14 @@ the round (3.2 of 7.4 s) — the next number to move (H3/H5).
 Two honesty notes. The baseline is *wall* time per round; the 7.4 s here
 is `llm_ms + tool_ms`, which excludes compaction, store writes and
 scheduler gaps — so the comparison, if anything, understates the gain.
-And the cost half is still open for a second reason besides the
-transcription: cached tokens are paid every round, and 372k of them per
-round is 2.7× the baseline's 138k. A better hit *ratio* on a larger
-prefix can therefore cost more per round; only the provider's own money
-row decides, and that is the row to carry over next time.
+And the cost half is open for two reasons. The `cost` row never appeared:
+`add_usage/2` threw away the sampled state, so every round re-baselined
+and no delta was ever written (review P38 — the credits row did show,
+because the balance rides a broadcast). And a fresh run is needed
+anyway: cached tokens are paid every round, and 372k of them per round is
+2.7× the baseline's 138k, so a better hit *ratio* on a larger prefix can
+still cost more per round. Only the provider's own money row decides, and
+that is the row to carry over next time.
 
 ---
 

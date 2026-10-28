@@ -196,6 +196,10 @@ defmodule CodingAgent.Core.Session.State do
     # fingerprint guard without a provider. nil in production.
     # Runtime-only.
     idle_compaction_runner: nil,
+    # test-only seam: the module that answers the billing probe
+    # (`snapshot/2`, `balance/2`), so a test never touches the network.
+    # nil means `CodingAgent.Core.Costs`. Runtime-only.
+    cost_module: nil,
     # The in-flight IDLE (soft-limit) compaction task (ADR 037) and the
     # context fingerprint captured when it started. The soft pass runs in
     # a background task after a turn ends; if the context changed while it
@@ -257,6 +261,7 @@ defmodule CodingAgent.Core.Session.State do
           turn_runner: (State.t() -> {State.t(), term()}) | nil,
           subagent_runner: (State.t() -> {State.t(), term()}) | nil,
           idle_compaction_runner: (State.t() -> {State.t(), boolean()}) | nil,
+          cost_module: module() | nil,
           idle_compaction_ref: reference() | nil,
           idle_compaction_fp: term()
         }
@@ -336,6 +341,7 @@ defmodule CodingAgent.Core.Session.State do
       idle_compaction_runner: nil,
       idle_compaction_ref: nil,
       idle_compaction_fp: nil,
+      cost_module: nil,
       status: idle_or_interrupted(state),
       # runtime guard counter: a snapshot saved with tool_rounds 25 (the
       # old never-reset bug) resurrected as 25, so resuming and

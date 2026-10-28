@@ -8,7 +8,14 @@ defmodule CodingAgent.Core.UsageTest do
   use ExUnit.Case, async: true
 
   alias CodingAgent.Core.Session
-  alias CodingAgent.Core.Session.{State, Store}
+  alias CodingAgent.Core.Session.{State, Store, Usage}
+
+  defmodule FakeCosts do
+    # The billing-probe seam (review P38): answers from the caller's
+    # process dictionary, so a test has no network and no rate limit.
+    def snapshot(_model, _providers), do: Process.get(:cost_snapshot) || {:error, :no_fixture}
+    def balance(_model, _providers), do: Process.get(:cost_balance) || :none
+  end
 
   defp state do
     %State{id: "usage-test", context: ReqLLM.Context.new(), model: "m", status: :idle}
@@ -43,6 +50,40 @@ defmodule CodingAgent.Core.UsageTest do
   test "nil usage (provider gave none) leaves state untouched" do
     s0 = state()
     assert Session.add_usage(s0, nil) == s0
+  end
+
+  test "the sampled cost is applied to the state and the marker gates the next probe (P38)" do
+    now = System.system_time(:millisecond)
+
+    Process.put(:cost_snapshot, {:ok, %{usd: 1.20, at: now}})
+
+    Process.put(
+      :cost_balance,
+      {:ok, %{remaining: 4.0, allowance: 60.0, purchased: 0.0, from: nil, until: nil}}
+    )
+
+    state = %State{
+      id: "usage-cost-#{System.unique_integer([:positive])}",
+      context: ReqLLM.Context.new(),
+      model: "m",
+      status: :idle,
+      persist?: false,
+      cost_module: FakeCosts,
+      usage: %Usage{marker: %{usd: 1.0, at: 0}}
+    }
+
+    next = Session.add_usage(state, %{input_tokens: 10, output_tokens: 1})
+
+    # the delta is the money spent since the previous sample — discarded
+    # before, so every round looked like a first sample and no cost ever
+    # appeared (the credits row did, because it is broadcast regardless)
+    assert_in_delta next.usage.cost, 0.20, 1.0e-9
+    assert next.usage.cost_basis == :billed
+    assert next.usage.marker.usd == 1.20
+    assert next.usage.balance.remaining == 4.0
+    # the advanced marker is what holds the 30 s gate; without it every
+    # round paid two billing HTTP reads
+    refute Usage.sample_due?(next.usage, 30_000, now + 1_000)
   end
 
   test "usage persists in the snapshot and survives load (old snapshots get defaults)" do

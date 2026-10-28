@@ -706,7 +706,8 @@ defmodule CodingAgent.Core.Session do
        test_mode: test_mode,
        turn_runner: turn_runner,
        subagent_runner: subagent_runner,
-       idle_compaction_runner: idle_compaction_runner
+       idle_compaction_runner: idle_compaction_runner,
+       cost_module: Keyword.get(opts, :cost_module)
      )}
   end
 
@@ -1779,6 +1780,7 @@ defmodule CodingAgent.Core.Session do
           id: session.id,
           turn_runner: session.turn_runner,
           subagent_runner: session.subagent_runner,
+          cost_module: session.cost_module,
           worker_ref: nil,
           worker_from: nil,
           queued_calls: session.queued_calls,
@@ -3307,8 +3309,12 @@ defmodule CodingAgent.Core.Session do
     else
       state = %{state | usage: next}
       broadcast(state, {:usage_updated, next})
+      # `maybe_sample_costs/1` returns the state carrying the provider's
+      # cost delta AND the advanced marker. Discarding it made every round
+      # look like a first sample: `cost` never accumulated, and the 30 s
+      # gate never held either — every round paid two billing HTTP reads
+      # (review P38).
       maybe_sample_costs(state)
-      state
     end
   end
 
@@ -3353,7 +3359,7 @@ defmodule CodingAgent.Core.Session do
   # probe, no credential or an unexpected body leaves the accounting
   # untouched: no number is better than a wrong one.
   defp sample_costs(state) do
-    case Costs.snapshot(effective_model(state), state.provider_config) do
+    case cost_module(state).snapshot(effective_model(state), state.provider_config) do
       {:ok, snapshot} ->
         usage =
           state.usage
@@ -3371,11 +3377,16 @@ defmodule CodingAgent.Core.Session do
   end
 
   defp apply_balance(usage, state) do
-    case Costs.balance(effective_model(state), state.provider_config) do
+    case cost_module(state).balance(effective_model(state), state.provider_config) do
       {:ok, balance} -> Usage.set_balance(usage, balance)
       _ -> usage
     end
   end
+
+  # The billing probe's module: `Costs` in production, a test stand-in via
+  # the `cost_module:` option (runtime-only, stripped before a save).
+  defp cost_module(%{cost_module: mod}) when mod != nil, do: mod
+  defp cost_module(_state), do: Costs
 
   # Append the streamed reasoning/answer blocks in order. Reasoning is the
   # thing the old store could not keep: it lives only here, never in the
@@ -3565,7 +3576,13 @@ defmodule CodingAgent.Core.Session do
   end
 
   defp strip_runner(state),
-    do: %{state | turn_runner: nil, subagent_runner: nil, idle_compaction_runner: nil}
+    do: %{
+      state
+      | turn_runner: nil,
+        subagent_runner: nil,
+        idle_compaction_runner: nil,
+        cost_module: nil
+    }
 
   # -- Infrastructure ---------------------------------------------------------
 
