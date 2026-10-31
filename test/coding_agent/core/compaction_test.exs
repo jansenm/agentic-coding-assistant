@@ -787,7 +787,11 @@ defmodule CodingAgent.Core.CompactionTest do
       _ = Registry.register(CodingAgent.EventRegistry, {Events.key(), id}, nil)
 
       s = state(id: id, usage: %{last_input_tokens: 136_000})
-      {_s2, true} = Compactor.maybe_compact(s, fn _state, _span, _prior -> {:ok, "summary"} end)
+
+      {_s2, true} =
+        Compactor.maybe_compact(s, fn _state, _span, _prior ->
+          {:ok, "## Objective\n- ship it"}
+        end)
 
       events = drain(id)
 
@@ -796,13 +800,16 @@ defmodule CodingAgent.Core.CompactionTest do
                _ -> false
              end)
 
+      # the summary itself rides the event: the TUI shows the human what
+      # the model now starts from
       assert Enum.any?(events, fn
-               {:context_compacted, _keep, :hard} -> true
+               {:context_compacted, _keep, :hard, "## Objective\n- ship it"} -> true
                _ -> false
              end)
 
       rows = CodingAgent.Core.Session.Store.display(id)
       assert Enum.any?(rows, &(&1.kind == :info and &1.text =~ "context compacted — hard"))
+      assert Enum.any?(rows, &(&1.kind == :summary and &1.text == "## Objective\n- ship it"))
     end
 
     test "the agent's tool and the human's /compact are told apart" do
@@ -824,7 +831,7 @@ defmodule CodingAgent.Core.CompactionTest do
                "#{trigger} did not announce itself: #{inspect(events)}"
 
         assert Enum.any?(events, fn
-                 {:context_compacted, _keep, ^trigger} -> true
+                 {:context_compacted, _keep, ^trigger, _summary} -> true
                  _ -> false
                end)
       end
@@ -846,7 +853,7 @@ defmodule CodingAgent.Core.CompactionTest do
              end)
 
       assert Enum.any?(events, fn
-               {:context_compacted, _keep, :soft} -> true
+               {:context_compacted, _keep, :soft, _summary} -> true
                _ -> false
              end)
     end

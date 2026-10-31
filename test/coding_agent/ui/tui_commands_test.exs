@@ -82,6 +82,19 @@ defmodule CodingAgent.UI.TuiCommandsTest do
     assert body =~ "tokens"
   end
 
+  test "a compaction shows the summary the model now starts from", %{root: root} do
+    pid = start_tui(root)
+    fire(pid, :__resize_poll__)
+
+    agent(pid, {:context_compacted, 2, :hard, "## Objective\n- ship the summary"})
+
+    body = Enum.join(buffer(pid), "\n")
+    assert body =~ "context compacted — hard limit reached"
+    assert body =~ "summary"
+    assert body =~ "## Objective"
+    assert body =~ "ship the summary"
+  end
+
   test "/stats: y copies the snapshot to a file beside tui.log (P37)", %{root: root} do
     pid = start_tui(root)
     fire(pid, :__resize_poll__)

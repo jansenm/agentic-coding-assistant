@@ -746,6 +746,7 @@ defmodule CodingAgent.UI.Tui do
   defp display_entry(%{kind: :assistant, text: t, agent: agent}), do: {:assistant, t, agent}
   defp display_entry(%{kind: :reasoning, text: t}), do: {:reasoning, t}
   defp display_entry(%{kind: :info, text: t}), do: {:info, t}
+  defp display_entry(%{kind: :summary, text: t}), do: {:summary, t}
 
   # tool rows: the meta now carries the call arguments too
   # ({:tool, name, args}); the old 2-tuple form stays for rows written
@@ -3385,9 +3386,13 @@ defmodule CodingAgent.UI.Tui do
     {:noreply, state}
   end
 
-  def handle_info({:agent, {:context_compacted, _keep, trigger}}, state) do
+  def handle_info({:agent, {:context_compacted, _keep, trigger, summary}}, state) do
     {:noreply,
-     %{state | transcript: state.transcript ++ [{:info, Compactor.compacted_text(trigger)}]}}
+     %{
+       state
+       | transcript:
+           state.transcript ++ [{:info, Compactor.compacted_text(trigger)}, {:summary, summary}]
+     }}
   end
 
   # The model updated its todo list (ADR 031): mirror it for the sidebar's
@@ -4284,6 +4289,16 @@ defmodule CodingAgent.UI.Tui do
   # info (no agent, e.g. resumed notices) renders the same dim line.
   defp entry_widgets({:info, text, _agent}, _w, _te) do
     [{%Paragraph{text: "  " <> text, style: Styles.role(:muted)}, 1}]
+  end
+
+  # The compaction summary in full (measure = paint: the body and the
+  # height both come from TranscriptView, which also renders it).
+  defp entry_widgets({:summary, text}, w, _open_id) do
+    h = TranscriptView.height({:summary, text}, w, nil) - TranscriptView.air()
+
+    widget = %Paragraph{text: TranscriptView.summary_body(text), style: Styles.role(:muted)}
+
+    [{widget, max(h, 1)}]
   end
 
   # Display shape of the thinking buffer, shared by measure, paint and

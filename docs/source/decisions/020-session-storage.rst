@@ -223,7 +223,7 @@ session id, which is the grouping key:
    display(session_id, seq, kind, text, agent, meta,
            PRIMARY KEY(session_id, seq))
                                        -- kind: user|assistant|reasoning|
-                                       -- tool|info
+                                       -- tool|info|summary
    -- gate state across an interruption
    pending(session_id, round_calls, round_results, tool_calls)
    -- search within the store
@@ -615,3 +615,26 @@ Open questions
    resumable/self-contained format would need the exactness encoder and
    would reintroduce the ``binary_to_term`` trust caveat on import; it is
    deliberately out of scope until a use for it exists.
+
+Dated amendment (2026-10-31): the display view gains a ``summary`` kind
+-----------------------------------------------------------------------
+
+**Status: Accepted (amendment); implemented with this record.** On owner
+request the compaction summary is visible in the transcript, not just
+implied by ``· context compacted``. A completed compaction appends one
+``summary`` row (plain text, the summarizer's output verbatim) right
+after the trigger note.
+
+The split from ADR 020 is unchanged and is the reason this is safe: the
+agent view already carries the summary as the message the model continues
+from, so the display row is pure record — no request changes, no extra
+tokens, no cache effect. It also removes the asymmetry the old resume had:
+a session whose display view holds the summary now shows it, while the
+``(earlier messages were compacted — summary present)`` placeholder stays
+for legacy sessions that only have the agent view.
+
+The render path is the boxless-widget contract of ``TranscriptView``
+(measure = paint): the block is a muted, wrapped paragraph headed
+``▸ summary``. ``Store.to_display_kind/1`` had to learn the kind too —
+without that it silently degrades an unknown kind to ``:info``, which is
+what the first test run showed.

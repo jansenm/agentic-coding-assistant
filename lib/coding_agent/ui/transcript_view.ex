@@ -140,6 +140,12 @@ defmodule CodingAgent.UI.TranscriptView do
     {%ExRatatui.Widgets.Paragraph{text: "  " <> text}, 0}
   end
 
+  # The compaction summary, in full: the human asked to read what the
+  # model now starts from. Muted like a note, wrapped by the Paragraph.
+  defp widget_for({:summary, text}, _width, _open_id) do
+    {%ExRatatui.Widgets.Paragraph{text: summary_body(text), style: Styles.role(:muted)}, 0}
+  end
+
   defp widget_for({:tool, id, name, content}, _width, open_id) do
     if id == open_id do
       # open: a header row plus the FULL output, indented. No block — the
@@ -182,6 +188,10 @@ defmodule CodingAgent.UI.TranscriptView do
       body <> "\n  … open with t (enter/ctrl-t) for the rest"
     end
   end
+
+  @doc "The painted text of a summary block: header + the summary, indented."
+  @spec summary_body(String.t()) :: String.t()
+  def summary_body(text), do: "▸ summary\n" <> indent(text)
 
   # The content's first `@preview` lines. Trailing blanks are trimmed
   # first: a `read_file` with trailing empty lines would otherwise fill

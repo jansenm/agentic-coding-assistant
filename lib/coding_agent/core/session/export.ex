@@ -118,6 +118,8 @@ defmodule CodingAgent.Core.Session.Export do
 
   defp markdown_entry(%{kind: :info, text: t}), do: "<!-- info: #{t} -->\n"
 
+  defp markdown_entry(%{kind: :summary, text: t}), do: "## context summary\n\n#{t}\n"
+
   defp markdown_entry(%{kind: :tool, text: t, meta: {:tool, name, args}}) do
     "### tool: #{name}\n\n```json\n#{Jason.encode!(args, pretty: true)}\n```\n\n" <>
       "```\n#{t}\n```\n"

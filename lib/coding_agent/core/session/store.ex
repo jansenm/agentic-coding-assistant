@@ -147,7 +147,7 @@ defmodule CodingAgent.Core.Session.Store do
   CREATE TABLE IF NOT EXISTS display (
     session_id TEXT NOT NULL,
     seq        INTEGER NOT NULL,
-    kind       TEXT NOT NULL,   -- user|assistant|reasoning|tool|info
+    kind       TEXT NOT NULL,   -- user|assistant|reasoning|tool|info|summary
     text       TEXT NOT NULL,
     agent      TEXT,
     meta       TEXT,            -- kind-specific extras (e.g. tool name), as a term
@@ -418,7 +418,7 @@ defmodule CodingAgent.Core.Session.Store do
   # -- The display view (ADR 020) ---------------------------------------------
 
   @typedoc "A display-view kind. `text` is plain text (the rendered form)."
-  @type display_kind :: :user | :assistant | :reasoning | :tool | :info
+  @type display_kind :: :user | :assistant | :reasoning | :tool | :info | :summary
 
   @doc """
   Appends one display event to a session, append-only (ADR 020). The
@@ -584,7 +584,7 @@ defmodule CodingAgent.Core.Session.Store do
 
   # an unknown kind must not mint an atom from stored text; degrade to
   # :info (the harmless display kind) instead
-  defp to_display_kind(kind) when kind in ~w(user assistant reasoning tool info),
+  defp to_display_kind(kind) when kind in ~w(user assistant reasoning tool info summary),
     do: String.to_existing_atom(kind)
 
   defp to_display_kind(_), do: :info

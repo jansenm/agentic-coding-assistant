@@ -572,7 +572,7 @@ defmodule CodingAgent.Core.Session.Compactor do
     # to the trigger deserves its warning again (warn-once per approach)
     state = %{state | context: context, compaction_backoff: 0, compaction_warned: false}
     state = note_shrunk_context(state)
-    broadcast(state, {:context_compacted, Compaction.min_keep(), kind})
+    broadcast(state, {:context_compacted, Compaction.min_keep(), kind, summary_text})
     {state, :changed}
   end
 
@@ -955,13 +955,19 @@ defmodule CodingAgent.Core.Session.Compactor do
       {:info, text} ->
         _ = CodingAgent.Core.Session.Store.append_display(state.id, :info, text)
 
-      {:context_compacted, _keep, trigger} ->
+      {:context_compacted, _keep, trigger, summary} ->
         _ =
           CodingAgent.Core.Session.Store.append_display(
             state.id,
             :info,
             compacted_text(trigger)
           )
+
+        # The summary is what the human can audit: the model's active
+        # history now starts with it, and the display view is the record
+        # of what the user saw. It stays OUT of the agent view (the model
+        # already has it as its summary message).
+        _ = CodingAgent.Core.Session.Store.append_display(state.id, :summary, summary)
 
       _ ->
         :ok
