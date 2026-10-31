@@ -149,6 +149,14 @@ defmodule CodingAgent.Core.Session.Compactor do
   @spec compacted_text(trigger()) :: String.t()
   def compacted_text(trigger), do: "· context compacted — #{trigger_text(trigger)}"
 
+  # The failure line's opening, used to BUILD it here and to RECOGNIZE it
+  # in the TUI (which turns its "compacting context…" echo into the
+  # outcome) — one literal, so the two cannot drift.
+  @failure_prefix "· compaction failed"
+  @doc false
+  @spec failure_line?(String.t()) :: boolean()
+  def failure_line?(text), do: String.starts_with?(text, @failure_prefix)
+
   defp trigger_text(:hard), do: "hard limit reached"
   defp trigger_text(:soft), do: "over the soft limit while idle"
   defp trigger_text(:agent), do: "the agent asked"
@@ -600,7 +608,7 @@ defmodule CodingAgent.Core.Session.Compactor do
     broadcast(
       state,
       {:info,
-       "· compaction failed (#{inspect(reason, printable_limit: 40)}); skipping the next #{@consecutive_failures} turns"}
+       "#{@failure_prefix} (#{inspect(reason, printable_limit: 40)}); skipping the next #{@consecutive_failures} turns"}
     )
 
     state = %{state | compaction_backoff: @consecutive_failures}

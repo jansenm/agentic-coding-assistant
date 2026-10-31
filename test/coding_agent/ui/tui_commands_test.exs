@@ -95,6 +95,39 @@ defmodule CodingAgent.UI.TuiCommandsTest do
     assert body =~ "ship the summary"
   end
 
+  test "a finished compaction clears the composer's \"compacting context…\" echo", %{root: root} do
+    pid = start_tui(root)
+    st = sync(pid)
+
+    # /compact set the echo; the completion event must not keep claiming
+    # the work is running (owner report 2026-10-31)
+    echoing = %{st | menu_note: "compacting context…"}
+
+    {:noreply, done} =
+      Tui.handle_info({:agent, {:context_compacted, 1, :hard, "## Objective\n- x"}}, echoing)
+
+    assert done.menu_note == nil
+    assert Enum.any?(done.transcript, &match?({:summary, _}, &1))
+
+    # a failure ends it too — with the outcome, not the stale echo
+    {:noreply, failed} =
+      Tui.handle_info(
+        {:agent, {:info, "· compaction failed (:timeout); skipping the next 3 turns"}},
+        echoing
+      )
+
+    assert failed.menu_note =~ "compaction failed"
+
+    # a note another command set is not ours to clear
+    {:noreply, untouched} =
+      Tui.handle_info(
+        {:agent, {:context_compacted, 1, :hard, "s"}},
+        %{st | menu_note: "exported x → y"}
+      )
+
+    assert untouched.menu_note == "exported x → y"
+  end
+
   test "/stats: y copies the snapshot to a file beside tui.log (P37)", %{root: root} do
     pid = start_tui(root)
     fire(pid, :__resize_poll__)

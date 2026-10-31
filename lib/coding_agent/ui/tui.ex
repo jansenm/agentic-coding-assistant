@@ -1866,6 +1866,15 @@ defmodule CodingAgent.UI.Tui do
   # next key event
   defp status_note(state, text), do: %{state | menu_note: text}
 
+  # The composer's "compacting context…" echo. It is a TRANSIENT command
+  # echo, not a status: the compaction runs in the session (off-process),
+  # so the note is cleared by the event that ends it. Owner report
+  # 2026-10-31: it kept claiming to run after the summary had landed.
+  defp compacting_note, do: "compacting context…"
+
+  defp clear_note(note, expected) when note == expected, do: nil
+  defp clear_note(note, _expected), do: note
+
   # the "show all keymaps" popup: one row per binding, grouped
   defp keymap_popup(keymap) do
     rows =
@@ -2495,7 +2504,7 @@ defmodule CodingAgent.UI.Tui do
     state = %{state | command_popup: nil}
 
     case Session.compact(state.session_id) do
-      :started -> {:noreply, status_note(state, "compacting context…")}
+      :started -> {:noreply, status_note(state, compacting_note())}
       :nothing -> {:noreply, status_note(state, "nothing to compact")}
       :turn_running -> {:noreply, status_note(state, "cannot compact while a turn runs")}
       :already_compacting -> {:noreply, status_note(state, "already compacting")}
@@ -3314,7 +3323,21 @@ defmodule CodingAgent.UI.Tui do
 
   # broadcast info notes (compaction warnings, notices): dim transcript line
   def handle_info({:agent, {:info, text}}, state) do
-    {:noreply, %{state | transcript: state.transcript ++ [{:info, text}]}}
+    # A failed compaction is the other way "/compact" can end: the note
+    # becomes the outcome instead of claiming work that already stopped.
+    note =
+      cond do
+        not Compactor.failure_line?(text) ->
+          state.menu_note
+
+        state.menu_note == nil or state.menu_note == compacting_note() ->
+          "compaction failed — full context kept"
+
+        true ->
+          state.menu_note
+      end
+
+    {:noreply, %{state | transcript: state.transcript ++ [{:info, text}], menu_note: note}}
   end
 
   def handle_info({:agent, {:llm_message, text}}, state) do
@@ -3391,7 +3414,10 @@ defmodule CodingAgent.UI.Tui do
      %{
        state
        | transcript:
-           state.transcript ++ [{:info, Compactor.compacted_text(trigger)}, {:summary, summary}]
+           state.transcript ++ [{:info, Compactor.compacted_text(trigger)}, {:summary, summary}],
+         # the command echo is over; a note another command set since
+         # (export, catalog) is not ours to clear
+         menu_note: clear_note(state.menu_note, compacting_note())
      }}
   end
 
