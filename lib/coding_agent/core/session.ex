@@ -52,13 +52,13 @@ defmodule CodingAgent.Core.Session do
   alias CodingAgent.Core.Interrupt
   alias CodingAgent.Core.Permissions
   alias CodingAgent.Core.ToolCall
-  alias CodingAgent.Core.Tools.Question
 
   alias CodingAgent.Core.Session.{
     Compactor,
     ContextBudget,
     Gate,
     Prompt,
+    Question,
     Request,
     State,
     Store,
@@ -1153,7 +1153,7 @@ defmodule CodingAgent.Core.Session do
     broadcast(state, {:status_changed, :running})
     persist(state)
 
-    results = build_question_results(question_calls(calls), questions, answers)
+    results = Question.results(Question.calls(calls), questions, answers)
 
     if state.test_mode do
       {state, _result} = execute_round(state, calls, results)
@@ -1162,36 +1162,6 @@ defmodule CodingAgent.Core.Session do
       ref = spawn_turn(state, fn snapshot -> execute_round(snapshot, calls, results) end)
       {:noreply, %{state | worker_ref: ref, worker_from: from}}
     end
-  end
-
-  # Build one tool result per question call. Each carries the formatted
-  # answers (opencode's shape): `User has answered your questions:
-  # "q"="a, b". You can now continue...`. An empty answer list renders as
-  # `Unanswered`.
-  defp build_question_results(calls, questions, answers) do
-    formatted =
-      questions
-      |> Enum.with_index()
-      |> Enum.map_join(", ", fn {q, i} ->
-        selected = Enum.at(answers, i) || []
-
-        value =
-          case selected do
-            [] -> "Unanswered"
-            list -> Enum.join(list, ", ")
-          end
-
-        ~s("#{q["question"]}"="#{value}")
-      end)
-
-    content =
-      "User has answered your questions: #{formatted}. " <>
-        "You can now continue with the user's answers in mind."
-
-    Enum.map(calls, fn call ->
-      {id, name, _args} = ToolCall.normalize(call)
-      %{id: id, name: name, content: content}
-    end)
   end
 
   # Every pending call needs a decision; partial answers are refused
@@ -2101,7 +2071,7 @@ defmodule CodingAgent.Core.Session do
     # A question is answered by the human, not executed (ADR 027). The
     # WHOLE round is held so the exchange stays atomic: any sibling calls
     # run only once the answer arrives.
-    case question_calls(calls) do
+    case Question.calls(calls) do
       [] ->
         execute_round(state, calls)
 
@@ -2112,15 +2082,6 @@ defmodule CodingAgent.Core.Session do
 
   # -- Question tool (ADR 027) -------------------------------------------------
 
-  # The question calls in a round (usually zero or one), with their parsed
-  # questions. Splitting here keeps `execute_round` free of the branch.
-  defp question_calls(calls) do
-    Enum.filter(calls, fn call ->
-      {_id, name, _args} = ToolCall.normalize(call)
-      name == Question.name()
-    end)
-  end
-
   # Park on the human's answer. The questions are parsed up front so a
   # malformed call is a result the model can fix, not a crash.
   #
@@ -2130,7 +2091,7 @@ defmodule CodingAgent.Core.Session do
   defp ask_question(state, calls, [call | _] = q_calls) do
     {id, _name, args} = ToolCall.normalize(call)
 
-    case parse_questions(args) do
+    case Question.parse(args) do
       {:ok, questions} ->
         if state.interactive do
           broadcast(state, {:info, "· the agent asked a question"})
@@ -2146,7 +2107,7 @@ defmodule CodingAgent.Core.Session do
           {state, {:ok, state}}
         else
           Logger.warning("question asked with no interactive driver; answering unavailable")
-          results = unavailable_question_results(q_calls)
+          results = Question.unavailable(q_calls)
           execute_round(state, calls, results)
         end
 
@@ -2158,51 +2119,6 @@ defmodule CodingAgent.Core.Session do
         state = complete_round(state, calls, [result])
         finish_round(state)
     end
-  end
-
-  # The synthetic answer when no human is available (ADR 027).
-  defp unavailable_question_results(calls) do
-    content =
-      "error: the human is not available to answer questions right now. " <>
-        "Proceed with your best judgment, or stop and state the question plainly in your answer."
-
-    Enum.map(calls, fn call ->
-      {id, name, _args} = ToolCall.normalize(call)
-      %{id: id, name: name, content: content}
-    end)
-  end
-
-  # Parses the tool arguments into a normalized question list. Lenient
-  # about string/atom keys (tool args arrive as maps with string keys).
-  defp parse_questions(args) do
-    raw = Map.get(args, "questions") || Map.get(args, :questions)
-
-    cond do
-      not is_list(raw) or raw == [] ->
-        {:error, "`questions` must be a non-empty array"}
-
-      true ->
-        questions =
-          Enum.map(raw, fn q ->
-            %{
-              "question" => q["question"] || q[:question] || "",
-              "header" => q["header"] || q[:header],
-              "multiple" => q["multiple"] || q[:multiple] || false,
-              "options" => normalize_options(q["options"] || q[:options] || [])
-            }
-          end)
-
-        {:ok, questions}
-    end
-  end
-
-  defp normalize_options(options) do
-    Enum.map(options, fn o ->
-      %{
-        "label" => o["label"] || o[:label] || "",
-        "description" => o["description"] || o[:description]
-      }
-    end)
   end
 
   # All gate policy lives in Session.Gate: it buckets this round's calls
@@ -2219,7 +2135,7 @@ defmodule CodingAgent.Core.Session do
     # time (see `Core.Session.Timing`).
     state = %{state | timing: Timing.start(state.timing)}
 
-    q_calls = question_calls(calls)
+    q_calls = Question.calls(calls)
     t_calls = task_calls(calls)
     d_calls = todo_calls(calls)
     c_calls = compact_calls(state, calls)

@@ -5,6 +5,7 @@ defmodule CodingAgent.Core.Session.QuestionTest do
 
   alias CodingAgent.Core.Permissions
   alias CodingAgent.Core.Session
+  alias CodingAgent.Core.Session.Question, as: SessionQuestion
   alias CodingAgent.Core.Tools.Question
 
   @tmp_root System.tmp_dir!() |> Path.join("agent-question-#{System.unique_integer()}")
@@ -168,6 +169,58 @@ defmodule CodingAgent.Core.Session.QuestionTest do
 
       {:ok, _} = Session.answer_question(id, [["fd"]])
       assert File.read!(Path.join(@tmp_root, "from-question.txt")) == "x"
+    end
+  end
+
+  describe "Session.Question.parse/1 (the normalized question map)" do
+    test "keeps the four fields the wizard reads, with options normalized" do
+      assert {:ok, [q]} =
+               SessionQuestion.parse(%{
+                 "questions" => [
+                   %{
+                     "question" => "Which engine?",
+                     "header" => "Engine",
+                     "multiple" => true,
+                     "options" => [
+                       %{"label" => "fd", "description" => "fast"},
+                       %{"label" => "pure"}
+                     ]
+                   }
+                 ]
+               })
+
+      assert q["question"] == "Which engine?"
+      assert q["header"] == "Engine"
+      assert q["multiple"] == true
+
+      assert q["options"] == [
+               %{"label" => "fd", "description" => "fast"},
+               %{"label" => "pure", "description" => nil}
+             ]
+    end
+
+    test "fills the absent fields instead of leaving nil holes" do
+      assert {:ok, [q]} = SessionQuestion.parse(%{"questions" => [%{"question" => "Q"}]})
+      assert q["header"] == nil
+      assert q["multiple"] == false
+      assert q["options"] == []
+    end
+
+    test "accepts atom keys (a decoded or resumed call, not a wire call)" do
+      assert {:ok, [q]} =
+               SessionQuestion.parse(%{
+                 questions: [%{question: "Q", options: [%{label: "a"}]}]
+               })
+
+      assert q["question"] == "Q"
+      assert q["options"] == [%{"label" => "a", "description" => nil}]
+    end
+
+    test "an empty or missing array is an error the model can fix" do
+      assert {:error, "`questions` must be a non-empty array"} =
+               SessionQuestion.parse(%{"questions" => []})
+
+      assert {:error, "`questions` must be a non-empty array"} = SessionQuestion.parse(%{})
     end
   end
 
