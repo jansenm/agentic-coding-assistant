@@ -406,6 +406,20 @@ defmodule CodingAgent.Core.Tools.FileExec do
 
   defp cwd(%{root: root}), do: Path.expand(root)
 
+  @doc """
+  The absolute path the confined program sees for `path`.
+
+  A relative path is resolved against the sandbox's working directory (the
+  scope root, the `--chdir` in the profile), exactly as the child resolves
+  it — so two spellings of one path (`a.ex`, `./a.ex`, absolute vs relative)
+  come out equal here. That is what makes it usable for an IDENTITY
+  question; it does not resolve symlinks, and the BEAM must not do that for
+  a tool (ADR 030), so an identity that survives links has to be answered by
+  the filesystem after the fact.
+  """
+  @spec absolute(Tools.scope(), String.t()) :: String.t()
+  def absolute(scope, path), do: Path.expand(path, cwd(scope))
+
   # The confined program's stderr (merged into stdout by Exec) is the
   # error text; trim and cap it so the model reads a sentence, not a dump.
   defp failure(output, path) do

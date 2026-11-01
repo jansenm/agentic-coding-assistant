@@ -53,8 +53,10 @@ defmodule CodingAgent.Core.Tools.MoveRegion do
           "or after it. The region is extended to whole lines. `position` is " <>
           ":begin, :end, {:before, anchor} or {:after, anchor}, and that " <>
           "anchor must occur exactly once in the destination. A same-file " <>
-          "move is allowed (reordering functions); a position inside the " <>
-          "region is refused. Set `dry_run: true` to see the line numbers " <>
+          "move is allowed (reordering functions); two spellings of one path " <>
+          "(`a.ex`, `./a.ex`) count as one file, and a symlink or hardlink to " <>
+          "the source is refused rather than written twice; a position inside " <>
+          "the region is refused. Set `dry_run: true` to see the line numbers " <>
           "without writing. It does NOT format and does not move aliases, " <>
           "imports or attributes with the region — run `mix format` and " <>
           "`mix compile` afterwards. Auto-approved by policy unless a " <>
@@ -90,14 +92,14 @@ defmodule CodingAgent.Core.Tools.MoveRegion do
     to = arg(args, :to)
     position = parse_position(arg(args, :position))
     dry_run? = arg(args, :dry_run) || false
-    same_file? = from_path == to_path
 
     with {:ok, position} <- position,
          :ok <- paths_ok(from_path, to_path),
+         {:ok, same_file?} <- same_file?(scope, from_path, to_path),
          {:ok, source} <- read(scope, from_path),
-         {:ok, dest} <- read_or_empty(scope, to_path, same_file?),
+         {:ok, dest} <- destination(scope, to_path, same_file?),
          {:ok, result} <-
-           Region.move(source, dest, from, to, position,
+           Region.move(source, dest.text, from, to, position,
              same_file?: same_file?,
              source_path: from_path,
              dest_path: to_path
@@ -161,6 +163,16 @@ defmodule CodingAgent.Core.Tools.MoveRegion do
 
   defp paths_ok(_, _), do: Tools.error("from_path and to_path must be strings")
 
+  # "Same file?" cannot be decided by comparing the two strings: `a.ex` and
+  # `./a.ex` are one file, and a symlink is one file under two names. The
+  # absolute form settles the spellings (it is the resolution the confined
+  # child does, from the scope root); the LINKS are settled after the fact by
+  # `verify/4`, because resolving them would be a BEAM filesystem access and
+  # the boundary is the sandbox (ADR 030).
+  defp same_file?(scope, from_path, to_path) do
+    {:ok, FileExec.absolute(scope, from_path) == FileExec.absolute(scope, to_path)}
+  end
+
   defp read(scope, path) do
     case FileExec.stat(scope, path, @timeout_secs) do
       :file -> FileExec.read(scope, path, @timeout_secs, @max_bytes)
@@ -169,18 +181,25 @@ defmodule CodingAgent.Core.Tools.MoveRegion do
     end
   end
 
-  # A destination that does not exist yet is a new file (the region becomes
-  # its whole content); `write` creates it, so this is not a special case
-  # further down.
-  defp read_or_empty(scope, path, same_file?) do
-    if same_file? do
-      read(scope, path)
-    else
-      case FileExec.stat(scope, path, @timeout_secs) do
-        :file -> FileExec.read(scope, path, @timeout_secs, @max_bytes)
-        :missing -> {:ok, ""}
-        :dir -> Tools.error("#{path} is a directory")
-      end
+  # The destination's text, and whether it was there at all. A destination
+  # that does not exist yet is a new file (the region becomes its whole
+  # content); `write` creates it, so that is not a special case further
+  # down — but the UNDO is, and it needs the difference.
+  defp destination(scope, path, true = _same_file?) do
+    with {:ok, text} <- read(scope, path), do: {:ok, %{text: text, existed?: true}}
+  end
+
+  defp destination(scope, path, _same_file?) do
+    case FileExec.stat(scope, path, @timeout_secs) do
+      :file ->
+        with {:ok, text} <- FileExec.read(scope, path, @timeout_secs, @max_bytes),
+             do: {:ok, %{text: text, existed?: true}}
+
+      :missing ->
+        {:ok, %{text: "", existed?: false}}
+
+      :dir ->
+        Tools.error("#{path} is a directory")
     end
   end
 
@@ -190,7 +209,7 @@ defmodule CodingAgent.Core.Tools.MoveRegion do
        "would land in #{to_path}:#{result.to_line} (nothing written)"}
   end
 
-  defp write(scope, result, {from_path, to_path}, _original, true) do
+  defp write(scope, result, {from_path, to_path}, _destination, true) do
     # One file, one write: the new text goes to a temporary file BESIDE the
     # target (same filesystem, so the rename is atomic) and moves over it.
     tmp = from_path <> ".move-tmp"
@@ -205,7 +224,7 @@ defmodule CodingAgent.Core.Tools.MoveRegion do
     end
   end
 
-  defp write(scope, result, {from_path, to_path}, original_dest, false) do
+  defp write(scope, result, {from_path, to_path}, destination, false) do
     # Cross-file, destination first: it is the write that GROWS the
     # filesystem (and it happens while space is still free); the source
     # then shrinks by the region, so it cannot fail on space. A crash in
@@ -213,40 +232,100 @@ defmodule CodingAgent.Core.Tools.MoveRegion do
     with {:ok, _} <- FileExec.write(scope, to_path, result.dest, @timeout_secs) do
       case FileExec.write(scope, from_path, result.source, @timeout_secs) do
         {:ok, _} ->
-          {:ok, done(result, from_path, to_path)}
+          verify(scope, result, {from_path, to_path}, destination)
 
         {:error, source_error} ->
-          # Put the destination back. `original_dest` is what the file held
-          # before this call ("" when it did not exist), kept from the read
-          # in `execute/2` — the ONLY copy, since the write replaced it.
-          restore(scope, {to_path, original_dest}, source_error, from_path)
+          # Put the destination back. `destination.text` is what the file
+          # held before this call ("" when it did not exist) — the ONLY copy,
+          # since the write replaced it.
+          restore(scope, {to_path, destination}, source_error, from_path)
       end
     end
   end
 
-  defp restore(scope, {to_path, original_dest}, source_error, from_path) do
-    if original_dest == "" do
-      # The destination did not exist before this call: removing it is the
-      # exact undo of having created it.
-      case FileExec.remove(scope, to_path, [], @timeout_secs) do
-        {:ok, _} ->
-          {:error,
-           "moved nothing: writing #{from_path} failed (#{source_error}), " <>
-             "and the new #{to_path} was removed again"}
+  # The two writes are only correct if the two paths are two files. When they
+  # are one file under two names (a symlink, a hardlink, a bind mount — none
+  # of which the absolute-path comparison can see), the second write
+  # OVERWROTE the first, and what is on disk is the source text at both
+  # names: the region is gone. Read both back and say so.
+  #
+  # The read is the point (review N133, the class is "a success that is not
+  # one"): an identity check before the writes is a claim, and the claim and
+  # the writes can disagree. This costs two confined reads per move.
+  defp verify(scope, result, {from_path, to_path}, destination) do
+    source = reread(scope, from_path, result.source)
+    dest = reread(scope, to_path, result.dest)
 
-        {:error, remove_error} ->
-          inconsistent(from_path, to_path, source_error, remove_error)
-      end
-    else
-      case FileExec.write(scope, to_path, original_dest, @timeout_secs) do
-        {:ok, _} ->
-          {:error,
-           "moved nothing: writing #{from_path} failed (#{source_error}), " <>
-             "and #{to_path} was restored to its original content"}
+    cond do
+      source == {:ok, result.source} and dest == {:ok, result.dest} ->
+        {:ok, done(result, from_path, to_path)}
 
-        {:error, restore_error} ->
-          inconsistent(from_path, to_path, source_error, restore_error)
-      end
+      source == {:ok, result.source} and dest == {:ok, result.source} ->
+        collision(scope, result, {from_path, to_path}, destination)
+
+      true ->
+        {:error,
+         "the move reported success but the files do not hold what it computed: " <>
+           "#{from_path} and #{to_path} were both written, and reading them back " <>
+           "does not match. Check both files by hand. The region it moved was:\n\n" <>
+           result.region_text}
+    end
+  end
+
+  # A read with the cap sized to what the file SHOULD hold: the destination
+  # grows by the region, so the input cap would reject the very result we are
+  # checking (and a file bigger than its own expected text is not one we
+  # wrote, which the comparison below then sees as a mismatch).
+  defp reread(scope, path, expected) do
+    cap = max(@max_bytes, byte_size(expected) + 1)
+    FileExec.read(scope, path, @timeout_secs, cap)
+  end
+
+  # One file under two names: the destination write was overwritten by the
+  # source write, so the file holds the source text at both paths. Undo the
+  # destination exactly as in `restore/4` and refuse the move.
+  defp collision(scope, result, {from_path, to_path}, destination) do
+    case undo_dest(scope, to_path, destination) do
+      :ok ->
+        {:error,
+         "refusing: #{from_path} and #{to_path} are the SAME file under two names " <>
+           "(a symlink or a hardlink, which a path comparison cannot see), so the " <>
+           "move would write both texts into one file and lose the region. " <>
+           "Nothing was moved and #{to_path} was put back."}
+
+      {:error, undo_error} ->
+        {:error,
+         "INCONSISTENT: #{from_path} and #{to_path} are the same file, so the move " <>
+           "wrote both texts into it and the region is gone; putting it back failed " <>
+           "(#{undo_error}). The region to re-insert is:\n\n#{result.region_text}"}
+    end
+  end
+
+  # The exact undo of the destination write: remove it when it did not exist
+  # before this call, put the original bytes back when it did.
+  defp undo_dest(scope, to_path, %{existed?: false}) do
+    case FileExec.remove(scope, to_path, [], @timeout_secs) do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp undo_dest(scope, to_path, %{text: original}) do
+    case FileExec.write(scope, to_path, original, @timeout_secs) do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp restore(scope, {to_path, destination}, source_error, from_path) do
+    case undo_dest(scope, to_path, destination) do
+      :ok ->
+        {:error,
+         "moved nothing: writing #{from_path} failed (#{source_error}), " <>
+           "and #{if destination.existed?, do: "#{to_path} was restored to its original content", else: "the new #{to_path} was removed again"}"}
+
+      {:error, undo_error} ->
+        inconsistent(from_path, to_path, source_error, undo_error)
     end
   end
 

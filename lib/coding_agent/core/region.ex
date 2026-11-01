@@ -58,13 +58,16 @@ defmodule CodingAgent.Core.Region do
 
   @typedoc """
   The two texts after the move, plus what the caller needs to report it:
-  the region's line count, the line the region occupied and the line it
-  lands on (both 1-based, in their own file).
+  the region's line count and its TEXT (a caller whose two writes collided
+  has just lost it from disk and has to be able to hand it back), the line
+  the region occupied and the line it lands on (both 1-based, in their own
+  file).
   """
   @type result :: %{
           source: String.t(),
           dest: String.t(),
           region: pos_integer(),
+          region_text: String.t(),
           from_line: pos_integer(),
           to_line: pos_integer()
         }
@@ -233,6 +236,7 @@ defmodule CodingAgent.Core.Region do
 
       check(new, new, opts, %{
         region: lines_in(region),
+        region_text: region,
         from_line: line_of(source, s),
         to_line: line_of(new, insert_at)
       })
@@ -242,6 +246,7 @@ defmodule CodingAgent.Core.Region do
 
       check(new_source, new_dest, opts, %{
         region: lines_in(region),
+        region_text: region,
         from_line: line_of(source, s),
         to_line: line_of(new_dest, o)
       })

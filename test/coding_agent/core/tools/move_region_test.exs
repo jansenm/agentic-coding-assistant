@@ -52,6 +52,77 @@ defmodule CodingAgent.Core.Tools.MoveRegionTest do
     assert CodingAgent.Core.Permissions.default_for("move_region") == :allow
   end
 
+  # N133: `a.ex` and `./a.ex` are one file. Decided on the resolved path, so
+  # the move is a REORDER of one file, not two writes into it (which put the
+  # source text last and lost the region, while reporting success).
+  test "two spellings of one path are one file", %{scope: scope, root: root} do
+    assert {:ok, out} =
+             move(scope, %{
+               "from_path" => "from.ex",
+               "to_path" => "./from.ex",
+               "from" => "defp two do",
+               "to" => "end",
+               "position" => ":begin"
+             })
+
+    assert out =~ "moved 3 line(s)"
+
+    body = File.read!(Path.join(root, "from.ex"))
+    {two, _} = :binary.match(body, "defp two")
+    {one, _} = :binary.match(body, "defp one")
+    assert two < one
+    # the region appears exactly once: a cross-file move into the same file
+    # left it at BOTH names' text (the second write overwrote the first)
+    assert length(:binary.matches(body, "defp two")) == 1
+    assert length(:binary.matches(body, "defp one")) == 1
+  end
+
+  # The same class, one layer down: a symlink is one file under two names that
+  # no path comparison can see. The two writes then collide, so the move must
+  # notice AFTER the fact and put the file back — not report a success.
+  test "a symlink alias of the source is refused, and the file is put back", %{
+    scope: scope,
+    root: root
+  } do
+    before_from = File.read!(Path.join(root, "from.ex"))
+    File.ln_s!(Path.join(root, "from.ex"), Path.join(root, "alias.ex"))
+
+    assert {:error, message} =
+             move(scope, %{
+               "from_path" => "from.ex",
+               "to_path" => "alias.ex",
+               "from" => "defp two do",
+               "to" => "end",
+               "position" => ":begin"
+             })
+
+    assert message =~ "SAME file under two names"
+    assert message =~ "Nothing was moved"
+    assert File.read!(Path.join(root, "from.ex")) == before_from
+  end
+
+  # A hardlink is the same collision without a link to see: both names are real
+  # paths, both hold the same inode.
+  test "a hardlink alias of the source is refused, and the file is put back", %{
+    scope: scope,
+    root: root
+  } do
+    before_from = File.read!(Path.join(root, "from.ex"))
+    File.ln!(Path.join(root, "from.ex"), Path.join(root, "hard.ex"))
+
+    assert {:error, message} =
+             move(scope, %{
+               "from_path" => "from.ex",
+               "to_path" => "hard.ex",
+               "from" => "defp two do",
+               "to" => "end",
+               "position" => ":begin"
+             })
+
+    assert message =~ "SAME file under two names"
+    assert File.read!(Path.join(root, "from.ex")) == before_from
+  end
+
   test "a cross-file move writes both files", %{scope: scope, root: root} do
     assert {:ok, out} =
              move(scope, %{

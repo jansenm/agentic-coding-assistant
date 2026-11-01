@@ -248,3 +248,61 @@ Consequences:
 - The move does not FORMAT (``mix format`` is the caller's next step) and
   does not carry aliases, imports or module attributes with the region.
   Deciding which ones a moved block still needs is semantic, not textual.
+
+Amendment 2026-11-01: same-file is a question about the filesystem, not about two strings
+-----------------------------------------------------------------------------------------
+
+The first version decided "is this a reorder or a copy?" by comparing the two
+path strings: ``from_path == to_path``. That is a claim about identity made
+where identity is not decidable. ``a.ex`` and ``./a.ex`` are one file; a
+symlink is one file under two names; a hardlink is one file with two real
+paths. Every one of those sent the move down the CROSS-FILE branch, which
+does two writes — and when both names are one file, the second write is the
+source text landing on top of the destination text.
+
+Measured, through the tool surface (``from_path: "a.ex"``,
+``to_path: "./a.ex"``, ``position: :begin``): ``{:ok, "moved 3 line(s) from
+a.ex:6 to ./a.ex:1. …"}`` and the file afterwards held ``defp one``, an empty
+line, and ``end`` — the region ``defp two`` was gone, under a success
+message. That was ``N133``, the one HIGH in the review record.
+
+Two changes, one for each layer the string comparison cannot see.
+
+**7. The spellings are settled before the arithmetic.** Both paths are
+resolved the way the confined child resolves them (``Path.expand/1`` from
+the scope root, ``FileExec.absolute/2``) and THOSE are compared. ``a.ex``,
+``./a.ex``, and absolute-vs-relative are now one file, so the move takes the
+same-file branch: one text, one write, temp file beside the target.
+
+**8. The links are settled after the writes, by reading both files back.**
+Symlinks, hardlinks and bind mounts are one file under two names that no
+path comparison can see, and the BEAM must not resolve them itself — the
+boundary is the sandbox (ADR 030), not a second predicate in the tool. So the
+move does not try to prove identity up front; it checks the RESULT. After
+both writes, both files are read back through the same confined ``cat`` that
+produced the inputs:
+
+- source holds the computed source text and destination the computed
+  destination text — the move is what it says it is;
+- destination holds the SOURCE text — the two names are one file and the
+  second write clobbered the first, so the destination is put back
+  (removed when it did not exist, its original bytes otherwise) and the call
+  is refused, naming the two paths;
+- anything else — both files are named, because the tool no longer knows
+  what it is looking at.
+
+This is deliberately a check of the result and not of the intent. An
+identity check before the writes is a claim, and the claim and the writes can
+disagree — which is exactly what happened: the string comparison said
+"two files" and the filesystem said otherwise. The verification costs two
+confined reads per move, and it would have turned the measured loss into a
+refusal.
+
+The same refactor made the rollback one code path: ``undo_dest/3`` (remove
+when the destination did not exist, restore its bytes when it did) is now
+shared by the source-write rollback and by the collision refusal, so the two
+cannot drift.
+
+Tests: two spellings of one path are one file (the region appears exactly
+once afterwards), a symlink alias of the source is refused and the file is
+byte-identical, a hardlink alias likewise.
