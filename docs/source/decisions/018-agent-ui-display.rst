@@ -799,4 +799,45 @@ fields to resolve (``sidebar_panel/1``, ``stats_snapshot/1``,
 values, so all three are unit-testable without a terminal
 (``dialogs_test.exs``, ``overlay_stats_test.exs``).
 
-``tui.ex``: 6044 → 5337 lines across the two passes.
+Amendment 2026-11-01 (iii): the text layer leaves the TUI, and the region move is a tool
+----------------------------------------------------------------------------------------
+
+Two changes that belong together: the largest remaining cluster of pure
+code in ``UI.Tui`` moved out, and the operation that moved it became a
+tool instead of three ``sed`` deletions.
+
+**``UI.Display`` is what the text looks like.** Six scattered regions —
+the stream buffer, the reasoning shape, the tool cap, the answer
+breathing, what a finished block becomes, and the two display lists —
+were spread over 700 lines of a GenServer module, four of them separated
+from their only caller by hundreds of lines of event handling. They are
+one module now, because they answer one question: given a transcript and
+a stream, what rows does the painter draw?
+
+The module's reason to exist is a contract, not a tidy file: three
+consumers read the same string and must not disagree — the measure
+(``TranscriptView.height/3``) renders the widget to count rows, the paint
+builds the same widget, and the persistence decides what a finished block
+becomes in the transcript. Every disagreement between them has landed the
+same way, an entry reserving rows the widget never paints, and the
+"scroll up three screens of blanks" bug is the canonical one. So the shape
+is applied once, in one place, and the render path trusts it.
+
+What the TUI keeps is the resolution of values, the same division as
+``sidebar_panel/1``: ``display_entries/1`` reads four fields off the
+state and hands them to ``Display.entries/4``. Nothing in ``Display``
+reads a state struct or a clock, so the shapes are unit-testable without
+a terminal (``display_test.exs``), which they were not before: every one
+of these functions was a ``defp`` reached only through a running TUI.
+
+**The move itself is ``move_region`` (ADR 045).** The sidebar pass and the
+dialogs pass were done with hand-written ``sed -i`` deletions, and one of
+them mis-attributed a compile error to the wrong file. This pass used
+``Tools.MoveRegion``: six anchored moves, each dry-run first to read the
+line numbers, then applied. The first ``mix compile`` after the moves
+reported exactly what the tool's own message predicts — the moved block
+does not carry its aliases — and the rewire was mechanical. Measured cost
+of the anchor scan: 1.0 ms per move on a 208 KB file, which is why the
+tool takes anchors and not line numbers.
+
+``tui.ex``: 6044 → 5008 lines across the three passes.
