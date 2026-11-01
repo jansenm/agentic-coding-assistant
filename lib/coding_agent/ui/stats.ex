@@ -34,10 +34,11 @@ defmodule CodingAgent.UI.Stats do
   @type t :: %__MODULE__{
           session_id: String.t(),
           timing: Timing.t(),
-          usage: Usage.t()
+          usage: Usage.t(),
+          trailer: {non_neg_integer(), pos_integer()} | nil
         }
 
-  defstruct session_id: "", timing: nil, usage: nil
+  defstruct session_id: "", timing: nil, usage: nil, trailer: nil
 
   @doc "Builds the snapshot from the values the TUI mirrors."
   @spec new(keyword()) :: t()
@@ -73,10 +74,24 @@ defmodule CodingAgent.UI.Stats do
       )
     ] ++
       token_lines(usage) ++
+      trailer_lines(stats.trailer) ++
       money_lines(usage)
   end
 
   defp stat(label, value), do: " " <> String.pad_trailing(label, 9) <> value
+
+  # The per-request state trailer against its cap (ADR 024, 2026-11-01).
+  # It is the one number that is a BUDGET rather than a total: the trailer
+  # is re-sent uncached on every round, so its size is a per-round floor,
+  # and the todo list is the only block the model sizes. No row before the
+  # first request — a "0" would claim a measurement that has not happened
+  # (the same rule as the cached-tokens row).
+  defp trailer_lines(nil), do: []
+
+  defp trailer_lines({0, _max}), do: []
+
+  defp trailer_lines({bytes, max}),
+    do: [stat("trailer", "#{Format.k(bytes)} of #{Format.k(max)}")]
 
   defp token_lines(usage) do
     cached =

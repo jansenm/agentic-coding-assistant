@@ -95,6 +95,17 @@ defmodule CodingAgent.UI.OverlayTest do
       assert Enum.any?(lines, &(&1 =~ ~r/^ cost\s+\$0\.2500 \(billed\)$/))
       assert Enum.any?(lines, &(&1 =~ ~r/^ credits\s+\$4\.00$/))
     end
+
+    test "the trailer row is a BUDGET: what it costs against the cap" do
+      lines = Stats.lines(stats(trailer: {1_740, 4_096}))
+
+      assert Enum.any?(lines, &(&1 =~ ~r/^ trailer\s+1\.7k of 4\.0k$/))
+
+      # no request assembled yet: no row, like the cached-tokens row (a 0
+      # would claim a measurement that has not happened)
+      refute Enum.any?(Stats.lines(stats(trailer: {0, 4_096})), &(&1 =~ "trailer"))
+      refute Enum.any?(Stats.lines(stats()), &(&1 =~ "trailer"))
+    end
   end
 
   describe "Stats.write_file/2 and copy/2" do

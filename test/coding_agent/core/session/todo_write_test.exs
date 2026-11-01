@@ -200,6 +200,24 @@ defmodule CodingAgent.Core.Session.TodoWriteTest do
       assert message =~ "refusing the request"
       assert message =~ "limit is #{Prompt.trailer_max()}"
     end
+
+    # The trailer's size is the one number the model never sees and the
+    # human cannot otherwise get; `/stats` mirrors it from this event.
+    test "the assembled trailer's size is published for the human" do
+      id = "todo-trailer-#{System.unique_integer()}"
+      start(id)
+      :ok = Session.subscribe(id)
+
+      :ok =
+        Session.debug_gate(id, [todo_call("t1", [%{"content" => "A", "status" => "pending"}])])
+
+      {:ok, state} = Session.state(id)
+      {:ok, _input, _opts, ctx} = Session.wire_request(state)
+
+      expected = Prompt.trailer_bytes(ctx)
+      assert expected > 0
+      assert_receive {:agent, ^id, {:trailer_bytes, ^expected}}, 1_000
+    end
   end
 
   describe "TodoWrite.parse/1" do

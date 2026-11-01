@@ -205,6 +205,27 @@ defmodule CodingAgent.UI.TuiCommandsTest do
     assert body =~ "2 calls"
   end
 
+  test "/stats shows the state trailer against its cap (ADR 024)", %{root: root} do
+    # The trailer is re-sent uncached on every round, so its size is a
+    # per-round floor; before the first request there is nothing to show,
+    # and a "0" would claim a measurement that has not happened.
+    pid = start_tui(root)
+    fire(pid, :__resize_poll__)
+
+    type(pid, "/stats")
+    key(pid, "enter")
+    refute Enum.join(buffer(pid), "\n") =~ "trailer"
+    key(pid, "esc")
+
+    agent(pid, {:trailer_bytes, 1_740})
+    fire(pid, :__resize_poll__)
+
+    type(pid, "/stats")
+    key(pid, "enter")
+
+    assert Enum.join(buffer(pid), "\n") =~ ~r/trailer\s+1\.7k of 4\.0k/
+  end
+
   test "esc closes the palette without running", %{root: root} do
     pid = start_tui(root)
     fire(pid, :__resize_poll__)

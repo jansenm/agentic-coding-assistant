@@ -2797,6 +2797,14 @@ defmodule CodingAgent.Core.Session do
       context = Prompt.with_budget(context, budget_info(state))
       context = Prompt.with_capabilities(context, capability_info(state))
 
+      # What the trailer COSTS is the one number the model never sees and
+      # the human cannot otherwise get: it is re-sent uncached on every
+      # round, so it is a per-round floor, and `Prompt.trailer_max/0` caps
+      # it. Published here because this is the one place the assembled
+      # context exists — a UI that re-assembled it would be a second
+      # assembly path that can drift from the request.
+      broadcast(state, {:trailer_bytes, Prompt.trailer_bytes(context)})
+
       # The trailer is uncached by construction (its bytes are re-sent on
       # every round), so it is capped: `Prompt.validate_trailer/1` returns
       # a message, never a raise — a predictable size error must be a value

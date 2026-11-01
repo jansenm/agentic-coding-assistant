@@ -28,6 +28,7 @@ defmodule CodingAgent.UI.Tui do
   alias CodingAgent.Core.Providers.{Catalog, Discovery}
   alias CodingAgent.Core.Providers.Catalog.Refresh
   alias CodingAgent.Core.Session.Compactor
+  alias CodingAgent.Core.Session.Prompt
   alias CodingAgent.Core.Session.Store
   alias CodingAgent.Core.Session.Supervisor
   alias CodingAgent.Core.Session.Timing
@@ -194,6 +195,9 @@ defmodule CodingAgent.UI.Tui do
       # worker, so the session process's own state is the one the turn
       # STARTED from and a running turn read as zeros.
       timing: Timing.new(),
+      # the per-request state trailer's size, MIRRORED from
+      # `{:trailer_bytes, …}` (ADR 024 cap); 0 = no request assembled yet
+      trailer_bytes: 0,
       status: :idle,
       transcript: [],
       # esc-to-quit confirm: first esc arms, second esc (within
@@ -506,6 +510,9 @@ defmodule CodingAgent.UI.Tui do
         # the round accounting, seeded from the snapshot and kept current
         # by `{:timing, …}` (see the picker mount)
         timing: Timing.restore(restored && Map.get(restored, :timing)),
+        # the trailer's size is not persisted: the first request of this
+        # mount republishes it (see the picker mount)
+        trailer_bytes: 0,
         status: status,
         transcript: history,
         # esc-to-quit confirm: first esc arms, second esc (within
@@ -3317,6 +3324,14 @@ defmodule CodingAgent.UI.Tui do
     {:noreply, %{state | timing: timing}}
   end
 
+  # The size of the per-request state trailer (ADR 024 cap), published when
+  # the session assembles a request. Mirrored rather than re-assembled: the
+  # trailer is built from live state inside `wire_request/2`, and a second
+  # assembly here would be a number that can drift from the one sent.
+  def handle_info({:agent, {:trailer_bytes, bytes}}, state) do
+    {:noreply, %{state | trailer_bytes: bytes}}
+  end
+
   # The session re-resolved its compaction window against the now-loaded
   # model catalog (ADR 039). The sidebar mirrors these numbers, so refresh
   # them; there is no transcript line for it (a background detail).
@@ -4994,10 +5009,13 @@ defmodule CodingAgent.UI.Tui do
   # `Session.state/1` (a turn's worker holds the live copy, so the
   # session process would answer with the state the turn STARTED from).
   defp stats_snapshot(state) do
+    bytes = Map.get(state, :trailer_bytes, 0)
+
     Stats.new(
       session_id: state.session_id,
       timing: Map.get(state, :timing) || Timing.new(),
-      usage: Usage.from_map(Map.get(state, :session_usage))
+      usage: Usage.from_map(Map.get(state, :session_usage)),
+      trailer: if(bytes > 0, do: {bytes, Prompt.trailer_max()})
     )
   end
 
