@@ -41,9 +41,11 @@ defmodule CodingAgent.UI.Tui do
     Commands,
     Composer,
     Editor,
+    Format,
     Keymap,
     LiveBand,
     Menu,
+    Sidebar,
     Styles,
     TranscriptView
   }
@@ -3864,7 +3866,7 @@ defmodule CodingAgent.UI.Tui do
 
     sidebar_widgets =
       if sidebar_area do
-        [{sidebar_widget(state), sidebar_area}]
+        [{Sidebar.widget(sidebar_panel(state)), sidebar_area}]
       else
         []
       end
@@ -4955,290 +4957,29 @@ defmodule CodingAgent.UI.Tui do
     end
   end
 
-  defp sidebar_widget(state) do
-    usage = CodingAgent.Core.Session.Usage.from_map(Map.get(state, :session_usage))
-    window = Map.get(state, :compaction_window, 0)
-
-    # The two limits the SESSION resolved once at init (ADR 037), mirrored
-    # like the model/effort: the render path must not re-read the layered
-    # config per frame. Soft is the idle threshold the warning tracks
-    # (80% of it); hard is `window - reserve`, the pre-call safety net.
-    soft = Map.get(state, :compaction_soft, 0)
-    hard = Map.get(state, :compaction_hard, 0)
-    warn_at = trunc(soft * 0.8)
-
-    # per-frame UserConfig.load removed (the CPU storm): the sidebar
-    # renders the value the LIVE SESSION resolved (state.session_effort,
-    # read once per mount, ADR 029) — the same one wire_request/2 puts on
-    # the request. A config re-read here would show the global layer even
-    # when the running session honoured a project override.
-    effort = Map.get(state, :session_effort)
-
-    # last turn's context size (ground truth from the provider) drives
-    # the % line; cumulative totals are separate. `Usage.last_input_tokens/1`
-    # is the one reader (heals a legacy map too); usage is a struct by
-    # this point (from_map/1 above), so no map-guard needed.
-    last_in = Usage.last_input_tokens(usage)
-    pct = trunc(last_in * 100 / max(window, 1))
-
-    # pre-compaction notice territory: the Compactor's warn threshold
-    pct_role = if last_in >= warn_at, do: :warning, else: :text
-
-    running = Map.get(state, :running_agent)
-    next_agent = Map.get(state, :next_agent)
-    busy? = state.status in [:running, :interrupting]
-
-    # -- the two blocks --------------------------------------------------------
-    # The panel answers three questions in three visually separated
-    # blocks, top to bottom:
-    #
-    #   * the HEADING: which repo is this session scoped to ("wo arbeite
-    #     ich") — a body line in `:emphasis`, not a `Block` title (a
-    #     one-sided border paints a title as bare text one cell in from
-    #     the edge, which reads as neither heading nor content);
-    #   * WHO acts: the agent (with the running/next split while a turn
-    #     is in flight), the model it runs on — split into its two halves,
-    #     so nothing is clipped — and the session id;
-    #   * WHAT it costs: the effort knob TOGETHER with the token rows it
-    #     belongs with (the decimal-aligned list), then the cost line.
-    #
-    # Labels are per-block for a reason: `definition_list/2` pads to the
-    # widest label of ITS list, so the identity block pads to "provider"
-    # (8) and the stats block to "tokens out" (10) — one list would pad
-    # every identity row to accommodate a stats label.
-    identity =
-      agent_rows(running, next_agent, busy?) ++
-        model_rows(Map.get(state, :model)) ++
-        [{"session", String.slice(state.session_id, 0, 22)}]
-
-    # An uncataloged model's window is the 500k default: a guess. Mark the
-    # soft line so it cannot be mistaken for a verified one (the session
-    # also emits a once-per-session note; this is the always-visible cue).
-    fallback? = Map.get(state, :context_window_source) == :fallback
-    soft_suffix = if fallback?, do: " tok (assumed)", else: " tok"
-    soft_role = if fallback?, do: :warning, else: pct_role
-
-    # WHEN the window came out of the catalog — matched or missed — say how
-    # old that catalog's data is (review N106). The snapshot is a PACKAGED
-    # file cut on llm_db's release cadence, so it is routinely months
-    # behind the providers: a cloud model released since the cut is absent
-    # from it and gets the 500k guess. Without the date the guess looks
-    # arbitrary; with it, `assumed` beside `2026-08-23 (55d)` IS the
-    # explanation. Hidden when the window is configured (the catalog was
-    # not used) or still loading (it was not consulted).
-    source = Map.get(state, :context_window_source)
-
-    stats =
-      [
-        {"effort", effort_name(effort)},
-        {"tokens in", {:decimal, fmt_k(Usage.input_tokens(usage)), nil}}
-      ] ++
-        cached_rows(usage) ++
-        [
-          {"tokens out", {:decimal, fmt_k(Usage.output_tokens(usage)), nil}},
-          {"context", {:decimal, fmt_k(last_in), " (#{pct}% win)"}, pct_role},
-          {"soft at", {:decimal, fmt_k(soft), soft_suffix}, soft_role},
-          {"hard at", {:decimal, fmt_k(hard), " tok"}, pct_role}
-        ] ++
-        last_round_row(Map.get(state, :timing, Timing.new()).last) ++
-        catalog_row(source, fallback?)
-
-    # What the provider says was spent — never tokens × a local rate
-    # (`CodingAgent.Core.Costs`). "(billed)" marks a DELTA of the
-    # provider's own account figure; without it the number came priced
-    # with the response. Both rows are absent until there is something to
-    # say: a fresh session has a baseline, not a cost.
-    cost_line =
-      case money_rows(usage) do
-        [] -> []
-        rows -> Styles.definition_list(rows, :sidebar)
-      end
-
-    help = [
-      Styles.gap(),
-      Styles.section_header("ctrl-t toggles tools", :sidebar),
-      Styles.section_header("ctrl-x p hides panel", :sidebar)
-    ]
-
-    todo_lines = todo_section(Map.get(state, :todos, []))
-    subagent_lines = subagent_section(Map.get(state, :subagents, %{}), active_tab_id(state))
-
-    lines =
-      [Styles.heading(scope_name(Map.get(state, :scope_root)), :sidebar), Styles.gap()] ++
-        Styles.definition_list(identity, :sidebar) ++
-        [Styles.gap()] ++
-        Styles.definition_list(stats, :sidebar) ++
-        cost_line ++ subagent_lines ++ todo_lines ++ help
-
-    %Paragraph{
-      text: lines,
-      # the whole panel carries the sidebar fill, so the gaps between
-      # role-styled spans are filled too (a patchy fill looked broken)
-      style: Styles.surface(:sidebar),
-      # NO title and no border: the heading is the first BODY line (see
-      # above), and the panel's grey fill against the transcript's
-      # default background is the separation. A `[:right]` rule drew a
-      # column the fill already draws.
-      block: Styles.panel(borders: [], surface: :sidebar)
-    }
+  # The left panel's values, resolved here so `UI.Sidebar` stays a pure
+  # painter: it reads no session, no config and no clock.
+  defp sidebar_panel(state) do
+    Sidebar.new(
+      scope_root: Map.get(state, :scope_root),
+      session_id: state.session_id,
+      running_agent: Map.get(state, :running_agent),
+      next_agent: Map.get(state, :next_agent),
+      busy?: state.status in [:running, :interrupting],
+      model: Map.get(state, :model),
+      effort: Map.get(state, :session_effort),
+      usage: Usage.from_map(Map.get(state, :session_usage)),
+      window: Map.get(state, :compaction_window, 0),
+      soft: Map.get(state, :compaction_soft, 0),
+      hard: Map.get(state, :compaction_hard, 0),
+      window_source: Map.get(state, :context_window_source),
+      last_round: (Map.get(state, :timing) || Timing.new()).last,
+      todos: Map.get(state, :todos, []),
+      subagents: Map.get(state, :subagents, %{}),
+      active_tab: active_tab_id(state),
+      width: @sidebar_width
+    )
   end
-
-  # The last finished round's two durations (I1): the provider call and
-  # the work it caused, in that order — the same order `/stats` uses, and
-  # the same number it averages. Absent until this view has seen a round
-  # finish (a freshly attached session shows no row until its next one).
-  defp last_round_row(nil), do: []
-
-  defp last_round_row(round) do
-    [{"last round", "#{Timing.format_ms(round.llm_ms)} + #{Timing.format_ms(round.tool_ms)}"}]
-  end
-
-  # The sidebar's catalog row: which data the window was resolved against,
-  # and how old it is. It belongs to the stats block (it is a property of
-  # the numbers above it) and the role says whether that answer was USED:
-  # `:warning` when the catalog was consulted and did not know the model
-  # (the `assumed` marker's cause), `:muted` when it answered. Absent in
-  # the two states where there is nothing to date — a `:configured` window
-  # never consulted it, and `:loading` has not finished loading it.
-  defp catalog_row(source, _fallback?) when source in [nil, :configured, :loading], do: []
-
-  defp catalog_row(_source, fallback?) do
-    [{"catalog", Catalog.snapshot_age(), if(fallback?, do: :warning, else: :muted)}]
-  end
-
-  # The sidebar's TODO block (ADR 031): a gap, a muted "todo" header, then
-  # one row per item. Empty when there is no list, so a session that never
-  # plans gains no chrome. A long list is capped (the panel height stays
-  # bounded) with an overflow line naming the hidden count.
-  @todo_cap 8
-
-  defp todo_section([]), do: []
-
-  defp todo_section(todos) when is_list(todos) do
-    shown = Enum.take(todos, @todo_cap)
-
-    overflow =
-      case length(todos) - @todo_cap do
-        n when n > 0 -> [Styles.section_header("… +#{n} more", :sidebar)]
-        _ -> []
-      end
-
-    [Styles.gap(), Styles.section_header("todo", :sidebar)] ++
-      Styles.todo_lines(shown, @sidebar_width - 4, :sidebar) ++ overflow
-  end
-
-  defp todo_section(_), do: []
-
-  # The sidebar's SUBAGENT block (ADR 018, owner request 2026-09-30): the
-  # ACTIVE `task` children only — a finished child's tab is kept (read-only)
-  # but it is no longer "what is happening", and listing every delegation a
-  # session ever ran would grow the panel without bound. The active TAB is
-  # marked so the panel and the transcript agree on which view the human is
-  # in. Empty when nothing is delegated, so a solo session gains no chrome.
-  @subagent_cap 8
-
-  defp subagent_section(subagents, _active_tab) when map_size(subagents) == 0, do: []
-
-  defp subagent_section(subagents, active_tab) do
-    running =
-      subagents
-      |> Enum.reject(fn {_id, c} -> Map.get(c, :finished?, false) end)
-      |> Enum.sort_by(fn {_id, c} -> Map.get(c, :agent) end)
-
-    case running do
-      [] ->
-        []
-
-      _ ->
-        shown = Enum.take(running, @subagent_cap)
-        hidden = length(running) - length(shown)
-
-        [Styles.gap(), Styles.section_header("subagents", :sidebar)] ++
-          Enum.map(shown, fn {id, c} ->
-            Styles.subagent_line(
-              Map.get(c, :agent),
-              Map.get(c, :model),
-              id == active_tab,
-              @sidebar_width - 4,
-              :sidebar
-            )
-          end) ++
-          if hidden > 0, do: [Styles.section_header("… +#{hidden} more", :sidebar)], else: []
-    end
-  end
-
-  # The identity rows for the agent slot (B4/ADR 018). While a turn is IN
-  # FLIGHT, running and next are BOTH shown so they can differ (Tab only
-  # changes the next turn's agent); when idle only the next agent is
-  # shown, because `running_agent` keeps the last turn's value. The value
-  # carries the `:agent` role (cyan) so the identity keeps the colour the
-  # badge gave it.
-  defp agent_rows(running, next_agent, busy?) do
-    cond do
-      not busy? ->
-        [{"agent", next_agent, :agent}]
-
-      is_binary(running) and is_binary(next_agent) and running != next_agent ->
-        [
-          {"agent", "#{running} running", :agent},
-          {"agent", "#{next_agent} next", :agent}
-        ]
-
-      is_binary(running) ->
-        [{"agent", "#{running} running", :agent}]
-
-      is_binary(next_agent) ->
-        [{"agent", "#{next_agent} next", :agent}]
-
-      true ->
-        [{"agent", nil, :agent}]
-    end
-  end
-
-  # The model rows: the spec's two halves on their own rows.
-  #
-  # A model spec is "<provider>:<model id>" and the sidebar used to show
-  # it as ONE 32-char-clipped badge ("model ollama_cloud:deepseek-v4.1-fl…"):
-  # the version that distinguishes one model from another was exactly
-  # what got cut. Split, both halves fit whole. The split rule is the one
-  # `Request.build/2` and `ProviderHealth.probe_model/2` already use, so
-  # the panel names the same two things the wire request does. A spec
-  # with no colon names no provider: the `provider` row is then omitted
-  # rather than filled with a guessed one. A missing model reads as the
-  # definition list's em dash, like every other absent value.
-  defp model_rows(model) do
-    case split_model_spec(model) do
-      {id, nil} -> [{"model", id, :model}]
-      {id, provider} -> [{"model", id, :model}, {"provider", provider, :model}]
-    end
-  end
-
-  # "<provider>:<model id>" -> {id, provider}; a bare id -> {id, nil}.
-  defp split_model_spec(model) when is_binary(model) and model != "" do
-    case String.split(model, ":", parts: 2) do
-      [provider, id] -> {id, provider}
-      [id] -> {id, nil}
-    end
-  end
-
-  defp split_model_spec(_), do: {nil, nil}
-
-  # The panel heading: the repo this session is scoped to, as its last
-  # path segment (the full path is far wider than the 36-column panel).
-  # A scope with no basename ("/") or no scope at all (a half-built
-  # state) falls back to something printable rather than a blank heading.
-  defp scope_name(root) when is_binary(root) and root != "" do
-    case Path.basename(root) do
-      "" -> root
-      name -> name
-    end
-  end
-
-  defp scope_name(_), do: "—"
-
-  defp fmt_k(n) when n < 1_000, do: "#{n}"
-  defp fmt_k(n) when n < 1_000_000, do: "#{trunc(n / 100) / 10}k"
-  defp fmt_k(n), do: "#{trunc(n / 100_000) / 10}M"
 
   # The `/stats` body (I1): one label/value row per fact, padded to the
   # widest label. `llm` and `tools` are the two halves of a round (see
@@ -5314,13 +5055,13 @@ defmodule CodingAgent.UI.Tui do
     cached =
       case Usage.cached_tokens(usage) do
         0 -> ""
-        n -> "  ·  #{fmt_k(n)} cached#{hit_suffix(usage)}"
+        n -> "  ·  #{Format.k(n)} cached#{hit_suffix(usage)}"
       end
 
     [
       stat(
         "tokens",
-        "#{fmt_k(Usage.input_tokens(usage))} in#{cached}  ·  #{fmt_k(Usage.output_tokens(usage))} out"
+        "#{Format.k(Usage.input_tokens(usage))} in#{cached}  ·  #{Format.k(Usage.output_tokens(usage))} out"
       )
     ]
   end
@@ -5333,77 +5074,8 @@ defmodule CodingAgent.UI.Tui do
   end
 
   defp money_lines(usage) do
-    usage |> money_rows() |> Enum.map(fn {label, value} -> stat(label, value) end)
+    usage |> Format.money_rows() |> Enum.map(fn {label, value} -> stat(label, value) end)
   end
-
-  # The money rows: what was spent and what is left, or nothing at all.
-  # A cost of 0 means "no baseline yet" (the first account sample only
-  # re-bases), so it is not shown — the sidebar never claims a measured
-  # zero.
-  defp money_rows(usage) do
-    spent =
-      case usage.cost do
-        c when is_number(c) and c > 0 ->
-          [{"cost", money(c) <> basis_suffix(usage.cost_basis)}]
-
-        _ ->
-          []
-      end
-
-    left =
-      case usage.balance do
-        %{remaining: r} = b when is_number(r) ->
-          [{"credits", money(r) <> allowance_suffix(b)}]
-
-        _ ->
-          []
-      end
-
-    spent ++ left
-  end
-
-  defp basis_suffix(:billed), do: " (billed)"
-  defp basis_suffix(_), do: ""
-
-  defp allowance_suffix(%{allowance: a}) when is_number(a) and a > 0, do: " / #{money(a)}"
-  defp allowance_suffix(_), do: ""
-
-  # Sub-cent amounts are the interesting ones here (a cached 200k call is
-  # $0.004), so the precision follows the magnitude instead of a fixed
-  # four decimals that would print "$0.0000" for a real cost.
-  defp money(n) do
-    decimals = if n < 0.01, do: 5, else: if(n < 1, do: 4, else: 2)
-    "$" <> :erlang.float_to_binary(n * 1.0, decimals: decimals)
-  end
-
-  # The prompt-cache row, or nothing at all. Zero means "no hit or the
-  # provider does not report caching" — the two are indistinguishable, so
-  # the row stays hidden instead of claiming a measured 0 %. The
-  # percentage comes from Usage.cache_hit_ratio/1, which is nil when the
-  # provider reports cached tokens outside the input (Anthropic); there
-  # the count is still worth showing, the share is not derivable.
-  defp cached_rows(usage) do
-    case Usage.cached_tokens(usage) do
-      0 ->
-        []
-
-      cached ->
-        suffix =
-          case Usage.cache_hit_ratio(usage) do
-            nil -> nil
-            ratio -> " (#{round(ratio * 100)}% hit)"
-          end
-
-        [{"cached in", {:decimal, fmt_k(cached), suffix}}]
-    end
-  end
-
-  # The reasoning-effort label for the sidebar (ADR 029). The session
-  # stores req_llm's canonical atom; `nil` means no override on the wire,
-  # which reads as "default" (the provider's own default).
-  defp effort_name(nil), do: "default"
-  defp effort_name(effort) when is_atom(effort), do: Atom.to_string(effort)
-  defp effort_name(effort), do: to_string(effort)
 
   # -- Agent slots (ADR 018) ---------------------------------------------------
 

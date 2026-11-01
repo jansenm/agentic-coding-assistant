@@ -702,3 +702,71 @@ over three terminal sizes with and without a tab strip, and "the pane the
 readers measure follows the composer, with no resize");
 ``tui_cells_test.exs`` ("the band is painted in the SAME frame rows the
 layout reserves for it").
+
+Amendment 2026-11-01: the panel is a module, and the live blocks move up
+-----------------------------------------------------------------------
+
+Two changes in one, because they touch the same lines.
+
+**The panel left the TUI.** ``sidebar_widget/1`` and its twenty row
+helpers lived in ``UI.Tui`` under the ``# -- Subagent tabs`` marker —
+the sidebar had no marker of its own, so the only way to find it was to
+read until ``defp sidebar_widget``. It is now ``UI.Sidebar``: a module
+that takes a struct of already-resolved values (``new/1``) and returns
+one widget. Nothing in it reads the session, the config or the clock, so
+the panel's order is unit-testable without a terminal
+(``sidebar_test.exs``), and the TUI keeps what only the TUI can know —
+which fields to resolve (``sidebar_panel/1``).
+
+The number spellings left too. The token abbreviation and the money rule
+were duplicated between the panel and the ``/stats`` popup; they are now
+``UI.Format`` (``k/1``, ``money/1``, ``money_rows/1``, ``effort_name/1``),
+read by both. Formatting is not painting, which is why it is its own
+module and not part of the panel.
+
+**The reading order changed.** The panel answered its questions in the
+order the rows had accumulated, not in the order a reader asks them: nine
+reference figures sat between the identity and the two blocks that
+actually move. Now:
+
+.. code-block:: text
+
+   <scope>
+
+   agent:    build
+   model:    deepseek-v4.1-flash
+   provider: ollama_cloud
+   session:  tui-3396
+
+   subagents
+   · explore · glm-5.3-flash          <- only while something runs
+
+   todo
+   ○ read the code                    <- only when the model plans
+
+   effort:      default
+   tokens in:    12.4k
+   tokens out:    3.1k
+   context:      48.0k (9% win)
+   soft at:     180.0k tok
+   hard at:     320.0k tok
+   last round:    4.2 s + 600 ms
+   catalog:     2026-08-23 (55d)
+
+   cost:      $0.2500 (billed)
+   credits:   $4.00
+
+   ctrl-t toggles tools
+   ctrl-x p hides panel
+
+The rule is *dynamic before static*: subagents and todo change while the
+session works, so they sit above the figures, which only move at a round
+boundary. The identity stays above both because it answers the first
+question ("who is doing this"), and the key hints stay last because they
+are read once.
+
+Accepted by ``sidebar_test.exs`` as an order (the label sequence), so a
+future reorder has to say so in the test: the heading first, identity
+before figures, the two live blocks above them, and every absent block
+(no subagents, no todos, no money, no catalog row) painting nothing at
+all.
