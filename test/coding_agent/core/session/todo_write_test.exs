@@ -218,6 +218,38 @@ defmodule CodingAgent.Core.Session.TodoWriteTest do
       assert expected > 0
       assert_receive {:agent, ^id, {:trailer_bytes, ^expected}}, 1_000
     end
+
+    # Review N141: the list is DURABLE, so it can arrive from the store or a
+    # mount option — paths that never pass `apply_todos/2`. A session carrying
+    # one that predates the cap used to have EVERY round refused, and the
+    # write that could shrink it needed a round: a deadlock. The list is
+    # fitted where it enters now, and the human is told what went.
+    test "an over-cap list from outside the tool does not make the session unusable" do
+      id = "todo-persisted-#{System.unique_integer()}"
+
+      huge =
+        Enum.map(1..40, fn i ->
+          %{"content" => String.duplicate("y", 60) <> "#{i}", "status" => "pending"}
+        end)
+
+      start(id, todos: huge)
+
+      {:ok, state} = Session.state(id)
+
+      # fitted, not refused — and the model reads the list it can update
+      assert length(state.todos) < 40
+      assert Prompt.todo_block_bytes(state.todos) <= Prompt.todo_limit()
+
+      # the request the deadlock was about now assembles
+      assert {:ok, _model, _opts, ctx} = Session.wire_request(state)
+      assert Prompt.trailer_bytes(ctx) <= Prompt.trailer_max()
+
+      # and the human is told what the fit took
+      assert Enum.any?(
+               CodingAgent.Core.Session.Store.display(id),
+               &(to_string(&1.text) =~ "dropped")
+             )
+    end
   end
 
   describe "TodoWrite.parse/1" do

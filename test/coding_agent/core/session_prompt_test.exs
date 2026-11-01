@@ -419,6 +419,53 @@ defmodule CodingAgent.Core.Session.PromptTest do
     end
   end
 
+  # Review N141: the list is DURABLE, so it can arrive from the store or a
+  # mount option, where `apply_todos/2` never saw it. Fitting it at the ENTRY
+  # keeps a session resumable; trimming only the rendered block would break
+  # `todowrite`'s full-replace contract instead (the model would resend what
+  # it can see and drop the rest).
+  describe "fit_todos/1" do
+    test "a list that fits comes back untouched" do
+      todos = for i <- 1..3, do: %{"content" => "step #{i}", "status" => "pending"}
+      assert Prompt.fit_todos(todos) == {todos, 0}
+      assert Prompt.fit_todos([]) == {[], 0}
+      assert Prompt.fit_todos(:nonsense) == {:nonsense, 0}
+    end
+
+    test "an over-cap list is trimmed to what one request may carry" do
+      todos =
+        Enum.map(1..40, fn i ->
+          %{"content" => String.duplicate("y", 60) <> "#{i}", "status" => "pending"}
+        end)
+
+      assert Prompt.todo_block_bytes(todos) > Prompt.todo_limit()
+
+      {kept, dropped} = Prompt.fit_todos(todos)
+
+      assert dropped == 40 - length(kept)
+      assert dropped > 0
+      assert Prompt.todo_block_bytes(kept) <= Prompt.todo_limit()
+      # the survivors keep the list's own order
+      assert kept == Enum.take(todos, length(kept))
+    end
+
+    test "open items are kept before completed ones" do
+      done = %{"content" => "finished thing", "status" => "completed"}
+
+      todos =
+        [done] ++
+          Enum.map(1..40, fn i ->
+            %{"content" => String.duplicate("y", 60) <> "#{i}", "status" => "pending"}
+          end)
+
+      {kept, dropped} = Prompt.fit_todos(todos)
+
+      assert dropped > 0
+      refute done in kept
+      assert kept == todos |> Enum.reject(&(&1 == done)) |> Enum.take(length(kept))
+    end
+  end
+
   describe "todos_block/1" do
     test "one [status] line per item" do
       block = Prompt.todos_block([%{"content" => "Fix parser", "status" => "in_progress"}])

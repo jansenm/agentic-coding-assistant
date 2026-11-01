@@ -637,78 +637,103 @@ defmodule CodingAgent.Core.Session do
           sanitize_context(restored)
       end
 
-    {:ok,
-     State.new(
-       id: id,
-       context: context,
-       model: model,
-       status: status,
-       scope_root: scope_root,
-       policy: policy,
-       pending_tool_calls: pending_tool_calls,
-       pending_round_calls: pending_round_calls,
-       pending_round_results: pending_round_results,
-       # [providers.*] snapshot (layer 0 < global < project): consulted
-       # per request (request_parts/1) and by the TUI's model menu
-       # (provider_config_of/1). Found live NEVER SEEDED — every
-       # session resolved against an empty registry, so non-native
-       # providers (ollama_cloud via provider = "openai") failed closed
-       # with :bad_entry and the model menu showed only the current
-       # model.
-       provider_config: snapshot.providers,
-       # Sandbox mount schema (ADR 015): rw/ro/hide from the config
-       # layers. `rw` may only come from shipped + global, so a repo
-       # cannot widen its own sandbox.
-       mounts: snapshot.mounts,
-       # the resolved agent definition (ADR 017), or nil. The UI reads its
-       # name/model for the two slots (ADR 018); the gate uses its policy
-       # layer via state.policy.
-       agent: agent,
-       base_policy: base_policy,
-       base_prompt: base_prompt,
-       prompt_override: prompt_override,
-       # resumed state carried forward: usage drives the compaction
-       # trigger (see above), warned/backoff avoid re-warning and
-       # re-retrying a summarize that already failed before the restart
-       usage: usage,
-       compaction_warned: compaction_warned,
-       compaction_backoff: compaction_backoff,
-       # the per-turn round budget resolved from config.toml (ADR 025);
-       # an agent's max_turns overrides it per turn (State.tool_budget/1)
-       max_tool_rounds: Config.max_tool_rounds(snapshot),
-       # the session's reasoning effort (ADR 029), resolved from the same
-       # layered config.toml; rides every request via wire_request/2.
-       # A malformed value raises inside Config (loud, never a no-op).
-       reasoning_effort: Config.reasoning_effort(snapshot),
-       # the model window and the two compaction limits (ADR 037)
-       context_window: window,
-       compaction_soft_limit: soft_limit,
-       compaction_hard_limit: hard_limit,
-       context_window_source: window_source,
-       # a driver that can answer a mid-turn question (the TUI sets this);
-       # a headless driver gets the automatic wrap-up at the budget
-       interactive: Keyword.get(opts, :interactive, false),
-       # Subagent seams (ADR 017/018). A primary is depth 0; a delegated
-       # child is depth 1 (no further delegation). The names a `task` call
-       # may delegate to are resolved here so the tool can advertise them.
-       depth: Keyword.get(opts, :depth, 0),
-       subagents: delegatable_names(Config.agents(scope_root)),
-       persist?: Keyword.get(opts, :persist?, true),
-       # a resumed budget pause re-offers its dialog (the held round and
-       # the question are durable)
-       budget_pause: Keyword.get(opts, :budget_pause),
-       # a resumed doom-loop pause re-offers too (ADR 026)
-       doom_pause: Keyword.get(opts, :doom_pause),
-       # a resumed question pause re-offers too (ADR 027)
-       question_pause: Keyword.get(opts, :question_pause),
-       # the model's todo list survives a resume (ADR 031)
-       todos: Keyword.get(opts, :todos, []),
-       test_mode: test_mode,
-       turn_runner: turn_runner,
-       subagent_runner: subagent_runner,
-       idle_compaction_runner: idle_compaction_runner,
-       cost_module: Keyword.get(opts, :cost_module)
-     )}
+    # Normalise the list where it ENTERS the session (review N141). It is
+    # durable and can predate the trailer cap, so a resume or a mount option
+    # could hand over a list that `apply_todos/2` never saw — and every
+    # request would be refused before the model could write a shorter one.
+    {todos, dropped_todos} = Prompt.fit_todos(Keyword.get(opts, :todos, []))
+
+    state =
+      State.new(
+        id: id,
+        context: context,
+        model: model,
+        status: status,
+        scope_root: scope_root,
+        policy: policy,
+        pending_tool_calls: pending_tool_calls,
+        pending_round_calls: pending_round_calls,
+        pending_round_results: pending_round_results,
+        # [providers.*] snapshot (layer 0 < global < project): consulted
+        # per request (request_parts/1) and by the TUI's model menu
+        # (provider_config_of/1). Found live NEVER SEEDED — every
+        # session resolved against an empty registry, so non-native
+        # providers (ollama_cloud via provider = "openai") failed closed
+        # with :bad_entry and the model menu showed only the current
+        # model.
+        provider_config: snapshot.providers,
+        # Sandbox mount schema (ADR 015): rw/ro/hide from the config
+        # layers. `rw` may only come from shipped + global, so a repo
+        # cannot widen its own sandbox.
+        mounts: snapshot.mounts,
+        # the resolved agent definition (ADR 017), or nil. The UI reads its
+        # name/model for the two slots (ADR 018); the gate uses its policy
+        # layer via state.policy.
+        agent: agent,
+        base_policy: base_policy,
+        base_prompt: base_prompt,
+        prompt_override: prompt_override,
+        # resumed state carried forward: usage drives the compaction
+        # trigger (see above), warned/backoff avoid re-warning and
+        # re-retrying a summarize that already failed before the restart
+        usage: usage,
+        compaction_warned: compaction_warned,
+        compaction_backoff: compaction_backoff,
+        # the per-turn round budget resolved from config.toml (ADR 025);
+        # an agent's max_turns overrides it per turn (State.tool_budget/1)
+        max_tool_rounds: Config.max_tool_rounds(snapshot),
+        # the session's reasoning effort (ADR 029), resolved from the same
+        # layered config.toml; rides every request via wire_request/2.
+        # A malformed value raises inside Config (loud, never a no-op).
+        reasoning_effort: Config.reasoning_effort(snapshot),
+        # the model window and the two compaction limits (ADR 037)
+        context_window: window,
+        compaction_soft_limit: soft_limit,
+        compaction_hard_limit: hard_limit,
+        context_window_source: window_source,
+        # a driver that can answer a mid-turn question (the TUI sets this);
+        # a headless driver gets the automatic wrap-up at the budget
+        interactive: Keyword.get(opts, :interactive, false),
+        # Subagent seams (ADR 017/018). A primary is depth 0; a delegated
+        # child is depth 1 (no further delegation). The names a `task` call
+        # may delegate to are resolved here so the tool can advertise them.
+        depth: Keyword.get(opts, :depth, 0),
+        subagents: delegatable_names(Config.agents(scope_root)),
+        persist?: Keyword.get(opts, :persist?, true),
+        # a resumed budget pause re-offers its dialog (the held round and
+        # the question are durable)
+        budget_pause: Keyword.get(opts, :budget_pause),
+        # a resumed doom-loop pause re-offers too (ADR 026)
+        doom_pause: Keyword.get(opts, :doom_pause),
+        # a resumed question pause re-offers too (ADR 027)
+        question_pause: Keyword.get(opts, :question_pause),
+        # the model's todo list survives a resume (ADR 031), fitted to what
+        # one request may carry
+        todos: todos,
+        test_mode: test_mode,
+        turn_runner: turn_runner,
+        subagent_runner: subagent_runner,
+        idle_compaction_runner: idle_compaction_runner,
+        cost_module: Keyword.get(opts, :cost_module)
+      )
+
+    {:ok, note_dropped_todos(state, dropped_todos)}
+  end
+
+  # The human sees what the fit took, once, in the transcript and the store.
+  # The model sees the SHORTER list on its first request, so it never reads a
+  # list that is not the one it can update.
+  defp note_dropped_todos(state, 0), do: state
+
+  defp note_dropped_todos(state, dropped) do
+    broadcast(
+      state,
+      {:info,
+       "· dropped #{dropped} todo item(s) on load: the list was over the per-request " <>
+         "budget (#{Prompt.todo_limit()} bytes)"}
+    )
+
+    state
   end
 
   # The names a `task` call may delegate to (ADR 017/018): `:subagent` and

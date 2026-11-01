@@ -386,6 +386,65 @@ defmodule CodingAgent.Core.Session.Prompt do
   def with_capabilities(context, _), do: context
 
   @doc """
+  Drops items from a list until its block fits `todo_limit/0`, and says how
+  many went.
+
+  The list is DURABLE (ADR 031) and can predate the cap, so it arrives from
+  the store or from a mount option — paths that never pass
+  `Session.apply_todos/2`. It is normalised where it ENTERS the session, not
+  where the request is built (review N141: a session resumed with an
+  over-cap list used to have every round refused, and the one write that
+  could shrink it needed a round).
+
+  Trimming the STATE rather than the rendered block is what keeps
+  `todowrite`'s full-replace contract true: a list the model can see only in
+  part would lose the hidden items on its next "send the complete list".
+  Open items are kept first — a stale plan misleads the human, an unfinished
+  one is still work — and the kept items keep their original order.
+  """
+  @spec fit_todos([map()]) :: {[map()], non_neg_integer()}
+  def fit_todos(todos) when is_list(todos) do
+    if todo_block_bytes(todos) <= @todo_limit do
+      {todos, 0}
+    else
+      fit(todos)
+    end
+  end
+
+  def fit_todos(other), do: {other, 0}
+
+  defp fit(todos) do
+    total = length(todos)
+
+    # Open first (stable, so each group keeps its own order), then a prefix
+    # that fits, restored to the original order: the sidebar shows the list
+    # the model reads, not a reshuffled one.
+    ranked =
+      todos
+      |> Enum.with_index()
+      |> Enum.sort_by(fn {todo, _i} -> if completed?(todo), do: 1, else: 0 end)
+
+    {kept, _} =
+      Enum.reduce_while(total..0//-1, {[], 0}, fn n, _ ->
+        kept =
+          ranked
+          |> Enum.take(n)
+          |> Enum.sort_by(fn {_todo, i} -> i end)
+          |> Enum.map(fn {todo, _i} -> todo end)
+
+        if todo_block_bytes(kept) <= @todo_limit do
+          {:halt, {kept, n}}
+        else
+          {:cont, {[], 0}}
+        end
+      end)
+
+    {kept, total - length(kept)}
+  end
+
+  defp completed?(todo), do: (todo["status"] || todo[:status]) == "completed"
+
+  @doc """
   The trailer's size cap, in bytes, for the WHOLE trailing state message.
 
   4 096 — measured, not chosen for roundness. At the live session's
