@@ -243,3 +243,49 @@ race, not a prompt defect: the answer's dialog vanished before the user
 could see the exchange had registered. With the dialog surviving, this is
 re-checked live before any prompt tuning (recorded in
 ``TODO.md``).
+
+Amendment 2026-11-01: Enter on an untouched question means the default
+----------------------------------------------------------------------
+
+Found live, twice in one session, and reported by the owner as "I think I
+answered … in both I picked the default": the wizard opens with
+``selected: []``, its own footer says ``enter = confirm``, and
+``question_confirm/1`` collects an empty selection into
+``"q"="Unanswered"``. So the one key the dialog advertises delivered
+*"the human declined"* when the human meant *"the one you recommended"*.
+Measured with the real wizard before the fix (Enter on an untouched
+single-question screen, one option labelled ``first (Recommended)``):
+
+```
+User has answered your questions: "Which?"="Unanswered".
+```
+
+Three things had to line up for that to reach the model, and each is
+worth naming: the dialog **advertised** Enter as confirm; nothing was
+**preselected**; and an empty selection is a **legitimate wire value**
+(Esc genuinely skips), so nothing downstream could tell the two apart.
+
+The fix follows the ordering rule this ADR already imposes on the model
+("put the recommended option FIRST"): the wizard now opens ON the first
+row, so Enter confirms the model's default. Esc keeps its meaning
+(``Unanswered`` for this and every remaining question), digits and
+arrows still move the pick, and typing still makes the custom buffer the
+answer instead.
+
+Two boundaries:
+
+- A **multi-select** question starts empty. A preselected row reads as
+  "these are the picks", and one pick is not a set; there the first
+  Enter honestly means "nothing here".
+- The preselection is **per question**: advancing the wizard re-derives
+  it for the next question instead of carrying the previous pick.
+
+The dialog and the mount seed now share ONE constructor
+(``question_prompt/1`` + ``default_selection/1`` in ``UI.Tui``), because
+the two had already drifted once: the ``:question_asked`` handler built
+its own map literal beside ``question_prompt_of/1``, so a default added
+in one would have been absent on the other path. Three tests pin the
+behaviour (``tui_question_test.exs``): Enter yields the first label, a
+multi-select stays empty, and a two-question wizard answers both with
+their own first rows.
+

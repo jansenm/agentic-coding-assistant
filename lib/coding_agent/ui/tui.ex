@@ -333,10 +333,38 @@ defmodule CodingAgent.UI.Tui do
   # active.
   defp question_prompt_of(%{question_pause: %{questions: questions}})
        when is_list(questions) and questions != [] do
-    %{questions: questions, index: 0, selected: [], answers: [], custom: nil}
+    question_prompt(questions)
   end
 
   defp question_prompt_of(_), do: nil
+
+  # The wizard state for a parked question. The first option starts
+  # SELECTED: the dialog's footer advertises "enter = confirm", so on an
+  # untouched screen that key must mean the model's default — the option
+  # it put first and marked "(Recommended)" (ADR 027's ordering rule) —
+  # and not `Unanswered`. A human who picks the default and hands the
+  # model a blank answer has been lied to by the one line that says what
+  # the keys do (found live 2026-10-31: two questions, both answered with
+  # Enter, both delivered as "Unanswered").
+  #
+  # A MULTI-select question starts empty: a preselected row reads as "these
+  # are the picks", and one pick is not a set — there the first Enter
+  # genuinely means "nothing here".
+  defp question_prompt(questions) do
+    %{
+      questions: questions,
+      index: 0,
+      selected: default_selection(List.first(questions)),
+      answers: [],
+      custom: nil
+    }
+  end
+
+  defp default_selection(%{"multiple" => multiple, "options" => [_ | _]})
+       when multiple in [nil, false],
+       do: [0]
+
+  defp default_selection(_), do: []
 
   defp mount_session(id, opts, prompt) do
     id = id || Keyword.get(opts, :session_id) || CodingAgent.Core.Session.new_id()
@@ -1664,7 +1692,16 @@ defmodule CodingAgent.UI.Tui do
     if next >= length(qp.questions) do
       question_send(%{state | question_prompt: nil}, answers)
     else
-      %{state | question_prompt: %{qp | index: next, selected: [], answers: answers, custom: nil}}
+      %{
+        state
+        | question_prompt: %{
+            qp
+            | index: next,
+              selected: default_selection(Enum.at(qp.questions, next)),
+              answers: answers,
+              custom: nil
+          }
+      }
     end
   end
 
@@ -3190,13 +3227,7 @@ defmodule CodingAgent.UI.Tui do
      %{
        state
        | status: :interrupted,
-         question_prompt: %{
-           questions: questions,
-           index: 0,
-           selected: [],
-           answers: [],
-           custom: nil
-         },
+         question_prompt: question_prompt(questions),
          pending: [],
          deciding?: false,
          stop_confirm?: false

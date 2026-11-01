@@ -60,6 +60,161 @@ defmodule CodingAgent.UI.TuiQuestionTest do
     wait_until(fn -> sync(pid).question_prompt == nil end)
   end
 
+  # Regression (found live 2026-10-31): the dialog advertises
+  # "enter = confirm" in its own footer, so a human who wants the model's
+  # default presses Enter on the untouched screen. Nothing was selected,
+  # `question_confirm/1` collected `[]`, and the model was told
+  # `"Which engine?"="Unanswered"` — twice, for two questions, while the
+  # human believed both were answered. The first row is the model's
+  # default by ADR 027's own ordering rule (recommended option FIRST), so
+  # the wizard now opens on it.
+  test "enter on an untouched question answers with the model's default" do
+    root = Path.join(System.tmp_dir!(), "tui-q-default-#{System.unique_integer()}")
+    File.mkdir_p!(root)
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    sid = "tui-q-default-#{System.unique_integer()}"
+
+    {:ok, _} =
+      CodingAgent.Core.Session.Supervisor.start_session(
+        id: sid,
+        scope_root: root,
+        policy: CodingAgent.Core.Permissions.load(nil, nil),
+        test_mode: true,
+        interactive: true
+      )
+
+    pid =
+      start_supervised!(
+        {Tui, [name: nil, test_mode: {100, 30}, session_id: sid, scope_root: root]}
+      )
+
+    :ok = CodingAgent.Core.Session.debug_gate(sid, [question_call()])
+    wait_until(fn -> sync(pid).question_prompt != nil end)
+
+    # the wizard opens ON the first option, and the frame says so
+    assert sync(pid).question_prompt.selected == [0]
+    assert Enum.join(buffer(pid), "\n") =~ "▸ 1) fd"
+
+    key(pid, "enter")
+    wait_until(fn -> sync(pid).question_prompt == nil end)
+
+    {:ok, state} = CodingAgent.Core.Session.state(sid)
+    text = context_text(state)
+
+    assert text =~ ~s("Which engine?"="fd")
+    refute text =~ "Unanswered"
+  end
+
+  # The one case where an untouched question really is unanswered: a
+  # MULTI-select question has no single default, and a preselected row
+  # would read as "these are the picks". Enter there means "nothing".
+  test "a multi-select question starts empty and Enter sends Unanswered" do
+    root = Path.join(System.tmp_dir!(), "tui-q-multi-#{System.unique_integer()}")
+    File.mkdir_p!(root)
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    sid = "tui-q-multi-#{System.unique_integer()}"
+
+    {:ok, _} =
+      CodingAgent.Core.Session.Supervisor.start_session(
+        id: sid,
+        scope_root: root,
+        policy: CodingAgent.Core.Permissions.load(nil, nil),
+        test_mode: true,
+        interactive: true
+      )
+
+    pid =
+      start_supervised!(
+        {Tui, [name: nil, test_mode: {100, 30}, session_id: sid, scope_root: root]}
+      )
+
+    :ok =
+      CodingAgent.Core.Session.debug_gate(sid, [
+        %{
+          id: "qm",
+          name: "question",
+          arguments: %{
+            "questions" => [
+              %{
+                "question" => "Which engines?",
+                "multiple" => true,
+                "options" => [%{"label" => "fd"}, %{"label" => "pure-Elixir"}]
+              }
+            ]
+          }
+        }
+      ])
+
+    wait_until(fn -> sync(pid).question_prompt != nil end)
+    assert sync(pid).question_prompt.selected == []
+
+    key(pid, "enter")
+    wait_until(fn -> sync(pid).question_prompt == nil end)
+
+    {:ok, state} = CodingAgent.Core.Session.state(sid)
+    assert context_text(state) =~ ~s("Which engines?"="Unanswered")
+  end
+
+  # A preselection must not survive into the NEXT question of a wizard
+  # run: question 2 opens on ITS default, not on whatever was picked for
+  # question 1.
+  test "each question of a multi-question wizard opens on its own default" do
+    root = Path.join(System.tmp_dir!(), "tui-q-two-#{System.unique_integer()}")
+    File.mkdir_p!(root)
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    sid = "tui-q-two-#{System.unique_integer()}"
+
+    {:ok, _} =
+      CodingAgent.Core.Session.Supervisor.start_session(
+        id: sid,
+        scope_root: root,
+        policy: CodingAgent.Core.Permissions.load(nil, nil),
+        test_mode: true,
+        interactive: true
+      )
+
+    pid =
+      start_supervised!(
+        {Tui, [name: nil, test_mode: {100, 30}, session_id: sid, scope_root: root]}
+      )
+
+    :ok =
+      CodingAgent.Core.Session.debug_gate(sid, [
+        %{
+          id: "q2",
+          name: "question",
+          arguments: %{
+            "questions" => [
+              %{"question" => "One?", "options" => [%{"label" => "a"}, %{"label" => "b"}]},
+              %{"question" => "Two?", "options" => [%{"label" => "c"}, %{"label" => "d"}]}
+            ]
+          }
+        }
+      ])
+
+    wait_until(fn -> sync(pid).question_prompt != nil end)
+    assert sync(pid).question_prompt.index == 0
+    assert sync(pid).question_prompt.selected == [0]
+
+    key(pid, "enter")
+
+    qp = sync(pid).question_prompt
+    assert qp.index == 1
+    assert qp.selected == [0]
+    assert qp.answers == [["a"]]
+
+    key(pid, "enter")
+    wait_until(fn -> sync(pid).question_prompt == nil end)
+
+    {:ok, state} = CodingAgent.Core.Session.state(sid)
+    text = context_text(state)
+    assert text =~ ~s("One?"="a")
+    assert text =~ ~s("Two?"="c")
+  end
+
   test "the wizard paints long question text wrapped, not clipped" do
     root = Path.join(System.tmp_dir!(), "tui-q3-#{System.unique_integer()}")
     File.mkdir_p!(root)
@@ -491,5 +646,25 @@ defmodule CodingAgent.UI.TuiQuestionTest do
     rows = buffer(pid)
     assert Enum.any?(rows, &String.contains?(&1, "tool budget reached (y/n)"))
     refute Enum.any?(rows, &String.contains?(&1, "approval needed"))
+  end
+
+  # The text of everything on the wire, so a test can assert what the
+  # MODEL was told (the tool result is the contract, not the buffer).
+  defp context_text(state) do
+    state.context
+    |> ReqLLM.Context.to_list()
+    |> Enum.map_join("\n", fn
+      %ReqLLM.Message{content: parts} when is_list(parts) ->
+        Enum.map_join(parts, "", fn
+          %ReqLLM.Message.ContentPart{text: t} when is_binary(t) -> t
+          _ -> ""
+        end)
+
+      %ReqLLM.Message{content: t} when is_binary(t) ->
+        t
+
+      _ ->
+        ""
+    end)
   end
 end
