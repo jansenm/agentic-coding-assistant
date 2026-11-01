@@ -770,3 +770,33 @@ future reorder has to say so in the test: the heading first, identity
 before figures, the two live blocks above them, and every absent block
 (no subagents, no todos, no money, no catalog row) painting nothing at
 all.
+
+Amendment 2026-11-01 (ii): the dialogs, the stats snapshot and the overlay geometry leave the TUI
+------------------------------------------------------------------------------------------------
+
+The same pass that moved the sidebar found three more clusters in
+``UI.Tui`` that were painter code living in a GenServer module:
+
+- **``UI.Dialogs``** — the four blocking surfaces (approval gate, tool
+  budget, doom loop, question wizard). They share one frame and one
+  failure mode (a dialog that does not fit its room, or two painting at
+  once), and they were 300 lines at the bottom of a 6000-line file. The
+  wizard's markdown body moved with them, since the def-list rules
+  (flatten every model-supplied line, separate blocks with an empty
+  blockquote) are the dialog's own contract, not the TUI's.
+- **``UI.Stats``** — the ``/stats`` body and its two exits (the file
+  beside ``tui.log``, OSC 52 to the clipboard). It is the detail view of
+  the two mirrors the sidebar shows at a glance.
+- **``UI.Overlay``** — the room and the rect every overlay is placed in.
+  The reading measure, ``area.height - 4`` and ``area.height - h - 3``
+  were spelled at each call site; the second one put a 26-row menu on a
+  30-row window at a negative row. One ``room/2`` and one ``rect/4`` now,
+  with the input height passed in rather than read from a state struct.
+
+What stays in ``UI.Tui`` is the one thing only the TUI knows: which
+fields to resolve (``sidebar_panel/1``, ``stats_snapshot/1``,
+``dialogs/1``) and which surface is up. The painters take resolved
+values, so all three are unit-testable without a terminal
+(``dialogs_test.exs``, ``overlay_stats_test.exs``).
+
+``tui.ex``: 6044 → 5337 lines across the two passes.

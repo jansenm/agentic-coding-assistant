@@ -27,7 +27,6 @@ defmodule CodingAgent.UI.Tui do
   alias CodingAgent.Core.Session
   alias CodingAgent.Core.Providers.{Catalog, Discovery}
   alias CodingAgent.Core.Providers.Catalog.Refresh
-  alias CodingAgent.Core.ToolCall
   alias CodingAgent.Core.Session.Compactor
   alias CodingAgent.Core.Session.Store
   alias CodingAgent.Core.Session.Supervisor
@@ -40,12 +39,14 @@ defmodule CodingAgent.UI.Tui do
     Bridge,
     Commands,
     Composer,
+    Dialogs,
     Editor,
-    Format,
     Keymap,
     LiveBand,
     Menu,
+    Overlay,
     Sidebar,
+    Stats,
     Styles,
     TranscriptView
   }
@@ -109,22 +110,13 @@ defmodule CodingAgent.UI.Tui do
   # up and the overlays move with it. The fixed `area.height - 4` cap and
   # `area.height - h - 3` offset this replaces only worked while the row
   # they must not cover was the composer's own meta row.
-  defp overlay_room(state, area) do
-    max(area.height - input_height(state) - LiveBand.height() - 2, 1)
-  end
+  #
+  # The geometry itself lives in `UI.Overlay` (one definition for every
+  # overlay); these two are the adapter that resolves this state's input
+  # height for it.
+  defp overlay_room(state, area), do: Overlay.room(area, input_height(state))
 
-  # an overlay's rect: bottom edge on the room's last row, centered
-  # horizontally, at most as tall as the room
-  defp overlay_rect(state, area, h, w) do
-    h = min(h, overlay_room(state, area))
-
-    %Rect{
-      x: div(max(area.width - w, 0), 2),
-      y: overlay_room(state, area) - h,
-      width: w,
-      height: h
-    }
-  end
+  defp overlay_rect(state, area, h, w), do: Overlay.rect(area, input_height(state), h, w)
 
   # The app's breathing room: 1 cell of background on every side of the
   # frame (`Layout.split margin: 1`, spelled there because the layout
@@ -2233,12 +2225,12 @@ defmodule CodingAgent.UI.Tui do
       end
 
     note =
-      case write_stats_file(state.session_id, text) do
+      case Stats.write_file(state.session_id, text) do
         {:ok, path} -> "stats copied (#{path})"
         :error -> "stats copied (clipboard only — no file)"
       end
 
-    osc52_copy(text, state)
+    Stats.copy(text, Map.get(state, :test_mode?, false))
 
     {:noreply,
      %{
@@ -2560,7 +2552,8 @@ defmodule CodingAgent.UI.Tui do
   defp run_command_action(:show_stats, _args, state) do
     rows =
       state
-      |> stats_lines()
+      |> stats_snapshot()
+      |> Stats.lines()
       |> Enum.map(fn line -> %{action: {:__info__, line}, key: "", label: ""} end)
 
     {:noreply,
@@ -3881,10 +3874,25 @@ defmodule CodingAgent.UI.Tui do
       menu_widgets(state, area) ++
       file_widgets(state, area) ++
       command_widgets(state, area) ++
-      budget_widgets(state, area) ++
-      doom_widgets(state, area) ++
-      question_widgets(state, area) ++ dialog_widgets(state, area)
+      Dialogs.widgets(dialogs(state), area, input_height(state))
   end
+
+  # The four blocking prompts the dialogs paint, resolved from the state.
+  defp dialogs(state) do
+    Dialogs.new(
+      pending: Map.get(state, :pending, []),
+      deciding?: Map.get(state, :deciding?, false),
+      budget: budget_prompt_value(state),
+      doom: doom_prompt_value(state),
+      question: Map.get(state, :question_prompt)
+    )
+  end
+
+  defp budget_prompt_value(%{budget_prompt: %{budget: budget}}), do: budget
+  defp budget_prompt_value(_), do: nil
+
+  defp doom_prompt_value(%{doom_prompt: %{tool: tool}}), do: tool
+  defp doom_prompt_value(_), do: nil
 
   # The `/` command palette (ADR 034): the same bottom-anchored, windowed
   # popup as the file picker, but the candidate list is the static
@@ -4981,100 +4989,16 @@ defmodule CodingAgent.UI.Tui do
     )
   end
 
-  # The `/stats` body (I1): one label/value row per fact, padded to the
-  # widest label. `llm` and `tools` are the two halves of a round (see
-  # `Core.Session.Timing`); the per-round average is what makes 33 minutes
-  # legible — 200 rounds at 9 s is the provider, 200 at 9 s with 8 s in the
-  # tools is the harness.
-  # The numbers the TUI has MIRRORED (`{:timing, …}`, `{:usage_updated, …}`),
-  # never `Session.state/1`. A turn runs in a worker with its own copy, so
-  # the session process still holds the state the turn STARTED from: asking
-  # it showed a running turn's stats as zeros until the turn returned.
-  defp stats_lines(state) do
-    timing = Map.get(state, :timing) || Timing.new()
-    usage = Usage.from_map(Map.get(state, :session_usage))
-    avg = fn ms -> Timing.format_ms(Timing.per_round(ms, timing)) end
-
-    [
-      stat("session", to_string(state.session_id)),
-      stat("rounds", "#{timing.rounds} calls"),
-      stat("llm", "#{Timing.format_ms(timing.llm_ms)}  (#{avg.(timing.llm_ms)}/round)"),
-      stat("tools", "#{Timing.format_ms(timing.tool_ms)}  (#{avg.(timing.tool_ms)}/round)"),
-      stat(
-        "turn",
-        "#{timing.turn_rounds} calls  #{Timing.format_ms(timing.turn_llm_ms + timing.turn_tool_ms)}"
-      )
-    ] ++
-      token_lines(usage) ++
-      money_lines(usage)
-  end
-
-  defp stat(label, value), do: " " <> String.pad_trailing(label, 9) <> value
-
-  # P37: the copy target. The state dir is where `tui.log` already lives
-  # ("logs and other non-session state live alongside the store DB"), so
-  # the path in the status line is one the reader can open, tail and paste
-  # from — the file is the part that always works.
-  defp write_stats_file(session_id, text) do
-    path = Path.join(CodingAgent.Core.Config.state_dir(), "stats-#{session_id}.txt")
-
-    with :ok <- File.mkdir_p(Path.dirname(path)),
-         :ok <- File.write(path, text) do
-      {:ok, path}
-    else
-      _ -> :error
-    end
-  rescue
-    _ -> :error
-  end
-
-  # OSC 52 on the controlling tty: `ESC ] 52 ; c ; <base64> BEL`. Written
-  # the way `Mix.Tasks.Tui.reset_terminal/0` writes its sequences, because
-  # stdout belongs to the renderer. Best-effort: terminals and tmux may
-  # ignore it (tmux needs `set-clipboard on`), which is why the file above
-  # exists. Skipped in test_mode — the suite runs on a real tty and must
-  # not put a base64 snapshot on whoever is running it.
-  defp osc52_copy(_text, %{test_mode?: true}), do: :ok
-
-  defp osc52_copy(text, _state) do
-    payload = Base.encode64(text)
-
-    case File.open("/dev/tty", [:write, :raw]) do
-      {:ok, tty} ->
-        IO.binwrite(tty, "\e]52;c;#{payload}\a")
-        File.close(tty)
-
-      {:error, _} ->
-        :ok
-    end
-  rescue
-    _ -> :ok
-  end
-
-  defp token_lines(usage) do
-    cached =
-      case Usage.cached_tokens(usage) do
-        0 -> ""
-        n -> "  ·  #{Format.k(n)} cached#{hit_suffix(usage)}"
-      end
-
-    [
-      stat(
-        "tokens",
-        "#{Format.k(Usage.input_tokens(usage))} in#{cached}  ·  #{Format.k(Usage.output_tokens(usage))} out"
-      )
-    ]
-  end
-
-  defp hit_suffix(usage) do
-    case Usage.cache_hit_ratio(usage) do
-      nil -> ""
-      ratio -> " (#{round(ratio * 100)}%)"
-    end
-  end
-
-  defp money_lines(usage) do
-    usage |> Format.money_rows() |> Enum.map(fn {label, value} -> stat(label, value) end)
+  # The `/stats` snapshot, resolved here so `UI.Stats` stays a pure
+  # formatter: the same two mirrors the panel reads, never
+  # `Session.state/1` (a turn's worker holds the live copy, so the
+  # session process would answer with the state the turn STARTED from).
+  defp stats_snapshot(state) do
+    Stats.new(
+      session_id: state.session_id,
+      timing: Map.get(state, :timing) || Timing.new(),
+      usage: Usage.from_map(Map.get(state, :session_usage))
+    )
   end
 
   # -- Agent slots (ADR 018) ---------------------------------------------------
@@ -5409,308 +5333,5 @@ defmodule CodingAgent.UI.Tui do
       mins < 1440 -> "#{div(mins, 60)}h ago"
       true -> "#{div(mins, 1440)}d ago"
     end
-  end
-
-  defp dialog_widgets(%{pending: []}, _area), do: []
-
-  defp dialog_widgets(%{deciding?: true}, _area), do: []
-
-  defp dialog_widgets(%{pending: pending} = state, area) do
-    pending
-    |> Enum.with_index()
-    |> Enum.map(fn {call, i} ->
-      {_id, name, args} = ToolCall.normalize(call)
-      pretty = pretty_args(args)
-
-      # Escalations carry the agent's stated reason (ADR 015): show it
-      # first, so the human reads WHY before the raw arguments.
-      reason =
-        case escalation_reason(args) do
-          nil -> ""
-          r -> "why: #{r}\n\n"
-        end
-
-      text =
-        "#{name}(#{pretty})\n\n" <>
-          reason <>
-          "y = approve   n = reject   e = edit (soon)"
-
-      h =
-        min(
-          6 + length(String.split(pretty, "\n")) + length(String.split(reason, "\n")),
-          div(area.height, 2)
-        )
-
-      # NOTE: widget-level bg + Clear variants both failed headless
-      # (bg didn't fill; Clear killed the render cycle). The joined
-      # string with per-row spaces renders — bg comes from the
-      # widget-level style.
-      body =
-        text
-        |> String.split("\n")
-        |> Enum.concat(List.duplicate(" ", max(h - 2 - length(String.split(text, "\n")), 0)))
-        |> Enum.join("\n")
-
-      # The gate is a distinct, blocking surface: a double border in the
-      # warning role (one meaning per color role). The panel builder owns
-      # the border type now — no reaching around it.
-      widget = %Paragraph{
-        text: body,
-        style: Styles.surface(:chrome),
-        block:
-          Styles.panel(
-            title: " APPROVAL #{i + 1}/#{length(pending)} ",
-            surface: :chrome,
-            border_style: Styles.role(:warning, :chrome),
-            border_type: :double
-          )
-      }
-
-      # cap at the reading measure and center: a wide terminal must
-      # not stretch the dialog edge to edge (live report)
-      w = min(@measure + 2, area.width - 4)
-      rect = overlay_rect(state, area, h, w)
-      [{%Clear{}, rect}, {widget, rect}]
-    end)
-    |> List.flatten()
-  end
-
-  # The tool-round budget prompt (ADR 025): a single panel, y continues
-  # (another full budget), n stops (the model summarizes and the turn
-  # ends). Rendered instead of the approval dialog — a budget pause has
-  # no pending tool calls.
-  defp budget_widgets(%{budget_prompt: nil}, _area), do: []
-
-  defp budget_widgets(%{budget_prompt: %{budget: budget}} = state, area) do
-    text =
-      "The turn has used its #{budget}-round tool budget.\n\n" <>
-        "y = continue (another #{budget} rounds)   n = stop (summarize)"
-
-    h = min(6, div(area.height, 2))
-
-    body =
-      text
-      |> String.split("\n")
-      |> Enum.concat(List.duplicate(" ", max(h - 2 - length(String.split(text, "\n")), 0)))
-      |> Enum.join("\n")
-
-    widget = %Paragraph{
-      text: body,
-      style: Styles.surface(:chrome),
-      block:
-        Styles.panel(
-          title: " TOOL BUDGET ",
-          surface: :chrome,
-          border_style: Styles.role(:warning, :chrome),
-          border_type: :double
-        )
-    }
-
-    w = min(@measure + 2, area.width - 4)
-    rect = overlay_rect(state, area, h, w)
-    [{%Clear{}, rect}, {widget, rect}]
-  end
-
-  # The doom-loop prompt (ADR 026): a single panel, y continues the
-  # repeated round, n rejects it (steers the model off the repetition).
-  defp doom_widgets(%{doom_prompt: nil}, _area), do: []
-
-  defp doom_widgets(%{doom_prompt: %{tool: tool}} = state, area) do
-    text =
-      "Repeated call detected: #{tool} was called 3 times with identical\n" <>
-        "arguments. This is usually a loop.\n\n" <>
-        "y = continue (run it anyway)   n = reject (change approach)"
-
-    h = min(7, div(area.height, 2))
-
-    body =
-      text
-      |> String.split("\n")
-      |> Enum.concat(List.duplicate(" ", max(h - 2 - length(String.split(text, "\n")), 0)))
-      |> Enum.join("\n")
-
-    widget = %Paragraph{
-      text: body,
-      style: Styles.surface(:chrome),
-      block:
-        Styles.panel(
-          title: " DOOM LOOP ",
-          surface: :chrome,
-          border_style: Styles.role(:warning, :chrome),
-          border_type: :double
-        )
-    }
-
-    w = min(@measure + 2, area.width - 4)
-    rect = overlay_rect(state, area, h, w)
-    [{%Clear{}, rect}, {widget, rect}]
-  end
-
-  # The question wizard (ADR 027): the current question, its options as a
-  # definition list, the always-present "type your own" row, and the
-  # controls.
-  #
-  # The body is MARKDOWN painted by the Markdown widget, not a hand-sized
-  # Paragraph: markdown wraps long question and description text natively,
-  # so nothing clips at the panel edge (the old plain-Paragraph wizard
-  # lost half of a long question on a narrow window, found live). Options
-  # use the definition-list form — the bold TERM is the key row
-  # ("**1) fd**"), the DESCRIPTION hangs below it prefixed with ": " —
-  # because tui-markdown turns bare digit-led lines into lists and
-  # RENUMBERS them ("1) fd" renders as "1." and "0)" becomes "3."), which
-  # would break the digit keys. Bold keeps "1)" literal. Measured and
-  # painted by the same probe the transcript uses (measure = paint).
-  defp question_widgets(%{question_prompt: nil}, _area), do: []
-
-  defp question_widgets(%{question_prompt: qp} = state, area) do
-    question = Enum.at(qp.questions, qp.index)
-    options = question["options"] || []
-
-    body = question_markdown(question, qp, options)
-
-    # The probe measures the boxless markdown at the rect's INNER width;
-    # the panel's border adds the 2 rows back. Verified against the drawn
-    # buffer at 100/62/40 cols: the bottom border lands on the rect's
-    # last row, nothing clipped (the boxed widget wraps one column
-    # tighter than the boxless probe on both sides, which the height's
-    # last-nonblank metric absorbs).
-    w = min(@measure + 2, area.width - 4)
-    h = min(TranscriptView.height({:reasoning, body}, w - 2, nil) + 2, area.height - 2)
-
-    title =
-      case question["header"] do
-        hdr when is_binary(hdr) and hdr != "" -> hdr
-        _ -> "QUESTION"
-      end
-
-    widget = %Markdown{
-      content: body,
-      style: Styles.surface(:chrome),
-      block:
-        Styles.panel(
-          title: " #{title} ",
-          surface: :chrome,
-          border_style: Styles.role(:accent, :chrome),
-          border_type: :double
-        )
-    }
-
-    rect = overlay_rect(state, area, h, w)
-    [{%Clear{}, rect}, {widget, rect}]
-  end
-
-  # The wizard body in markdown. Terms are hard-wrapped single lines
-  # (option rows must stay rows — a description never merges into the
-  # next term's line), options separated by blank-QUOTE separators (see
-  # options_deflist — a plain blank line paints with no gap); the
-  # "type your own" row is an answer row like any other, so it gets the
-  # same separator. tui-markdown renders the description on its own
-  # ": " line (the definition-list look, verified against the painted
-  # buffer).
-  defp question_markdown(question, qp, options) do
-    hint =
-      if question["multiple"] || false do
-        "  \n(select one or more)"
-      else
-        nil
-      end
-
-    controls =
-      "enter = confirm   esc = skip" <>
-        if(length(qp.questions) > 1,
-          do: "   question #{qp.index + 1}/#{length(qp.questions)}",
-          else: ""
-        )
-
-    answers =
-      if options == [] do
-        custom_entry(qp.custom)
-      else
-        options_deflist(options, qp.selected) <> "\n\n>\n\n" <> custom_entry(qp.custom)
-      end
-
-    [
-      hard_breaks(String.trim(question["question"] || "")),
-      hint,
-      "",
-      answers,
-      "",
-      controls
-    ]
-    |> Enum.reject(&is_nil/1)
-    |> Enum.join("\n")
-  end
-
-  # The options as a definition list: the bold term carries the digit key
-  # (literal inside **…**), the description hangs below as ": …". Blocks
-  # are separated by an EMPTY BLOCKQUOTE (`>`): the def-list parser eats
-  # blank lines between blocks (measured — "\n\n" paints with no gap), so
-  # a plain paragraph separator shows nothing. A blockquote opens a new
-  # top-level block, which ratatui's spacer paints as a blank row even
-  # when empty — and a description or label containing "> x" merges into
-  # the def-list paragraph (lazy continuation) instead of breaking it.
-  #
-  # Labels, descriptions and the custom buffer are MODEL/USER text
-  # embedded in that structure, so each is reduced to ONE line first: a
-  # newline inside a label leaves the bold term unclosed and a blank line
-  # in a description escapes the def-list (measured — "evil\n>\n\n## x"
-  # painted as a heading). Flattening whitespace keeps the option rows
-  # rows, which is the structure's contract.
-  defp options_deflist(options, selected) do
-    options
-    |> Enum.with_index(1)
-    |> Enum.map_join("\n\n>\n\n", fn {o, i} ->
-      mark = if (i - 1) in selected, do: "▸ ", else: ""
-      term = "#{mark}**#{i}) #{single_line(o["label"])}**"
-
-      case single_line(o["description"]) do
-        "" -> term
-        desc -> term <> "\n: " <> desc
-      end
-    end)
-  end
-
-  # The always-present "type your own" row; while a custom answer is
-  # being typed it carries the buffer and the cursor.
-  defp custom_entry(nil), do: "**0) type your own answer…**"
-  defp custom_entry(buf), do: "▸ **0) #{single_line(buf)}▏**"
-
-  # One line, always: whitespace runs (newlines included) collapse to a
-  # single space, so embedded text cannot open a markdown block or close
-  # its own emphasis.
-  defp single_line(nil), do: ""
-  defp single_line(text) when is_binary(text), do: text |> String.split() |> Enum.join(" ")
-  defp single_line(_), do: ""
-
-  # A paragraph's own newlines must not open new blocks: make them hard
-  # breaks so the question's line structure survives the markdown parse.
-  defp hard_breaks(text), do: String.replace(text, "\n", "  \n")
-
-  # The agent's stated reason for an escalation (ADR 015), for display.
-  # Shown for any call that STATES one — `git` carries the same `network`
-  # escalation `shell` does, so this keys off the arguments, not the tool
-  # name (a file tool can state a `reason` too; then it is shown, and the
-  # gate ignores it, since that tool declares no escalation to attach it to).
-  defp escalation_reason(args) do
-    case Map.get(args, "reason") || Map.get(args, :reason) do
-      r when is_binary(r) and r != "" -> r
-      _ -> nil
-    end
-  end
-
-  # `reason` is rendered separately as "why:" — omit it from the raw argument
-  # list so the dialog does not say the same thing twice. The escalation
-  # booleans stay visible: they are the grant being approved, and `git` now
-  # carries one too (`network`).
-  @hidden_args ~w(reason)
-
-  defp pretty_args(args) do
-    args
-    |> Enum.reject(fn {k, _} -> to_string(k) in @hidden_args end)
-    |> Enum.map(fn {k, v} ->
-      v_str = if is_binary(v) and String.contains?(v, "\n"), do: inspect(v), else: to_string(v)
-      "#{k}: #{String.slice(v_str, 0, 160)}"
-    end)
-    |> Enum.join("\n")
   end
 end
