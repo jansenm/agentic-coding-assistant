@@ -112,6 +112,9 @@ Die Engine ist umgestellt (ADR 020 R16 + ADR 023). Offen:
   definieren (`mount_picker` 122 Zeilen, `mount_session` 224 — Funktionsspanne
   `defp` bis `end`). Die früheren Maße (`~114/~212`) waren die von `935cf92`,
   dem Commit, in dem sie falsch waren.
+  → Fortschritt: `Sidebar`, `Dialogs`, `Stats`, `Overlay`, `Display`, `Tabs`
+  sind eigene Module; `tui.ex` 6044 → **4803**. Der Mount-State ist **offen**
+  (siehe „Maps → Structs", Punkt 1).
 * `TranscriptView.metrics/…` als **eine** Heimat der Pane-Geometrie — derzeit
   verstreut (`content_width`, `pane_size`, Overlay-Raum).
 * `test_mode?`-Branches durch injizierte Behaviours ersetzen, wo sie schon
@@ -123,6 +126,110 @@ Die Engine ist umgestellt (ADR 020 R16 + ADR 023). Offen:
   Approval-Dialog druckt noch `y = approve …`; Info-/Warn-/Fehlerzeilen tragen
   `✖` als eingebackenen String statt eines rollen-gewählten Leitglyphs;
   Picker-Zeilen nutzen `to_string(status)` statt `Styles.status_badge/1`.
+
+## Maps → Structs
+
+**Regel (Owner-Entscheidung 2026-11-01):** ein Record, dessen Keys zur
+Compile-Zeit feststehen, ist eine **Struct**, keine Map. Maps bleiben nur
+**Wörterbücher** (Keys nicht vorher bekannt). Die Regel steht in `AGENTS.md`
+(„Maps become structs when the shape is known"); hier steht, **was noch offen
+ist**.
+
+Zählung auf `dev/mjansen @ 4bf6063`:
+`grep -rl defstruct lib/ | wc -l` → **17 Module** (18 Vorkommen; `ui/tabs.ex`
+hat zwei), und `grep -rn '@type [A-Za-z_]* :: %{' lib/ | wc -l` → **26
+Map-Shapes**. Davon sind **4 Wörterbücher** (`Permissions.entries`,
+`Permissions.layer`, `Question.question`, `Keymap.t` — Keys nicht vorher
+bekannt), also **22 Records**, die eine Struct sein sollten.
+
+### 1. Der TUI-State — die größte Lücke
+
+`ui/tui.ex` hat **kein** `defstruct`: der State ist ein anonymes Map-Literal,
+und zwar **zweimal** — `mount_picker/4` (53 Felder) und `mount_session/3`
+(64 Felder), Union **67**. Zwei Literale derselben Form heißt: ein neues Feld
+einzutragen ist ein Edit an zwei Stellen, und ein Feld, das nur in einem steht,
+ist ein `nil` an der anderen.
+
+Belege für den Preis (gleiche Zählung):
+
+| Maß | Zahl |
+| --- | --- |
+| `%{state \| …}`-Updates | 123 |
+| `state.x`-Lesezugriffe | 176 |
+| `Map.get(state, :k)` | 80 (davon 33 **mit** Default) |
+
+Die 33 Defaults sind der eigentliche Befund: sie sind die Stellen, an denen
+der Code *nicht weiß*, ob das Feld existiert — und in einem `defstruct` wäre
+die Antwort „ja, und zwar mit genau diesem Wert". Ein Feld existiert heute
+sogar **gar nicht** im Literal: `:last_pane_rect` wird von
+`remember_pane_rect/1` per `Map.put/3` geschrieben und von
+`last_pane_rect/1` per `Map.get/2` gelesen (Poll-Erkennung, `68b9ecd`). Es
+funktioniert, weil Maps jedes Key aufnehmen; eine Struct hätte den Fehler beim
+ersten Compile gezeigt.
+
+Ein `%UI.State{}` ist damit kein Umbenennen, sondern eine **Inventur**: 67
+Felder wollen in Gruppen (Sitzung / Eingabe / Transkript / Tabs / Picker /
+Overlays) — genau die `# --`-Abschnitte, die heute nur Kommentare sind. Das
+ist der nächste große Schnitt nach `Tabs`.
+
+### 2. Die Records mit den meisten Aufrufstellen
+
+Gemessen als Vorkommen von `Modul.typ` in `lib/` + `test/`:
+
+| Ort | Form | Refs | Warum es sich lohnt |
+| --- | --- | --- | --- |
+| `Core.Tools.scope` | `%{required(:root) => …, optional…}` | **30** | `%{root: …}` steht **15×** in **9** Dateien (davon `%{root: root}` 9×); jede Tool-Datei baut ihren Scope selbst, und `Tools.in_scope?/2`, `FileExec` und `Sandbox` lesen ihn unterschiedlich. Eine `Scope`-Struct mit `new/1` macht die 5 optionalen Felder (`mounts`, `session_id`, `shell_mode`, `depth`, `subagents`) zu benannten Feldern statt zu `Map.get`-Raten. **Größter Einzelgewinn.** |
+| `Core.Sandbox.profile` | `required`/`optional`-Map | 11 | Produzent (`Sandbox`) und Verbraucher (`Bwrap`, `Spill`, `Shell`) sind getrennte Module; ein Tippfehler im Grant-Namen fällt heute nur als „Grant fehlt" auf — also als stiller Rechteverlust (ADR 015: „must refuse, never silently widen"). |
+| `Core.Session.Export.data` | 7-Feld-Record | 7 | Wird nach JSON gerendert; die Feldnamen sind Vertrag. Struct + `Jason.Encoder`-Ableitung wäre **eine** Wahrheit statt String-Keys im Renderer. |
+| `Core.Costs.snapshot` | 6-Feld-Record | 6 | Zählerstände, die im Sidebar/`stats` landen. |
+| `Core.Sandbox.Mounts.t` | 3 Listen | 4 | Schon ein Record, nur ohne Struct — `%Mounts{}` wäre ein Ein-Zeilen-Umbau. |
+| `Core.Costs.balance` **und** `Core.Session.Usage.balance` | **zwei** identische 5-Feld-Shapes | 3 + 0 | Der Produzent (`Costs`) und der Speicher (`%Usage{balance:}`) definieren denselben Typ doppelt. Eine Struct (`Costs.Balance`) löscht die Kopie. |
+| `Core.Interrupt.snapshot` | 3-Feld-Record | 3 | Nur Diagnose/Test, aber der einzige Weg, den Interrupt-Zustand zu lesen. |
+
+### 3. Die kleinen Records (mechanisch, ein Record pro Commit)
+
+`Core.Region.result` (6 Felder, wird von `MoveRegion` in Fehlermeldungen
+zerlegt), `Core.Session.Gate.plan` (5 Buckets), `Core.Session.Timing.round`
+(`%{round, llm_ms, tool_ms}` — der Typ existiert, `Timing.last` speichert ihn
+aber als Map), `Core.Checkpoint.t`, `Core.Spill.writer` (10 Felder,
+`File.io_device()` darin), `Core.Session.Subagent.result`,
+`Core.Providers.Discovery.model_entry`,
+`Core.Providers.Catalog.Refresh.report`, `UI.Styles.status_badge_t`
+(3 Felder, an 7 Stellen als Map gebaut), `UI.Commands.t` (16 Records über
+`cmd/6`), `UI.Keymap.event` und `UI.Keymap.pattern` (je 2 Felder — der
+Tastendruck-Pfad, also der heißeste; ein Struct ist hier vertretbar, aber
+nicht wichtig).
+
+**`UI.Menu.t` / `UI.Menu.item` sind der Sonderfall:** der Typ existiert,
+**keine** Stelle im Baum referenziert ihn (`Menu.t`/`Menu.item`: 0 Treffer),
+und der TUI hängt ein Feld an, das der Typ nicht kennt — der `/stats`-Popup
+setzt `width: 74` und liest es als `Map.get(menu_popup, :width, 60)`. Genau
+dieses „ein Feld, das nur der Aufrufer kennt" ist der Fehler, den eine Struct
+verhindert.
+
+### 4. Was **Map bleiben soll** (Wörterbuch oder Fremdform)
+
+* `Permissions.entries` / `Permissions.layer` (`tool => pattern => decision`)
+  — Keys kommen aus der Policy-Datei.
+* `UI.Keymap.t` (`action => [pattern]`) — Nachschlagetabelle.
+* `Core.Session.Question.question` (`%{String.t() => …}`) — **die Form
+  diktiert das Modell** (die Keys sind die Felder des `ask`-Arguments). Eine
+  Struct erst am Rand, wo wir sie lesen (`Dialogs`/`question_type/2`), nicht
+  als Speicherform.
+* `Usage.marker` (`map() | nil`) — was der Provider zurückgibt.
+* `todos` und die Tool-Argumente — wie `question`, JSON des Modells. Eine
+  Struct erst am Rand (`Prompt.fit_todos/1` liest heute
+  `todo["content"] || todo[:content]`), nicht als Speicherform.
+* `ReqLLM`-Strukturen (`pending_round_calls`/`_results`, `Context`) — fremde
+  Module.
+
+### 5. Der Rand, an dem ein Struct-Upgrade passiert
+
+`Core.Session.State` wird als `term_to_binary` persistiert. Ein Feld, das von
+Map zu Struct wechselt, braucht `new/0` + `from_map/1` **an der Ladestelle**
+(`State.from_map/1`, wie `Usage.from_map/1` es vormacht) — nie eine Migration
+mitten im Code, und nie ein `Map.get` als Krücke an den Aufrufstellen.
+
 
 ## UI-Redesign — offen
 

@@ -18,6 +18,37 @@ The following principles do not matter at this point:
 
 * Backwards compatibility. (*The software is unreleased*)
 
+## Maps become structs when the shape is known
+
+A record whose keys are known at compile time is a **struct**, not a bare map.
+Owner decision (2026-11-01): wherever it makes sense, convert — the default is
+the struct, and a map has to justify itself.
+
+What a struct buys that a map does not:
+
+* a mistyped key is a compile error, not a `nil` at runtime;
+* `%{m | k: v}` fails loudly on a field that is not there, while a map update
+  quietly works on a key nobody declared (`Map.put(state, :last_pane_rect, …)`
+  in `ui/tui.ex` is such a field: written and read, never declared);
+* `Map.get(m, :k, default)` — the "the field may not exist" idiom — stops being
+  needed, and with it the ambiguity between *absent* and *empty*;
+* the record gets a name in specs (`@type t :: %__MODULE__{}`), in pattern
+  matches (`%Tabs.Child{}`), and in every `IO.inspect`, instead of an anonymous
+  `%{agent: …, stream: […], …}` that a reader has to reconstruct.
+
+**The exception is a dictionary**: keys not known ahead of time — a keymap
+(`action => patterns`), permission entries (`tool => pattern => decision`), a
+path→value store. Those stay maps and their `@type` says so (`%{K => V}`).
+
+**A record that crosses a persistence or wire boundary** (a session snapshot,
+a `term_to_binary` payload) is upgraded with `new/0` + `from_map/1`: heal the
+old shape at the EDGE where it is loaded, never in the middle of the code.
+`Core.Session.Usage.from_map/1` is the precedent — it turned `Usage` from a
+map into a struct without a snapshot migration.
+
+`TODO.md` ("Maps → Structs") carries the list of what is still a map, with the
+measurements. Keep it current when you convert one.
+
 ## One repo, two worktrees — work in the one your context names
 
 This repository is checked out as **linked worktrees sharing one history**
