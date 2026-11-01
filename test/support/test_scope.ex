@@ -21,6 +21,16 @@ defmodule CodingAgent.TestScope do
   `:loading`/`:fallback` and the one warning — must not use this; they
   capture the log and assert it (`capture_log/1`), which is the rule for
   every warning a test triggers on purpose.
+
+  ## The root outlives the test
+
+  The other half is lifetime: a session started here lives in the app's
+  session supervisor, not in the test process, so it can outlive the test
+  that started it. Deleting its scope root makes a later port's
+  `{:cd, root}` fail and `erl_child_setup` print "spawn: Could not cd to …"
+  on the VM's stderr (review N122, form 1) — noise no test can assert.
+  `root!/1` therefore creates a run-scoped root and never deletes it; the
+  run TMPDIR (`test_helper.exs`) owns the tree.
   """
 
   @window 500_000
@@ -35,6 +45,23 @@ defmodule CodingAgent.TestScope do
     dir = Path.join(root, ".coding-agent")
     File.mkdir_p!(dir)
     File.write!(Path.join(dir, "config.toml"), "context_window = #{window}\n")
+    root
+  end
+
+  @doc """
+  A scope root that lives until the RUN ends.
+
+  A test that starts a REAL session must not delete its root: the session
+  outlives the test (it lives in the app's session supervisor), and a port
+  spawned afterwards with `{:cd, root}` makes `erl_child_setup` print
+  "spawn: Could not cd to …" straight to the VM's stderr, where no port and
+  no `capture_log` can see it (review N122, form 1). The run-scoped TMPDIR
+  (`test_helper.exs`) owns the tree and removes it at VM exit.
+  """
+  @spec root!(String.t()) :: Path.t()
+  def root!(name) do
+    root = Path.join(System.tmp_dir!(), "#{name}-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(root)
     root
   end
 

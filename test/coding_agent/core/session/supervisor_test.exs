@@ -13,20 +13,20 @@ defmodule CodingAgent.Core.Session.SupervisorTest do
   alias CodingAgent.Core.Session
   alias CodingAgent.Core.Session.{Store, Supervisor}
 
-  @tmp_root System.tmp_dir!() |> Path.join("session-sup-#{System.unique_integer([:positive])}")
-
-  setup do
-    File.rm_rf!(@tmp_root)
-    File.mkdir_p!(@tmp_root)
-    on_exit(fn -> File.rm_rf!(@tmp_root) end)
-    :ok
+  # A run-scoped root: the tests start REAL sessions in the app supervisor,
+  # and a session outlives the test that started it. Deleting the root under
+  # one makes a later port's `{:cd, root}` fail and erl_child_setup print
+  # "spawn: Could not cd to …" on the VM's stderr (review N122, form 1).
+  # The run TMPDIR owns the tree, so this module never removes it.
+  setup_all do
+    {:ok, root: CodingAgent.TestScope.root!("session-sup")}
   end
 
-  defp start(id) do
+  defp start(id, root) do
     {:ok, pid} =
       Supervisor.start_session(
         id: id,
-        scope_root: @tmp_root,
+        scope_root: root,
         model: "ollama:test-model",
         test_mode: true,
         interactive: true
@@ -38,9 +38,9 @@ defmodule CodingAgent.Core.Session.SupervisorTest do
   defp unique(prefix), do: "#{prefix}-#{System.unique_integer([:positive])}"
 
   describe "a crashed session is not restarted (ADR 047)" do
-    test "the process stays gone and the last persisted state is what remains" do
+    test "the process stays gone and the last persisted state is what remains", %{root: root} do
       id = unique("n86-gone")
-      pid = start(id)
+      pid = start(id, root)
 
       # A conversation on disk, written the way a turn boundary writes it,
       # plus a model switch: two facts the START OPTIONS do not carry.
@@ -70,9 +70,9 @@ defmodule CodingAgent.Core.Session.SupervisorTest do
       assert length(persisted.context.messages) == length(context.messages)
     end
 
-    test "a normal stop is not restarted either (the subagent seam)" do
+    test "a normal stop is not restarted either (the subagent seam)", %{root: root} do
       id = unique("n86-stop")
-      _pid = start(id)
+      _pid = start(id, root)
 
       :ok = Session.stop(id)
 
@@ -82,7 +82,7 @@ defmodule CodingAgent.Core.Session.SupervisorTest do
   end
 
   describe "the blast radius of a crash" do
-    test "four deaths do not take the session supervisor or a bystander down" do
+    test "four deaths do not take the session supervisor or a bystander down", %{root: root} do
       # OTP's default intensity is 3 restarts / 5 s, applied to the
       # children of a DynamicSupervisor as a GROUP: under `:transient`
       # four crashes of one session killed the supervisor and every other
@@ -93,11 +93,11 @@ defmodule CodingAgent.Core.Session.SupervisorTest do
       assert is_pid(supervisor)
 
       bystander_id = unique("n86-bystander")
-      bystander = start(bystander_id)
+      bystander = start(bystander_id, root)
 
       for _ <- 1..4 do
         doomed = unique("n86-doomed")
-        Process.exit(start(doomed), :kill)
+        Process.exit(start(doomed, root), :kill)
         Process.sleep(50)
       end
 
@@ -106,7 +106,7 @@ defmodule CodingAgent.Core.Session.SupervisorTest do
       assert {:ok, _state} = Session.state(bystander_id)
 
       # and the supervisor still accepts work
-      assert is_pid(start(unique("n86-after")))
+      assert is_pid(start(unique("n86-after"), root))
     end
   end
 

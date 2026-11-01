@@ -13,9 +13,14 @@ defmodule CodingAgent.Core.Session.StoreTest do
   alias ReqLLM.Context
 
   # @store_path is the DB FILE (the store is one SQLite db); @scope_dir is
-  # a real directory used where a test needs a scope root.
+  # a real directory used where a test needs a scope root. The DB is reset
+  # per test; the SCOPE dir is not (review N122, form 1): `ren-live` and
+  # other sessions started here outlive the test, so deleting their root
+  # would make a later `{:cd, root}` fail and erl_child_setup print
+  # "spawn: Could not cd to …" on the VM's stderr. The run TMPDIR owns it.
   @tmp_root System.tmp_dir!() |> Path.join("agent-store-test-#{System.unique_integer()}")
-  @store_path Path.join(@tmp_root, "store.db")
+  @store_dir Path.join(@tmp_root, "store")
+  @store_path Path.join(@store_dir, "store.db")
   @scope_dir Path.join(@tmp_root, "scope")
 
   # the store active at test-compile time: the global test_helper sets an
@@ -27,13 +32,12 @@ defmodule CodingAgent.Core.Session.StoreTest do
     # isolate: tests run against their own store, never the user's real
     # session storage (an earlier version wiped real sessions once)
     Application.put_env(:coding_agent, :store_path, @store_path)
-    File.rm_rf!(@tmp_root)
+    File.rm_rf!(@store_dir)
     File.mkdir_p!(@scope_dir)
     CodingAgent.TestScope.declare_window!(@scope_dir)
 
     on_exit(fn ->
       Application.put_env(:coding_agent, :store_path, @prev_store_dir)
-      File.rm_rf!(@tmp_root)
     end)
 
     :ok
@@ -411,9 +415,8 @@ defmodule CodingAgent.Core.Session.StoreTest do
 
   describe "live session persistence" do
     test "decide on an interrupted session persists; resume carries the exchange" do
-      root = Path.join(System.tmp_dir!(), "store-live-#{System.unique_integer()}")
-      File.mkdir_p!(root)
-      on_exit(fn -> File.rm_rf!(root) end)
+      # run-scoped: the session started below outlives this test (N122)
+      root = CodingAgent.TestScope.root!("store-live")
 
       id = "live-#{System.unique_integer()}"
 
