@@ -27,6 +27,7 @@ defmodule CodingAgent.Core.Tools do
   alias CodingAgent.Core.Tools.Grep
   alias CodingAgent.Core.Tools.ListDir
   alias CodingAgent.Core.Tools.MoveFile
+  alias CodingAgent.Core.Tools.MoveRegion
   alias CodingAgent.Core.Tools.ReadFile
   alias CodingAgent.Core.Tools.Question
   alias CodingAgent.Core.Tools.Shell
@@ -96,6 +97,7 @@ defmodule CodingAgent.Core.Tools do
       Edit.tool(scope),
       DeleteFile.tool(scope),
       MoveFile.tool(scope),
+      MoveRegion.tool(scope),
       Shell.tool(scope),
       Git.tool(scope),
       WebFetch.tool(scope)

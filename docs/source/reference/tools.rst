@@ -80,6 +80,15 @@ confined, so ``shell``/``git`` are allowed by default; a stated escalation
      - Move or rename a path (a confined ``mv``). ``to`` is the exact new
        path (``-T``); an existing destination is refused unless
        ``force`` is set; a symlink moves as a link.
+   * - ``move_region``
+     - Move a line-aligned REGION of a file into another one (or reorder it
+       inside one). ``from`` is an exact anchor string that must occur
+       exactly once; ``to`` is looked for at or after it; ``position`` is
+       ``:begin``, ``:end``, ``before: <anchor>`` or ``after: <anchor>``.
+       A position inside the region is refused, both resulting files must
+       parse (``.ex``/``.exs``), and ``dry_run: true`` reports the line
+       numbers without writing. It does not format and does not move
+       aliases with the region.
    * - ``shell``
      - Run a command through ``/bin/sh`` in the scope root; captures
        stdout+stderr and the exit code. Default timeout 300 s, hard cap

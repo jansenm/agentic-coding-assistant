@@ -80,6 +80,7 @@ defmodule CodingAgent.Core.Permissions do
     "write_file",
     "delete_file",
     "move_file",
+    "move_region",
     "shell",
     "git"
   ]

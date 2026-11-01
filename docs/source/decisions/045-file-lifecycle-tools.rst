@@ -163,3 +163,88 @@ Open questions
    writes stdin with quieter semantics than ``dd``'s ``of=``, it is
    welcome to replace it — measured against the same four cases
    (missing parent, ``EROFS`` bind, an existing file, an empty write).
+
+Amendment 2026-11-01: ``move_region``, and why the region is not addressed by line numbers
+------------------------------------------------------------------------------------------
+
+Split work is the case this ADR did not cover: ``delete_file`` and
+``move_file`` move whole PATHS, and nothing moved a BLOCK of one file into
+another. The gap was filled by hand, three times in one session, with
+``sed -i 'N,Md'`` — and every deletion shifted the numbers for the next, so
+the map had to be re-derived after each step. The damage from one bad
+range surfaced as a compile error about an undefined function several
+hundred lines from the deleted region. That is the dogfooding incident
+this amendment answers (a P-level feedback point: *no region-move
+primitive, and the resulting damage is misattributed*).
+
+**One new gated tool, ``move_region``**, split the way ``Session.Gate`` /
+``Session.ToolRunner`` are: the computation is
+``Core.Region`` (pure, no filesystem, 22 unit tests) and
+``Tools.MoveRegion`` is the confined I/O around it.
+
+**1. The region is addressed by ANCHOR TEXT, not by line numbers.** The
+caller that wants a move has just read the code, so it has the anchor;
+only a caller with a stale file has line numbers. ``from`` must occur
+exactly once; ``to`` is looked for at or after it (so ``"end"`` — a word
+that occurs hundreds of times in an Elixir file — is usable as a region
+end, while the region itself stays unambiguous). An ambiguous anchor is an
+error that NAMES the lines (``3 matches for the `from` anchor on lines 2,
+4, 6``), the rule ``edit`` already states and ``dd10698`` measured.
+
+**2. Line-number hints are refused, and the reason is measured.** A full
+scan for both anchors plus the newline count that produces those line
+numbers costs **1.0 ms** on a 208 147-byte file (``lib/coding_agent/ui/tui.ex``,
+100 iterations). A hint could not move that work, only reorder it, and the
+whole-file scan is needed anyway to prove uniqueness. A hint would therefore
+be a new parameter that can be stale, in exchange for nothing. If one is
+ever added it must be a DISAMBIGUATOR (``occurrence: 3``), verified against
+the match list — a different thing, and not in this version.
+
+**3. Four positions, and ``:begin`` was missing from the first draft.**
+``:begin``, ``:end``, ``{:before, anchor}``, ``{:after, anchor}`` — an
+editor's four moves. The JSON schema cannot carry the tuple, so the string
+spellings ``":begin"`` / ``":end"`` / ``"before: <anchor>"`` /
+``"after: <anchor>"`` are parsed by the tool, with the term form accepted
+too.
+
+**4. A same-file move resolves its position in the ORIGINAL text and
+refuses a point inside the region, closed interval.** ``s <= o <= e`` — and
+the closed end matters: ``o == e`` is ``{:after, <the region's own last
+line>}``, the commonest no-op of all, and a half-open test let it through
+as a silent success. The interval also covers ``:begin`` on a region at
+offset 0, ``{:before, <the start anchor>}`` and ``:end`` on a region that
+ends the file. A move that would not change the file is an error.
+
+**5. The write order is destination-first, and the reason is space.** A
+cross-file move makes two writes and they cannot be atomic (``FileExec``
+has no transaction). Writing the destination first leaves a crash
+DUPLICATED — visible, one keystroke away — instead of LOST, which is what
+writing the source first would risk. The second half is that the
+destination write is the only one that GROWS the filesystem: the source
+write then shrinks by the region, so ``ENOSPC`` cannot reach the step whose
+failure would be hard to undo. The destination's original bytes are held in
+the BEAM for the rollback (a destination that did not exist before is
+removed again, which is the exact undo of creating it). A same-file move
+cannot be split into two writes at all, so it writes a temporary file
+BESIDE the target — same filesystem, so the rename is atomic; a temp in the
+scratch would turn ``mv`` into copy+unlink — and renames over the original.
+
+**6. Both results must parse (``.ex``/``.exs``), or the move is refused.**
+``Code.string_to_quoted/1`` on each result. This is precisely the check
+whose absence let a half-deleted block reach the compiler. It is a syntax
+check only, and both the tool's result message and the module doc say so: a
+moved function whose ``alias`` stayed behind still parses, and ``mix
+compile`` is the real check.
+
+Consequences:
+
+- ``Region`` is pure and the interesting half (anchors, ambiguity, offsets)
+  is unit-testable without a sandbox; ``MoveRegion`` is the boring half.
+- Both paths go to the gate, the rule ``move_file`` already documents: a
+  deny on either end refuses the call. ``move_region`` joins
+  ``Permissions.@allow_class`` with the other contained writes.
+- ``dry_run: true`` reports the anchor lines and the region size and writes
+  nothing, so the tool is safe to call while orienting.
+- The move does not FORMAT (``mix format`` is the caller's next step) and
+  does not carry aliases, imports or module attributes with the region.
+  Deciding which ones a moved block still needs is semantic, not textual.
