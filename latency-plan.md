@@ -1,6 +1,10 @@
 # Turn latency and round count — the investigation plan
 
-**Status:** planning. No code changed yet.
+**Status (2026-11-01):** Phase 0 is instrumented and in use; **F1 landed**
+(and the tail was capped on 2026-11-01); F2–F6 are open. The §2 rows that
+had gone stale are corrected in place, §6 has a third reading, and §9 is
+answered. The history is kept: a *Result* / *Status* note marks where the
+plan met the tree, rather than rewriting what was only hypothesised then.
 
 **Observation.** Working in opencode (same machine, same repo, same model
 class) turns feel faster than in this harness, without an obvious gain in
@@ -23,16 +27,25 @@ which side of that product it belongs to.
 
 ## 1. The two quantities, as a shape
 
-The request this harness sends has a single volatile block in front of
+The request this harness sends has a single volatile block **behind**
 everything:
 
 ```
-[ system: base + agent + env + todos + "Tool rounds this turn: N / 100" + caps ]
+[ system: base + agent + env(constants) ]        ← byte-stable per session
 [ user ] [ assistant tool_calls ] [ tool ] [ assistant ] [ tool ] ...
+[ user: <system-reminder> model · git · date · todos · budget · capabilities ]
 ```
 
 Every cache a provider offers is a *prefix* cache. A counter in the
-first message means no prefix ever repeats — see H1.
+**first** message means no prefix ever repeats — see H1. Since F1 the
+volatile state rides ONE trailing user message
+(`Prompt.append_state_block/2`, `session.ex:2835-2838`), and since
+`ea6e2d0` the constants — harness, platform, working directory, store —
+are part of the base prompt. The trailer is re-sent uncached on every
+round, so it is capped at 4,096 B (`Prompt.trailer_max/0`); the todo share
+is 2,560 B and is fitted where the list enters the session
+(`Prompt.fit_todos/1`, review N141). The number a stable prefix saves is
+the whole context; the number the trailer costs is `size × rounds`.
 
 ---
 
@@ -40,25 +53,27 @@ first message means no prefix ever repeats — see H1.
 
 | Fact                                                                                                                                                                                       | Where                                                                                                     |
 |--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------|
-| The per-call blocks (env, todos, budget, capabilities) are appended to **the first message** — the system prompt                                                                           | `lib/coding_agent/core/session/prompt.ex:513` (`append_system_block/2`); call site `session.ex:2746-2749` |
-| The budget block always renders `Tool rounds this turn: <rounds> / <max>` plus the projected token count, so its text changes on every request                                             | `prompt.ex:385-402`, `prompt.ex:422-423`                                                                  |
-| `%Usage{}` has no `cached_tokens` field; ReqLLM reports it, `Usage.add/2` drops it                                                                                                         | `session/usage.ex:24`; `deps/req_llm/lib/req_llm/usage.ex:18`                                             |
+| The per-call blocks (model, git, date, todos, budget, capabilities) ride **one trailing `<system-reminder>` user message**; the system message is session-constant and carries only the constants | `prompt.ex:754` (`append_state_block/2`), `session.ex:2835-2838`; constants in `Prompt.base/4` |
+| The budget block speaks in **bands**, not numbers; the round band flips only at 80 % and 100 % of the budget | `prompt.ex:644-697` (`budget_block/1`, `rounds_band/1`)                                                   |
+| `%Usage{}` carries `cached_tokens` (and `cost`, `cost_basis`, `balance`, `marker`); `Usage.cache_hit_ratio/1` is the only ratio, and it refuses a bucket that exceeds input | `session/usage.ex:42-51`, `144-152`                                                                      |
 | Tool calls in a round run **sequentially** (`Enum.reduce`), though the prompt invites parallel calls                                                                                       | `session/tool_runner.ex:45-75`; `priv/coding-agent/prompts/default.txt`                                   |
 | `read_file` with neither `offset` nor `limit` returns the **whole file**; the prompt says "Read the full file before editing it"                                                           | `tools/read_file.ex:17,61`; `default.txt`                                                                 |
 | `edit` is exact-match only: `String.replace/4` after an exact `occurrences/1` count; 0 matches is a hard error, 2+ is ambiguous. No normalization fallback                                 | `tools/edit.ex:101-156`                                                                                   |
-| A primary session sees **15** tools: 7 read-only, 7 gated, 1 delegation                                                                                                                    | `tools.ex:60-107`                                                                                         |
+| A primary session sees **16** tools: 7 read-only, 8 gated, 1 delegation                                                                                                                    | `tools.ex:109` (`all/1`); `move_region` added in `08e20b7`                                               |
 | `ollama_cloud` rides the **OpenAI-compatible** path: shipped layer 0 sets `provider = "openai"`, `base_url = https://ollama.com/v1`, `backend = "ollama"`; an empty user table does not erase it (deep merge) | `priv/coding-agent/config.toml`; `user_config.ex:144-153` |
 | One round is atomic: if any call in it needs approval, **every** result is held until the human answers                                                                                    | `session.ex:2247-2271`                                                                                    |
 | Default round budget is 100; the stored TUI session carried 200                                                                                                                            | `config.ex:33`; store                                                                                     |
-| The `compact` tool exists, but was **never called**: 0 calls across 5 135 tool calls in seven stored sessions, while auto-compaction ran 23 times                                          | `prompt.ex:428-435`                                                                                       |
+| The `compact` tool exists and was called **once in 838** tool calls (2026-11-01); auto-compaction (and the manual call) still does most of the work | store display of `tui-00MVRX…`                                                                             |
 | Tool output already spills to the scratch instead of re-running a command                                                                                                                  | `core/spill.ex` (ADR 038)                                                                                 |
-| The one long real session in the local store: 133 tool calls — `shell` 106, `read_file` 16, `edit` 6, `git` 4, `todowrite` 1 — and **134 assistant messages**, i.e. ~1 tool call per round | `~/.local/state/coding_agent/store.db`                                                                    |
-| The same session's cumulative input is **644 M tokens** — irreconcilable with 134 visible assistant messages, so either history was compacted away or the accounting is wrong              | store (`Usage.input_tokens`)                                                                              |
+| `Usage` accumulates one provider call's **whole prompt** per round and is durable across resumes; the stored message/display rows are the (post-compaction) context, **not a call log**. 838 tool calls in the 2026-11-01 session, 46 stored assistant rows | store (`tui-00MVRX…`) |
+| A long-lived session can carry **644 M** cumulative input — see §8: ~2 100 calls at a ~300 k compaction line, not a doubled count                                                                                                                          | store (`Usage.input_tokens`)                                                                             |
 
-Caveat on the last two rows: that session is old (its stored base prompt
-predates the current todo/compact sections), so treat its mix as
-indicative, not as the current baseline. The 644 M number is a separate
-question worth its own finding either way.
+The 644 M row is the old session, which has since been deleted (the store
+now holds `tui-00MVRX…` and seven smaller ones), so the number is history —
+the mechanism was re-measured on 2026-11-01: 838 tool calls, 46 stored
+assistant rows and 119.9 M cumulative input in ONE session, with 84 rounds
+in the current process. See §8 and review N142. The "anomaly" was the same
+denominator confusion, not a double count.
 
 ---
 
@@ -163,6 +178,8 @@ one).
 
 **Confidence.** High as a mechanism; unknown as a share of the total.
 **Cost to test.** Per-tool timing in `ToolRunner.execute/3`.
+**Status 2026-11-01.** Still serial (`ToolRunner.execute/3` is one
+`Enum.reduce`); `tool_ms` is 1.5 s of an 8.0 s round, 18.5 %.
 
 ### H3 — the tool mix is shell-heavy and every shell is a confined child *(latency)*
 
@@ -177,6 +194,9 @@ EPIPE failures on big payloads.
 
 **Confidence.** Medium. **Cost to test.** Same instrumentation as H2, plus
 a grep of the store for `Broken pipe`.
+**Status 2026-11-01.** Confirmed: `shell` is 507 of 838 calls (60 %). No
+tool result carries an EPIPE failure (the two `Broken pipe` matches in the
+display are source text a `grep` printed).
 
 ### H4 — one tool call per round, because a batched round is all-or-nothing *(rounds)*
 
@@ -196,6 +216,9 @@ opencode at the same model.
 **Confidence.** Medium-high for the old session; unknown for today.
 **Cost to test.** Query the store (already scripted) over the current
 sessions.
+**Status 2026-11-01.** Confirmed: the one turn measured end-to-end carried
+53 tool calls in 53 rounds (22 reads, 18 shells, 10 edits, 3 `todowrite`),
+and the session is ≈60 calls per turn. Not a preference — see §9 Q4.
 
 **Note.** Partial delivery is not an option on the wire — an assistant
 message with 3 calls needs 3 results in the same exchange. The available
@@ -217,6 +240,9 @@ shows 0, so this may not be *this* user's factor — but it is a per-model
 constant worth removing before it becomes one).
 
 **Confidence.** Medium. **Cost to test.** Grep the store.
+**Status 2026-11-01.** 2 of 77 `edit` calls failed on `old_string not
+found`; every other tool error was a `todowrite`. Real, but a small tax
+here.
 
 ### H6 — the prompt teaches context management, and the policy is self-reinforcing *(rounds + latency)*
 
@@ -235,6 +261,9 @@ repeated reads.
 
 **Confidence.** Medium. **Cost to test.** Compaction count per turn from
 the store; duplicate-read detection.
+**Status 2026-11-01.** Two compactions in 14 user turns (one idle pass at
+240k/300k, one manual `compact`). The churn is real; duplicate-read
+detection is still not measured.
 
 ### H7 — the prompt family is wrong for the model *(rounds, quality)*
 
@@ -264,6 +293,9 @@ calls are errors, and an error is a round.
 **Falsifier.** No wrong-tool errors in the store.
 
 **Confidence.** Low-medium. **Cost to test.** Grep the store.
+**Status 2026-11-01.** Falsified for the measured session: 838 tool calls,
+no unknown-tool error. The overlap may still teach wrong-tool calls at the
+edges; this store does not show them.
 
 ---
 
@@ -369,7 +401,16 @@ before/after table (Phase 1) — the numbers to compare against are the
 before/after row (the table in §6): 150 rounds, 7.4 s/round, 98 % cached.
 The credits row was readable, the cost row was not — it never appeared,
 because `add_usage/2` discarded the sampled state (review P38, fixed the
-same day). The cost half wants a fresh run.
+same day). The cost half wants a fresh run — and got one: the third
+reading (§6, 2026-11-01) carries the provider's own `$1.35`.
+
+**Status 2026-11-01: one instrument lied.** `/stats` reported the
+*process's* rounds against the *session's* tokens after a resume, because
+`timing` was missing from `resume_opts/2` while `usage` was carried
+(review N142, fixed in `362a307`). Any per-round row read after a restart
+divides two lifetimes; the third reading marks the rounds column. The
+exit criterion is met in form AND in use now — but a before/after table is
+only as trustworthy as its denominator.
 
 ---
 
@@ -406,15 +447,27 @@ The `rounds` line says 150 and the per-round averages agree (`llm` 628 s
 / 4.2 s, `tools` 487 s / 3.2 s). The `session` line and the money rows
 (`cost`, `credits`) were readable but not carried over.
 
-| | `tui-15426` (2026-10-25) | 2026-10-28 |
-|---|---|---|
-| rounds | 200 (one turn) | 150 (whole session) |
-| time per round | 9.9 s (turn wall time) | 7.4 s measured (llm 4.2 + tools 3.2) |
-| input per round | 145k | 381k |
-| cached | 27.6 M = 95 % | 55.8 M = 98 % |
-| uncached per round | 7.0k | 8.7k |
-| output per round | 1.8k | 6.2k |
-| cost | $0.88 (365 calls) | never appeared (P38, fixed) |
+| | `tui-15426` (2026-10-25) | 2026-10-28 | `tui-00MVRX…` (2026-11-01) |
+|---|---|---|---|
+| rounds | 200 (one turn) | 150 (whole session) | 243 (process; lifetime is larger)\* |
+| time per round | 9.9 s (turn wall time) | 7.4 s measured (llm 4.2 + tools 3.2) | 8.0 s measured (llm 6.5 + tools 1.5) |
+| input per round | 145k | 381k | 386k\* |
+| cached | 27.6 M = 95 % | 55.8 M = 98 % | 92.2 M = 98 % |
+| uncached per round | 7.0k | 8.7k | 7.0k |
+| output per round | 1.8k | 6.2k | 2.7k |
+| tool calls per round | — | — | 1.0 (53 calls in 53 rounds, the one turn measured end-to-end) |
+| tool time share | — | 43 % | 18.5 % |
+| edit failures | 0 | — | 2 in 77 |
+| compactions | — | — | 2 in 14 turns |
+| cost | $0.88 (365 calls) | never appeared (P38, fixed) | $1.35 billed |
+
+\* The rounds figure is the current PROCESS's, the tokens are the
+SESSION's: before `362a307` a resume started the rounds at 1 while `usage`
+kept the session total, so this quotient is inflated (review N142). The
+earlier rows cannot be re-checked (their sessions are gone), and the
+2026-10-28 row reports 150 rounds for 55.8 M cached — 372k per round, high
+enough to suspect the same defect. The unmarked `cached`, `uncached` and
+`output` figures are ratios of the same lifetime and survive it.
 
 Token caveat: the `input / cached / output` columns are the harness's
 counters (`%Usage{}`), not the provider's. For the same day the key's own
@@ -441,6 +494,37 @@ anyway: cached tokens are paid every round, and 372k of them per round is
 2.7× the baseline's 138k, so a better hit *ratio* on a larger prefix can
 still cost more per round. Only the provider's own money row decides, and
 that is the row to carry over next time.
+
+**Read (2026-11-01).** The third reading says: the model still makes one
+tool call per round — the one turn measured end-to-end carried 53 tool
+calls in 53 rounds (22 reads, 18 shells, 10 edits, 3 `todowrite`), so H4
+stands and F5 is still a lever. Over the session that is 838 tool calls in
+14 user turns (≈60 per turn), with `shell` still 60 % of them (507/838),
+so H3 stands. What moved is the tool share of the round: 18.5 % now
+(5m56s of 32m10s) against 43 % in the 2026-10-28 row — F2's ceiling is
+smaller, not gone. Edit failures are 2 in 77 calls and every other tool
+error was a `todowrite`; no unknown-tool error at all, so H5 is a small tax
+and H8 is falsified here. Two compactions in 14 user turns — one of them
+the manual `compact` (1 of 838 tool calls) — so H6's churn is real, though
+the lever is now being used.
+
+The 372k-cached-per-round figure in the honesty note above is the N142
+artifact, not a second prefix: divide the session's cached total by the
+session's rounds (~850, from 838 tool calls at one per round plus the turn
+ends) and the average context is ~140k — the same order as the baseline.
+The money row ($1.35 billed) is unaffected.
+
+**The peer, same model (2026-11-01).** opencode's own store
+(`session_v2`, `session_message`) for this machine shows 2 103 calls with
+`variant: "high"`, 1.3–5.9 s per call, 115–1 180 output tokens per call,
+and 363 M cached against 7.6 M input (98 %); its last turns were 10–12
+calls in 28–107 s, against our 53 calls in 7m23s. So there are two gaps,
+not one: our calls take ~2× as long, and a turn takes ~5× as many calls.
+The second gap is open — whether opencode's calls carry several tools each
+(which would put H4/F5 back at the centre) was not measured, and its store
+can answer it. The first is a per-call property of the request (output
+volume and `reasoning_effort`, which opencode sets to `high` and this
+harness resolves from `config.toml`).
 
 ---
 
@@ -479,6 +563,14 @@ other side (`session/instruction-state.ts`: freeze the baseline, render
 changes as messages; `plugin/plan.ts`: "appending near the tail so the
 cached prefix stays warm").
 
+**Extended 2026-11-01.** The remaining blocks (env, todos, capabilities)
+joined the tail, and the tail itself is capped at 4,096 B
+(`Prompt.trailer_max/0`), with the constant half of the environment moved
+into the base prompt (`ea6e2d0`) and the assembled size surfaced in
+`/stats` (`41ab6a5`). The live session holds 97.9 % cached. The cap is a
+guard rather than a target: the realistic trailer is ~1.4 kB, three
+quarters of it the todo list.
+
 **Target:** cache hit ratio > 80 % after round 1; per-round latency flat.
 **Must not regress:** ADR 040's behavior — the model should still act
 before the hard line. Measure compaction-forced-mid-turn count.
@@ -497,6 +589,10 @@ subagent cap), keeping the round atomic. Constraints to respect:
 
 **Target:** `tool_ms` on a 4-read round drops to ≈ 1 call, not 4.
 
+**Status 2026-11-01:** open — `ToolRunner.execute/3` is still one
+`Enum.reduce`. The prize is smaller than the first reading suggested:
+tools are 18.5 % of the round now, not 43 %.
+
 ### F3 — reduce the edit-retry tax (H5)
 
 A strictly ordered fallback chain (exact → line-trimmed → whitespace-
@@ -509,6 +605,11 @@ design is cheaper than inventing one.
 **Target:** zero `old_string not found` on a task set that currently
 produces them; never a wrong-location edit in the test suite.
 
+**Status 2026-11-01:** open, and smaller here than feared — 2 of 77 `edit`
+calls failed on `old_string not found`, and every other tool error was a
+`todowrite` (since guarded). Worth removing before it becomes a tax, not
+before the per-call cost work.
+
 ### F4 — trim the coaching, keep the data (H6)
 
 Drop the per-request prose about step boundaries and `compact`; keep the
@@ -519,6 +620,11 @@ edit fails, may dominate. Measure duplication reads and compaction count.
 
 **Target:** compactions per turn halve; repeated reads disappear.
 
+**Status 2026-11-01:** open — `default.txt` still says "Read the full file
+before editing it" and still explains `compact`. Compaction runs twice in
+14 user turns, so the churn is real; the manual `compact` tool was used
+once.
+
 ### F5 — batch by policy, not by hope (H4)
 
 A prompt rule — "do not mix a call that needs approval with observation
@@ -526,11 +632,22 @@ calls" — plus the measurement. Cheap, reversible, measurable. Only after
 F1/F2, because a batched round is only faster once the round itself is
 cheap.
 
+**Status 2026-11-01:** open, and now aimed at the right thing. The model
+does NOT batch: 53 tool calls in 53 measured rounds, and the store's whole
+session is ≈60 calls per turn. The rule is still worth trying; the
+measurement exists.
+
 ### F6 — later, separately
 
 Tool-surface collapse (H8), a prompt family for non-Claude models (H7),
 and the 644 M accounting anomaly. These are real, but they are not the
 first thing to prove.
+
+**Status 2026-11-01:** the 644 M anomaly is resolved (§8) and H8 is
+falsified for the measured session (no unknown-tool error in 838 calls).
+The tool-surface collapse and the non-Claude prompt family are still open;
+the latter is now the more interesting of the two, because the per-call
+gap to opencode sits in output volume, which a prompt family can move.
 
 ---
 
@@ -547,10 +664,20 @@ first thing to prove.
   similar output size, or a terse round will look like a fast one.
 - **Instrumentation changes behavior.** No extra provider calls, no disk
   writes per round.
-- **The 644 M input count is a double count.** Then the sidebar's cost and
-  token display are wrong, and that is a separate finding — file it before
-  F1, because it may mean the harness has *already* been paying for cache
-  misses it never saw.
+- **The 644 M input count is a double count.** → **Resolved 2026-11-01.**
+  It was not a double count: `Usage` accumulates the whole prompt of every
+  provider call and is durable across resumes, while the stored
+  message/display rows are the post-compaction context, not a call log.
+  644 M at a ~300 k compaction line is ≈2 100 calls, which matches a
+  long-lived session. The real defect was on the *other* counter —
+  `timing` did not survive a resume (review N142, fixed in `362a307`), so
+  `/stats` divided one lifetime's tokens by another lifetime's rounds.
+  The money row was never affected: it is the provider's own delta.
+- **The per-round denominator is a different lifetime from its numerator.**
+  A resumed session before `362a307` reported the process's rounds and the
+  session's tokens. Any table read from an older build has this defect;
+  re-read it on the current build before comparing, and never divide the
+  `usage` totals by `timing.rounds` across a restart.
 
 ---
 
@@ -564,11 +691,18 @@ first thing to prove.
    empty user table does not erase it.
    **Also answered:** both clients do share one key, so the 26 % is a
    blend and the harness's own ratio is at most that.
-2. May the budget block become band-only (F1), or is the exact count part
-   of ADR 040's contract?
-3. `/stats` as a slash command, or metrics in the session export only?
-4. Is "one tool call per round" acceptable to you as a style, or is
-   batching a goal in itself?
+2. ~~May the budget block become band-only (F1), or is the exact count part
+   of ADR 040's contract?~~ **Answered (2026-10-25):** it became band-only,
+   and then moved to the tail; ADR 040's contract is the *decision* (act at
+   a step boundary), not the number. The numbers stayed in the sidebar.
+3. ~~`/stats` as a slash command, or metrics in the session export only?~~
+   **Answered:** it is a slash command and writes a copy (`y`), because the
+   popup itself was not copyable (P37).
+4. ~~Is "one tool call per round" acceptable to you as a style, or is
+   batching a goal in itself?~~ **Answered by measurement (2026-11-01):**
+   it is not a style — the model makes one call per round (53 in 53
+   measured rounds), and the peer harness makes 10–12 calls per turn. The
+   lever is the round's content (F2/F5), not an instruction to batch.
 
 ---
 
