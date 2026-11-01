@@ -1,7 +1,7 @@
 defmodule CodingAgent.UI.TuiSubagentTest do
   use CodingAgent.TuiCase, async: true
 
-  alias CodingAgent.UI.Tui
+  alias CodingAgent.UI.{Tabs, Tui}
 
   # Subagent surfacing (ADR 017/018): the parent publishes
   # {:subagent_started, child_id, name, model}; the live band names the
@@ -43,8 +43,8 @@ defmodule CodingAgent.UI.TuiSubagentTest do
     agent(pid, {:subagent_started, "child-1", "explorer", "ollama:explorer-model"})
     state = sync(pid)
 
-    assert Map.has_key?(state.subagents, "child-1")
-    assert state.active_tab == nil
+    assert Map.has_key?(state.tabs.subagents, "child-1")
+    assert Tabs.active_id(state.tabs) == nil
 
     rows = buffer(pid)
     assert Enum.any?(rows, &String.contains?(&1, "agent build"))
@@ -54,7 +54,7 @@ defmodule CodingAgent.UI.TuiSubagentTest do
     state = run_menu(pid, "a")
     child = Enum.find(state.menu_popup.items, &match?(%{id: {:tab, "child-1"}}, &1))
     :ok = open_popup_selection(pid, state, child)
-    assert sync(pid).active_tab == "child-1"
+    assert Tabs.active_id(sync(pid).tabs) == "child-1"
 
     rows = buffer(pid)
     assert Enum.any?(rows, &String.contains?(&1, "agent explorer"))
@@ -65,14 +65,14 @@ defmodule CodingAgent.UI.TuiSubagentTest do
     agent(pid, {:subagent_finished, "child-1", :ok})
     state = sync(pid)
 
-    assert %{"child-1" => %{finished?: true, agent: "explorer"}} = state.subagents
-    assert state.active_tab == "child-1"
+    assert %{"child-1" => %Tabs.Child{finished?: true, agent: "explorer"}} = state.tabs.subagents
+    assert Tabs.active_id(state.tabs) == "child-1"
 
     # back to the parent tab: the band reverts to the primary
     state = run_menu(pid, "a")
     primary = Enum.find(state.menu_popup.items, &match?(%{id: {:tab, nil}}, &1))
     :ok = open_popup_selection(pid, state, primary)
-    assert sync(pid).active_tab == nil
+    assert Tabs.active_id(sync(pid).tabs) == nil
 
     rows = buffer(pid)
     assert Enum.any?(rows, &String.contains?(&1, "agent build"))
@@ -105,7 +105,7 @@ defmodule CodingAgent.UI.TuiSubagentTest do
 
     state = sync(pid)
     # the tab is kept (finished); the human is still on the parent tab
-    assert state.active_tab == nil
+    assert Tabs.active_id(state.tabs) == nil
 
     assert Enum.any?(state.transcript, fn
              {:info, text} -> String.contains?(text, "subagent ended with an error")
@@ -148,7 +148,7 @@ defmodule CodingAgent.UI.TuiSubagentTest do
       # a stream error: the child ends without ever emitting `llm_message`
       agent(pid, {:subagent_finished, "c1", :error})
 
-      child = sync(pid).subagents["c1"]
+      child = sync(pid).tabs.subagents["c1"]
 
       # the reasoning is committed (not stranded), and the error is in the
       # CHILD's own view, not only the parent's
@@ -166,7 +166,7 @@ defmodule CodingAgent.UI.TuiSubagentTest do
       agent(pid, "c1", {:llm_message, "the answer"})
       agent(pid, {:subagent_finished, "c1", :ok})
 
-      child = sync(pid).subagents["c1"]
+      child = sync(pid).tabs.subagents["c1"]
 
       # exactly one assistant entry, no stray reasoning duplication
       assistant = Enum.filter(child.transcript, &match?({:assistant, _}, &1))
@@ -210,7 +210,7 @@ defmodule CodingAgent.UI.TuiSubagentTest do
       agent(pid, "c1", {:llm_message, "child answer"})
 
       state = sync(pid)
-      child = state.subagents["c1"]
+      child = state.tabs.subagents["c1"]
 
       assert child.transcript == [{:assistant, "child answer"}]
       # the parent transcript saw nothing of the child's stream
@@ -230,7 +230,7 @@ defmodule CodingAgent.UI.TuiSubagentTest do
       st = sync(pid)
 
       # the fold happened, the paint did not
-      assert st.subagents["c1"].stream == [{:assistant, "deferred child"}]
+      assert st.tabs.subagents["c1"].stream == [{:assistant, "deferred child"}]
       assert st.stream_dirty? == true
 
       # in production the throttle is declared while a CHILD stream is
@@ -316,7 +316,7 @@ defmodule CodingAgent.UI.TuiSubagentTest do
       selected = Enum.find(state.menu_popup.items, &match?(%{id: {:tab, "c1"}}, &1))
       :ok = open_popup_selection(pid, state, selected)
 
-      assert sync(pid).active_tab == "c1"
+      assert Tabs.active_id(sync(pid).tabs) == "c1"
       assert Enum.any?(buffer(pid), &String.contains?(&1, "found the bug"))
     end
 
@@ -327,7 +327,7 @@ defmodule CodingAgent.UI.TuiSubagentTest do
       agent(pid, {:subagent_finished, "c1", :ok})
 
       # kept after finish
-      assert %{"c1" => %{finished?: true}} = sync(pid).subagents
+      assert %{"c1" => %Tabs.Child{finished?: true}} = sync(pid).tabs.subagents
 
       # the popup lists the parent row AND the finished child
       state = run_menu(pid, "a")
@@ -339,7 +339,7 @@ defmodule CodingAgent.UI.TuiSubagentTest do
       assert child
 
       :ok = open_popup_selection(pid, state, child)
-      assert sync(pid).active_tab == "c1"
+      assert Tabs.active_id(sync(pid).tabs) == "c1"
       assert Enum.any?(buffer(pid), &String.contains?(&1, "child result"))
 
       # back to the parent transcript
@@ -347,7 +347,7 @@ defmodule CodingAgent.UI.TuiSubagentTest do
       primary = Enum.find(state.menu_popup.items, &match?(%{id: {:tab, nil}}, &1))
       :ok = open_popup_selection(pid, state, primary)
 
-      assert sync(pid).active_tab == nil
+      assert Tabs.active_id(sync(pid).tabs) == nil
     end
 
     # F4: `active_tab` is a POINTER into `subagents`, not an independent
@@ -363,12 +363,12 @@ defmodule CodingAgent.UI.TuiSubagentTest do
       state = run_menu(pid, "a")
       child = Enum.find(state.menu_popup.items, &match?(%{id: {:tab, "c1"}}, &1))
       :ok = open_popup_selection(pid, state, child)
-      assert sync(pid).active_tab == "c1"
+      assert Tabs.active_id(sync(pid).tabs) == "c1"
 
       # simulate the lifetime case: c1 is gone (a later slice may drop
       # tabs), the pointer stays
       :sys.replace_state(pid, fn rt ->
-        update_in(rt.user_state.subagents, &Map.delete(&1, "c1"))
+        update_in(rt.user_state.tabs.subagents, &Map.delete(&1, "c1"))
       end)
 
       # repaint (the spinner tick renders)
@@ -382,7 +382,7 @@ defmodule CodingAgent.UI.TuiSubagentTest do
       key(pid, "page_up")
       st = sync(pid)
 
-      refute Map.has_key?(st.subagents, "c1")
+      refute Map.has_key?(st.tabs.subagents, "c1")
 
       # the tab bar marks the PARENT as viewing (the effective pointer)
       assert Enum.any?(buffer(pid), &String.contains?(&1, "[primary]"))

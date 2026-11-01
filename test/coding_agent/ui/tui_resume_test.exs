@@ -2,7 +2,7 @@ defmodule CodingAgent.UI.TuiResumeTest do
   use CodingAgent.TuiCase, async: true
 
   alias CodingAgent.Core.Session.Store
-  alias CodingAgent.UI.Tui
+  alias CodingAgent.UI.{Tabs, Tui}
 
   # User report: 'mix tui --resume <id>' started the session but the
   # old messages were not visible — the transcript was seeded empty
@@ -189,16 +189,16 @@ defmodule CodingAgent.UI.TuiResumeTest do
       assert elem(tool, 2) == "shell"
       # collapsed by default; ctrl-t opens the most recent tool block
       # (single-open accordion)
-      assert st.open_tool_id == nil
+      assert Tabs.open_tool_id(st.tabs) == nil
 
       key(pid, "t", ["ctrl"])
 
       st2 = sync(pid)
-      assert st2.open_tool_id == elem(tool, 1)
+      assert Tabs.open_tool_id(st2.tabs) == elem(tool, 1)
 
       key(pid, "t", ["ctrl"])
 
-      assert sync(pid).open_tool_id == nil
+      assert Tabs.open_tool_id(sync(pid).tabs) == nil
     end
   end
 

@@ -6,7 +6,7 @@ defmodule CodingAgent.UI.TuiVisualTest do
   """
   use CodingAgent.TuiCase, async: true
 
-  alias CodingAgent.UI.Tui
+  alias CodingAgent.UI.{Tabs, Tui}
   alias CodingAgent.UI.TranscriptView
 
   defp start_tui(size \\ {80, 24}, opts \\ []) do
@@ -147,7 +147,7 @@ defmodule CodingAgent.UI.TuiVisualTest do
 
     st = sync(pid)
     # collapsed by default (header + preview)
-    assert st.open_tool_id == nil
+    assert Tabs.open_tool_id(st.tabs) == nil
 
     # the STORED display shape is already capped: 10 head + note + 10 tail
     {:tool, id, "shell", capped} = Enum.find(st.transcript, &match?({:tool, _, _, _}, &1))
@@ -205,12 +205,13 @@ defmodule CodingAgent.UI.TuiVisualTest do
 
     st = sync(pid)
     {:tool, id, _, _} = Enum.find(st.transcript, &match?({:tool, _, _, _}, &1))
-    assert st.open_tool_id == id
+    assert Tabs.open_tool_id(st.tabs) == id
 
     entries = st.transcript
-    total = Enum.sum(for e <- entries, do: TranscriptView.height(e, 100, st.open_tool_id))
+    open_id = Tabs.open_tool_id(st.tabs)
+    total = Enum.sum(for e <- entries, do: TranscriptView.height(e, 100, open_id))
     pane_h = CodingAgent.UI.Tui.pane_rect(st).height
-    skipped = max(total - pane_h - min(st.scroll_offset, max(total - pane_h, 0)), 0)
+    skipped = max(total - pane_h - min(Tabs.scroll_offset(st.tabs), max(total - pane_h, 0)), 0)
     assert skipped >= 1
 
     rows = buffer(pid)
@@ -408,17 +409,11 @@ defmodule CodingAgent.UI.TuiVisualTest do
       fire(pid, :__resize_poll__)
 
       if tabs do
-        child = %{
-          agent: "explore",
-          model: "m",
-          finished?: false,
-          transcript: [{:info, "child"}],
-          stream: [],
-          open_tool_id: nil,
-          scroll_offset: 0
-        }
+        child = %Tabs.Child{agent: "explore", model: "m", transcript: [{:info, "child"}]}
 
-        :sys.replace_state(pid, &put_in(&1.user_state.subagents, %{"c1" => child}))
+        :sys.replace_state(pid, fn rt ->
+          update_in(rt.user_state.tabs.subagents, &Map.put(&1, "c1", child))
+        end)
       end
 
       agent(pid, {:llm_message, "A\nB\nC\nD"})

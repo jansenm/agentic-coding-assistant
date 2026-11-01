@@ -2,6 +2,7 @@ defmodule CodingAgent.UI.TuiMenuTest do
   use CodingAgent.TuiCase, async: true
 
   alias CodingAgent.Core.Session
+  alias CodingAgent.UI.Tabs
 
   setup do
     tmp_root = System.tmp_dir!() |> Path.join("agent-menu-#{System.unique_integer()}")
@@ -77,7 +78,7 @@ defmodule CodingAgent.UI.TuiMenuTest do
 
     st = sync(pid)
     assert st.menu_popup == nil
-    assert st.open_tool_id != nil
+    assert Tabs.open_tool_id(st.tabs) != nil
   end
 
   test "ctrl-x c triggers /compact (fast path, no popup)", %{root: tmp_root} do

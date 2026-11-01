@@ -841,3 +841,62 @@ of the anchor scan: 1.0 ms per move on a 208 KB file, which is why the
 tool takes anchors and not line numbers.
 
 ``tui.ex``: 6044 → 5008 lines across the three passes.
+
+Amendment 2026-11-01 (iv): the tab slice leaves the TUI, as a struct
+--------------------------------------------------------------------
+
+**``UI.Tabs`` is the subagent tabs.** Everything the four earlier
+amendments in this file decided about tabs — the tab model, the one
+pointer, the per-view scroll and expand state, the tab strip, the popup
+rows — was still spread through ``ui/tui.ex``: five functions under
+"active-view routing", ten under "Subagent tabs", the strip and its
+``@tab_bar_cap`` in the composer's section, and the popup builder between
+two other menus. They answer ONE question — which views exist, which one
+is on screen, and where each one sits — so they are one module now.
+
+**The slice is a struct, not a map.** The state the TUI held was four
+loose fields (``subagents``, ``active_tab``, ``scroll_offset``,
+``open_tool_id``) whose invariant — "one pointer into ``subagents``, every
+consumer goes through it" (F4) — was a comment on the state struct, not
+something the type could hold. It is ``state.tabs = %Tabs{}`` now: the
+pointer and the map it points into are the same value, and each child is a
+``%Tabs.Child{}`` instead of an anonymous map. The primary view's own
+position lives beside them (``primary_scroll_offset``,
+``primary_open_tool_id``), so "every view keeps its own position" is one
+accessor pair (``scroll_offset/1``, ``put_scroll/2``) that dispatches on
+the active view rather than a field name that differs per view.
+
+The F4 rule is now unrepresentable-wrong rather than merely documented:
+``active_child/1`` is the single reader and ``open/2`` the single writer,
+so a stale pointer reads as the primary for the transcript, the scroll,
+the expand state, the strip and the popup mark at once (pinned by
+``tabs_test.exs``).
+
+**What stays in the TUI, and why.** The band's identity
+(``band_identity/1``) reads the active child, but the band is the VIEW's
+row, not a tab property — its fallback is the primary's running agent, and
+that lives in the session state. The clock helpers (``band_elapsed_s/1``,
+``band_label/1``, ``pause_label/1``, ``esc_hint/1``) never touched a tab
+and did not move. The session calls the slice cannot make on its own
+(``Session.interrupt/1`` per running child, ``Session.unsubscribe/1`` on
+finish) DID move, because they are the tab's own lifetime:
+``interrupt_running/1`` and ``finish/3`` own them, and the TUI only calls
+one function.
+
+``Sidebar.new/1`` deliberately keeps its ``subagents``/``active_tab``
+arguments: the panel is a painter handed resolved values, and a
+``%Tabs.Child{}`` answers ``Map.get/2`` exactly like the map it replaced.
+Narrowing that contract to the struct is a separate, smaller slice.
+
+**Test seam moved with the data.** The integration tests
+(``tui_subagent_test.exs``, ``tui_visual_test.exs``,
+``tui_accordion_test.exs``, ``tui_menu_test.exs``,
+``tui_resume_test.exs``) asserted ``state.subagents`` / ``state.active_tab``
+/ ``state.open_tool_id`` directly; they assert through the module now
+(``Tabs.active_id/1``, ``Tabs.open_tool_id/1``) and build fixtures as
+``%Tabs.Child{}``. That is the cost of the struct and it is the good
+direction: a test that pokes a field name breaks on every reshape, a test
+that asks the module survives it.
+
+``tui.ex``: 5026 → 4803 lines (``ui/tabs.ex``: 382). Suite 1493 → 1507
+(``tabs_test.exs``: 14 tests, terminal-free).

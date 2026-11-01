@@ -6,7 +6,7 @@ defmodule CodingAgent.UI.TuiAccordionTest do
   """
   use CodingAgent.TuiCase, async: true
 
-  alias CodingAgent.UI.Tui
+  alias CodingAgent.UI.{Tabs, Tui}
 
   setup do
     pid = start_supervised!({Tui, [name: nil, test_mode: {80, 24}, scope_root: File.cwd!()]})
@@ -18,17 +18,17 @@ defmodule CodingAgent.UI.TuiAccordionTest do
     send(pid, {:agent, {:tool_executed, "shell", "out1\nout2"}})
 
     st = sync(pid)
-    assert st.open_tool_id == nil
+    assert Tabs.open_tool_id(st.tabs) == nil
 
     key(pid, "t", ["ctrl"])
     st = sync(pid)
     # most recent = the shell block
-    assert st.open_tool_id != nil
-    id = st.open_tool_id
+    assert Tabs.open_tool_id(st.tabs) != nil
+    id = Tabs.open_tool_id(st.tabs)
     assert st.transcript |> Enum.find(&match?({:tool, ^id, _, _}, &1)) |> elem(2) == "shell"
 
     key(pid, "t", ["ctrl"])
-    assert sync(pid).open_tool_id == nil
+    assert Tabs.open_tool_id(sync(pid).tabs) == nil
   end
 
   test "click on a collapsed tool header opens THAT block", %{pid: pid} do
@@ -40,7 +40,7 @@ defmodule CodingAgent.UI.TuiAccordionTest do
     y = Tui.pane_rect(sync(pid)).y
 
     click(pid, 5, y)
-    assert sync(pid).open_tool_id != nil
+    assert Tabs.open_tool_id(sync(pid).tabs) != nil
   end
 
   test "click below the transcript pane (input area) does nothing", %{pid: pid} do
@@ -51,7 +51,7 @@ defmodule CodingAgent.UI.TuiAccordionTest do
     # transcript
     pane = Tui.pane_rect(sync(pid))
     click(pid, 5, pane.y + pane.height + 1)
-    assert sync(pid).open_tool_id == nil
+    assert Tabs.open_tool_id(sync(pid).tabs) == nil
   end
 
   test "the clickable row IS the painted header row, with the sidebar on and wrapping above", %{
@@ -81,17 +81,19 @@ defmodule CodingAgent.UI.TuiAccordionTest do
 
     # clicking the painted header row opens it
     click(pid, 5, header_row)
-    assert sync(pid).open_tool_id != nil
+    assert Tabs.open_tool_id(sync(pid).tabs) != nil
 
     # ...and closing it again through the same row
     click(pid, 5, header_row)
-    assert sync(pid).open_tool_id == nil
+    assert Tabs.open_tool_id(sync(pid).tabs) == nil
 
     # the rows just above the header belong to the answer, not the tool:
     # this is what the width bug broke (the band reached into them)
     for y <- [header_row - 1, header_row - 2], y >= pane.y do
       click(pid, 5, y)
-      assert sync(pid).open_tool_id == nil, "row #{y} (above the header) opened the tool"
+
+      assert Tabs.open_tool_id(sync(pid).tabs) == nil,
+             "row #{y} (above the header) opened the tool"
     end
   end
 end
