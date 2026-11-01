@@ -194,7 +194,7 @@ defmodule CodingAgent.Core.Session.Prompt do
   @doc """
   The per-call environment block (ADR 024): the model of THIS call, whether
   the scope root is a repository, the git branch/worktree, the agent mode,
-  and the date. Appended to the system message ON THE WIRE only — never
+  and the date. Rides the trailing state message ON THE WIRE only — never
   persisted, because it changes every call.
 
   The constant half of the old block (harness, platform, working
@@ -635,7 +635,7 @@ defmodule CodingAgent.Core.Session.Prompt do
   # (ADR 025).
   #
   # Every number left this text (ADR 040, amendment 2026-10-24). They
-  # moved on every round of a turn, and the block sits in the system
+  # moved on every round of a turn, and the block then sat in the system
   # message — ahead of every other byte — so a provider caching on the
   # exact prefix could never hit: measured 8 960 of 9 049 tokens cached
   # with a stable first message, 0 with one line changed. The numbers are
