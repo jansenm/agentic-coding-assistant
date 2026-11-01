@@ -585,7 +585,7 @@ defmodule CodingAgent.Core.Session do
     # apply_pending_switches). A caller-supplied override wins over the
     # model file and is kept for that recomposition.
     prompt_override = Keyword.get(opts, :system_prompt)
-    base_prompt = Prompt.base(prompt_override, scope_root, model)
+    base_prompt = Prompt.base(prompt_override, scope_root, model, store_row())
 
     {agent, policy, system_prompt} =
       case resolve_agent(Keyword.get(opts, :agent), policy, base_prompt, snapshot.agents) do
@@ -1314,7 +1314,7 @@ defmodule CodingAgent.Core.Session do
 
   # Apply a new model and, with it, the model-selected framework prompt.
   defp apply_model(state, model) do
-    base_prompt = Prompt.base(system_prompt_override(state), state.scope_root, model)
+    base_prompt = Prompt.base(system_prompt_override(state), state.scope_root, model, store_row())
 
     # A different model has a different window (ADR 037 OQ1, review N9):
     # re-resolve the compaction limits for the NEW effective model, so the
@@ -2382,6 +2382,13 @@ defmodule CodingAgent.Core.Session do
   # list is broadcast so the TUI sidebar repaints.
   defp apply_todos(state, []), do: {state, []}
 
+  # A todo list is the one block of the per-call trailer whose size the
+  # MODEL controls (the others are bounded by construction), and the
+  # trailer is re-sent uncached on every round — so the list is refused
+  # HERE, where the model can act on it, instead of at request time, where
+  # the round would fail and the model that could shrink the list would
+  # never get to run. `Prompt.todo_limit/0` is the share it may use; the
+  # whole-trailer cap (`Prompt.validate_trailer/1`) stays as the bug guard.
   defp apply_todos(state, d_calls) do
     {state, results} =
       Enum.reduce(d_calls, {state, []}, fn call, {state, acc} ->
@@ -2389,15 +2396,19 @@ defmodule CodingAgent.Core.Session do
 
         case CodingAgent.Core.Tools.TodoWrite.parse(args) do
           {:ok, todos} ->
-            broadcast(state, {:todos_updated, todos})
+            if too_large?(todos) do
+              {state, [todo_too_large_result(id, todos) | acc]}
+            else
+              broadcast(state, {:todos_updated, todos})
 
-            result = %{
-              id: id,
-              name: CodingAgent.Core.Tools.TodoWrite.name(),
-              content: todo_summary(todos)
-            }
+              result = %{
+                id: id,
+                name: CodingAgent.Core.Tools.TodoWrite.name(),
+                content: todo_summary(todos)
+              }
 
-            {%{state | todos: todos}, [result | acc]}
+              {%{state | todos: todos}, [result | acc]}
+            end
 
           {:error, reason} ->
             result = %{
@@ -2411,6 +2422,23 @@ defmodule CodingAgent.Core.Session do
       end)
 
     {state, Enum.reverse(results)}
+  end
+
+  defp too_large?(todos), do: Prompt.todo_block_bytes(todos) > Prompt.todo_limit()
+
+  defp todo_too_large_result(id, todos) do
+    bytes = Prompt.todo_block_bytes(todos)
+
+    %{
+      id: id,
+      name: CodingAgent.Core.Tools.TodoWrite.name(),
+      content:
+        "error: that list would put #{bytes} bytes into the per-request state " <>
+          "trailer; the limit for the list is #{Prompt.todo_limit()} bytes (the whole " <>
+          "trailer is capped at #{Prompt.trailer_max()} and it is re-sent on every " <>
+          "round). Shorten the items, drop finished ones, or move detail out of the " <>
+          "list; the previous list is unchanged."
+    }
   end
 
   defp todo_summary([]), do: "Cleared the todo list."
@@ -2768,23 +2796,38 @@ defmodule CodingAgent.Core.Session do
       context = Prompt.with_todos(context, state.todos)
       context = Prompt.with_budget(context, budget_info(state))
       context = Prompt.with_capabilities(context, capability_info(state))
-      {:ok, model_input, opts, context}
+
+      # The trailer is uncached by construction (its bytes are re-sent on
+      # every round), so it is capped: `Prompt.validate_trailer/1` returns
+      # a message, never a raise — a predictable size error must be a value
+      # the round can fail with (ADR 047's rule for the store, applied to
+      # the request).
+      with :ok <- Prompt.validate_trailer(context) do
+        {:ok, model_input, opts, context}
+      end
     end
   end
 
-  # The per-session facts the environment block names that the model
-  # cannot infer from the tree (harness feedback P2): which AGENT it runs
-  # as, and which session STORE is active. Read straight from the state
-  # this request is built from, so the block and the session cannot
-  # disagree. The git branch/worktree rows are derived in `Prompt` from
-  # the scope root alone.
+  # The per-session fact the environment block names that the model cannot
+  # infer from the tree (harness feedback P2): which AGENT it runs as. Read
+  # straight from the state this request is built from, so the block and
+  # the session cannot disagree. The git branch/worktree rows are derived
+  # in `Prompt` from the scope root alone; the store row moved to the
+  # session header (`Prompt.base/4`), where a fact that cannot change
+  # belongs.
   defp environment_opts(%State{} = state) do
-    [agent: state.agent, store: Config.store_path()]
+    [agent: state.agent]
+  end
+
+  # The store row of the session header. A session cannot change its store
+  # while it runs, so the row is as constant as the working directory — and
+  # `store_path` can raise when a pinned store cannot be resolved (a dead
+  # ambient selector). The header must never fail a session over an
+  # informational row, so that case leaves it out.
+  defp store_row do
+    [store: Config.store_path()]
   catch
-    # store_path can raise when a pinned store cannot be resolved (a dead
-    # ambient selector). The environment block must never fail a request
-    # over a missing informational row.
-    :error, _ -> [agent: state.agent]
+    :error, _ -> []
   end
 
   # The numbers the budget block shows the model: the projected context

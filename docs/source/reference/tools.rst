@@ -47,7 +47,10 @@ Read-only tools
    * - ``todowrite``
      - Maintain the task list (ADR 031). Pure session state, intercepted,
        never parks. Each item may carry agent-private ``notes`` that
-       survive compaction.
+       survive compaction. The list is the one block the model sizes, so
+       it is refused when it would push the per-request state trailer over
+       its share (ADR 024, amendment 2026-11-01) — the previous list then
+       stays unchanged.
    * - ``compact``
      - Summarize older messages now to free context (ADR 040). The model's
        own compaction lever; intercepted by the session.

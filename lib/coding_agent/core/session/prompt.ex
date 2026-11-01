@@ -7,16 +7,22 @@ defmodule CodingAgent.Core.Session.Prompt do
     1. the framework prompt **selected for the model** (or a
        caller-supplied replacement),
     2. the project memory (`AGENTS.md`, `Core.ProjectMemory`),
-    3. the agent definition's prompt (ADR 017), when one is selected.
+    3. the **session header** (`session_header/2`) — the harness, the
+       platform, the working directory and the store. These cannot change
+       while the session runs, so they belong to the prefix and not to the
+       per-round channel;
+    4. the agent definition's prompt (ADR 017), when one is selected.
 
-  Layers 1-3 form the STABLE, persisted prefix (`base_prompt` +
+  Layers 1-4 form the STABLE, persisted prefix (`base_prompt` +
   agent body), stored in the first context message. Everything that can
   change DURING a session is not part of it: it rides ONE trailing
   `<system-reminder>` message, rebuilt per call (ADR 024):
 
-    * the **environment block** (`environment/2`) — the model id, the
-      working directory, the platform, the date. Baking that into the
-      stored prompt would make it stale and non-cacheable;
+    * the **environment block** (`environment/2`) — the model of THIS
+      call, the git branch, whether the scope root is a repository, the
+      date. What is constant moved to the session header: the same fact
+      re-sent uncached on every round is the one cost this channel
+      creates, and it is bounded so that it stays a few hundred bytes;
     * the **todo block** (`with_todos/2`, ADR 031) — the model's current
       list, rebuilt from session state per call so compaction cannot eat
       it;
@@ -44,6 +50,17 @@ defmodule CodingAgent.Core.Session.Prompt do
   round whose new content was a few hundred tokens. At the tail the same
   change costs only the tail, which is re-sent on every round anyway.
 
+  ## The tail is uncached by construction, so it is CAPPED
+
+  A byte at the tail is never part of the next round's cached prefix: the
+  next request appends the assistant turn and its tool results exactly
+  where the trailer stood. Its cost is therefore `size × rounds`, not
+  `size × changes`, and that makes an unbounded block a per-round floor
+  nobody sees. `validate_trailer/1` enforces `@trailer_max`; the todo
+  list — the only block whose size the model controls — is refused at its
+  source (see `todo_limit/0`) so the cap is a bug guard rather than a
+  wall the human has to climb.
+
   This module is pure string work — it reads prompt files and composes
   strings; it touches no session state and no clock beyond the date.
   """
@@ -51,6 +68,23 @@ defmodule CodingAgent.Core.Session.Prompt do
   alias CodingAgent.Core.Session.ContextBudget
 
   @prompts_dir_path "coding-agent/prompts"
+
+  # The trailer's cap and the share the todo list may not exceed (see
+  # `trailer_max/0` and `todo_limit/0`). Up here because a function body
+  # reads an attribute at compile time in file order, and `todo_limit/0`
+  # sits above the state channel.
+  @trailer_max 4_096
+  @blocks_reserve 1_536
+  @todo_limit @trailer_max - @blocks_reserve
+
+  # The per-call state channel's delimiters (see `append_state_block/2`).
+  # Up here for the same file-order reason: `state_text/1` above the
+  # channel reads the lead.
+  @state_open "<system-reminder>"
+  @state_close "</system-reminder>"
+  @state_lead @state_open <>
+                "\nSession state, updated automatically on every request. " <>
+                "It is not a message from the human; do not reply to it."
 
   # Last-resort prompt if the priv files cannot be read (a broken build).
   # An empty system prompt is worse than a short one.
@@ -106,35 +140,77 @@ defmodule CodingAgent.Core.Session.Prompt do
   def family(_), do: "default"
 
   @doc """
-  The base prompt: the framework prompt for `model` (or `override`) plus
-  the project memory for `scope_root`. This is the value stored as
-  `base_prompt`.
+  The base prompt: the framework prompt for `model` (or `override`), the
+  project memory for `scope_root`, and the session header. This is the
+  value stored as `base_prompt`.
+
+  `opts` carries the one fact the header cannot derive from the scope
+  root: `:store`, the session database (checkpoint refs are
+  store-namespaced, so a history question is answered against a named
+  store). It is an option rather than a `Config` read so this module stays
+  a string composer.
   """
-  @spec base(String.t() | nil, String.t() | nil, String.t() | nil) :: String.t()
-  def base(override, scope_root, model \\ nil) do
+  @spec base(String.t() | nil, String.t() | nil, String.t() | nil, keyword()) :: String.t()
+  def base(override, scope_root, model \\ nil, opts \\ []) do
     override = override || framework(model)
-    CodingAgent.Core.ProjectMemory.append(override, scope_root)
+    base = CodingAgent.Core.ProjectMemory.append(override, scope_root)
+    base <> "\n\n" <> session_header(scope_root, opts)
+  end
+
+  # The session header: the facts that cannot change while this system
+  # message stands (ADR 024, 2026-11-01). They used to ride the per-call
+  # trailer, re-sent uncached on every round — ~400 B of the ~1.9 kB the
+  # channel cost. A fact belongs HERE exactly when no per-call state can
+  # falsify it: the model row does not (it is the call's model, and an
+  # agent definition may pin its own), the git row does not (a checkout
+  # moves it), and neither do the date or the todo list.
+  #
+  # Resume is the one hole: a base prompt is composed once and restored
+  # from the store, so a session resumed on another PLATFORM keeps the old
+  # row — the same trade project memory already makes (review I23).
+  defp session_header(scope_root, opts) do
+    dir = scope_root || File.cwd!()
+
+    lines =
+      [
+        {"Harness", harness()},
+        {"Platform", platform()},
+        {"Working directory", dir}
+      ] ++ store_lines(opts)
+
+    body = Enum.map_join(lines, "\n", fn {label, value} -> "  #{label}: #{value}" end)
+
+    """
+    # Session
+
+    #{body}
+
+    These do not change while the session runs. The live state — the model of
+    the call, the git branch, the date, the todo list and the context budget —
+    arrives in a trailing <system-reminder> on every request.\
+    """
   end
 
   @doc """
-  The per-call environment block (ADR 024): model identity, working
-  directory, the harness it is running in, platform, date. Appended to the
-  system message ON THE WIRE only — never persisted, because it changes
-  every call.
+  The per-call environment block (ADR 024): the model of THIS call, whether
+  the scope root is a repository, the git branch/worktree, the agent mode,
+  and the date. Appended to the system message ON THE WIRE only — never
+  persisted, because it changes every call.
+
+  The constant half of the old block (harness, platform, working
+  directory, store) is now part of the base prompt: see `base/4`. Only the
+  bytes that a per-call fact can falsify stay on the uncached road.
 
   The block also names the SESSION the model cannot infer from the tree:
 
     * the git branch and whether the scope root is a linked WORKTREE
       (``git worktree list`` is otherwise a tool round just to learn
       "which checkout am I in");
-    * the agent mode (``plan`` = read-only, ``build`` = read-write) and the
-      shell root mode — the same ``Shell root`` fact the capability block
-      states for a read-only root;
-    * the session store in use (checkpoint refs are store-namespaced).
+    * the agent mode (``plan`` = read-only, ``build`` = read-write) — the
+      same fact the capability block states for a read-only root.
 
-  ``opts`` carries the per-session facts the composition already resolved:
-  ``:agent`` (mode), ``:shell_mode`` (policy) and ``:store`` (the pinned
-  store path). All optional: a pure string-level call (a test, an older
+  ``opts`` carries the per-session fact the composition already resolved:
+  ``:agent`` (mode). Optional: a pure string-level call (a test, an older
   caller) emits the same block as before, so this stays a pure prompt
   function.
   """
@@ -145,17 +221,11 @@ defmodule CodingAgent.Core.Session.Prompt do
     lines =
       [
         {"Model", model || "unknown"},
-        {"Working directory", dir},
         {"Is directory a git repo", if(git_repo?(dir), do: "yes", else: "no")}
       ] ++
         git_lines(dir) ++
         agent_lines(opts) ++
-        [{"Platform", platform()}] ++
-        store_lines(opts) ++
-        [
-          {"Today's date", "#{Date.utc_today()}"},
-          {"Harness", harness()}
-        ]
+        [{"Today's date", "#{Date.utc_today()}"}]
 
     body = Enum.map_join(lines, "\n", fn {label, value} -> "  #{label}: #{value}" end)
 
@@ -314,6 +384,114 @@ defmodule CodingAgent.Core.Session.Prompt do
   end
 
   def with_capabilities(context, _), do: context
+
+  @doc """
+  The trailer's size cap, in bytes, for the WHOLE trailing state message.
+
+  4 096 — measured, not chosen for roundness. At the live session's
+  `last_input_tokens` (93 732) a full re-prefill of the context is 1.4 ct
+  and a warm call was 0.24 ct (365 calls, $0.86 in the store); 4 096 B is
+  ≈1 365 tokens ≈ 0.02 ct at the provider's measured uncached rate, i.e.
+  ~8 % of a warm call and ~4 % of the context. A 500-round session pays
+  ≈9.5 ct at the cap — five cold re-prefills' worth, for state that is
+  current on every round.
+
+  It is a guard, not a target: the realistic trailer after the session
+  header moved into the system message is ~1.4 kB, and three quarters of
+  that is the todo list.
+  """
+  @spec trailer_max() :: pos_integer()
+  def trailer_max, do: @trailer_max
+
+  @doc """
+  How much of the cap the todo block alone may use.
+
+  The other blocks are bounded by construction — the environment is four
+  short rows, the budget block is at most two band sentences, the
+  capability block is a fixed sentence per missing tool — and together
+  measured ≈830 B at their largest. 1 536 reserves that with room to
+  spare; the list gets the rest. It is refused AT ITS SOURCE
+  (`Session.apply_todos/2`), because a trailer that fails at request time
+  cannot be shrunk by the model that could shrink it.
+  """
+  @spec todo_limit() :: pos_integer()
+  def todo_limit, do: @todo_limit
+
+  @doc "The bytes a list would add to the trailer (0 for an empty list)."
+  @spec todo_block_bytes([map()]) :: non_neg_integer()
+  def todo_block_bytes(todos) do
+    case todos_block(todos) do
+      nil -> 0
+      block -> byte_size(block)
+    end
+  end
+
+  @doc """
+  The trailing state message's size, or 0 when the context has none (an
+  empty todo list, a session with no resolved window, a bare test state).
+
+  Only the message this module produced counts: a human message that
+  happens to be last is not a trailer, and must never be charged to it.
+  """
+  @spec trailer_bytes(ReqLLM.Context.t()) :: non_neg_integer()
+  def trailer_bytes(context) do
+    case state_text(context) do
+      nil -> 0
+      text -> byte_size(text)
+    end
+  end
+
+  @doc """
+  `:ok`, or `{:error, message}` when the trailer is over `trailer_max/0`.
+
+  The error is a VALUE, not a raise: the caller fails the round with it.
+  It names the total, the cap and the largest block, because "too big" is
+  not actionable and the block is.
+  """
+  @spec validate_trailer(ReqLLM.Context.t()) :: :ok | {:error, String.t()}
+  def validate_trailer(context) do
+    case trailer_bytes(context) do
+      bytes when bytes <= @trailer_max ->
+        :ok
+
+      bytes ->
+        {label, size} = largest_block(context)
+
+        {:error,
+         "refusing the request: the per-call state trailer is #{bytes} bytes and the " <>
+           "limit is #{@trailer_max} (largest block: #{label} — #{size} bytes). It is " <>
+           "re-sent uncached on every round; the todo list is refused at its source " <>
+           "(#{todo_limit()} bytes), so a block larger than that is a bug."}
+    end
+  end
+
+  # The biggest chunk of the trailer, with the first line as its name: the
+  # blocks are joined with a blank line, so the split is the block split.
+  defp largest_block(context) do
+    case state_text(context) do
+      nil ->
+        {"none", 0}
+
+      text ->
+        text
+        |> String.split("\n\n")
+        |> Enum.map(fn chunk ->
+          {chunk |> String.split("\n", parts: 2) |> hd(), byte_size(chunk)}
+        end)
+        |> Enum.max_by(fn {_label, size} -> size end, fn -> {"none", 0} end)
+    end
+  end
+
+  defp state_text(context) do
+    case List.last(ReqLLM.Context.to_list(context)) do
+      %ReqLLM.Message{role: :user, content: [%ReqLLM.Message.ContentPart{text: text}]}
+      when is_binary(text) ->
+        if String.starts_with?(text, @state_lead), do: text, else: nil
+
+      _ ->
+        nil
+    end
+  end
 
   # The block text, or nil when there is nothing to state: full
   # capabilities, read-write shell, and no exposed tool whose decision
@@ -511,13 +689,9 @@ defmodule CodingAgent.Core.Session.Prompt do
   # block, so a block that changes moves only the tail of the request and
   # the cached prefix is untouched (see the moduledoc). Blocks are merged
   # in call order into the same message; only we produce this lead, so a
-  # human message can never be mistaken for it.
-  @state_open "<system-reminder>"
-  @state_close "</system-reminder>"
-  @state_lead @state_open <>
-                "\nSession state, updated automatically on every request. " <>
-                "It is not a message from the human; do not reply to it."
-
+  # human message can never be mistaken for it. (The delimiters are
+  # defined at the top of the module: a function above this point reads
+  # them.)
   defp append_state_block(context, block) do
     case List.last(ReqLLM.Context.to_list(context)) do
       %ReqLLM.Message{role: :user, content: [%ReqLLM.Message.ContentPart{text: text} = part]}

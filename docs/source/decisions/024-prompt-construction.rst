@@ -325,3 +325,69 @@ Consequences:
   re-prefills the context (that is the provider's TTL, not a changed
   byte), and a model switch still recomposes the system message on
   purpose.
+
+Amendment 2026-11-01: the constants go back into the prefix, and the tail gets a cap
+-----------------------------------------------------------------------------------
+
+The 2026-10-25 amendment moved the per-call blocks to the tail, which
+fixed the re-prefill. It left one thing in the wrong place: the
+**constants** rode the tail too. ``Harness``, ``Platform``,
+``Working directory`` and ``Store`` were re-sent, uncached, on every
+round of every session — the same bytes, thousands of times — while the
+system message they belong to is composed once and cached.
+
+**The rule, stated so the next block can be placed without re-deriving
+it:** a fact belongs to the system message exactly when no per-call fact
+can falsify it. Under that rule the split is
+
+- **prefix** (``Prompt.base/4``: framework, project memory, session
+  header) — the harness, the platform, the working directory, the store.
+  Two facts deliberately stayed behind: ``Model`` is the model of THIS
+  call (an agent definition may pin its own, so the row would have to be
+  re-derived per turn), and ``Is directory a git repo``/``Git`` move
+  under a checkout or a ``git init``.
+- **tail** (``Prompt.environment/3`` and the three blocks) — the model,
+  the repository flag, the branch, the date, the todo list, the budget
+  band, the capabilities.
+
+Measured on the realistic case (eight todos, band advice, two missing
+tools): the trailer went from 1 896 B to 1 740 B, and the 156 B it lost
+are now paid once per compose instead of once per round. At 0.24 ct per
+warm call (365 calls, $0.86 in the store) that is ~2.5 ct over a session
+— small, and the point is not the 2.5 ct: it is that a constant on the
+uncached channel is wrong on principle, and the principle is what keeps
+the channel honest.
+
+**The cap.** A byte at the tail is never in the next round's cached
+prefix: the next request appends the assistant turn and its tool results
+exactly where the trailer stood. So the trailer's cost is
+``size × rounds``, not ``size × changes``, and an unbounded block is a
+per-round floor nobody sees. ``Prompt.trailer_max/0`` is **4 096 B**:
+
+- ≈1 365 tokens, ≈0.02 ct at the provider's measured uncached rate, i.e.
+  ~8 % of a warm call and ~4 % of a 93k context;
+- a 500-round session pays ≈9.5 ct at the cap — five cold re-prefills at
+  121k, for state that is current on every round;
+- ~2.9× the realistic trailer, which leaves room for a todo list with
+  notes without making the cap a wall.
+
+**Two enforcers, one limit.** ``Prompt.validate_trailer/1`` refuses a
+request whose trailer is over the cap and says the total, the cap and the
+largest block — as a VALUE (``{:error, message}``), because a predictable
+size error must fail a round, not crash a session (ADR 047's rule,
+applied to the request). That is a bug guard, and a bug guard must be
+impossible to reach in normal work, so the one block the MODEL sizes is
+refused at its source: ``Session.apply_todos/2`` refuses a list whose
+rendered block would exceed ``Prompt.todo_limit/0`` (2 560 B = the cap
+minus 1 536 B reserved for the blocks that are bounded by construction)
+and returns a tool result the model can act on in the same turn. Without
+that half, an over-long list would deadlock: the round that could shrink
+it cannot be built.
+
+**What this rejects.** Rendering the todo list into history once, as an
+opencode-style instruction delta, would bound the cost by *changes*
+rather than by *size*. It also buys the epoch machinery and its failure
+mode — their spec needs a reconciliation rule because "compaction,
+committed revert, and message editing can strip the reminder". A trailer
+rebuilt from live state cannot go stale, be stripped, or drift; the only
+thing that can go wrong with it is that it grows, and that is now capped.

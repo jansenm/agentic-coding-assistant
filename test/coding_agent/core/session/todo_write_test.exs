@@ -3,6 +3,7 @@ defmodule CodingAgent.Core.Session.TodoWriteTest do
 
   alias CodingAgent.Core.Permissions
   alias CodingAgent.Core.Session
+  alias CodingAgent.Core.Session.Prompt
   alias CodingAgent.Core.Tools.TodoWrite
 
   @tmp_root System.tmp_dir!() |> Path.join("agent-todo-#{System.unique_integer()}")
@@ -153,6 +154,51 @@ defmodule CodingAgent.Core.Session.TodoWriteTest do
 
       {:ok, state} = Session.state(id)
       assert state.todos == [%{"content" => "A", "status" => "pending"}]
+    end
+
+    # The list is the only block of the per-call trailer whose size the
+    # MODEL controls, and the trailer is re-sent uncached on every round —
+    # so the refusal belongs here, where the model can act on it, and not
+    # at request time, where the round would die before the model could
+    # shrink the list it just wrote.
+    test "a list too big for the trailer is refused, and the old list stays" do
+      id = "todo-too-big-#{System.unique_integer()}"
+      start(id)
+
+      :ok =
+        Session.debug_gate(id, [todo_call("t1", [%{"content" => "A", "status" => "pending"}])])
+
+      huge =
+        Enum.map(1..60, fn i ->
+          %{"content" => String.duplicate("y", 60) <> "#{i}", "status" => "pending"}
+        end)
+
+      assert Prompt.todo_block_bytes(huge) > Prompt.todo_limit()
+
+      :ok = Session.debug_gate(id, [todo_call("t2", huge)])
+
+      {:ok, state} = Session.state(id)
+      assert state.todos == [%{"content" => "A", "status" => "pending"}]
+      assert context_text(state) =~ "the previous list is unchanged"
+      assert context_text(state) =~ "limit for the list is #{Prompt.todo_limit()}"
+    end
+
+    test "the request guard refuses an over-cap trailer as a value" do
+      id = "todo-cap-wire-#{System.unique_integer()}"
+      start(id)
+
+      {:ok, state} = Session.state(id)
+
+      huge =
+        Enum.map(1..60, fn i ->
+          %{"content" => String.duplicate("y", 60) <> "#{i}", "status" => "pending"}
+        end)
+
+      # reach the request path without the source guard: the backstop is a
+      # bug guard, and a bug guard must still be tested through the caller
+      assert {:error, message} = Session.wire_request(%{state | todos: huge})
+      assert message =~ "refusing the request"
+      assert message =~ "limit is #{Prompt.trailer_max()}"
     end
   end
 

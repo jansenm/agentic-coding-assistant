@@ -57,21 +57,28 @@ defmodule CodingAgent.Core.Session.PromptTest do
     )
   end
 
-  test "base/2 is framework + project memory, in that order", %{root: root} do
+  test "base/2 is framework + project memory + session header, in that order", %{root: root} do
     File.write!(Path.join(root, "AGENTS.md"), "PROJECT-RULE")
 
     base = Prompt.base(nil, root)
 
-    assert base =~ "coding assistant"
+    # a phrase only the framework file has (the header also says "coding
+    # assistant", so the old anchor would match either layer)
+    assert base =~ "embedded in a terminal application"
     assert base =~ "PROJECT-RULE"
-    # framework first, memory after
-    assert :binary.match(base, "coding assistant") |> elem(0) <
+    assert base =~ "# Session"
+
+    # framework, then memory, then the header
+    assert :binary.match(base, "embedded in a terminal application") |> elem(0) <
              :binary.match(base, "PROJECT-RULE") |> elem(0)
+
+    assert :binary.match(base, "PROJECT-RULE") |> elem(0) <
+             :binary.match(base, "# Session") |> elem(0)
   end
 
   test "base/2 honors a caller's prompt override", %{root: root} do
     assert Prompt.base("CUSTOM", root) =~ "CUSTOM"
-    refute Prompt.base("CUSTOM", root) =~ "coding assistant"
+    refute Prompt.base("CUSTOM", root) =~ "embedded in a terminal application"
   end
 
   test "compose_agent/2 appends a non-blank agent prompt" do
@@ -172,26 +179,20 @@ defmodule CodingAgent.Core.Session.PromptTest do
   # -- ADR 024: the per-call environment block ----------------------------
 
   describe "environment/2" do
-    test "carries the model, cwd, git-repo flag, platform, date and harness", %{root: root} do
+    test "carries only what a per-call fact can change", %{root: root} do
       block = Prompt.environment("ollama:test", root)
 
       assert block =~ "<env>"
       assert block =~ "Model: ollama:test"
-      assert block =~ "Working directory: #{root}"
       assert block =~ "Is directory a git repo: no"
-      assert block =~ "Platform: "
       assert block =~ "Today's date: #{Date.utc_today()}"
-      assert block =~ "Harness: #{Prompt.harness()}"
-    end
 
-    test "names the software the model is running in, not only the machine" do
-      # This repo is both the harness and the product, so the block has to
-      # say something about the harness: a reviewing agent otherwise has to
-      # infer that the thing it is inside is the thing it is reading.
-      block = Prompt.environment("m", File.cwd!())
-
-      assert block =~ ~r/^  Harness: \S.*$/m
-      refute block =~ "Harness: unknown"
+      # the constants moved to the session header (2026-11-01): the same
+      # fact re-sent uncached on every round is the cost of this channel
+      refute block =~ "Working directory:"
+      refute block =~ "Platform:"
+      refute block =~ "Harness:"
+      refute block =~ "Store:"
     end
 
     test "reports a git repo when .git is present", %{root: root} do
@@ -234,20 +235,43 @@ defmodule CodingAgent.Core.Session.PromptTest do
       refute Prompt.environment("m", root) =~ "Git:"
     end
 
-    test "opts name the agent and the store" do
-      block =
-        Prompt.environment("m", "/tmp", agent: %{name: "plan"}, store: "/tmp/store.db")
+    test "opts name the agent" do
+      block = Prompt.environment("m", "/tmp", agent: %{name: "plan"})
 
       assert block =~ "Agent: plan"
-      assert block =~ "Store: /tmp/store.db"
     end
 
-    test "a subagent is marked as such, and a missing agent or store adds no row" do
+    test "a subagent is marked as such, and a missing agent adds no row" do
       block = Prompt.environment("m", "/tmp", agent: %{name: "explore", mode: :subagent})
       assert block =~ "Agent: explore (subagent)"
 
       refute Prompt.environment("m", "/tmp") =~ "Agent:"
-      refute Prompt.environment("m", "/tmp") =~ "Store:"
+    end
+  end
+
+  # -- the session header: what cannot change goes into the prefix --------
+
+  describe "the session header" do
+    test "names the harness, the platform and the working directory", %{root: root} do
+      # This repo is both the harness and the product, so the prompt has to
+      # say something about the harness: a reviewing agent otherwise has to
+      # infer that the thing it is inside is the thing it is reading.
+      header = Prompt.base(nil, root)
+
+      assert header =~ "# Session"
+      assert header =~ ~r/^  Harness: \S.*$/m
+      refute header =~ "Harness: unknown"
+      assert header =~ "Platform: "
+      assert header =~ "Working directory: #{root}"
+    end
+
+    test "names the store when the session passes one", %{root: root} do
+      assert Prompt.base(nil, root, nil, store: "/tmp/store.db") =~ "Store: /tmp/store.db"
+      refute Prompt.base(nil, root) =~ "Store:"
+    end
+
+    test "says where the live state goes, so the two channels are not a mystery", %{root: root} do
+      assert Prompt.base(nil, root) =~ "arrives in a trailing <system-reminder>"
     end
   end
 
@@ -338,6 +362,60 @@ defmodule CodingAgent.Core.Session.PromptTest do
     test "nothing to say sends the context unchanged" do
       assert Prompt.with_todos(base(), []) == base()
       assert Prompt.with_capabilities(base(), %{missing: [], shell_mode: :rw}) == base()
+    end
+  end
+
+  # The trailer is uncached by construction — the next request appends its
+  # messages exactly where the trailer stood — so its cost is size × ROUNDS.
+  # These pin the cap that keeps that floor visible.
+  describe "the trailer cap" do
+    test "a realistic trailer is well under the cap" do
+      on_wire =
+        base()
+        |> Prompt.with_environment("m", "/tmp")
+        |> Prompt.with_todos(
+          Enum.map(1..8, &%{"content" => "step #{&1} of the work", "status" => "pending"})
+        )
+        |> Prompt.with_budget(budget(used: 300_000))
+        |> Prompt.with_capabilities(%{missing: ["edit", "write_file"], shell_mode: :ro})
+
+      assert Prompt.validate_trailer(on_wire) == :ok
+      assert Prompt.trailer_bytes(on_wire) < Prompt.trailer_max()
+    end
+
+    test "an over-cap trailer is a value naming the total, the cap and the block" do
+      huge =
+        for i <- 1..60,
+            do: %{"content" => String.duplicate("x", 60) <> "#{i}", "status" => "pending"}
+
+      on_wire = base() |> Prompt.with_todos(huge)
+
+      assert {:error, message} = Prompt.validate_trailer(on_wire)
+      assert message =~ "#{Prompt.trailer_bytes(on_wire)} bytes"
+      assert message =~ "limit is #{Prompt.trailer_max()}"
+      assert message =~ "Current todo list"
+    end
+
+    test "a bare context and a human's last message are not a trailer" do
+      assert Prompt.trailer_bytes(base()) == 0
+      assert Prompt.validate_trailer(base()) == :ok
+
+      human = base() |> ReqLLM.Context.append(ReqLLM.Context.user("hello"))
+      assert Prompt.trailer_bytes(human) == 0
+      assert Prompt.validate_trailer(human) == :ok
+    end
+
+    test "the todo share leaves room for every block that is bounded by construction" do
+      assert Prompt.todo_limit() < Prompt.trailer_max()
+
+      over =
+        for i <- 1..60,
+            do: %{"content" => String.duplicate("y", 60) <> "#{i}", "status" => "pending"}
+
+      assert Prompt.todo_block_bytes(over) > Prompt.todo_limit()
+
+      assert Prompt.todos_block([]) == nil
+      assert Prompt.todo_block_bytes([]) == 0
     end
   end
 

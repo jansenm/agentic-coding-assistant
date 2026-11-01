@@ -286,13 +286,15 @@ defmodule CodingAgent.Core.Session.AgentWiringTest do
       {:ok, s} = Session.state("wire-env-agent")
 
       {:ok, _input, _opts, ctx} = Session.wire_request(s)
-      text = state_text_of(ctx)
 
-      # the agent row is the session's own definition, not a re-derivation
-      assert text =~ "Agent: build"
-      # the store row names the real active database (checkpoint refs are
-      # store-namespaced, so history is read against THIS one)
-      assert text =~ "Store: #{CodingAgent.Core.Config.store_path()}"
+      # the agent row is the session's own definition, not a re-derivation;
+      # it is per call (a pending Tab switch applies at the turn boundary)
+      assert state_text_of(ctx) =~ "Agent: build"
+
+      # the store row moved to the session header (2026-11-01): it cannot
+      # change while the session runs, so it belongs to the cached prefix
+      assert ctx |> ReqLLM.Context.to_list() |> hd() |> system_text() =~
+               "Store: #{CodingAgent.Core.Config.store_path()}"
     end
 
     test "a read-only plan session says its agent name in the environment block" do
