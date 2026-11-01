@@ -2,9 +2,12 @@
 
 **Status (2026-11-01):** Phase 0 is instrumented and in use; **F1 landed**
 (and the tail was capped on 2026-11-01); F2–F6 are open. The §2 rows that
-had gone stale are corrected in place, §6 has a third reading, and §9 is
-answered. The history is kept: a *Result* / *Status* note marks where the
-plan met the tree, rather than rewriting what was only hypothesised then.
+had gone stale are corrected in place, §6 has a third reading and a
+counted peer reading, and §9 is answered. The counters no longer show a
+multiple between the harnesses — see §6 "The peer, counted" and §8's first
+risk; the original "feels slower" is now a UI/task-mix question. The
+history is kept: a *Result* / *Status* note marks where the plan met the
+tree, rather than rewriting what was only hypothesised then.
 
 **Observation.** Working in opencode (same machine, same repo, same model
 class) turns feel faster than in this harness, without an obvious gain in
@@ -498,7 +501,8 @@ that is the row to carry over next time.
 **Read (2026-11-01).** The third reading says: the model still makes one
 tool call per round — the one turn measured end-to-end carried 53 tool
 calls in 53 rounds (22 reads, 18 shells, 10 edits, 3 `todowrite`), so H4
-stands and F5 is still a lever. Over the session that is 838 tool calls in
+stands — and F5 is a small lever: the peer batches 1.16 tools per call,
+which is worth ~14 % of its rounds. Over the session that is 838 tool calls in
 14 user turns (≈60 per turn), with `shell` still 60 % of them (507/838),
 so H3 stands. What moved is the tool share of the round: 18.5 % now
 (5m56s of 32m10s) against 43 % in the 2026-10-28 row — F2's ceiling is
@@ -514,17 +518,37 @@ session's rounds (~850, from 838 tool calls at one per round plus the turn
 ends) and the average context is ~140k — the same order as the baseline.
 The money row ($1.35 billed) is unaffected.
 
-**The peer, same model (2026-11-01).** opencode's own store
-(`session_v2`, `session_message`) for this machine shows 2 103 calls with
-`variant: "high"`, 1.3–5.9 s per call, 115–1 180 output tokens per call,
-and 363 M cached against 7.6 M input (98 %); its last turns were 10–12
-calls in 28–107 s, against our 53 calls in 7m23s. So there are two gaps,
-not one: our calls take ~2× as long, and a turn takes ~5× as many calls.
-The second gap is open — whether opencode's calls carry several tools each
-(which would put H4/F5 back at the centre) was not measured, and its store
-can answer it. The first is a per-call property of the request (output
-volume and `reasoning_effort`, which opencode sets to `high` and this
-harness resolves from `config.toml`).
+**The peer, counted (2026-11-01).** opencode's own store
+(`session_message`: one assistant row is one provider call, `content[]` the
+parts of that call) holds 2 298 calls and 2 665 tool parts, so **1.16 tool
+calls per call** — 1 825 calls with exactly one tool, 374 with two or more
+(max 12). So it batches, but at ~1.2: batching saves ~14 % of the rounds
+(2 665 → 2 298), not the 3–4× the older anecdote implied. Per call it
+writes 833 output tokens and 2 069 chars of reasoning, and its
+`created → streamed` time is **4.24 s mean, 2.59 s median** (p90 9.0 s).
+Its last turns are 42, 53 and 85 calls in 194, 380 and 500 s — 4.6–7.2 s
+of wall per round.
+
+Our side, read later the same day because the session is live: 977 tool
+calls over 15 turns ≈ 992 lifetime rounds (a round is one provider call;
+tool calls plus turn ends is a lower bound), so **0.98 tool calls per
+round**, 881 output tokens and 2 471 chars of reasoning per call. The
+current process reports **4.31 s per round** of `llm_ms` and 1.94 s of
+`tool_ms` (230 rounds), i.e. 6.25 s of wall per round. The one task both
+harnesses ran (the merge-and-review turn in the second reading) took
+opencode 53 calls in 380 s; the TUI had passed 53 rounds at 7m23s when the
+snapshot was written.
+
+So the counters say the gap is **~1.1–1.5×, not multiples**: same cache
+ratio (98 %), comparable calls per turn (42–85 vs 53), comparable provider
+time (4.24 vs 4.31 s), ours writing ~6 % more output and ~19 % more
+reasoning per call. The 10–12-call turns of the earlier reading are real
+but sit beside 42–85-call turns; comparing the latter is the fair picture.
+This is still not a controlled A/B — the tasks and the prompts differ —
+but the order of magnitude is gone. **The original "feels slower" is not
+reproduced in the model counters** — see §8's first risk. What remains is
+the UI's own cost (streaming, rendering, input handling) and task mix, not
+rounds or tokens.
 
 ---
 
@@ -634,8 +658,9 @@ cheap.
 
 **Status 2026-11-01:** open, and now aimed at the right thing. The model
 does NOT batch: 53 tool calls in 53 measured rounds, and the store's whole
-session is ≈60 calls per turn. The rule is still worth trying; the
-measurement exists.
+session is ≈60 calls per turn. The peer batches 1.16 tools per call, so
+the ceiling is ~14 % of the rounds — worth trying, not a fix for the
+perceived slowdown.
 
 ### F6 — later, separately
 
@@ -653,9 +678,15 @@ gap to opencode sits in output volume, which a prompt family can move.
 
 ## 8. Risks, and what cancels the plan
 
-- **The effect does not reproduce.** Then the report was about task mix or
-  model, and the findings are the metrics work (Phase 0) plus H7. Say so
-  and stop.
+- **The effect does not reproduce.** → **This is where the counters now
+  point (2026-11-01).** Provider time per call is 4.24 s in opencode
+  against 4.31 s here; tool calls per call 1.16 against 0.98; output
+  tokens per call 833 against 881; the cache ratio is 98 % on both sides.
+  The effect the plan started from is not visible in the model layer.
+  What survives is the metrics work (Phase 0) and the tail/cache rule
+  (F1); F2 and F5 are small levers (18 % of the round, ~14 % of the
+  rounds), not the cause. The next investigation is the UI's own cost and
+  task mix, which this plan does not measure.
 - **The provider does not cache on this route.** H1's mechanism is dead;
   F1 still removes pointless prompt churn, but check `cached_tokens`
   before spending a day on it.
@@ -701,8 +732,10 @@ gap to opencode sits in output volume, which a prompt family can move.
 4. ~~Is "one tool call per round" acceptable to you as a style, or is
    batching a goal in itself?~~ **Answered by measurement (2026-11-01):**
    it is not a style — the model makes one call per round (53 in 53
-   measured rounds), and the peer harness makes 10–12 calls per turn. The
-   lever is the round's content (F2/F5), not an instruction to batch.
+   measured rounds). The peer harness batches, but only 1.16 tools per
+   call (374 of 2 298 calls carry two or more), which is worth ~14 % of
+   the rounds; its turns are 42–85 calls, not 10–12. Batching is a small
+   lever, not a style question.
 
 ---
 
