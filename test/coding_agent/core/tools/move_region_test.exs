@@ -226,6 +226,39 @@ defmodule CodingAgent.Core.Tools.MoveRegionTest do
     assert File.read!(Path.join(root, "to.ex")) == before_to
   end
 
+  # N136: the undo has to tell "there was no destination" from "there was an
+  # EMPTY one". The old `read_or_empty/3` mapped both to `""`, so the undo
+  # removed a file this call had not created. `e9ef88f` introduced
+  # `%{text:, existed?:}`, which closes it — this pins the distinction,
+  # because the three tests that commit added are all about ALIASES and none
+  # of them reaches the rollback.
+  test "a failed source write restores an EMPTY destination instead of deleting it", %{
+    scope: scope,
+    root: root
+  } do
+    empty = Path.join(root, "empty.ex")
+    File.write!(empty, "")
+    source_path = Path.join(root, "from.ex")
+    File.chmod!(source_path, 0o444)
+    on_exit(fn -> File.chmod(source_path, 0o644) end)
+
+    assert {:error, message} =
+             move(scope, %{
+               "from_path" => "from.ex",
+               "to_path" => "empty.ex",
+               "from" => "defp two do",
+               "to" => "end",
+               "position" => ":end"
+             })
+
+    assert message =~ "moved nothing"
+    # the wording is the other half of the finding: "removed again" would be
+    # a lie about a file that existed before the call
+    assert message =~ "restored to its original content"
+    assert File.exists?(empty)
+    assert File.read!(empty) == ""
+  end
+
   test "the parse guard refuses a partial region and writes nothing", %{scope: scope, root: root} do
     before_from = File.read!(Path.join(root, "from.ex"))
     before_to = File.read!(Path.join(root, "to.ex"))
