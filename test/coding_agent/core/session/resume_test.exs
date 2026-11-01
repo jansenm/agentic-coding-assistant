@@ -4,6 +4,7 @@ defmodule CodingAgent.Core.Session.ResumeTest do
   alias CodingAgent.Core.Permissions
   alias CodingAgent.Core.Session
   alias CodingAgent.Core.Session.State
+  alias CodingAgent.Core.Session.Timing
   alias ReqLLM.Context
 
   @tmp_root System.tmp_dir!() |> Path.join("resume-#{System.unique_integer([:positive])}")
@@ -30,9 +31,12 @@ defmodule CodingAgent.Core.Session.ResumeTest do
 
   describe "resume_opts/2" do
     test "carries the persisted fields a fresh session would otherwise lose" do
+      timing = Timing.restore(%{rounds: 3, llm_ms: 9_000, tool_ms: 3_000, turn_rounds: 1})
+
       s =
         state(
           usage: %{input_tokens: 42, output_tokens: 7, cost: nil},
+          timing: timing,
           compaction_warned: true,
           compaction_backoff: 2,
           status: :interrupted,
@@ -45,6 +49,9 @@ defmodule CodingAgent.Core.Session.ResumeTest do
 
       assert opts[:id] == s.id
       assert opts[:usage] == s.usage
+      # N142: the token totals were durable, the round totals were not
+      assert opts[:timing] == timing
+      assert opts[:timing].rounds == 3
       assert opts[:compaction_warned] == true
       assert opts[:compaction_backoff] == 2
       assert opts[:status] == :interrupted
@@ -146,6 +153,51 @@ defmodule CodingAgent.Core.Session.ResumeTest do
       assert {:ok, _} = Session.resume(stored)
       assert {:ok, live} = Session.state(id)
       assert live.model == "ollama:new-model"
+    end
+
+    # N142: `usage` survived a resume and `timing` did not, so `/stats`
+    # reported the session's tokens over the CURRENT process's rounds. The
+    # unit test above pins `resume_opts/2`; this one walks the store, the
+    # load and the resume, because the bug was in the path between them.
+    test "the round totals survive a resume, exactly like the token totals" do
+      id = "resume-timing-#{System.unique_integer([:positive])}"
+
+      {:ok, _} =
+        CodingAgent.Core.Session.Supervisor.start_session(
+          id: id,
+          scope_root: @tmp_root,
+          test_mode: true,
+          model: "ollama:test-model"
+        )
+
+      {:ok, live} = Session.state(id)
+
+      timing =
+        live.timing
+        |> Timing.start()
+        |> Timing.finish_llm(4_200)
+        |> then(fn t -> t |> Timing.finish_tools(800) |> elem(0) end)
+
+      snapshot = %{live | timing: timing, usage: %{input_tokens: 42_000, output_tokens: 700}}
+      # the live process would answer `state/1` with its own (fresh) timing
+      # and ignore the snapshot; retire it first, the way quitting the TUI
+      # does, so the assertions below are about the RESUME path
+      :ok = Session.stop(id)
+      :ok = CodingAgent.Core.Session.Store.save(snapshot)
+
+      assert {:ok, stored} = CodingAgent.Core.Session.Store.load(id)
+      assert stored.timing.rounds == 1
+
+      assert {:ok, _} = Session.resume(stored)
+      assert {:ok, again} = Session.state(id)
+
+      assert again.timing.rounds == 1
+      assert again.timing.llm_ms == 4_200
+      assert again.timing.tool_ms == 800
+      # the per-turn counters are not a session total: they reset at the
+      # next `begin_turn/1`, and the in-flight stamp never survives
+      assert again.timing.started_at == nil
+      assert again.usage.input_tokens == 42_000
     end
   end
 end

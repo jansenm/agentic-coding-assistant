@@ -234,6 +234,14 @@ defmodule CodingAgent.Core.Session do
       # (ADR 024)
       system_prompt: state.prompt_override,
       usage: state.usage,
+      # The round totals are durable the same way `usage` is: `/stats`
+      # answers "where did the time go" for the SESSION, and the slow turn
+      # is often the one a resume continues (review N142). Dropping this
+      # made every restart begin at round 1 in the numerator while `usage`
+      # kept the session's total — a token-per-round average of two
+      # different lifetimes. The per-turn counters start over in
+      # `Timing.begin_turn/1`; the in-flight stamp was dropped at load.
+      timing: state.timing,
       compaction_warned: state.compaction_warned,
       compaction_backoff: state.compaction_backoff,
       status: state.status,
@@ -534,6 +542,10 @@ defmodule CodingAgent.Core.Session do
     # a just-resumed session on its first command regardless of the real
     # token count (found live: every resumed session compacted at once).
     usage = Usage.from_map(Keyword.get(opts, :usage))
+    # The round totals travel with `usage` (review N142): a resumed
+    # session's `/stats` must divide this process's rounds into the SAME
+    # lifetime's tokens. `restore/1` drops the in-flight stamp.
+    timing = Timing.restore(Keyword.get(opts, :timing))
     compaction_warned = Keyword.get(opts, :compaction_warned, false)
     compaction_backoff = Keyword.get(opts, :compaction_backoff, 0)
     # test seam: replace the worker's blocking body. Lets a test hold a
@@ -677,6 +689,9 @@ defmodule CodingAgent.Core.Session do
         # trigger (see above), warned/backoff avoid re-warning and
         # re-retrying a summarize that already failed before the restart
         usage: usage,
+        # a resumed session keeps the round totals; a fresh one starts at
+        # zero (`Timing.restore(nil)`), same shape as `usage`
+        timing: timing,
         compaction_warned: compaction_warned,
         compaction_backoff: compaction_backoff,
         # the per-turn round budget resolved from config.toml (ADR 025);
