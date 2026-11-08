@@ -191,12 +191,27 @@ defmodule CodingAgent.Core.Providers.CatalogRefreshTest do
     assert document["generated_at"] == "2026-08-01T00:00:00Z"
   end
 
+  # The name the fixture uses for "a modality the installed reader does not
+  # know". It is NOT a literal at the use site: llm_db's vocabulary is
+  # compile-time generated and it GROWS between pins (2026.11.0 added
+  # `decisions`, which this fixture used to carry — the test then saw a
+  # swappable provider instead of a refused one and failed). `unknown_modality!/0`
+  # asserts the premise, so the day the vocabulary catches up with this name
+  # the test says WHICH fixture went stale instead of failing on the
+  # downstream assertion.
+  @unknown_modality "hologram"
+
+  defp unknown_modality! do
+    :error = LLMDB.Generated.ValidModalities.fetch(@unknown_modality)
+    @unknown_modality
+  end
+
   # Each refusal is a whole-document failure measured against the real release
   # document: one unknown provider id fails the load ("wallaby" against the
-  # installed registry), and one unknown modality fails it deeper
-  # ("decisions" under azure/openrouter/cloudflare_workers_ai). Both are
+  # installed registry), and one unknown modality fails it deeper. Both are
   # therefore checked per provider, and neither may enter the artifact.
   test "build/3 refuses a provider the installed reader cannot digest, per provider" do
+    unknown = unknown_modality!()
     unknown_id = %{"wallaby" => provider("wallaby", %{"hop" => 1})}
 
     unknown_modality = %{
@@ -204,7 +219,7 @@ defmodule CodingAgent.Core.Providers.CatalogRefreshTest do
         provider("anthropic", %{})
         | "models" => %{
             "claude-x" =>
-              model("anthropic", "claude-x", 1, %{"input" => ["text"], "output" => ["decisions"]})
+              model("anthropic", "claude-x", 1, %{"input" => ["text"], "output" => [unknown]})
           }
       }
     }
@@ -215,7 +230,7 @@ defmodule CodingAgent.Core.Providers.CatalogRefreshTest do
     assert report.swapped == []
     assert report.skipped["openai"] == :absent_from_release
     assert report.skipped["wallaby"] == :absent_from_packaged
-    assert report.skipped["anthropic"] == {:unknown_modalities, ["decisions"]}
+    assert report.skipped["anthropic"] == {:unknown_modalities, [unknown]}
 
     # nothing leaked in — the document is still loadable
     refute Map.has_key?(document["providers"], "wallaby")

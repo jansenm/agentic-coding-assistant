@@ -4,30 +4,47 @@ defmodule CodingAgent.Core.Providers.Catalog.Refresh do
   llm_db's newest published snapshot (ADR 039, amendment 2026-10-18 (2)).
 
   llm_db ships a **packaged** snapshot, cut on its release cadence, and the
-  pin in `mix.exs` (`{:req_llm, "~> 1.21"}` constrains `llm_db` to
-  `~> 2026.8.4`) fixes which snapshot that is. Measured 2026-10-18: the
-  packaged file is dated 2026-08-23, 56 days behind, and a cloud model
-  released since — `ollama_cloud:deepseek-v4.1-flash` — is simply absent
-  from it, so its context window falls back to a 500k guess (review N106
-  dates that guess in the sidebar; this module is what makes the date
-  move).
+  pin in `mix.exs` (`{:req_llm, "~> 1.30"}` constrains `llm_db` to
+  `~> 2026.11.0`) fixes which snapshot that is. Measured 2026-10-18 on the
+  then-current pin (`llm_db 2026.8.4`): the packaged file was dated
+  2026-08-23, 56 days behind, and a cloud model released since —
+  `ollama_cloud:deepseek-v4.1-flash` — was simply absent from it, so its
+  context window fell back to a 500k guess (review N106 dates that guess in
+  the sidebar; this module is what makes the date move).
+
+  That gap is what the pin move to `req_llm ~> 1.30` mostly closes: measured
+  2026-11-08 on `llm_db 2026.11.0`, the packaged snapshot is generated
+  `2026-11-02`, 11 796 748 B over 243 providers — a day-old cut instead of
+  a two-month-old one. The mechanism below is unchanged and still the
+  reason a re-cut exists; only the distance it has to bridge shrank.
 
   **Why re-cut instead of pointing llm_db at the feed.** The newest
   published document does not load on the installed pin, and not because
   it is malformed. The reader's vocabulary is compile-time generated:
   `LLMDB.Generated.ProviderRegistry` builds the provider atoms from the
   packaged file when llm_db is compiled, and `ValidModalities` freezes the
-  modality atoms the same way. Measured on the current release doc
-  (11 330 065 B, 237 providers):
+  modality atoms the same way. Measured 2026-10-18 on the release doc of
+  that day (11 330 065 B, 237 providers):
 
     * `LLMDB.Loader.load(snapshot_source: {:file, doc})` →
       `{:invalid_snapshot_item, :provider, {:unknown_provider_id, "wallaby"}}`
-      — 42 of the 237 provider ids are newer than the pin, and one unknown
+      — 42 of the 237 provider ids were newer than the pin, and one unknown
       id fails the WHOLE document;
     * trimming to the 195 registry-known providers (10 177 235 B, 89.8 %)
-      fails deeper: `{:invalid_snapshot_item, :model,
+      failed deeper: `{:invalid_snapshot_item, :model,
       {:unknown_modality, "decisions"}}` — 27 entries in `azure`,
       `openrouter`, `cloudflare_workers_ai`.
+
+  **Both of those refusals are pin-relative, and the pin moved.** llm_db
+  2026.11.0's frozen vocabulary is 14 modalities and now CONTAINS
+  `:decisions` (`LLMDB.Generated.ValidModalities.list/0`), so that worked
+  example is no longer a refusal on the installed reader — the test fixture
+  that used it asserted the wrong thing the moment the pin moved
+  (`catalog_refresh_test.exs`, now `@unknown_modality`, which asserts its
+  own premise). The *shape* of the argument stands: the vocabulary is
+  frozen at compile time and any name outside it fails the whole document.
+  Re-measure before quoting these numbers again — they describe the
+  2026.8.4 pin, not the one in `mix.exs` today.
 
   So the release document is an **input** to this module, never the
   artifact. The artifact is the packaged document — every provider the

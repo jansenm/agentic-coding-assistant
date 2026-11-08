@@ -37,7 +37,7 @@ defmodule CodingAgent.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:req_llm, "~> 1.21"},
+      {:req_llm, "~> 1.30"},
       {:dotenvy, "~> 1.2"},
       {:ex_ratatui, "~> 0.13"},
       # ex_ratatui's NIF is built from source, not the precompiled
