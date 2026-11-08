@@ -106,3 +106,55 @@ Open questions
    would name the faulting function exactly, at the cost of a slow,
    non-production NIF. Deferred: the conservative release build is what
    we can ship; the debug build is a separate one-off.
+
+Amendment 2026-11-08: the pin moves to 0.20.0, the source build stays
+---------------------------------------------------------------------
+
+The dependency sweep took ex_ratatui from **0.13.1 to 0.20.0** (seven
+minor releases) and deliberately did NOT lift the mitigation. Decision 3
+above ("keep the API and the pin") is the part that changed; decisions 1
+and 2 are untouched and still carry the build.
+
+**Why the workaround stays.** Nothing in the 0.14.0–0.20.0 changelogs
+mentions this crash signature — no SIGSEGV, coredump, null-pointer, GOT,
+LTO or `codegen-units` note (searched the full range). The ADR's own exit
+condition is "the crash is reproduced on the source build, or fixed
+upstream"; neither is established for 0.20. So `force_build` and the two
+`CARGO_PROFILE_RELEASE_*` overrides remain exactly as they were.
+
+**Both config paths still exist in 0.20.0**, verified before the bump:
+
+- `config :rustler_precompiled, :force_build, ex_ratatui: true` — the
+  package still reads it (`native.ex`, `Application.compile_env(
+  :rustler_precompiled, [:force_build, @otp_app])`) and still branches to
+  `{:force_build, rustler_opts}`;
+- `config :ex_ratatui, ExRatatui.Native, env: [...]` — still forwarded
+  (`env = Application.compile_env(@otp_app, __MODULE__, [])` →
+  `Rustler.Compiler.compile_crate/3`);
+- `config :ex_ratatui, detach_local_input: false` (test) — unchanged.
+
+`rustler_precompiled` moved 0.9.0 → 0.10.1 with it; the `:force_build`
+key survived that move too.
+
+**Cost of the bump, measured.** The Rust crate has to be re-resolved and
+rebuilt: `cargo` needs `index.crates.io`, so this is the one dependency
+step that does NOT work inside the sandbox (`Could not resolve host:
+index.crates.io`; hex.pm was reachable, crates.io was not).
+`mix deps.compile ex_ratatui --force` with network access took 132 s and
+produced a 5 871 312 B artifact (source build, conservative profile).
+
+**One real breakage, and it was in the harness, not the app.**
+0.20 coalesces renders: `ExRatatui.Server` enqueues its own render message
+when other messages are already queued, so one `:sys.get_state/1` barrier
+can answer with the state folded and the frame NOT painted. Three colour
+tests (`tui_cells_test`, `tui_accordion_test`) read an empty transcript
+pane while `user_state` already held the message. The fix is in
+`test/support/tui_case.ex`: `runtime/1` now makes two `get_state` calls —
+the second is ordered behind the coalesced render message, so the frame is
+painted when it answers. Deterministic, no sleep, and it keeps the
+harness's fence-not-poll property.
+
+**Still the owner's to validate, and the reason this ADR stays open:** the
+suite cannot reproduce an intermittent native fault. The exit condition
+needs a live session on 0.20 — the same conditions the four coredumps
+happened under (a streaming turn with popups open, frequent repaints).

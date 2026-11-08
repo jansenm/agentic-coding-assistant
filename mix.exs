@@ -39,7 +39,7 @@ defmodule CodingAgent.MixProject do
     [
       {:req_llm, "~> 1.30"},
       {:dotenvy, "~> 1.2"},
-      {:ex_ratatui, "~> 0.13"},
+      {:ex_ratatui, "~> 0.20"},
       # ex_ratatui's NIF is built from source, not the precompiled
       # artifact: the shipped v0.13.1 binary crashes (SIGSEGV through a
       # null pointer in the render NIF, 4x — see ADR 035). Forcing a

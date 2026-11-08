@@ -34,11 +34,36 @@ defmodule CodingAgent.TuiCase do
 
   @doc "The TUI's `user_state` — a barrier on the process mailbox."
   @spec sync(pid() | GenServer.server()) :: map()
-  def sync(pid), do: :sys.get_state(pid).user_state
+  def sync(pid), do: runtime(pid).user_state
 
-  @doc "The full runtime state (`user_state` + `terminal_ref`)."
+  @doc """
+  The full runtime state (`user_state` + `terminal_ref`), as a fence that
+  also covers the PENDING FRAME.
+
+  Two calls, not one, and the second is what makes a test able to read the
+  buffer. `ExRatatui.Server` coalesces renders: when another message is
+  already queued behind the one it just handled, it enqueues its own
+  `@render_message` and returns instead of painting, so the first
+  `:sys.get_state/1` can answer with the state folded and the frame NOT
+  drawn. The render message is in the mailbox by then, and `get_state` is a
+  call, so the second call is ordered behind it: by the time it answers,
+  the coalesced frame has been painted.
+
+  That is deterministic — no poll, no sleep — which is the whole point of
+  this harness (`fire/2` + `sync/1` instead of `Process.sleep`). Found when
+  ex_ratatui 0.13 -> 0.20 introduced the coalescing: three colour tests
+  read an empty transcript pane while `user_state` already held the
+  message.
+  """
   @spec runtime(pid() | GenServer.server()) :: map()
-  def runtime(pid), do: :sys.get_state(pid)
+  def runtime(pid) do
+    # the first call is the mailbox barrier for what the test just sent; the
+    # second is the frame barrier for the render the first one may have
+    # deferred (see above). `:sys.get_state/1` is cheap: it copies state
+    # that this harness already reads on every assertion.
+    _ = :sys.get_state(pid)
+    :sys.get_state(pid)
+  end
 
   @doc "The rendered terminal buffer, split into lines."
   @spec buffer(pid() | GenServer.server()) :: [String.t()]
