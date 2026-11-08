@@ -54,7 +54,7 @@ defmodule CodingAgent.MixProject do
       # driver; this is the one core-path NIF, isolated behind
       # Core.Session.Store. We use its raw `Exqlite.Sqlite3` API (not
       # ecto_sqlite3) — ADR 020 chose SQL directly, no Ecto.
-      {:exqlite, "~> 0.40"}
+      {:exqlite, "~> 0.43"}
     ]
   end
 end
