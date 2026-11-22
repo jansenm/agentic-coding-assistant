@@ -35,6 +35,16 @@ defmodule CodingAgent.Core.Tools.Edit do
   # stay one error message.
   @listed_matches 10
 
+  @doc "The tool name (the registry key and the model's call name)."
+  @spec name() :: String.t()
+  def name, do: "edit"
+
+  @doc """
+  The call arguments that name filesystem paths, for the permission gate.
+  """
+  @spec path_arguments() :: [Tools.path_argument()]
+  def path_arguments, do: [path: :required]
+
   @spec tool(Tools.scope()) :: ReqLLM.Tool.t()
   def tool(scope) do
     ReqLLM.Tool.new!(

@@ -35,6 +35,7 @@ defmodule CodingAgent.Core.Tools do
   alias CodingAgent.Core.Tools.ReadFile
   alias CodingAgent.Core.Tools.Question
   alias CodingAgent.Core.Tools.Shell
+  alias CodingAgent.Core.Tools.Task
   alias CodingAgent.Core.Tools.TodoWrite
   alias CodingAgent.Core.Tools.WebFetch
   alias CodingAgent.Core.Tools.WriteFile
@@ -54,6 +55,68 @@ defmodule CodingAgent.Core.Tools do
           optional(:subagents) => [%{name: String.t(), description: String.t() | nil}]
         }
 
+  @typedoc """
+  One call argument that names a filesystem path, as the permission gate
+  must see it: the key, plus the tool's own default for an optional one
+  (`:required` when the call must carry it). A tool declares these; the
+  gate never guesses a name (review of N134).
+  """
+  @type path_argument :: {atom(), String.t() | :required}
+
+  # The registry, as modules. One list feeds both the tool structs and the
+  # gate's path-argument lookup, so a tool cannot be exposed without its
+  # declaration being discoverable.
+  @read_only [
+    ListDir,
+    ReadFile,
+    Grep,
+    Glob,
+    # asking is read-only, and the session intercepts the call before
+    # execution (ADR 027); available to every agent including plan
+    Question,
+    # pure session state, intercepted before execution (ADR 031);
+    # available to every agent including plan
+    TodoWrite,
+    # the model's own compaction lever (ADR 040 OQ1): pure session state,
+    # intercepted before execution, no filesystem effect and no human
+    # prompt; available to every agent including plan
+    Compact
+  ]
+
+  @gated [
+    WriteFile,
+    Edit,
+    DeleteFile,
+    MoveFile,
+    MoveRegion,
+    Shell,
+    Git,
+    WebFetch
+  ]
+
+  @delegation [Task]
+
+  @modules @read_only ++ @gated ++ @delegation
+
+  @doc "Every tool module this build knows, in registry order."
+  @spec modules() :: [module()]
+  def modules, do: @modules
+
+  @doc """
+  The path arguments of a tool by name.
+
+  `{:error, :unknown_tool}` for a name this build does not know — the gate
+  must fail closed rather than fall back to the class default (review of
+  N134).
+  """
+  @spec path_arguments(String.t()) :: {:ok, [path_argument()]} | {:error, :unknown_tool}
+  def path_arguments(name) do
+    case Enum.find(@modules, &(&1.name() == name)) do
+      nil -> {:error, :unknown_tool}
+      module -> {:ok, module.path_arguments()}
+    end
+  end
+
   @doc """
   Read-only tools enabled for phase 2a sessions.
 
@@ -64,23 +127,7 @@ defmodule CodingAgent.Core.Tools do
   @spec read_only(scope() | nil) :: [ReqLLM.Tool.t()]
   def read_only(scope \\ nil) do
     scope = scope || default_scope()
-
-    [
-      ListDir.tool(scope),
-      ReadFile.tool(scope),
-      Grep.tool(scope),
-      Glob.tool(scope),
-      # asking is read-only, and the session intercepts the call before
-      # execution (ADR 027); available to every agent including plan
-      Question.tool(scope),
-      # pure session state, intercepted before execution (ADR 031);
-      # available to every agent including plan
-      TodoWrite.tool(scope),
-      # the model's own compaction lever (ADR 040 OQ1): pure session
-      # state, intercepted before execution, no filesystem effect and no
-      # human prompt; available to every agent including plan
-      Compact.tool(scope)
-    ]
+    Enum.map(@read_only, & &1.tool(scope))
   end
 
   @doc """
@@ -95,17 +142,7 @@ defmodule CodingAgent.Core.Tools do
   @spec gated(scope() | nil) :: [ReqLLM.Tool.t()]
   def gated(scope \\ nil) do
     scope = scope || default_scope()
-
-    [
-      WriteFile.tool(scope),
-      Edit.tool(scope),
-      DeleteFile.tool(scope),
-      MoveFile.tool(scope),
-      MoveRegion.tool(scope),
-      Shell.tool(scope),
-      Git.tool(scope),
-      WebFetch.tool(scope)
-    ]
+    Enum.map(@gated, & &1.tool(scope))
   end
 
   @doc "All tools a session carries (read-only + gated + delegation)."
@@ -126,7 +163,7 @@ defmodule CodingAgent.Core.Tools do
     scope = scope || default_scope()
 
     if is_map(scope) and Map.get(scope, :depth, 0) == 0 do
-      [CodingAgent.Core.Tools.Task.tool(scope)]
+      Enum.map(@delegation, & &1.tool(scope))
     else
       []
     end

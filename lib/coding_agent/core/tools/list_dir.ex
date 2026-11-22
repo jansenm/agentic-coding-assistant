@@ -16,6 +16,16 @@ defmodule CodingAgent.Core.Tools.ListDir do
 
   @timeout_secs 30
 
+  @doc "The tool name (the registry key and the model's call name)."
+  @spec name() :: String.t()
+  def name, do: "list_dir"
+
+  @doc """
+  The call arguments that name filesystem paths, for the permission gate.
+  """
+  @spec path_arguments() :: [Tools.path_argument()]
+  def path_arguments, do: [path: "."]
+
   @spec tool(Tools.scope()) :: ReqLLM.Tool.t()
   def tool(scope) do
     ReqLLM.Tool.new!(

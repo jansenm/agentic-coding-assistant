@@ -28,7 +28,10 @@ defmodule CodingAgent.Core.Session.Gate do
   own choice and always wins; an escalation (`network`/`change_vcs`)
   still asks, because it widens the profile the agent stated it needs.
   Which escalations a tool may state is read from that tool's own
-  parameter schema (`Tools.Escalation`), not assumed here.
+  parameter schema (`Tools.Escalation`), not assumed here. The same rule
+  holds for paths: a tool declares which of its arguments name one
+  (`Tools.path_arguments/1`), and a call that omits a declared path is
+  refused rather than looked up as if it had no path (review of N134).
   `Permissions` answers the pure-policy question (explicit entry, else a
   supplied fallback), and this module supplies the confinement fallback
   — so there is no second policy lookup implementation.
@@ -36,6 +39,7 @@ defmodule CodingAgent.Core.Session.Gate do
 
   alias CodingAgent.Core.Permissions
   alias CodingAgent.Core.ToolCall
+  alias CodingAgent.Core.Tools
   alias CodingAgent.Core.Tools.Escalation
   alias CodingAgent.Core.Tools.Git
   alias CodingAgent.Core.Tools.Shell
@@ -95,16 +99,39 @@ defmodule CodingAgent.Core.Session.Gate do
   @spec decision(Permissions.t(), String.t() | nil, String.t(), term()) :: Permissions.decision()
   def decision(policy, scope_root, name, args) do
     tool = tool_name(name)
-    fallback = fallback_for(tool, args)
 
-    # A call may name more than one path (move_file: `from` and `to`).
-    # Every one is evaluated and the MOST RESTRICTIVE wins — otherwise a
-    # `[permissions.move_file] "lib/**" = "deny"` would not match (the
-    # lookup reads only `path`) and the fallback would allow the call.
-    scope_root
-    |> call_rel_paths(args)
-    |> Enum.map(&Permissions.effective(policy, tool, &1, fallback: fallback))
-    |> Enum.reduce(&Permissions.most_restrictive/2)
+    case call_rel_paths(scope_root, tool, args) do
+      {:ok, rel_paths} ->
+        fallback = fallback_for(tool, args)
+
+        # A call may name more than one path (move_file: `from` and `to`).
+        # Every one is evaluated and the MOST RESTRICTIVE wins — otherwise
+        # a `[permissions.move_file] "lib/**" = "deny"` would not match and
+        # the fallback would allow the call.
+        rel_paths
+        |> Enum.map(&Permissions.effective(policy, tool, &1, fallback: fallback))
+        |> Enum.reduce(&Permissions.most_restrictive/2)
+
+      {:error, reason} ->
+        # No path, no decision. A missing/unknown declaration is a broken
+        # CALL, not a call without a path: falling back here is how N134
+        # let a `move_region` deny reach `:allow`.
+        Logger.warning("gate: refusing #{inspect(tool)} call: #{inspect(reason)}")
+        :deny
+    end
+  end
+
+  @doc """
+  The policy decision for a tool WITHOUT a call — the capability block.
+
+  The lookup uses the empty relative path, exactly what a pathless call
+  gets; it does not invent a call just to ask the gate. `Session` excludes
+  the intercepted tools before asking, and the per-path entries are by
+  nature not part of this per-session answer.
+  """
+  @spec capability_decision(Permissions.t(), String.t()) :: Permissions.decision()
+  def capability_decision(policy, tool) do
+    Permissions.effective(policy, tool, "", fallback: Permissions.default_for(tool))
   end
 
   @doc "The result for an explicit-policy-denied call."
@@ -151,10 +178,13 @@ defmodule CodingAgent.Core.Session.Gate do
   defp escalation_names(_name), do: []
 
   # The path argument(s) a call exposes to the policy, relative to the
-  # scope root. Most calls name one (`path`); `move_file` names two
-  # (`from`, `to`) and both must reach the policy. A call with no path
-  # yields `[""]`, so the lookup stays exactly as it was for every other
-  # tool.
+  # scope root. Each tool DECLARES them (`path_arguments/0` through
+  # `Tools.path_arguments/1`): `read_file` names `path`, `move_file` names
+  # `from`/`to`, `move_region` names `from_path`/`to_path`, and
+  # `shell`/`git`/`webfetch` have none. A call with a tool that declares
+  # none yields `[""]`, the no-path entry; a declared key that is absent,
+  # empty or not a string is an ERROR — a malformed call must never be
+  # read as "no path" and reach the class default (review of N134).
   #
   # The matching is TEXTUAL (Path.expand, no filesystem); the tools
   # resolve PHYSICALLY (symlinks followed) via Containment. Net effect is
@@ -164,35 +194,54 @@ defmodule CodingAgent.Core.Session.Gate do
   # to a symlink tmp -> /etc matches the CALL and then fails at
   # execution with "path escapes the session scope".
   @doc false
-  def call_rel_paths(scope_root, args) when is_map(args) do
-    # Every tool's own argument names, not just the common ones: a new
-    # two-path tool that is not listed here silently reaches the class
-    # default (`:allow`) instead of the policy (review N134).
-    [
-      arg_path(args, "path"),
-      arg_path(args, "from"),
-      arg_path(args, "to"),
-      arg_path(args, "from_path"),
-      arg_path(args, "to_path")
-    ]
-    |> Enum.reject(&is_nil/1)
-    |> Enum.map(&rel_path(scope_root, &1))
-    |> case do
-      [] -> [""]
-      paths -> Enum.uniq(paths)
+  @spec call_rel_paths(String.t() | nil, String.t(), term()) ::
+          {:ok, [String.t()]} | {:error, term()}
+  def call_rel_paths(scope_root, tool, args) when is_map(args) do
+    with {:ok, declarations} <- Tools.path_arguments(tool),
+         {:ok, paths} <- path_values(args, declarations) do
+      paths = paths |> Enum.map(&rel_path(scope_root, &1)) |> Enum.uniq()
+      {:ok, if(paths == [], do: [""], else: paths)}
     end
   end
 
-  def call_rel_paths(_scope_root, _args), do: [""]
+  def call_rel_paths(_scope_root, _tool, _args), do: {:error, :arguments_not_a_map}
 
-  defp arg_path(args, key), do: Map.get(args, key) || Map.get(args, String.to_atom(key))
+  defp path_values(args, declarations) do
+    Enum.reduce_while(declarations, {:ok, []}, fn {key, default}, {:ok, acc} ->
+      case arg_path(args, key) do
+        nil when default == :required ->
+          {:halt, {:error, {:missing_path_argument, key}}}
+
+        nil ->
+          {:cont, {:ok, [default | acc]}}
+
+        value when is_binary(value) and value != "" ->
+          {:cont, {:ok, [value | acc]}}
+
+        _other ->
+          {:halt, {:error, {:invalid_path_argument, key}}}
+      end
+    end)
+  end
+
+  # Declarations use atoms (the tool schemas' keys); a model's call carries
+  # string keys. Read either, without inventing atoms.
+  defp arg_path(args, key) when is_atom(key),
+    do: Map.get(args, key) || Map.get(args, Atom.to_string(key))
+
+  defp arg_path(args, key), do: Map.get(args, key)
 
   defp rel_path(scope_root, path) do
     root = Path.expand(scope_root || File.cwd!())
     expanded = Path.expand(path, root)
 
     if String.starts_with?(expanded <> "/", root <> "/") do
-      Path.relative_to(expanded, root)
+      # The root itself is the empty relative path, the same key a
+      # pathless call uses; `Path.relative_to/2` spells it ".".
+      case Path.relative_to(expanded, root) do
+        "." -> ""
+        rel -> rel
+      end
     else
       # absolute path outside scope: policy matches the raw path; the
       # tool itself will reject execution anyway
