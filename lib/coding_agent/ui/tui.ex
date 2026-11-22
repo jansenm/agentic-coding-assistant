@@ -1798,19 +1798,28 @@ defmodule CodingAgent.UI.Tui do
   defp attach_selected_session(%{id: id}, state) do
     opts = state.mount_opts || []
 
-    # Drop the outgoing session's subscription BEFORE mounting the new
-    # one: the TUI process is the subscriber, and the tag-routing above
+    # Drop the outgoing session's subscription only AFTER the new one is
+    # mounted. The TUI process is the subscriber, and the tag-routing above
     # already ignores events of a session it is not showing — but the
-    # registry entry would survive the switch (it is keyed by session,
-    # and this caller keeps it for the rest of the process's life), so
-    # the old session would keep sending into a dead view. `mount_session`
-    # subscribes the new one (and `subscribe/1` is idempotent, so a
-    # re-attach cannot double-register).
-    Session.unsubscribe(state.session_id)
-
+    # registry entry would survive the switch (it is keyed by session, and
+    # this caller keeps it for the rest of the process's life), so the old
+    # session would keep sending into a dead view. Unsubscribing FIRST made
+    # a failed mount worse than no switch: the error branch keeps the old
+    # state on screen, already deaf — no deltas, no status changes, a
+    # spinner that never ends (review N100). `mount_session` subscribes the
+    # new one (and `subscribe/1` is idempotent, so a re-attach cannot
+    # double-register); a same-id re-attach must not have that fresh entry
+    # removed again.
     case mount_session(id, Keyword.put(opts, :resume_id, id), nil) do
-      {:ok, new_state} -> {:noreply, new_state}
-      {:error, reason} -> {:noreply, status_note(state, "switch failed: #{inspect(reason)}")}
+      {:ok, new_state} ->
+        if new_state.session_id != state.session_id do
+          Session.unsubscribe(state.session_id)
+        end
+
+        {:noreply, new_state}
+
+      {:error, reason} ->
+        {:noreply, status_note(state, "switch failed: #{inspect(reason)}")}
     end
   end
 
