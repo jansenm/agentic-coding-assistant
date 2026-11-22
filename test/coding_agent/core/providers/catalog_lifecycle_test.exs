@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Michael Jansen <ferroclass@michael-jansen.biz>
+#
+# SPDX-License-Identifier: MPL-2.0
+
 defmodule CodingAgent.Core.Providers.CatalogLifecycleTest do
   @moduledoc """
   The catalog's lifecycle around the refresh (ADR 039 amendment 2026-10-18

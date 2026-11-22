@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Michael Jansen <ferroclass@michael-jansen.biz>
+#
+# SPDX-License-Identifier: MPL-2.0
+
 defmodule CodingAgent.Core.Interrupt do
   @moduledoc """
   User-stop coordination for running turns (opencode's esc) — in ONE

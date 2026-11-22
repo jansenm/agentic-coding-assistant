@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Michael Jansen <ferroclass@michael-jansen.biz>
+#
+# SPDX-License-Identifier: MPL-2.0
+
 # Provider defaults shipped with coding-agent (ADR 014).
 #
 # This file is layer 0: user config (~/.config/coding-agent/config.toml)

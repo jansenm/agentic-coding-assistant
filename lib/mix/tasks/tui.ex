@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Michael Jansen <ferroclass@michael-jansen.biz>
+#
+# SPDX-License-Identifier: MPL-2.0
+
 defmodule Mix.Tasks.Tui do
   @moduledoc """
   The phase-5 terminal UI (5a slice).

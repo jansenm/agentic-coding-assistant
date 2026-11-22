@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Michael Jansen <ferroclass@michael-jansen.biz>
+#
+# SPDX-License-Identifier: MPL-2.0
+
 defmodule CodingAgent.Core.Session.Prompt do
   @moduledoc """
   System-prompt composition for a session (P3 factoring; ADR 024).

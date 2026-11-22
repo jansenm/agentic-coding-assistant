@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Michael Jansen <ferroclass@michael-jansen.biz>
+#
+# SPDX-License-Identifier: MPL-2.0
+
 defmodule CodingAgent.Core.Providers.Catalog do
   @moduledoc """
   The model-catalog boundary: llm_db's model metadata, owned by one

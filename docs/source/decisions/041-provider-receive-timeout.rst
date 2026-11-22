@@ -1,3 +1,7 @@
+.. SPDX-FileCopyrightText: 2026 Michael Jansen <ferroclass@michael-jansen.biz>
+..
+.. SPDX-License-Identifier: MPL-2.0
+
 :orphan:
 
 The turn's transport timeout is explicit (measured, not the 30s default)

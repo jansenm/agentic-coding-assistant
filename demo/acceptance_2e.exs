@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Michael Jansen <ferroclass@michael-jansen.biz>
+#
+# SPDX-License-Identifier: MPL-2.0
+
 # Slice 2e acceptance demo (LLM-free, deterministic): edit behind the
 # gate. Acceptance criterion per ROADMAP: targeted replacement,
 # fail-closed on non-unique match, gated like write_file. The arc:

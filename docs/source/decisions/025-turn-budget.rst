@@ -1,3 +1,7 @@
+.. SPDX-FileCopyrightText: 2026 Michael Jansen <ferroclass@michael-jansen.biz>
+..
+.. SPDX-License-Identifier: MPL-2.0
+
 :orphan:
 
 Turn budget: the round limit degrades by wrap-up, not failure

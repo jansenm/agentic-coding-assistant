@@ -1,8 +1,16 @@
+<!--
+SPDX-FileCopyrightText: 2026 Michael Jansen <ferroclass@michael-jansen.biz>
+
+SPDX-License-Identifier: MPL-2.0
+-->
+
 # Third-party notices
 
-This project is MPL-2.0 (see the project `LICENSE`, to be added). The
-files listed here are third-party material redistributed under their own
-licenses; they are **not** relicensed as MPL.
+This project is MPL-2.0 (see [`LICENSE`](LICENSE)). The files listed
+here are third-party material redistributed under their own licenses;
+they are **not** relicensed as MPL. Every file in the tree carries its
+licensing as SPDX tags (or, where a header cannot be written, in
+[`REUSE.toml`](REUSE.toml)); `reuse lint` is the check.
 
 ## opencode — prompt text
 

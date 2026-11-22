@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Michael Jansen <ferroclass@michael-jansen.biz>
+#
+# SPDX-License-Identifier: MPL-2.0
+
 defmodule CodingAgent.UI.ComposerTest do
   @moduledoc """
   The composer panel as a unit: `UI.Composer` owns the geometry (the

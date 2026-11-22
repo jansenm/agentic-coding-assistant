@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Michael Jansen <ferroclass@michael-jansen.biz>
+#
+# SPDX-License-Identifier: MPL-2.0
+
 defmodule CodingAgent.Core.Sandbox.Bwrap do
   @moduledoc """
   Bubblewrap confinement (ADR 015): one static profile, bound the process,

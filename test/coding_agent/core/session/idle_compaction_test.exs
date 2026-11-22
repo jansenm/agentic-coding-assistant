@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Michael Jansen <ferroclass@michael-jansen.biz>
+#
+# SPDX-License-Identifier: MPL-2.0
+
 defmodule CodingAgent.Core.Session.IdleCompactionTest do
   @moduledoc """
   Session-level integration for ADR 037's idle (soft-limit) pass: after a

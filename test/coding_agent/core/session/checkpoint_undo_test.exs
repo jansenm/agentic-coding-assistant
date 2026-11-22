@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Michael Jansen <ferroclass@michael-jansen.biz>
+#
+# SPDX-License-Identifier: MPL-2.0
+
 defmodule CodingAgent.Core.Session.CheckpointUndoTest do
   @moduledoc """
   Session-level integration for ADR 036: a checkpoint is taken before a

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Michael Jansen <ferroclass@michael-jansen.biz>
+#
+# SPDX-License-Identifier: MPL-2.0
+
 defmodule CodingAgent.UI.TuiFilePickerTest do
   @moduledoc """
   The `@`-file picker (ADR 032): `@` at a word boundary opens a popup of

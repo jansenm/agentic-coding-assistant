@@ -1,3 +1,7 @@
+.. SPDX-FileCopyrightText: 2026 Michael Jansen <ferroclass@michael-jansen.biz>
+..
+.. SPDX-License-Identifier: MPL-2.0
+
 :orphan:
 
 Read tools delegate to ripgrep/fd when available, fall back to Elixir

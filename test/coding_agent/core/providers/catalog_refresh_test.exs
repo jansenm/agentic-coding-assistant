@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Michael Jansen <ferroclass@michael-jansen.biz>
+#
+# SPDX-License-Identifier: MPL-2.0
+
 defmodule CodingAgent.Core.Providers.CatalogRefreshTest do
   @moduledoc """
   The refresh pipeline (ADR 039 amendment 2026-10-18 (2)): fetch, re-cut for

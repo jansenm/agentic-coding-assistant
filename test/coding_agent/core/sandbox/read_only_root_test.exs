@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Michael Jansen <ferroclass@michael-jansen.biz>
+#
+# SPDX-License-Identifier: MPL-2.0
+
 defmodule CodingAgent.Core.Sandbox.ReadOnlyRootTest do
   @moduledoc """
   The LIVE read-only-root behaviour (`shell: read_only`): under real bwrap

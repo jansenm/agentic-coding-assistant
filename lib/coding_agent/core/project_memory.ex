@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Michael Jansen <ferroclass@michael-jansen.biz>
+#
+# SPDX-License-Identifier: MPL-2.0
+
 defmodule CodingAgent.Core.ProjectMemory do
   @moduledoc """
   Project memory: the `AGENTS.md` long-term-memory tier (memory.rst).

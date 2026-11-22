@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2026 Michael Jansen <ferroclass@michael-jansen.biz>
+
+SPDX-License-Identifier: MPL-2.0
+-->
+
 # ExRatatui.Server busy-loops at 100% CPU when `poll_event/1` returns an error
 
 We run an `ExRatatui.App` on the `:local` transport. Under some condition we

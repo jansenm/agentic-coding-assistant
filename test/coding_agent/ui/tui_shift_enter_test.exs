@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Michael Jansen <ferroclass@michael-jansen.biz>
+#
+# SPDX-License-Identifier: MPL-2.0
+
 defmodule CodingAgent.UI.TuiShiftEnterTest do
   @moduledoc """
   Regression: shift+enter (B2) must be defined, not silently dropped.

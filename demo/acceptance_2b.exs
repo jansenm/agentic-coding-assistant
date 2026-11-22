@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Michael Jansen <ferroclass@michael-jansen.biz>
+#
+# SPDX-License-Identifier: MPL-2.0
+
 # Slice 2b acceptance demo (deterministic core, no LLM round-trip):
 # The SAME write_file call takes two different paths, driven ONLY by
 # editing .coding-agent/permissions.toml — the ADR 010 acceptance criterion.

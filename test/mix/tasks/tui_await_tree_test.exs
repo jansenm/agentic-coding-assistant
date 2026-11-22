@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Michael Jansen <ferroclass@michael-jansen.biz>
+#
+# SPDX-License-Identifier: MPL-2.0
+
 defmodule Mix.Tasks.TuiAwaitTreeTest do
   # Review N124: `mix tui` starts the TUI from the Mix task, not from the
   # application supervisor. So when the application tree dies (a crash loop

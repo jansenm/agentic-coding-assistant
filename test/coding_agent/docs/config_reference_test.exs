@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Michael Jansen <ferroclass@michael-jansen.biz>
+#
+# SPDX-License-Identifier: MPL-2.0
+
 defmodule CodingAgent.Docs.ConfigReferenceTest do
   @moduledoc """
   The configuration reference is checked against the code (ADR 008: one

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Michael Jansen <ferroclass@michael-jansen.biz>
+#
+# SPDX-License-Identifier: MPL-2.0
+
 # One tmp root per RUN. The session scratch, the checkpoint's temp index
 # and the summarizer's spill all live under <tmp>/coding-agent/<session-id>,
 # a path keyed by the id alone — shared between processes by construction.

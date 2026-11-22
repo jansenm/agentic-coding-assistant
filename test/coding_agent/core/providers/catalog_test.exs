@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Michael Jansen <ferroclass@michael-jansen.biz>
+#
+# SPDX-License-Identifier: MPL-2.0
+
 defmodule CodingAgent.Core.Providers.CatalogTest do
   @moduledoc """
   Unit tests for the catalog boundary (ADR 039): the non-blocking window

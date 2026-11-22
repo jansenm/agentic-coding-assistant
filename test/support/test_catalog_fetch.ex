@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Michael Jansen <ferroclass@michael-jansen.biz>
+#
+# SPDX-License-Identifier: MPL-2.0
+
 defmodule CodingAgent.TestCatalogFetch do
   @moduledoc """
   Test transport for the catalog refresh (ADR 039 amendment 2026-10-18 (2)).

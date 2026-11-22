@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Michael Jansen <ferroclass@michael-jansen.biz>
+#
+# SPDX-License-Identifier: MPL-2.0
+
 defmodule CodingAgent.Core.Providers.Catalog.Refresh do
   @moduledoc """
   The one artifact the catalog reads that we own: a locally re-cut copy of

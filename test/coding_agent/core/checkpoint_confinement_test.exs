@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Michael Jansen <ferroclass@michael-jansen.biz>
+#
+# SPDX-License-Identifier: MPL-2.0
+
 defmodule CodingAgent.Core.CheckpointConfinementTest do
   @moduledoc """
   The checkpoint under the REAL bwrap sandbox (ADR 030/036): a checkpoint

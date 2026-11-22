@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2026 Michael Jansen <ferroclass@michael-jansen.biz>
+
+SPDX-License-Identifier: MPL-2.0
+-->
+
 # Coding Agent
 
 This repository contains the ongoing implementation of an agentic coding assistant

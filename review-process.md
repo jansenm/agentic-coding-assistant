@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2026 Michael Jansen <ferroclass@michael-jansen.biz>
+
+SPDX-License-Identifier: MPL-2.0
+-->
+
 # Review process — how a review record is handed over and triaged
 
 **Status: provisional.** There is no real review process yet. This repository is

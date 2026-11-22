@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Michael Jansen <ferroclass@michael-jansen.biz>
+#
+# SPDX-License-Identifier: MPL-2.0
+
 defmodule CodingAgent.Core.CompactionTest do
   # async: false — the wall-clock-budget test mutates the GLOBAL
   # `:compaction_wall_clock_ms` app env. ExUnit runs all async modules

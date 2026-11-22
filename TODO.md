@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2026 Michael Jansen <ferroclass@michael-jansen.biz>
+
+SPDX-License-Identifier: MPL-2.0
+-->
+
 # TODO — der aktive Backlog (Features)
 
 Stand: 2026-10-04, Branch `dev/mjansen`. Diese Datei ist der **kurzfristige

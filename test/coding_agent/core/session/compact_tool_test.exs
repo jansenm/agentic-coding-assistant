@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Michael Jansen <ferroclass@michael-jansen.biz>
+#
+# SPDX-License-Identifier: MPL-2.0
+
 defmodule CodingAgent.Core.Session.CompactToolTest do
   @moduledoc """
   The agent's own `compact` tool (ADR 040 OQ1, answered 2026-09-30): the

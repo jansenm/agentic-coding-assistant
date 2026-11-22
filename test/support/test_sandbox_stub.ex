@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Michael Jansen <ferroclass@michael-jansen.biz>
+#
+# SPDX-License-Identifier: MPL-2.0
+
 defmodule CodingAgent.TestSandbox.Stub do
   @moduledoc """
   Test sandbox double: confines and is available. `wrap/2` returns a fixed

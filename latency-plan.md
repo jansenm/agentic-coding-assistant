@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2026 Michael Jansen <ferroclass@michael-jansen.biz>
+
+SPDX-License-Identifier: MPL-2.0
+-->
+
 # Turn latency and round count — the investigation plan
 
 **Status (2026-11-01):** Phase 0 is instrumented and in use; **F1 landed**

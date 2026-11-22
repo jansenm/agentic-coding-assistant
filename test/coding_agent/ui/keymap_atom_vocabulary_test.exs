@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Michael Jansen <ferroclass@michael-jansen.biz>
+#
+# SPDX-License-Identifier: MPL-2.0
+
 defmodule CodingAgent.UI.KeymapAtomVocabularyTest do
   # NOT async: `:erlang.system_info(:atom_count)` is global VM state, so
   # any concurrent test that mints an atom would make this flaky. ExUnit

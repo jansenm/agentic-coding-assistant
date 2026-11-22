@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Michael Jansen <ferroclass@michael-jansen.biz>
+#
+# SPDX-License-Identifier: MPL-2.0
+
 defmodule CodingAgent.UI.TuiTodoTest do
   @moduledoc """
   The sidebar's TODO block (ADR 031): the model's list is mirrored from

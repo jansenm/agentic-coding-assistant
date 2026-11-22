@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Michael Jansen <ferroclass@michael-jansen.biz>
+#
+# SPDX-License-Identifier: MPL-2.0
+
 defmodule CodingAgentTest do
   # async: false — this test mutates the GLOBAL `AGENT_MODEL` env var that
   # every session start reads. Sync modules run after all async ones, so

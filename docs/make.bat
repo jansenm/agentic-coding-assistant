@@ -1,3 +1,7 @@
+REM SPDX-FileCopyrightText: 2026 Michael Jansen <ferroclass@michael-jansen.biz>
+REM
+REM SPDX-License-Identifier: MPL-2.0
+
 @ECHO OFF
 
 pushd %~dp0

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Michael Jansen <ferroclass@michael-jansen.biz>
+#
+# SPDX-License-Identifier: MPL-2.0
+
 defmodule CodingAgent.Core.ProjectMemoryTest do
   @moduledoc """
   Unit tests for the extracted ProjectMemory module (P3). The session
