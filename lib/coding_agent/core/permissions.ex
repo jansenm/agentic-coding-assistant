@@ -66,8 +66,9 @@ defmodule CodingAgent.Core.Permissions do
   # construction and contained (see Containment): grep/glob joined in
   # 2d; edit and write_file joined by the 2026-09-15 ADR 010 amendment
   # — contained (physically-resolved paths) and reviewable (every
-  # landed change sits in the VCS diff). delete_file and move_file
-  # joined under ADR 045 by the same test: they are confined `rm`/`mv`
+  # landed change sits in the VCS diff). delete_file, move_file and
+  # move_region joined under ADR 045 by the same test: they are confined
+  # `rm`/`mv`
   # (ADR 030), and `shell` can already delete/move anything in the
   # scope — denying them here while `shell` is allow would be theatre.
   # shell and git joined with ADR 030: a session only exists under a

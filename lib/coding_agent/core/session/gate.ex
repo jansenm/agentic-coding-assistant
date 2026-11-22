@@ -165,7 +165,16 @@ defmodule CodingAgent.Core.Session.Gate do
   # execution with "path escapes the session scope".
   @doc false
   def call_rel_paths(scope_root, args) when is_map(args) do
-    [arg_path(args, "path"), arg_path(args, "from"), arg_path(args, "to")]
+    # Every tool's own argument names, not just the common ones: a new
+    # two-path tool that is not listed here silently reaches the class
+    # default (`:allow`) instead of the policy (review N134).
+    [
+      arg_path(args, "path"),
+      arg_path(args, "from"),
+      arg_path(args, "to"),
+      arg_path(args, "from_path"),
+      arg_path(args, "to_path")
+    ]
     |> Enum.reject(&is_nil/1)
     |> Enum.map(&rel_path(scope_root, &1))
     |> case do
