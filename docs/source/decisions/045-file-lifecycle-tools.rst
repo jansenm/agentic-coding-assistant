@@ -247,6 +247,16 @@ Consequences:
 - Both paths go to the gate, the rule ``move_file`` already documents: a
   deny on either end refuses the call. ``move_region`` joins
   ``Permissions.@allow_class`` with the other contained writes.
+- A tool **declares** which of its arguments name a path
+  (``path_arguments/0``), and the gate reads that declaration
+  (``Tools.path_arguments/1``). The first version of this amendment read a
+  union of plausible names instead: ``move_region`` names its ends
+  ``from_path``/``to_path``, so the list came back empty and a policy deny
+  became ``:allow`` (review N134). A call that omits a declared path, or a
+  tool name the build does not know, is now refused — the gate does not
+  guess, and it does not read a malformed call as "no path". The
+  capability block uses ``Gate.capability_decision/2``, the same no-call
+  lookup, so it never fabricates a call just to ask the policy.
 - ``dry_run: true`` reports the anchor lines and the region size and writes
   nothing, so the tool is safe to call while orienting.
 - The move does not FORMAT (``mix format`` is the caller's next step) and

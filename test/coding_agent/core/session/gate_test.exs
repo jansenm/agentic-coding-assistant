@@ -6,6 +6,7 @@ defmodule CodingAgent.Core.Session.GateTest do
   use ExUnit.Case, async: false
 
   import CodingAgent.SandboxCase
+  import ExUnit.CaptureLog
 
   alias CodingAgent.Core.Permissions
   alias CodingAgent.Core.Session.Gate
@@ -105,6 +106,45 @@ defmodule CodingAgent.Core.Session.GateTest do
                "from_path" => "scratch/a.ex",
                "to_path" => "scratch/b.ex"
              }) == :allow
+    end
+
+    test "a declared path argument that is absent fails closed, it is not 'no path'" do
+      log =
+        capture_log(fn ->
+          assert Gate.decision(policy(), @tmp_root, "read_file", %{}) == :deny
+          assert Gate.decision(policy(), @tmp_root, "move_file", %{"from" => "a.txt"}) == :deny
+
+          assert Gate.decision(policy(), @tmp_root, "write_file", %{"path" => ""}) == :deny
+        end)
+
+      assert log =~ "missing_path_argument"
+      assert log =~ "invalid_path_argument"
+    end
+
+    test "an unknown tool is refused instead of falling back to the class default" do
+      log =
+        capture_log(fn ->
+          assert Gate.decision(policy(), @tmp_root, "not_a_tool", %{}) == :deny
+        end)
+
+      assert log =~ "unknown_tool"
+    end
+
+    test "an optional path argument uses the default the tool declares" do
+      assert Gate.decision(policy(), @tmp_root, "list_dir", %{}) == :allow
+      assert Gate.decision(policy(), @tmp_root, "grep", %{"pattern" => "x"}) == :allow
+    end
+
+    test "a tool that declares no path keeps the no-path lookup" do
+      assert Gate.decision(policy(), @tmp_root, "shell", %{"command" => "ls"}) == :allow
+
+      assert Gate.decision(policy(), @tmp_root, "webfetch", %{"url" => "https://example.com"}) ==
+               :ask
+    end
+
+    test "the capability block asks the no-call lookup, not a fabricated call" do
+      assert Gate.capability_decision(policy(), "read_file") == :allow
+      assert Gate.capability_decision(policy(), "webfetch") == :ask
     end
 
     test "delete_file, move_file and move_region are allow-by-class under confinement (ADR 045)" do

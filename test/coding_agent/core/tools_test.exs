@@ -71,6 +71,28 @@ defmodule CodingAgent.Core.ToolsTest do
     end
   end
 
+  describe "path arguments (the gate's contract)" do
+    test "every registered tool names itself and declares its path arguments" do
+      scope = %{root: ".", depth: 0}
+
+      for module <- Tools.modules() do
+        tool = module.tool(scope)
+        assert module.name() == tool.name
+
+        assert {:ok, declarations} = Tools.path_arguments(tool.name)
+
+        for {key, default} <- declarations do
+          assert is_atom(key)
+          assert default == :required or is_binary(default)
+        end
+      end
+    end
+
+    test "an unknown name is an error, not an empty declaration" do
+      assert {:error, :unknown_tool} = Tools.path_arguments("not_a_tool")
+    end
+  end
+
   describe "in_scope?/2" do
     setup do
       %{scope: %{root: "/tmp/agent-test-root"}}

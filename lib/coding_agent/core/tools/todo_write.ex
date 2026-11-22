@@ -47,6 +47,12 @@ defmodule CodingAgent.Core.Tools.TodoWrite do
   @spec name() :: String.t()
   def name, do: @tool_name
 
+  @doc """
+  The call arguments that name filesystem paths, for the permission gate.
+  """
+  @spec path_arguments() :: [Tools.path_argument()]
+  def path_arguments, do: []
+
   @doc "The three states a todo may carry."
   @spec statuses() :: [String.t()]
   def statuses, do: @statuses
