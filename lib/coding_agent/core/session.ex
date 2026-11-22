@@ -176,8 +176,14 @@ defmodule CodingAgent.Core.Session do
   process instead (bug found by the TUI in 5a: the first real event
   consumer; the CLI never noticed because run/2 returns the final
   state and the deltas path was silently empty).
+
+  Like every other public call, this one must not take the caller down:
+  the TUI subscribes right after `start_session/1`, and a session runs
+  `restart: :temporary`, so it can already be gone. `safe_call/4` turns
+  that into `{:error, :not_found}`, and the registry entry is written
+  only after the session accepted the subscription (review N128).
   """
-  @spec subscribe(String.t()) :: :ok
+  @spec subscribe(String.t()) :: :ok | {:error, :not_found | :timeout}
   def subscribe(id) do
     # Unregister first: registration is a no-op when it is already there,
     # so re-subscribing the same process would leave TWO entries and every
@@ -185,8 +191,15 @@ defmodule CodingAgent.Core.Session do
     # switch, and `key: :duplicate` keeps both). Idempotent by design —
     # this is "subscribe this caller to exactly one copy".
     _ = Registry.unregister(CodingAgent.EventRegistry, {Events.key(), id})
-    _ = Registry.register(CodingAgent.EventRegistry, {Events.key(), id}, nil)
-    GenServer.call(via(id), :subscribe)
+
+    case safe_call(id, :subscribe, "subscribe", @call_timeout) do
+      :ok ->
+        _ = Registry.register(CodingAgent.EventRegistry, {Events.key(), id}, nil)
+        :ok
+
+      {:error, _} = error ->
+        error
+    end
   end
 
   @doc """
