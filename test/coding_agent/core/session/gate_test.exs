@@ -83,12 +83,41 @@ defmodule CodingAgent.Core.Session.GateTest do
              }) == :allow
     end
 
-    test "delete_file and move_file are allow-by-class under confinement (ADR 045)" do
+    test "a two-path call is denied when EITHER end matches (move_region)" do
+      path = Path.join(@tmp_root, "region-deny.toml")
+      File.write!(path, "[permissions.move_region]\n\"lib/**\" = \"deny\"\n")
+      policy = Permissions.load(nil, path)
+
+      # `move_region` names its ends `from_path`/`to_path`, not
+      # `from`/`to`: the lookup must read those names or it sees no path
+      # and falls back to the class default (review N134).
+      assert Gate.decision(policy, @tmp_root, "move_region", %{
+               "from_path" => "scratch/a.ex",
+               "to_path" => "lib/a.ex"
+             }) == :deny
+
+      assert Gate.decision(policy, @tmp_root, "move_region", %{
+               "from_path" => "lib/a.ex",
+               "to_path" => "scratch/b.ex"
+             }) == :deny
+
+      assert Gate.decision(policy, @tmp_root, "move_region", %{
+               "from_path" => "scratch/a.ex",
+               "to_path" => "scratch/b.ex"
+             }) == :allow
+    end
+
+    test "delete_file, move_file and move_region are allow-by-class under confinement (ADR 045)" do
       assert Gate.decision(policy(), @tmp_root, "delete_file", %{"path" => "a.txt"}) == :allow
 
       assert Gate.decision(policy(), @tmp_root, "move_file", %{
                "from" => "a.txt",
                "to" => "b.txt"
+             }) == :allow
+
+      assert Gate.decision(policy(), @tmp_root, "move_region", %{
+               "from_path" => "a.txt",
+               "to_path" => "b.txt"
              }) == :allow
     end
   end
