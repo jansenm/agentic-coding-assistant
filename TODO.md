@@ -13,8 +13,9 @@ Ground Rules), **Entscheidungen** in den ADRs (`docs/source/decisions/`).
 
 **Erledigtes fällt hier raus.** Die Commits und die ADRs sind der Record —
 es gibt bewusst keine „Erledigt“-Chronik mehr. Review-Befunde und
-Harness-Feedback stehen in **`review.md`** (eine Liste für alles Offene,
-Konvention in `review-process.md`); sie gehören nicht in diese Datei.
+Harness-Feedback sind **Issues im GitHub-Projekt** (ein Issue je Befund, die
+Nummer im Titel ist die ID, Konvention in `review-process.md`); sie gehören
+nicht in diese Datei.
 
 Querverweise der ADRs („T4“, „B3“, „the rival-opencode list“) beziehen sich
 auf die Nummern in dieser Datei; die historische Herkunft ist im jeweiligen

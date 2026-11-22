@@ -20,7 +20,7 @@ stack overview lives in
 This file is the **long-term plan**: the phases and the forward-looking
 ideas under "Later". Finished slices fall out — their commits and ADRs are
 the record. The short-term backlog is `TODO.md`; open review findings and
-harness feedback are in `review.md`.
+harness feedback are issues on the GitHub project.
 
 ## Goal: dogfooding
 

@@ -105,7 +105,9 @@ Name what you expected, what you got, and what you would change. Keep it to
 the interface you are working *through*; judging the code itself is a review
 task, not a side note.
 
-Review findings and harness feedback both live in **`review.md`** — the one
-list of what is open (see `review-process.md` for the convention). Say it in
-your answer, and add a numbered entry there (or the owner will, if it came
-up in conversation).
+Review findings and harness feedback both live as **issues on the GitHub
+project** — one issue per finding, the `N…`/`P…`/`I…` number in the title is
+the ID (`review-process.md` has the convention). Say it in your answer, and
+open the issue (or the owner will, if it came up in conversation). Do not
+start a new `review.md`: the issue is the record, and closing it is the
+closure.

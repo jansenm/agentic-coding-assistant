@@ -14,7 +14,9 @@ decision. That is the main thing to know before you write code.
 
 - **Open an issue first** for anything that is not a small fix. The
   interesting part of this repository is *why* it is built the way it is;
-  a change that ignores an ADR will be asked to argue with it.
+  a change that ignores an ADR will be asked to argue with it. Findings and
+  ideas are tracked as issues on the project, not in a file: one issue per
+  finding, the `N…`/`P…`/`I…` number in the title is the ID.
 - **Read [AGENTS.md](AGENTS.md).** It is the rulebook the code is written
   under (design principles first, no duplication, separation of concerns,
   no backwards compatibility while unreleased). It applies to humans too.

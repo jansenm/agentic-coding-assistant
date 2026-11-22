@@ -20,9 +20,8 @@ erl_crash.dump
 /.idea/
 *.iml
 
-# Review records are untracked artefacts; the convention file is tracked.
-review-*.*
-!review-process.md
+# Review records are no longer files: findings live as GitHub issues
+# (review-process.md). A stray review.md shows up as untracked on purpose.
 
 # Docs build
 /docs/build/
@@ -34,5 +33,3 @@ __pycache__/
 
 
 
-# review.md: the single open-findings list (untracked artefact, like the old review records)
-/review.md
