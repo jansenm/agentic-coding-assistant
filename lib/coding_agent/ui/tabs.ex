@@ -195,11 +195,12 @@ defmodule CodingAgent.UI.Tabs do
   # Subscribe to a child's channel for its tab. Best effort: the child may
   # already be gone (a fast delegation that finished before this event was
   # processed, or a synthetic test event with no live child) — a missing
-  # child is not an error, the tab simply has no live stream.
+  # child is not an error, the tab simply has no live stream. The `:exit`
+  # that used to be caught here is `Session.subscribe/1`'s own policy now
+  # (review N128), so this stays a caller and nothing more.
   defp subscribe(child_id) do
-    Session.subscribe(child_id)
-  catch
-    :exit, _ -> :ok
+    _ = Session.subscribe(child_id)
+    :ok
   end
 
   @doc """
