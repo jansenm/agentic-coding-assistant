@@ -2,9 +2,9 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-defmodule Mix.Tasks.TuiAwaitTreeTest do
-  # Review N124: `mix tui` starts the TUI from the Mix task, not from the
-  # application supervisor. So when the application tree dies (a crash loop
+defmodule CodingAgent.CLIAwaitTreeTest do
+  # Review N124: `mix tui` starts the TUI from the CLI, not from the application
+  # supervisor. So when the application tree dies (a crash loop
   # in a singleton child), the TUI keeps painting a screen whose store,
   # sessions and catalog are gone. `await_tui/3` now monitors the tree too:
   # it stops the TUI first (its terminate restores the terminal — a hard
@@ -17,7 +17,7 @@ defmodule Mix.Tasks.TuiAwaitTreeTest do
 
   import ExUnit.CaptureIO
 
-  alias Mix.Tasks.Tui
+  alias CodingAgent.CLI
 
   test "the application tree dying stops the TUI, reports it and exits non-zero" do
     {:ok, tree} = Agent.start_link(fn -> nil end)
@@ -31,7 +31,7 @@ defmodule Mix.Tasks.TuiAwaitTreeTest do
       :ok
     end
 
-    task = Task.async(fn -> Tui.await_tui(tui, halt, tree) end)
+    task = Task.async(fn -> CLI.await_tui(tui, halt, tree) end)
 
     stderr =
       capture_io(:stderr, fn ->

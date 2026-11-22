@@ -24,7 +24,7 @@ defmodule CodingAgent.UI.Stats do
       state", so the path in the status line is one the reader can open,
       tail and paste from;
     * OSC 52 to the terminal's clipboard, written to `/dev/tty` the way
-      `Mix.Tasks.Tui.reset_terminal/0` writes its sequences, because
+      `CodingAgent.CLI.reset_terminal/0` writes its sequences, because
       stdout belongs to the renderer. Best effort by nature: tmux needs
       `set-clipboard on` and some terminals ignore the sequence, which is
       exactly why the file exists.

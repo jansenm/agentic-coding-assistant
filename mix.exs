@@ -12,6 +12,7 @@ defmodule CodingAgent.MixProject do
       elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
+      releases: releases(),
       deps: deps(),
       test_coverage: test_coverage()
     ]
@@ -23,6 +24,41 @@ defmodule CodingAgent.MixProject do
   # without pretending those modules are unit-testable.
   defp test_coverage do
     [summary: [threshold: 75]]
+  end
+
+  # One release, one target: the host. `Burrito.wrap/1` is one build step, so
+  # deleting it leaves an ordinary `mix release` tarball (ADR 048).
+  defp releases do
+    [
+      coding_agent: [
+        steps: [:assemble, &Burrito.wrap/1],
+        burrito: [
+          targets: [
+            linux: [
+              os: :linux,
+              cpu: :x86_64,
+              # We build natively on the host. Burrito treats EVERY Linux
+              # target as a cross-build and recompiles NIFs with
+              # `zig cc ... -shared`; that link also leaves an unversioned
+              # `NEEDED libc.so` behind, which a glibc ERTS cannot load.
+              # Keep the NIFs the host build produced.
+              skip_nifs: true,
+              # Burrito's own ERTS is musl, and ex_ratatui (Rust, ADR 035)
+              # and exqlite are glibc. Use the ERTS this build runs under:
+              # the OTP root holds several `erts-*` directories and Burrito
+              # takes the first. `BURRITO_CUSTOM_ERTS` overrides for a build
+              # that packages a different (glibc) ERTS.
+              custom_erts: custom_erts()
+            ]
+          ]
+        ]
+      ]
+    ]
+  end
+
+  defp custom_erts do
+    System.get_env("BURRITO_CUSTOM_ERTS") ||
+      Path.join(to_string(:code.root_dir()), "erts-#{:erlang.system_info(:version)}")
   end
 
   # Test-only support modules (test/support) compile into the test env:
@@ -54,6 +90,9 @@ defmodule CodingAgent.MixProject do
       # YAML frontmatter for agent definitions (ADR 017/019). Pure Erlang,
       # no NIF; used directly (not via yaml_elixir, which only wraps it).
       {:yamerl, "~> 0.10"},
+      # The single-binary wrapper (ADR 048). Build-time only: the app reads
+      # its arguments from `:init.get_plain_arguments/0`, not from Burrito.
+      {:burrito, "~> 1.5.0", runtime: false},
       # Session storage engine (ADR 020/023). SQLite has no pure-BEAM
       # driver; this is the one core-path NIF, isolated behind
       # Core.Session.Store. We use its raw `Exqlite.Sqlite3` API (not
