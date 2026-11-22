@@ -39,6 +39,10 @@ Rules that survive:
 * **Do not start a new `review.md`.** If the tracker is unreachable, say the
   finding in the answer and let the owner file it. A second list that drifts is
   what this convention exists to prevent.
+* **A number with no issue is a closed finding.** Its record is the commit that
+  fixed it (`git log --grep 'N73'`); do not renumber it, and do not re-file it
+  without the reason. A reference to an *open* finding is a link (`#56`), never a
+  bare number.
 
 ## Labels and types
 
@@ -112,11 +116,30 @@ the symptom, with the measurement that shows it
 the observation that would fail today
 ```
 
-For an **idea**: `## Goal`, `## Why`, `## First step`, and what it depends on.
-An idea has no severity and no `Introduced`; it has a target and a first step.
+For an **idea**: `## Goal`, `## Why`, `## First step`. An idea has no severity
+and no `Introduced`; it has a target and a first step.
 
 Keep the **command and its output** in the body. "Measured 65 objects" is worth
 little next to the `comm -13 … | wc -l` line that produces the 65.
+
+## Relationships, not prose
+
+A real dependency is a GitHub **relationship**, not a sentence: `blocked by` /
+`blocking`, set through the API (`addBlockedBy`). It shows on both issues, it
+survives edits to either body, and it cannot point at a number that has no issue
+— the failure this record had to fix by hand once (I15 depended on I6, which had
+been closed and therefore had no issue to link to).
+
+```sh
+gh api graphql -H 'GraphQL-Features: issue_dependencies' \
+  -f query='mutation { addBlockedBy(input: {issueId: "I_…", blockingIssueId: "I_…"}) { issue { number } } }'
+```
+
+Prose still links the softer relation ("see also", "same class as", `#56`), but
+never carries a blocker on its own.
+
+**Sub-issues** are for work that belongs *inside* one issue — a checklist with
+its own state — not for a dependency between peers.
 
 ## Three fields, three jobs
 
