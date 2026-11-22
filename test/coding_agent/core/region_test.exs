@@ -207,6 +207,36 @@ defmodule CodingAgent.Core.RegionTest do
                )
     end
 
+    test "a broken destination is named as the destination" do
+      # the source stays a complete unit; only the destination (which is
+      # missing its own `end`) breaks. The old guard picked the first
+      # Elixir path and blamed the source (review N135).
+      source = "def f do\n  1\nend\n"
+      dest = "def g do\n"
+
+      assert {:error, message} =
+               Region.move(source, dest, "def f", "end\n", :end,
+                 source_path: "src.ex",
+                 dest_path: "dst.ex"
+               )
+
+      assert message =~ "(dst.ex)"
+      refute message =~ "(src.ex)"
+      assert message =~ "missing terminator"
+    end
+
+    test "each side is parsed against its own path (.ex -> .html)" do
+      # The destination is HTML, not Elixir: parsing it as Elixir would
+      # refuse a move that is perfectly valid (review N135).
+      source = "def f do\n  1\nend\n"
+
+      assert {:ok, _} =
+               Region.move(source, "<html>\n", "def f", "end\n", :end,
+                 source_path: "a.ex",
+                 dest_path: "b.html"
+               )
+    end
+
     test "non-Elixir paths are not parsed" do
       # unbalanced braces are fine in a markdown file
       source = "```\nunclosed\n"

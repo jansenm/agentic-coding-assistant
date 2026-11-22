@@ -49,12 +49,14 @@ defmodule CodingAgent.Core.Region do
 
   ## The parse guard
 
-  When `:source_path` / `:dest_path` name `.ex`/`.exs` files, both results
-  must parse, or the move is refused. That is the check whose absence let
-  a half-deleted block reach the compiler, where the error surfaced
-  several hundred lines away from the damage. It is a syntax check only: a
-  moved function whose `alias` stayed behind still parses, and the compile
-  is still the real check.
+  When `:source_path` / `:dest_path` name `.ex`/`.exs` files, the result
+  for that path must parse, or the move is refused. Each side is checked
+  against its OWN path, so `.ex` -> `.md` does not parse the markdown and
+  a broken destination is named as the destination. That is the check
+  whose absence let a half-deleted block reach the compiler, where the
+  error surfaced several hundred lines away from the damage. It is a
+  syntax check only: a moved function whose `alias` stayed behind still
+  parses, and the compile is still the real check.
   """
 
   @typedoc "Where the region goes, in the destination text."
@@ -268,27 +270,43 @@ defmodule CodingAgent.Core.Region do
     before <> region <> binary_part(dest, o, byte_size(dest) - o)
   end
 
+  # Each text is checked against ITS OWN path (review N135): the two sides
+  # can be different languages (`.ex` -> `.md`), and when only the
+  # destination broke, the message must name the destination rather than
+  # the first Elixir path in the list. A same-file move has one text and
+  # one result, so it gets one check — against whichever end names an
+  # Elixir file.
   defp check(new_source, new_dest, opts, facts) do
-    paths = [Keyword.get(opts, :source_path), Keyword.get(opts, :dest_path)]
+    checks =
+      if Keyword.get(opts, :same_file?, false) do
+        case Enum.find(
+               [Keyword.get(opts, :source_path), Keyword.get(opts, :dest_path)],
+               &elixir?/1
+             ) do
+          nil -> []
+          path -> [{path, new_source}]
+        end
+      else
+        [
+          {Keyword.get(opts, :source_path), new_source},
+          {Keyword.get(opts, :dest_path), new_dest}
+        ]
+        |> Enum.filter(fn {path, _text} -> elixir?(path) end)
+        |> Enum.uniq()
+      end
 
-    case Enum.find(Enum.uniq(paths), &elixir?/1) do
+    case Enum.find(checks, fn {_path, text} -> not parses?(text) end) do
       nil ->
         {:ok, Map.merge(%{source: new_source, dest: new_dest}, facts)}
 
-      path ->
-        texts = [new_source, new_dest] |> Enum.uniq()
-
-        case Enum.find(texts, &(Code.string_to_quoted(&1) |> elem(0) == :error)) do
-          nil ->
-            {:ok, Map.merge(%{source: new_source, dest: new_dest}, facts)}
-
-          bad ->
-            {:error,
-             "refusing: the result does not parse (#{path}); " <>
-               "the region is probably not a complete unit — #{parse_error(bad)}"}
-        end
+      {path, text} ->
+        {:error,
+         "refusing: the result does not parse (#{path}); " <>
+           "the region is probably not a complete unit — #{parse_error(text)}"}
     end
   end
+
+  defp parses?(text), do: match?({:ok, _}, Code.string_to_quoted(text))
 
   # `Code.string_to_quoted/1`'s error shape is a meta keyword list, the
   # message (which may be a `{prefix, suffix}` tuple) and a token — all
