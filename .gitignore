@@ -31,5 +31,5 @@ __pycache__/
 *.pyc
 .venv
 
-
-
+# Burrito builds (ADR 048)
+/burrito_out/

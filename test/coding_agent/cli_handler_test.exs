@@ -2,13 +2,13 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-defmodule Mix.Tasks.TuiHandlerTest do
+defmodule CodingAgent.CLIHandlerTest do
   use ExUnit.Case, async: true
 
   alias ExRatatui.CellSession
   alias ExRatatui.Server
-  alias Mix.Tasks.Tui
-  alias Mix.Tasks.Tui.Handler
+  alias CodingAgent.CLI
+  alias CodingAgent.CLI.Handler
 
   # The TUI's log file is the ONLY record once the app owns the screen
   # (`:logger.remove_handler(:default)`), so this handler has three jobs:
@@ -158,7 +158,7 @@ defmodule Mix.Tasks.TuiHandlerTest do
       :ok
     end
 
-    assert :ok = Tui.await_tui(tui, halt)
+    assert :ok = CLI.await_tui(tui, halt)
     assert_receive {:halted, 0}
   end
 end

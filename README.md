@@ -62,6 +62,27 @@ mix tui --store <name|path>   # pick which session store to use
 mix tui "explain this repo"   # start with a first prompt
 ```
 
+## The binary
+
+```sh
+MIX_ENV=prod mix release        # needs zig 0.15.2 and xz on PATH
+./burrito_out/coding_agent_linux
+```
+
+A self-contained **Linux x86_64 glibc** executable: ERTS and the BEAM code are
+inside, so neither Erlang nor Elixir has to be installed
+([ADR 048](docs/source/decisions/048-binary-distribution.rst)). It is not a
+musl/Alpine build — the TUI and SQLite NIFs are linked against glibc, and the
+package carries the ERTS the build ran under. Build it on a glibc host with
+the OTP you want inside (`BURRITO_CUSTOM_ERTS` selects another glibc ERTS).
+
+What it does **not** carry: `bwrap`, `rg`, `fd`, `git` and a configured
+model — the same requirements as a checkout, minus the toolchain.
+
+The binary starts the TUI from the application callback and takes the same
+arguments as `mix tui`: `--resume <id>`, `--store <name|path>`,
+`--agent <name>` and an initial prompt.
+
 ## Configuration
 
 Three layers, later ones win:

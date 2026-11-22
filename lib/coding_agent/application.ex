@@ -46,7 +46,32 @@ defmodule CodingAgent.Application do
       CodingAgent.Core.Session.Supervisor
     ]
 
-    Supervisor.start_link(children, strategy: :one_for_one, name: CodingAgent.Supervisor)
+    case Supervisor.start_link(children, strategy: :one_for_one, name: CodingAgent.Supervisor) do
+      {:ok, _sup} = started ->
+        maybe_start_cli()
+        started
+
+      error ->
+        error
+    end
+  end
+
+  # A release boots through this callback, not through `mix tui`, so the
+  # binary's TUI has to start here. The flag is set in `config/runtime.exs`
+  # for `:prod` only, which is what keeps `mix tui` (and `mix test`) from
+  # starting a second TUI on top of the one the task starts.
+  #
+  # Linked, not supervised: the CLI owns the terminal and exits the VM when
+  # the TUI stops. A crash in it must take the application down rather than
+  # leave a VM whose screen nobody owns.
+  defp maybe_start_cli do
+    if Application.get_env(:coding_agent, :run_cli, false) do
+      spawn_link(fn ->
+        CodingAgent.CLI.run(:init.get_plain_arguments() |> Enum.map(&to_string/1))
+      end)
+    end
+
+    :ok
   end
 
   # Startup sandbox check (ADR 015/030). This is a DIAGNOSTIC, not the
