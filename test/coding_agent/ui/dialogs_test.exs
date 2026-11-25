@@ -104,6 +104,77 @@ defmodule CodingAgent.UI.DialogsTest do
     assert body =~ "question 2/2"
   end
 
+  # P19: the box is clamped to the pane, so a long question's options and
+  # the controls footer at the body's end fall below the fold. The
+  # scroll keys move the content — the facts the key handler needs come
+  # from the painter's own measurement (`question_scroll/3`).
+  describe "the question scroll (P19)" do
+    defp many_options do
+      Enum.map(1..6, &%{"label" => "option #{&1}", "description" => "the #{&1}th choice"})
+    end
+
+    defp two_options, do: [%{"label" => "fd"}, %{"label" => "pure-Elixir"}]
+
+    defp qp(scroll, opts \\ []) do
+      options = if Keyword.get(opts, :tall?, true), do: many_options(), else: two_options()
+
+      q = %{"question" => "Which one?", "options" => options}
+      %{questions: [q], index: 0, selected: [], answers: [], custom: nil, scroll: scroll}
+    end
+
+    defp question_widget(scroll, area, opts \\ []) do
+      [_, {widget, rect}] =
+        Dialogs.widgets(Dialogs.new(question: qp(scroll, opts)), area, @input_h)
+
+      {widget, rect}
+    end
+
+    test "a body taller than the pane says so in the title and holds the fold at end" do
+      # 10 rows of room: the six options plus question and footer are
+      # far below what fits. The stored offset (999) cannot paint past
+      # the body's end.
+      {widget, rect} =
+        question_widget(999, %Rect{x: 0, y: 0, width: 100, height: 10})
+
+      assert widget.block.title =~ "pgup/pgdn scrolls"
+      assert {at, 0} = widget.scroll
+      assert at > 0
+
+      # the box never outgrows the room it was clamped to
+      assert rect.height <= 10
+    end
+
+    test "a mid-range offset passes through unclamped" do
+      {widget, _rect} = question_widget(2, %Rect{x: 0, y: 0, width: 100, height: 10})
+      assert {2, 0} = widget.scroll
+    end
+
+    test "a body that fits holds the offset and keeps the keys out of the title" do
+      {widget, _rect} = question_widget(2, @area, tall?: false)
+
+      assert widget.block.title == " QUESTION "
+      assert {0, 0} = widget.scroll
+    end
+
+    test "the scroll facts the key handler reads come from the same measurement" do
+      # the max is the body's full height minus the visible rows: a
+      # page_down from any offset reaches a view that shows the body's
+      # end (the footer and the last option)
+      dialogs = Dialogs.new(question: qp(999))
+
+      {stored, max_scroll, page} =
+        Dialogs.question_scroll(dialogs, %Rect{x: 0, y: 0, width: 100, height: 10}, @input_h)
+
+      assert stored == 999
+      assert max_scroll > 0
+      assert page > 0
+    end
+
+    test "no question reads neutral scroll facts" do
+      assert Dialogs.question_scroll(Dialogs.new([]), @area, @input_h) == {0, 0, 1}
+    end
+  end
+
   test "long argument values are capped and multiline ones are inspected" do
     args = %{"path" => String.duplicate("x", 300), "content" => "a\nb"}
 

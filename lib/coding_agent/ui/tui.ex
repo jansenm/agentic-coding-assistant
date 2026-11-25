@@ -346,13 +346,18 @@ defmodule CodingAgent.UI.Tui do
   # A MULTI-select question starts empty: a preselected row reads as "these
   # are the picks", and one pick is not a set — there the first Enter
   # genuinely means "nothing here".
+  #
+  # `scroll` (P19) is the VIEW offset of the dialog's body against the
+  # pane's room, zero per screen: every new question unfolds, and a
+  # resize-shrink frame clamps it at the draw anyway.
   defp question_prompt(questions) do
     %{
       questions: questions,
       index: 0,
       selected: default_selection(List.first(questions)),
       answers: [],
-      custom: nil
+      custom: nil,
+      scroll: 0
     }
   end
 
@@ -1489,8 +1494,43 @@ defmodule CodingAgent.UI.Tui do
       :arrow_down -> question_move(state, +1)
       :arrow_left -> question_move(state, -1)
       :arrow_right -> question_move(state, +1)
+      # the content, not the selection (P19): the arrows are the answer
+      # rows' keys, so the body's below-the-fold rows — long questions
+      # bury the options and the controls footer — move on the scroll
+      # keys instead
+      :page_down -> question_scroll(state, +1)
+      :page_up -> question_scroll(state, -1)
       _ -> state
     end
+  end
+
+  # P19: move the dialog's view, clamped at both ends. The fold's max
+  # comes from the painter's own measurement (`Dialogs.question_scroll/3`
+  # — one derivation), so the keys and the draw cannot disagree; a
+  # pane-sized step reaches the body's end in one key on the terminals
+  # the dialog matters at.
+  defp question_scroll(state, dir) do
+    {v, max_scroll, page} =
+      Dialogs.question_scroll(
+        dialogs(state),
+        frame_rect(state),
+        input_height(state)
+      )
+
+    target = if dir > 0, do: min(v + page, max_scroll), else: max(v - page, 0)
+    qp = state.question_prompt
+
+    %{state | question_prompt: %{qp | scroll: target}}
+  end
+
+  # The rect the dialogs are painted at: the full frame (the same base
+  # `frame_layout` derives its regions from), so the handler's
+  # measurement and the draw read the same geometry — no dimension is
+  # stored (the Resize handler's comment), every reader derives from
+  # `term_size/1`.
+  defp frame_rect(state) do
+    {w, h} = term_size(state)
+    %Rect{x: 0, y: 0, width: w, height: h}
   end
 
   defp question_text(%{question_prompt: nil} = state, _text), do: state
@@ -1615,7 +1655,8 @@ defmodule CodingAgent.UI.Tui do
             | index: next,
               selected: default_selection(Enum.at(qp.questions, next)),
               answers: answers,
-              custom: nil
+              custom: nil,
+              scroll: 0
           }
       }
     end

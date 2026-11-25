@@ -146,29 +146,38 @@ defmodule CodingAgent.UI.Dialogs do
 
   defp question_widgets(%__MODULE__{question: nil}, _area, _input_h), do: []
 
-  defp question_widgets(%__MODULE__{question: qp}, area, input_h) do
-    question = Enum.at(qp.questions, qp.index)
-    options = question["options"] || []
+  defp question_widgets(%__MODULE__{question: qp} = dialogs, area, input_h) do
+    %{
+      body: body,
+      base_title: base_title,
+      w: w,
+      h: h,
+      inner_h: inner_h,
+      content_h: content_h,
+      scrollable?: scrollable?
+    } = question_metrics(dialogs, area, input_h)
 
-    body = question_markdown(question, qp, options)
+    # P19: the box is clamped to the room, so a body taller than it has
+    # rows below the fold — the arrows move the SELECTION, not the
+    # content, and before the scroll binding the options and the
+    # controls footer at the body's end were unreachable exactly when
+    # the question was long enough to need them. The offset rides the
+    # wizard state (`qp.scroll`), clamped here against the measurement,
+    # so a stale offset can never paint past the body's end.
+    at = min(Map.get(qp, :scroll, 0), max(content_h - inner_h, 0))
 
     title =
-      case question["header"] do
-        hdr when is_binary(hdr) and hdr != "" -> hdr
-        _ -> "QUESTION"
+      if scrollable? do
+        # the hint rides the TITLE, not the body: a row added to the
+        # content would move the fold the hint describes
+        base_title <> " — pgup/pgdn scrolls"
+      else
+        base_title
       end
-
-    # The probe measures the boxless markdown at the rect's INNER width;
-    # the panel's border adds the 2 rows back. Verified against the drawn
-    # buffer at 100/62/40 cols: the bottom border lands on the rect's last
-    # row, nothing clipped (the boxed widget wraps one column tighter than
-    # the boxless probe on both sides, which the height's last-nonblank
-    # metric absorbs).
-    w = Overlay.width(area)
-    h = min(TranscriptView.height({:reasoning, body}, w - 2, nil) + 2, area.height - 2)
 
     widget = %Markdown{
       content: body,
+      scroll: {at, 0},
       style: Styles.surface(:chrome),
       block:
         Styles.panel(
@@ -182,6 +191,85 @@ defmodule CodingAgent.UI.Dialogs do
     rect = Overlay.rect(area, input_h, h, w)
     [{%Clear{}, rect}, {widget, rect}]
   end
+
+  # The wizard dialog's size facts — the ONE derivation the painter and
+  # the scroll key handler (UI.Tui, P19) share: the body, the box height
+  # after the room clamp, the visible rows under the border, and whether
+  # the body has rows below the fold. A measurement the handler copies
+  # elsewhere would drift from the box the human actually sees. A plain
+  # map in the `frame_layout` shape: an internal record, one producer,
+  # private to this module.
+  @spec question_metrics(
+          t(),
+          ExRatatui.Layout.Rect.t(),
+          non_neg_integer()
+        ) ::
+          %{
+            body: String.t(),
+            base_title: String.t(),
+            w: pos_integer(),
+            h: non_neg_integer(),
+            inner_h: non_neg_integer(),
+            content_h: non_neg_integer(),
+            scrollable?: boolean()
+          }
+  # Called only with a question present: the nil surface returns no
+  # widgets (`question_widgets/2`) and no facts (`question_scroll/3`)
+  # before this is reached.
+  defp question_metrics(%__MODULE__{question: qp}, area, input_h) do
+    question = Enum.at(qp.questions, qp.index)
+    options = question["options"] || []
+
+    body = question_markdown(question, qp, options)
+
+    base_title =
+      case question["header"] do
+        hdr when is_binary(hdr) and hdr != "" -> hdr
+        _ -> "QUESTION"
+      end
+
+    # The probe measures the boxless markdown at the rect's INNER width;
+    # the panel's border adds the 2 rows back. Verified against the drawn
+    # buffer at 100/62/40 cols: the bottom border lands on the rect's last
+    # row, nothing clipped (the boxed widget wraps one column tighter than
+    # the boxless probe on both sides, which the height's last-nonblank
+    # metric absorbs).
+    #
+    # The box is clamped by the OVERLAY'S room (the rows above the live
+    # band), not by the pane's height: `Overlay.rect/4` applies that same
+    # clamp when it places the box, so the fold the scroll keys move is
+    # the fold the human sees.
+    w = Overlay.width(area)
+    content_h = TranscriptView.height({:reasoning, body}, w - 2, nil)
+    h = min(content_h + 2, Overlay.room(area, input_h))
+    inner_h = max(h - 2, 0)
+
+    %{
+      body: body,
+      base_title: base_title,
+      w: w,
+      h: h,
+      inner_h: inner_h,
+      content_h: content_h,
+      scrollable?: content_h > inner_h
+    }
+  end
+
+  # The scroll facts for the key handler: the stored offset, the maximum
+  # it may reach, and the visible rows (what one page_down moves). The
+  # handler clamps before it stores, so an offset can never grow past
+  # the end and make the next scroll-up feel dead (the transcript's
+  # scroll learned this the hard way: it inflates silently).
+  @doc false
+  @spec question_scroll(t(), ExRatatui.Layout.Rect.t(), non_neg_integer()) ::
+          {non_neg_integer(), non_neg_integer(), pos_integer()}
+  def question_scroll(%__MODULE__{question: %{} = qp} = dialogs, area, input_h) do
+    %{inner_h: inner_h, content_h: content_h} = question_metrics(dialogs, area, input_h)
+
+    {Map.get(qp, :scroll, 0), max(content_h - inner_h, 0), max(inner_h, 1)}
+  end
+
+  def question_scroll(_dialogs, _area, _input_h), do: {0, 0, 1}
 
   # The wizard body in markdown. Terms are hard-wrapped single lines
   # (option rows must stay rows — a description never merges into the next

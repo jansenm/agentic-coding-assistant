@@ -290,6 +290,93 @@ defmodule CodingAgent.UI.TuiQuestionTest do
     assert buf =~ "0) type your own answer…"
   end
 
+  # P19: the dialog's box is clamped to the pane, so the tail of a long
+  # question — the last options and the controls footer — fell below
+  # the fold with NO key that could reach it (the arrows move the
+  # selection). page_down/page_up now move the content: the footer and
+  # the last option arrive, and scrolling back restores the top.
+  test "a long question's below-the-fold tail is reachable with the scroll keys (P19)" do
+    root = Path.join(System.tmp_dir!(), "tui-q5-#{System.unique_integer()}")
+    File.mkdir_p!(root)
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    sid = "tui-q5-#{System.unique_integer()}"
+
+    {:ok, _} =
+      CodingAgent.Core.Session.Supervisor.start_session(
+        id: sid,
+        scope_root: root,
+        policy: CodingAgent.Core.Permissions.load(nil, nil),
+        test_mode: true,
+        interactive: true
+      )
+
+    pid =
+      start_supervised!(
+        {Tui, [name: nil, test_mode: {80, 24}, session_id: sid, scope_root: root]}
+      )
+
+    options =
+      Enum.map(1..6, fn i ->
+        %{"label" => "choice #{i}", "description" => "the #{i}th decision this question offers"}
+      end)
+
+    :ok =
+      CodingAgent.Core.Session.debug_gate(sid, [
+        %{
+          id: "q3",
+          name: "question",
+          arguments: %{
+            "questions" => [
+              %{
+                "question" =>
+                  "Which path should the release take? The six options below carry the " <>
+                    "trade-offs the review measured, and the footer below them names the keys.",
+                "header" => "Release",
+                "options" => options
+              }
+            ]
+          }
+        }
+      ])
+
+    wait_until(fn -> sync(pid).question_prompt != nil end)
+
+    initially = buffer(pid) |> Enum.join("\n")
+
+    # the question's opening is on screen; the six options and the
+    # controls footer are NOT (they fall below the fold the box's room
+    # clamp creates)
+    assert initially =~ "Which path should the release take?"
+    refute initially =~ "enter = confirm"
+    refute initially =~ "5) choice 5"
+
+    # one page_down: the view moves off the top (the page step is the
+    # box's visible rows, the measurement's inner height)
+    key(pid, "page_down")
+    state = sync(pid)
+    assert state.question_prompt.scroll > 0
+    refute buffer(pid) |> Enum.join("\n") =~ "Which path should the release take?"
+
+    # a second page_down reaches the body's end: the last option, the
+    # free-text row and the controls footer are on screen
+    key(pid, "page_down")
+    at_end = buffer(pid) |> Enum.join("\n")
+    assert at_end =~ "enter = confirm"
+    assert at_end =~ "0) type your own answer…"
+    assert at_end =~ "6) choice 6"
+
+    # and back up: the question's opening returns (the offset clamped
+    # at the fold, not past it)
+    key(pid, "page_up")
+    key(pid, "page_up")
+    key(pid, "page_up")
+    back = buffer(pid) |> Enum.join("\n")
+
+    assert back =~ "Which path should the release take?"
+    assert back =~ "1) choice 1"
+  end
+
   test "selecting \"type your own\" clears the option (they are exclusive)" do
     # Regression (found in review): `0` set the custom buffer but left the
     # selected option marked, so BOTH rows painted their ▸ and confirming
