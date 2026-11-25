@@ -24,6 +24,15 @@ The following principles do not matter at this point:
 
 * Backwards compatibility. (*The software is unreleased*)
 
+## Merging: squash, always
+
+A pull request is merged as **one commit** — `gh pr merge --squash`, never a
+merge commit and never a rebase merge. The commits on the branch are the review
+record; `devel`'s history is one commit per change. The squash commit is the
+record that survives, so its subject follows the house style and its body
+carries the why, what was verified, and `Fixes #n` for each issue the PR closes.
+The merged branch is left in place (`delete_branch_on_merge` is off).
+
 ## Maps become structs when the shape is known
 
 A record whose keys are known at compile time is a **struct**, not a bare map.
