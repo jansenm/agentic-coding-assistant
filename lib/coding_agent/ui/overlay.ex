@@ -36,7 +36,10 @@ defmodule CodingAgent.UI.Overlay do
   # The reading measure. Beyond ~100 characters the eye loses the
   # return-sweep (newspapers and books sit at 45-90), so the content
   # column is capped and the overlays are sized from the same number
-  # instead of each picking its own width.
+  # instead of each picking its own width. This is the ONE definition of
+  # the value (N139, ADR 018's "the reading measure"): UI.Tui's content
+  # column and the frame's mid column read it through `measure/0`, so a
+  # change here moves dialog width and reading column together.
   @measure 100
 
   @doc "The reading measure (the widest useful content column)."

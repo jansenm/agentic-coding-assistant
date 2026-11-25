@@ -132,10 +132,10 @@ defmodule CodingAgent.UI.Tui do
   # width than the painter is the hit-test's width bug.
   @inset 1
 
-  # reading measure (typography): the eye loses the return-sweep past
-  # ~100 characters (newspapers/books: 45-90). On wider panes the
-  # content column is capped and centered instead of stretching.
-  @measure 100
+  # reading measure (typography): the ONE definition lives in UI.Overlay
+  # (`Overlay.measure/0`, N139) — the content column and the frame's mid
+  # column read the same number the dialogs are sized from, so the reading
+  # column and the overlay width cannot drift apart.
 
   # left panel width: session name, model, context tokens, % window.
   # Widened from 24 after live use: model ids ("ollama_cloud:glm-5.3-flash")
@@ -3970,16 +3970,16 @@ defmodule CodingAgent.UI.Tui do
     end)
   end
 
-  # The reading column: capped at @measure, centered on wide panes.
-  # Measurement and rendering share this width (heights must match).
-  defp content_width(w), do: min(w, @measure)
+  # The reading column: capped at the reading measure, centered on wide
+  # panes. Measurement and rendering share this width (heights must match).
+  defp content_width(w), do: min(w, Overlay.measure())
 
   # -- the frame's geometry (ONE definition for paint AND every reader) ---
   #
   # The renderer decides the transcript pane from three things a stored
   # number cannot know: the app's margin, whether the sidebar is up (it
   # claims @sidebar_width columns), the reading measure (the mid column is
-  # capped at @measure), and the composer's height (it grows with the
+  # capped at `Overlay.measure/0`), and the composer's height (it grows with the
   # typed lines and the tab strip). Every reader that must measure what
   # the painter painted — the mouse hit-test (`block_at_row/2`), the
   # scroll clamp (`clamp_scroll_now/1`), the scroll diagnostics and the
@@ -4014,7 +4014,10 @@ defmodule CodingAgent.UI.Tui do
     # the mid column is capped at the reading measure and then split
     # vertically into (transcript, air, band, air, input)
     [mid_area, _gutter] =
-      Layout.split(mid_area, :horizontal, [{:length, min(@measure, mid_area.width)}, {:min, 0}])
+      Layout.split(mid_area, :horizontal, [
+        {:length, min(Overlay.measure(), mid_area.width)},
+        {:min, 0}
+      ])
 
     template = [{:min, 0}, {:length, 1}, {:length, band_h}, {:length, 1}, {:length, input_h}]
 
