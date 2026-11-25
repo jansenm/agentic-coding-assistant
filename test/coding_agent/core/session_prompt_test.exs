@@ -535,6 +535,29 @@ defmodule CodingAgent.Core.Session.PromptTest do
       refute text =~ "READ-ONLY"
     end
 
+    # N81: the framework section recommends `todowrite` unconditionally;
+    # a session without the tool must read a sentence that retires that
+    # guidance, not just the bare "you do not have the tool".
+    test "a missing todowrite neutralises the framework's todo guidance (N81)" do
+      text =
+        Prompt.with_capabilities(base(), %{missing: ["todowrite"], shell_mode: :rw})
+        |> state_text()
+
+      assert text =~ "Session capabilities:"
+      assert text =~ "you do not have the todowrite tool(s)"
+      assert text =~ "todo-list guidance does not apply"
+      assert text =~ "keep the step plan and the durable facts in your answer"
+    end
+
+    test "a session that has todowrite reads no neutralisation, even when another tool is missing (N81)" do
+      text =
+        Prompt.with_capabilities(base(), %{missing: ["edit"], shell_mode: :rw})
+        |> state_text()
+
+      assert text =~ "you do not have the edit tool(s)"
+      refute text =~ "todo-list guidance does not apply"
+    end
+
     test "a read-only shell is stated even when every tool is present" do
       text =
         Prompt.with_capabilities(base(), %{missing: [], shell_mode: :ro})

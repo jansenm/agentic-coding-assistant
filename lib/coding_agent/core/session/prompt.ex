@@ -70,6 +70,9 @@ defmodule CodingAgent.Core.Session.Prompt do
   """
 
   alias CodingAgent.Core.Session.ContextBudget
+  # The tool name the todo clause names (N81) — one definition, so a
+  # rename moves the clause.
+  alias CodingAgent.Core.Tools.TodoWrite
 
   @prompts_dir_path "coding-agent/prompts"
 
@@ -590,7 +593,23 @@ defmodule CodingAgent.Core.Session.Prompt do
           nil
       end
 
-    clauses = Enum.reject([tool_clause, shell_clause], &is_nil/1)
+    # N81: the framework section says, unconditionally, "use `todowrite` to
+    # track work". When the session does not have the tool (a policy or an
+    # agent removed it), that section and this block contradict exactly
+    # once and the failed call costs a turn. The clause neutralises the
+    # section instead of rewriting it: the framework text is the cached
+    # prefix and would churn on every tool change, while this block rides
+    # the tail, rebuilt per call — which is also where an agent switch's
+    # tool change arrives.
+    todo_clause =
+      if TodoWrite.name() in missing do
+        "the framework section's todo-list guidance does not apply (no todo " <>
+          "list exists) — keep the step plan and the durable facts in your answer"
+      else
+        nil
+      end
+
+    clauses = Enum.reject([tool_clause, todo_clause, shell_clause], &is_nil/1)
 
     base =
       "Session capabilities: " <>
