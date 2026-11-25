@@ -136,11 +136,18 @@ defmodule CodingAgent.Core.Session do
   def state(id), do: safe_call(id, :state, "state read", 5_000)
 
   @doc """
-  Updates the LIVE session's in-memory id after a Store rename so its
-  next save lands under the new name (no stale-file resurrection).
-  The registry keeps the old key — the process remains addressable
-  under the id it was started with until it exits; future mounts go
-  through the renamed file.
+  Updates the LIVE session's id after a Store rename: the in-memory id and
+  the registry name move together, because "one session id, one process"
+  is the invariant every mount resolves through (N125).
+
+  Before the fix the registry kept the old key: the process published and
+  persisted under the new id while remaining addressable under the old —
+  and a mount through the new id started a SECOND process on the same row
+  (the two-writers shape ADR 047 removed for restarts, produced here by a
+  rename). With the key moved, a mount through the new id finds the
+  running process (the supervisor's already-started path); a call under
+  the old id no longer finds it — the rename moved the name, that is the
+  point.
   """
   def set_id(id, new_id) do
     safe_call(id, {:set_id, new_id}, "set_id", @call_timeout)
@@ -964,7 +971,48 @@ defmodule CodingAgent.Core.Session do
     end
   end
 
-  def handle_call({:set_id, new_id}, _from, state) do
+  # N125: a rename must move the NAME with the id. The registry key is
+  # what every `safe_call` and mount resolves through; with the id changed
+  # but the key left on the old id, one session id came to exist as two
+  # processes — the live one addressed under the old key, a mount through
+  # the new id starting a second writer on the same row.
+  #
+  # The move is a pure registry edit and runs here, never inside
+  # `Store.do_rename/2`'s db fun (the lock inversion its comment
+  # explains).
+  #
+  # # The race that survives
+  #
+  # A mount through the NEW id between the store's commit and this
+  # notification started an impostor owning the new key. The claim fails
+  # (`keys: :unique`) and the process KEEPS the old key — addressable
+  # under the id it was started with, and the warning names the
+  # duplicate. The in-memory id still moves either way: persistence
+  # under the old id would resurrect a deleted row.
+  def handle_call({:set_id, id}, _from, %State{id: id} = state) do
+    # an unchanged id: nothing to move (the key is this process's own)
+    {:reply, :ok, state}
+  end
+
+  def handle_call({:set_id, new_id}, _from, %State{id: old} = state) do
+    case Registry.register(CodingAgent.Registry, {:session, new_id}, nil) do
+      # the claim (a key a dead session left behind is claimed outright —
+      # the previous, dead owner's pid comes back): drop the old name
+      :ok ->
+        :ok = Registry.unregister(CodingAgent.Registry, {:session, old})
+
+      {:ok, _dead_owner} ->
+        :ok = Registry.unregister(CodingAgent.Registry, {:session, old})
+
+      {:error, {:already_registered, impostor}} ->
+        Logger.warning(
+          "session #{old} renamed to #{new_id}: the new id already has a live " <>
+            "process #{inspect(impostor)}; the session keeps its address under the " <>
+            "old id until it exits and ends up with two writers — stop one " <>
+            "(the impostor, or this session and remount through the new id)"
+        )
+    end
+
     {:reply, :ok, struct!(state, id: new_id)}
   end
 
