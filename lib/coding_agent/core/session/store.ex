@@ -787,9 +787,10 @@ defmodule CodingAgent.Core.Session.Store do
 
   @doc """
   Renames a persisted session (one transaction: re-id the row, move the
-  scratch). Intended for idle sessions — a live one keeps running under
-  its old id and re-saves it on the next turn. Returns
-  `{:ok, new_id}` or `{:error, reason}`.
+  scratch). A live session is told its new id when the call returns —
+  in-memory id and registry name move together (N125), so its next save
+  lands on the renamed row and a mount through the new id finds it.
+  Returns `{:ok, new_id}` or `{:error, reason}`.
   """
   def rename(id, new_id) when is_binary(new_id) do
     new_id = String.trim(new_id)

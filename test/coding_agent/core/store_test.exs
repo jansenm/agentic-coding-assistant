@@ -647,17 +647,105 @@ defmodule CodingAgent.Core.Session.StoreTest do
     assert {:ok, "ren-live2"} = Store.rename("ren-live", "ren-live2")
     assert Process.alive?(pid)
 
+    # N125: the rename moves the NAME with the id. The live process is
+    # addressable under the new id only, and its in-memory id agrees —
     # the live process re-saves on turn boundaries; force one via a
     # state fetch + save (persist uses the in-memory id — the notify
     # must have landed before rename returned)
-    live = Registry.lookup(CodingAgent.Registry, {:session, "ren-live"}) |> hd() |> elem(0)
+    assert [] = Registry.lookup(CodingAgent.Registry, {:session, "ren-live"})
+
+    live = Registry.lookup(CodingAgent.Registry, {:session, "ren-live2"}) |> hd() |> elem(0)
+    assert live == pid
+
     s = :sys.get_state(live)
     assert s.id == "ren-live2"
     assert :ok = Store.save(s)
 
+    # from the call side too: the old id is gone, the new id resolves
+    assert {:error, :not_found} = Session.state("ren-live")
+    assert {:ok, %{id: "ren-live2"}} = Session.state("ren-live2")
+
     # no stale resurrection: old row gone, new row present
     assert {:error, :enoent} = Store.load("ren-live")
     assert {:ok, %{id: "ren-live2"}} = Store.load("ren-live2")
+  end
+
+  # N125: "one session id, one process" survives a live rename. The
+  # supervisor's already-started path is the mechanism: a mount through
+  # the renamed id resolves the key the rename's notification moved,
+  # so it finds the running process instead of starting a second writer
+  # on the same row (the shape ADR 047 removed for restarts).
+  test "a mount through the renamed id finds the live process, not a second writer (N125)" do
+    id = "m125-#{System.unique_integer([:positive])}"
+    renamed = id <> "-2"
+    ctx = Context.new([Context.user("hi")])
+
+    Store.save(
+      State.new(
+        id: id,
+        context: ctx,
+        model: "m",
+        status: :idle,
+        scope_root: @scope_dir
+      )
+    )
+
+    {:ok, pid} = Session.Supervisor.start_session(id: id, scope_root: @scope_dir)
+    assert {:ok, ^renamed} = Store.rename(id, renamed)
+
+    assert {:ok, ^pid} =
+             Session.Supervisor.start_session(id: renamed, scope_root: @scope_dir)
+
+    # one process under the new id, none under the old
+    assert [] = Registry.lookup(CodingAgent.Registry, {:session, id})
+    [{found, _}] = Registry.lookup(CodingAgent.Registry, {:session, renamed})
+    assert found == pid
+  end
+
+  # The race N125 leaves open: a mount through the NEW id between the
+  # store's commit and the notification owns the key already. The
+  # renamed session keeps its start-id address (it stays callable), the
+  # warning names the two writers, and persistence still moves (the old
+  # row must not resurrect).
+  test "an impostor on the new id keeps the renamed session callable and warned (N125)" do
+    id = "race-#{System.unique_integer([:positive])}"
+    renamed = id <> "-2"
+    ctx = Context.new([Context.user("hi")])
+
+    Store.save(
+      State.new(
+        id: id,
+        context: ctx,
+        model: "m",
+        status: :idle,
+        scope_root: @scope_dir
+      )
+    )
+
+    # the impostor: a process holding the new id BEFORE the rename
+    {:ok, _impostor} =
+      Session.Supervisor.start_session(id: renamed, scope_root: @scope_dir)
+
+    {:ok, pid} = Session.Supervisor.start_session(id: id, scope_root: @scope_dir)
+
+    log =
+      capture_log(fn ->
+        assert {:ok, ^renamed} = Store.rename(id, renamed)
+      end)
+
+    assert log =~ "two writers"
+    assert log =~ "already has a live process"
+
+    # the renamed session answers under the id it was STARTED with (its
+    # claim failed; the old address stays), and its in-memory id moved
+    s = :sys.get_state(pid)
+    assert s.id == renamed
+
+    # and persistence moved: the save lands on the renamed row, the old
+    # row does not resurrect
+    assert :ok = Store.save(:sys.get_state(pid))
+    assert {:ok, %{id: ^renamed}} = Store.load(renamed)
+    assert {:error, :enoent} = Store.load(id)
   end
 
   describe "display view (ADR 020)" do
