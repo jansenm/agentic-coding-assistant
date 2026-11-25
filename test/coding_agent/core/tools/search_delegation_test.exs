@@ -400,10 +400,9 @@ defmodule CodingAgent.Core.Tools.SearchDelegationTest do
     # invisibility class the skip line exists against. A failed check is
     # a sentence with the reason, once per answer.
     test "a failed fd probe is named, not rendered as 'nothing skipped' (N123)", %{scope: s} do
-      big = Path.join(s.root, "big/generated.ex")
-      File.mkdir_p!(Path.dirname(big))
-      File.write!(big, "needle\n" <> String.duplicate("x", 1_100_000))
-
+      # no fixture needed: the probe is forced to `:error` before any fd
+      # runs, so nothing here is ever listed or inspected (the walk's
+      # matches come from the files setup wrote)
       saved = External.probe(:fd)
       External.put(:fd, :error)
       on_exit(fn -> External.put(:fd, saved) end)

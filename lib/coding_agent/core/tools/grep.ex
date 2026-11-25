@@ -75,6 +75,11 @@ defmodule CodingAgent.Core.Tools.Grep do
   # confined like shell/git are.
   @exec_timeout 60
 
+  # The walk's size check is a fast name sweep (fd --size), well under a
+  # real search; one number for Exec's deadline and the sentence, the
+  # way @exec_timeout binds its two literals.
+  @size_check_timeout 30
+
   @doc "The tool name (the registry key and the model's call name)."
   @spec name() :: String.t()
   def name, do: "grep"
@@ -226,25 +231,11 @@ defmodule CodingAgent.Core.Tools.Grep do
       {:ok, out, code} when code in [0, 1] ->
         format_rg_matches(out, root, glob, path, scope)
 
-      {:ok, out, _code} ->
-        Tools.error("rg failed: #{String.trim(out)}")
-
-      {:timeout, _partial} ->
-        Tools.error("rg search timed out after #{@exec_timeout}s")
-
-      {:stopped, _partial} ->
-        Tools.error("rg search stopped by the user")
-
-      {:raw_too_large, _partial} ->
-        Tools.error(
-          "rg produced more output than can be held in memory; narrow the pattern or path"
-        )
-
-      {:sandbox_error, reason} ->
-        Tools.error("cannot confine the search: #{inspect(reason)}")
-
-      {:error, reason} ->
-        Tools.error("cannot run rg: #{inspect(reason)}")
+      # every Exec shape past the success cases: the shared mapping
+      # (`failure_reason/3`), so both delegated commands phrase their
+      # failures from ONE definition
+      other ->
+        Tools.error(failure_reason(other, "rg", @exec_timeout))
     end
   end
 
@@ -372,11 +363,12 @@ defmodule CodingAgent.Core.Tools.Grep do
 
     profile = Tools.profile(%{root: root}) |> Map.put(:root, root)
 
-    # Every shape of Exec's outcome that is not a clean listing is a
+    # Every shape of Exec's outcome past a clean listing (exit 0) is a
     # `{:error, reason}`: the caller renders the reason, because a
     # fallback to "nothing skipped" repeats N3's invisible-empty-answer
-    # class one level up.
-    case Exec.run({:exec, fd, args}, abs, 30, profile, truncate: false) do
+    # class one level up. The reason is `failure_reason/3`'s — the same
+    # mapping rg_search/5 uses.
+    case Exec.run({:exec, fd, args}, abs, @size_check_timeout, profile, truncate: false) do
       {:ok, out, 0} ->
         {:ok,
          out
@@ -387,24 +379,51 @@ defmodule CodingAgent.Core.Tools.Grep do
          |> Enum.take(10)}
 
       # exit 1 is an ERROR for fd (unlike rg — measured), as is every
-      # other non-zero status
-      {:ok, _out, exit_code} ->
-        {:error, "fd exited with status #{exit_code}"}
+      # other non-zero status and the partial shapes
+      other ->
+        {:error, failure_reason(other, "fd", @size_check_timeout)}
+    end
+  end
+
+  # THE ONE mapping of Exec's non-success outcomes to a model-readable
+  # sentence; both delegated commands in this module (rg, and the fd
+  # size check) draw their failure reason from here (review of PR #84:
+  # it stood twice and the wordings had already drifted — "unholdable
+  # output" against Exec's own "too large to buffer"). `subject` names
+  # the process in the sentence, `secs` fills the timeout clause.
+  #
+  # The success shapes never reach this function — each call site
+  # matches them first, because exit 1 means opposite things there
+  # (match vs error).
+  @spec failure_reason(Exec.outcome(), String.t(), pos_integer()) :: String.t()
+  defp failure_reason(outcome, subject, secs) do
+    case outcome do
+      # The delegated command's diagnostic rides in on stdout (Exec
+      # merges stderr into it): carrying it is what makes the sentence
+      # name the REASON. An empty stream falls back to the status,
+      # which is then all there is.
+      {:ok, out, code} ->
+        case String.trim(out) do
+          "" -> "#{subject} exited with status #{code}"
+          text -> "#{subject} failed: #{text}"
+        end
 
       {:timeout, _partial} ->
-        {:error, "the size check timed out after 30s"}
+        "#{subject} timed out after #{secs}s"
 
       {:stopped, _partial} ->
-        {:error, "the size check was stopped"}
+        "#{subject} was stopped by the user"
 
-      {:raw_too_large, _partial} ->
-        {:error, "the size check produced unholdable output"}
+      # Exec's own wording for the shape, with the byte count it
+      # carries
+      {:raw_too_large, size} ->
+        "#{subject}'s output was too large to buffer (#{size} bytes); narrow the pattern or path"
 
       {:sandbox_error, reason} ->
-        {:error, "cannot confine the size check: #{inspect(reason)}"}
+        "cannot confine #{subject}: #{inspect(reason)}"
 
       {:error, reason} ->
-        {:error, "could not run fd: #{inspect(reason)}"}
+        "could not run #{subject}: #{inspect(reason)}"
     end
   end
 
