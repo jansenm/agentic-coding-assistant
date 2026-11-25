@@ -111,4 +111,16 @@ defmodule CodingAgent.UI.TuiTest do
       assert [{:assistant, "broadcast"}] = sync(pid).transcript
     end
   end
+
+  # N139: the reading measure has ONE definition (`Overlay.measure/0`),
+  # and the content column caps at THAT number, not at a copy — when the
+  # copies drift, dialog width and reading column disagree.
+  describe "the reading measure" do
+    test "the content column is capped at Overlay.measure/0, not at a copy" do
+      measure = CodingAgent.UI.Overlay.measure()
+
+      # a pane wider than the measure: the cap bites AT the measure
+      assert Tui.entry_width(measure + 40) == measure
+    end
+  end
 end

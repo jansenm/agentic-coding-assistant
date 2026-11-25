@@ -392,6 +392,43 @@ defmodule CodingAgent.Core.Tools.SearchDelegationTest do
       out = tool_answer(grep(s), %{"pattern" => "needle"})
 
       refute out =~ "skipped:"
+      refute out =~ "could not check"
+    end
+
+    # N123: every error of the fd call fell back to `[]` — the skip line
+    # was missing and the answer read like a COMPLETE search, exactly the
+    # invisibility class the skip line exists against. A failed check is
+    # a sentence with the reason, once per answer.
+    test "a failed fd probe is named, not rendered as 'nothing skipped' (N123)", %{scope: s} do
+      # no fixture needed: the probe is forced to `:error` before any fd
+      # runs, so nothing here is ever listed or inspected (the walk's
+      # matches come from the files setup wrote)
+      saved = External.probe(:fd)
+      External.put(:fd, :error)
+      on_exit(fn -> External.put(:fd, saved) end)
+
+      # direct execution: `tool_answer/2` resets the probe memo and the
+      # forced value would be re-probed away
+      {:ok, out} = ReqLLM.Tool.execute(grep(s), %{"pattern" => "needle"})
+
+      # the matches are still the answer; the note names the dead check
+      assert out =~ "needle"
+      assert out =~ "could not check for files over 1 MiB"
+      refute out =~ "skipped:"
+    end
+
+    test "an fd exec failure is named with its reason (N123)", %{scope: s} do
+      # stand in for "rg works, the fd size check dies": exit 1 is an
+      # error for fd (unlike rg), and must not read as "nothing skipped"
+      saved = External.probe(:fd)
+      External.put(:fd, {:ok, "/bin/false"})
+      on_exit(fn -> External.put(:fd, saved) end)
+
+      {:ok, out} = ReqLLM.Tool.execute(grep(s), %{"pattern" => "needle"})
+
+      assert out =~ "could not check for files over 1 MiB"
+      assert out =~ "fd exited with status 1"
+      refute out =~ "skipped:"
     end
   end
 

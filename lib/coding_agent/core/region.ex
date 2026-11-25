@@ -248,26 +248,33 @@ defmodule CodingAgent.Core.Region do
       })
     else
       new_source = binary_part(source, 0, s) <> binary_part(source, e, byte_size(source) - e)
-      new_dest = insert(dest, o, region)
+      {new_dest, added} = insert(dest, o, region)
 
       check(new_source, new_dest, opts, %{
         region: lines_in(region),
         region_text: region,
         from_line: line_of(source, s),
-        to_line: line_of(new_dest, o)
+        to_line: line_of(new_dest, o + added)
       })
     end
   end
 
   # A destination with no trailing newline gets one before the region, so
-  # the moved lines are not glued to the last line that was there.
+  # the moved lines are not glued to the last line that was there. That
+  # added newline SHIFTS the region one line down, and the reported
+  # `to_line` must follow it — the second element is the byte count
+  # `insert` added before `o`, the offset `assemble/7` reports from (N137).
   defp insert(dest, o, region) do
     before = binary_part(dest, 0, o)
 
-    before =
-      if before == "" or String.ends_with?(before, "\n"), do: before, else: before <> "\n"
+    {before, added} =
+      if before == "" or String.ends_with?(before, "\n") do
+        {before, 0}
+      else
+        {before <> "\n", 1}
+      end
 
-    before <> region <> binary_part(dest, o, byte_size(dest) - o)
+    {before <> region <> binary_part(dest, o, byte_size(dest) - o), added}
   end
 
   # Each text is checked against ITS OWN path (review N135): the two sides

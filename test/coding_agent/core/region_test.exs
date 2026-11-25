@@ -62,6 +62,25 @@ defmodule CodingAgent.Core.RegionTest do
       assert {:ok, out} = Region.move("x\ny\n", "head", "x", "x", :end)
       assert out.dest == "head\nx\n"
     end
+
+    # N137: `insert/3` adds the newline BEFORE the region, so the region
+    # starts one line later than the insert offset. The dry run promises
+    # correct line numbers — it must report the line the region lands on.
+    test "to_line counts the newline a bare destination gains" do
+      source = "aaa\ndefp one do\n  1\nend\nbbb\n"
+
+      assert {:ok, out} = Region.move(source, "head", "defp one do", "end", :end)
+      assert out.dest == "head\ndefp one do\n  1\nend\n"
+      assert out.to_line == 2
+    end
+
+    test "to_line stays right when the destination already ends in a newline" do
+      source = "aaa\ndefp one do\n  1\nend\nbbb\n"
+
+      assert {:ok, out} = Region.move(source, "head\n", "defp one do", "end", :begin)
+      assert out.dest == "defp one do\n  1\nend\nhead\n"
+      assert out.to_line == 1
+    end
   end
 
   describe "the region is line-aligned" do

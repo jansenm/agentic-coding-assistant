@@ -169,6 +169,27 @@ defmodule CodingAgent.Core.Tools.MoveRegionTest do
     assert File.read!(Path.join(root, "to.ex")) == before_to
   end
 
+  # N137: the dry run promises the line numbers without writing. A bare
+  # destination (no trailing newline) gains a newline before the region, so
+  # the region lands ONE line later than the insert offset — the message
+  # must report that line ("bare.ex:2"), not the line before it.
+  test "the dry run counts the newline the insert adds", %{scope: scope, root: root} do
+    File.write!(Path.join(root, "bare.ex"), "head")
+
+    assert {:ok, out} =
+             move(scope, %{
+               "from_path" => "from.ex",
+               "to_path" => "bare.ex",
+               "from" => "defp two do",
+               "to" => "end",
+               "position" => ":end",
+               "dry_run" => true
+             })
+
+    assert out =~
+             "dry run: 3 line(s) from from.ex:8 would land in bare.ex:2 (nothing written)"
+  end
+
   test "a same-file reorder rewrites the one file", %{scope: scope, root: root} do
     assert {:ok, out} =
              move(scope, %{
