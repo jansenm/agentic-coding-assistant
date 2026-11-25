@@ -51,7 +51,10 @@ defmodule CodingAgent.Core.Tools.Grep do
   The skipped files are LISTED in the result (`skipped: N file(s) over
   1 MiB — name one with \`path\``). A silent skip is an empty answer that
   looks like "no match": found live, the only hit of a repo-wide search
-  sat in a 1.4 MB file, and the tool reported nothing at all.
+  sat in a 1.4 MB file, and the tool reported nothing at all. When the
+  listing ITSELF fails (fd missing, a timeout, an exec error), the note
+  names the failure — rendered as "nothing skipped" it would again be an
+  answer that reads as a complete search.
   """
 
   alias CodingAgent.Core.Containment
@@ -93,7 +96,8 @@ defmodule CodingAgent.Core.Tools.Grep do
           "build/vendor directories. Use glob first to narrow files if needed. " <>
           "A directory search skips files larger than 1 MiB and NAMES them in " <>
           "the result (\"skipped: ...\"), so a bare \"no matches\" never hides an " <>
-          "unsearched file; name one with `path` to search it in full.",
+          "unsearched file; if the size listing itself fails, the answer says so " <>
+          "(\"could not check...\"). Name one with `path` to search it in full.",
       parameter_schema: [
         pattern: [
           type: :string,
@@ -322,56 +326,85 @@ defmodule CodingAgent.Core.Tools.Grep do
   # nothing at all. The model can name one with `path` to search it
   # (rg's cap applies only to the walk, not to a named target, so the
   # re-run searches it in full). The walk stays bounded; only the
-  # report grows.
+  # report grows. A FAILED check is a sentence with the reason, not a
+  # silent "nothing skipped" (N123).
   defp skipped_note(root, path, glob) do
     case oversized_files(root, path, glob) do
-      [] ->
+      {:ok, []} ->
         ""
 
-      files ->
+      {:ok, files} ->
         "\n[skipped: #{length(files)} file(s) over 1 MiB — name one with `path`: #{Enum.join(files, ", ")}]"
+
+      {:error, reason} ->
+        "\n[could not check for files over 1 MiB: #{reason}]"
     end
   end
 
-  # The files the walk would skip. An explicitly NAMED target is not a
-  # walk, so rg searches it whatever its size — no note then. rg's own
-  # `--no-ignore`/`--hidden` are reflected in `--hidden` here; the
-  # skip-dirs keep the excluded trees out of the count.
+  # The files the walk would skip, or the reason the check could not run
+  # (a check that answers `[]` on failure reads as a complete search —
+  # N123). An explicitly NAMED file target is not a walk, so rg searches
+  # it whatever its size — there is nothing the check could hide, the
+  # probe does not even run, and no note appears even when fd is broken.
+  # rg's own `--no-ignore`/`--hidden` are reflected in `--hidden` here;
+  # the skip-dirs keep the excluded trees out of the count.
   defp oversized_files(root, path, glob) do
-    case External.probe(:fd) do
-      {:ok, fd} -> fd_oversized(fd, root, path, glob)
-      :error -> []
-    end
-  end
-
-  defp fd_oversized(fd, root, path, glob) do
     abs = abs_path(%{root: root}, path)
 
     if File.regular?(abs) do
-      []
+      {:ok, []}
     else
-      # fd prunes by name, not by rg's `!**/dir/**` glob: the same
-      # `External.skip_dirs()` list, expressed the way fd understands it
-      # (rg's form made fd treat each pattern as a path — `[fd error]:
-      # Search path '!**/_build/**' is not a directory`).
-      args =
-        ["--type", "f", "--size", "+#{@max_file_bytes}b", "--hidden"] ++
-          Enum.flat_map(External.skip_dirs(), fn dir -> ["--exclude", dir] end) ++ ["."]
-
-      profile = Tools.profile(%{root: root}) |> Map.put(:root, root)
-
-      case Exec.run({:exec, fd, args}, abs, 30, profile, truncate: false) do
-        {:ok, out, 0} ->
-          out
-          |> String.split("\n", trim: true)
-          |> Enum.map(&String.trim_leading(&1, "./"))
-          |> Enum.filter(&keep_match?({&1, 0, ""}, [glob, path]))
-          |> Enum.sort()
-          |> Enum.take(10)
-
-        _ ->
-          []
+      case External.probe(:fd) do
+        {:ok, fd} -> fd_oversized(fd, root, abs, glob, path)
+        :error -> {:error, "fd is not available"}
       end
+    end
+  end
+
+  defp fd_oversized(fd, root, abs, glob, path) do
+    # fd prunes by name, not by rg's `!**/dir/**` glob: the same
+    # `External.skip_dirs()` list, expressed the way fd understands it
+    # (rg's form made fd treat each pattern as a path — `[fd error]:
+    # Search path '!**/_build/**' is not a directory`).
+    args =
+      ["--type", "f", "--size", "+#{@max_file_bytes}b", "--hidden"] ++
+        Enum.flat_map(External.skip_dirs(), fn dir -> ["--exclude", dir] end) ++ ["."]
+
+    profile = Tools.profile(%{root: root}) |> Map.put(:root, root)
+
+    # Every shape of Exec's outcome that is not a clean listing is a
+    # `{:error, reason}`: the caller renders the reason, because a
+    # fallback to "nothing skipped" repeats N3's invisible-empty-answer
+    # class one level up.
+    case Exec.run({:exec, fd, args}, abs, 30, profile, truncate: false) do
+      {:ok, out, 0} ->
+        {:ok,
+         out
+         |> String.split("\n", trim: true)
+         |> Enum.map(&String.trim_leading(&1, "./"))
+         |> Enum.filter(&keep_match?({&1, 0, ""}, [glob, path]))
+         |> Enum.sort()
+         |> Enum.take(10)}
+
+      # exit 1 is an ERROR for fd (unlike rg — measured), as is every
+      # other non-zero status
+      {:ok, _out, exit_code} ->
+        {:error, "fd exited with status #{exit_code}"}
+
+      {:timeout, _partial} ->
+        {:error, "the size check timed out after 30s"}
+
+      {:stopped, _partial} ->
+        {:error, "the size check was stopped"}
+
+      {:raw_too_large, _partial} ->
+        {:error, "the size check produced unholdable output"}
+
+      {:sandbox_error, reason} ->
+        {:error, "cannot confine the size check: #{inspect(reason)}"}
+
+      {:error, reason} ->
+        {:error, "could not run fd: #{inspect(reason)}"}
     end
   end
 
