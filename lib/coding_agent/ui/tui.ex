@@ -52,6 +52,7 @@ defmodule CodingAgent.UI.Tui do
     Menu,
     Overlay,
     Sidebar,
+    State,
     Stats,
     Styles,
     Tabs,
@@ -156,16 +157,13 @@ defmodule CodingAgent.UI.Tui do
     # test_mode skips the picker: tests seed sessions in a shared
     # store dir and expect direct attachment. Opt-in :picker forces
     # it for the picker's own tests.
-    test_mode? = test_session?(opts)
     force_picker? = Keyword.get(opts, :picker, false)
+    scope_root = Keyword.get(opts, :scope_root) || File.cwd!()
 
-    if Keyword.get(opts, :resume_id) == nil and (force_picker? or not test_mode?) do
-      case Store.list_in(Keyword.get(opts, :scope_root) || File.cwd!()) do
-        [_ | _] = sessions ->
-          mount_picker(opts, sessions, prompt, Keyword.get(opts, :scope_root) || File.cwd!())
-
-        _ ->
-          mount_session(nil, opts, prompt)
+    if Keyword.get(opts, :resume_id) == nil and (force_picker? or not State.test_session?(opts)) do
+      case Store.list_in(scope_root) do
+        [_ | _] = sessions -> {:ok, State.picker(opts, sessions, prompt, scope_root)}
+        _ -> mount_session(nil, opts, prompt)
       end
     else
       mount_session(nil, opts, prompt)
@@ -187,131 +185,6 @@ defmodule CodingAgent.UI.Tui do
       :new ->
         mount_session(nil, opts, prompt)
     end
-  end
-
-  defp mount_picker(opts, sessions, prompt, root) do
-    initial = %{
-      session_id: nil,
-      model: nil,
-      session_usage: CodingAgent.Core.Session.Usage.new(),
-      # the session's round accounting, MIRRORED from `{:timing, …}` (I1).
-      # `/stats` reads this rather than `Session.state/1`: a turn runs in a
-      # worker, so the session process's own state is the one the turn
-      # STARTED from and a running turn read as zeros.
-      timing: Timing.new(),
-      # the per-request state trailer's size, MIRRORED from
-      # `{:trailer_bytes, …}` (ADR 024 cap); 0 = no request assembled yet
-      trailer_bytes: 0,
-      status: :idle,
-      transcript: [],
-      # esc-to-quit confirm: first esc arms, second esc (within
-      # @quit_confirm_window) quits, any other key disarms
-      quit_confirm?: false,
-      quit_armed_at: 0,
-      # esc-to-stop confirm: while a turn runs, first esc arms, second esc
-      # (within @stop_confirm_window) stops, any other key disarms
-      stop_confirm?: false,
-      stop_armed_at: 0,
-      # in-flight stream, IN ARRIVAL ORDER: a list of
-      # {:reasoning, text} | {:assistant, text} blocks. Reasoning and
-      # answer text interleave exactly as the provider streamed them
-      # (opencode-style) instead of two buffers that force reasoning
-      # first; cleared/persisted when the turn's message lands.
-      stream: [],
-      # true while a delta landed but its frame has not painted; drives
-      # subscriptions/1 (the stream render throttle)
-      stream_dirty?: false,
-      # Activity/spinner state: the last message from the session that
-      # shows progress (any delta, a tool start/finish). The spinner
-      # reports how long the app has been silent, so a stuck turn visibly
-      # diverges from a healthy one.
-      last_activity_at: nil,
-      spin: 0,
-      # the tool currently running (from {:tool_started, name}), nil when
-      # none — lets the status read "running mix".
-      active_tool: nil,
-      tool_started_at: nil,
-      # scroll diagnostics are developer output (they render in the
-      # composer's meta row when on); off by default, toggled with
-      # ctrl-x d.
-      debug_visible?: false,
-      textarea: ExRatatui.textarea_new(),
-      history: [],
-      history_index: nil,
-      history_draft: nil,
-      pending: [],
-      pending_edit: nil,
-      # true from pressing y/n until the {:__decided__} reply lands:
-      # the dialog is hidden but `pending` is NOT dropped, so an
-      # errored decide/2 can re-show it
-      deciding?: false,
-      # the tool-round budget prompt (ADR 025): %{budget: n} while the
-      # session is parked at the budget; y continues, n stops
-      budget_prompt: nil,
-      # the doom-loop prompt (ADR 026): %{tool: name} while the session is
-      # parked at a repeated call; y continues, n rejects (steers)
-      doom_prompt: nil,
-      # the question prompt (ADR 027): %{questions: [...], answers: [...],
-      # index: i, selected: [j], custom: nil|buf} while the agent waits for
-      # an answer; a wizard, one question per screen
-      question_prompt: nil,
-      # the model's todo list (ADR 031), mirrored from the session for the
-      # sidebar's fourth block; seeded on mount, updated by
-      # {:todos_updated, todos}. Empty = the block is not painted.
-      todos: [],
-      # the `@`-file picker (ADR 032): %{prepared: [...], query: ".", matches:
-      # [...], index: i} while open. `prepared` is the confined fd list
-      # fetched once, indexed by `ListFiles.prepare/1` (path + downcased +
-      # hidden?, review F4) so a keystroke only filters, never re-derives;
-      # `matches` is the filtered view. nil = closed.
-      file_popup: nil,
-      # the `/` command palette (ADR 034): %{query: "...", matches: [...],
-      # index: i} while open. Unlike the file picker the candidate list is
-      # the static registry filtered in memory. nil = closed.
-      command_popup: nil,
-      # subagent tabs (ADR 018): the child views, the pointer that says
-      # which one the pane shows, and each view's own scroll/expand state
-      # (`UI.Tabs`). Empty until a `task` call starts a child.
-      tabs: Tabs.new(),
-      last_error: nil,
-      provider_down?: false,
-      test_pid: Keyword.get(opts, :test_pid),
-      test_mode?: test_session?(opts),
-      picker: sessions,
-      picker_index: 0,
-      picker_opts: opts,
-      picker_prompt: prompt,
-      picker_op: nil,
-      picker_scope: Path.expand(root),
-      # Session management (ADR 020, slice 1): the picker is a manager,
-      # not just a chooser. `picker_all?` widens the source from this
-      # directory's sessions to the whole store; `picker_filter` narrows
-      # the visible rows (id / model / status / scope). While the filter
-      # prompt is open, `picker_op` is `{:filter, buf}` and routes
-      # printable keys into the query.
-      picker_all?: false,
-      picker_filter: "",
-      # store-wide content search (ADR 020 S1): `S` opens a query prompt;
-      # while it is committed, the picker source is `Store.search/1`
-      # results (sessions with their matching display rows) instead of
-      # the metadata listing. `picker_op` is `{:search, buf}` while typing.
-      picker_search: nil,
-      # sidebar panel: visible by default; toggled at runtime
-      # (Menu :toggle_sidebar) or seeded off via `sidebar: false`
-      # (tests read a clean transcript buffer without a 36-col panel)
-      sidebar_visible?: Keyword.get(opts, :sidebar, true),
-      menu_pending: false,
-      # the armed `:__menu_timeout__` timer ref (cancelled when the prefix
-      # is consumed), so a stale timer cannot steal a later ctrl-x window
-      menu_timer: nil,
-      menu_popup: nil,
-      menu_popup_id: nil,
-      menu_index: 0,
-      menu_note: nil,
-      mount_opts: opts
-    }
-
-    {:ok, initial}
   end
 
   # A parked budget prompt (ADR 025): the TUI renders a continue/stop
@@ -446,7 +319,7 @@ defmodule CodingAgent.UI.Tui do
       # the layered config, so a global re-read here could disagree.
       session_effort =
         case Session.state(effective_id) do
-          {:ok, st} -> Map.get(st, :reasoning_effort)
+          {:ok, st} -> st.reasoning_effort
           _ -> nil
         end
 
@@ -457,140 +330,53 @@ defmodule CodingAgent.UI.Tui do
         case Session.state(effective_id) do
           {:ok, st} ->
             {Compactor.window(st), Compactor.soft_limit(st), Compactor.hard_limit(st),
-             Map.get(st, :context_window_source)}
+             st.context_window_source}
 
           _ ->
             {0, 0, 0, nil}
         end
 
-      initial = %{
-        session_id: effective_id,
-        model: session_model,
-        # the scope root this session works in, mirrored for the sidebar
-        # heading (read once per mount, like the model and the effort — the
-        # render path must not call into the session per frame)
-        scope_root: session_scope(effective_id),
-        # ADR 018 two slots:
-        #   running_agent  — what is executing the ACTIVE turn (the
-        #                    session's resolved definition; a subagent
-        #                    later). nil = no agent.
-        #   next_agent     — what the NEXT input starts with. Tab cycles
-        #                    the primary agents; a running turn keeps its
-        #                    own agent, so the two can differ.
-        running_agent: session_agent(effective_id),
-        next_agent: session_agent(effective_id),
-        # subagent tabs (ADR 018): the child views of this session with the
-        # pointer that selects one. A finished tab is KEPT (read-only) until
-        # the view is discarded; the child's transcript is never blended into
-        # the parent view.
-        tabs: Tabs.new(),
-        # the agent executing the CURRENT turn (unknown until the
-        # session broadcasts {:turn_started, agent}); used to attribute
-        # live assistant/tool/compaction lines while a turn streams.
-        active_agent: session_agent(effective_id),
-        # per-turn attribution: one agent name (or nil) per USER turn,
-        # in execution order. Seeded from the persisted session on
-        # resume; extended locally when a prompt is sent (before the
-        # session broadcasts its own turn_started) so the just-typed
-        # "you" footer can show the target agent immediately.
-        turn_agents: session_turn_agents(effective_id),
-        primary_agents: primary_agent_names(session_scope(effective_id)),
-        # models per slot, resolved once per mount (not per frame — the
-        # sidebar runs at poll cadence and must not hit the disk)
-        running_agent_model:
-          agent_model(session_scope(effective_id), session_agent(effective_id)),
-        next_agent_model: agent_model(session_scope(effective_id), session_agent(effective_id)),
-        session_usage:
-          CodingAgent.Core.Session.Usage.from_map(restored && Map.get(restored, :usage)),
-        # the round accounting, seeded from the snapshot and kept current
-        # by `{:timing, …}` (see the picker mount)
-        timing: Timing.restore(restored && Map.get(restored, :timing)),
-        # the trailer's size is not persisted: the first request of this
-        # mount republishes it (see the picker mount)
-        trailer_bytes: 0,
-        status: status,
-        transcript: history,
-        # esc-to-quit confirm: first esc arms, second esc (within
-        # @quit_confirm_window) quits, any other key disarms
-        quit_confirm?: false,
-        quit_armed_at: 0,
-        # esc-to-stop confirm: while a turn runs, first esc arms, second
-        # esc (within @stop_confirm_window) stops, any other key disarms
-        stop_confirm?: false,
-        stop_armed_at: 0,
-        # in-flight stream, IN ARRIVAL ORDER (see mount_picker)
-        stream: [],
-        # true while a delta has landed but its frame has not been painted;
-        # drives subscriptions/1 (the stream render throttle)
-        stream_dirty?: false,
-        # activity/spinner + debug state (see mount_picker)
-        last_activity_at: nil,
-        spin: 0,
-        active_tool: nil,
-        tool_started_at: nil,
-        debug_visible?: false,
-        textarea: ExRatatui.textarea_new(),
-        history: recall,
-        history_index: nil,
-        history_draft: nil,
-        pending: pending,
-        pending_edit: nil,
-        deciding?: false,
-        budget_prompt: budget_prompt,
-        doom_prompt: doom_prompt,
-        question_prompt: question_prompt,
-        # the model's todo list (ADR 031), mirrored for the sidebar's
-        # fourth block; a resumed session shows the list it had
-        todos: session_todos(effective_id),
-        # the `@`-file picker (ADR 032); nil = closed
-        file_popup: nil,
-        # the `/` command palette (ADR 034); nil = closed
-        command_popup: nil,
-        last_error: nil,
-        provider_down?: false,
-        test_pid: Keyword.get(opts, :test_pid),
-        test_mode?: test_session?(opts),
-        # loaded ONCE here, not per keypress (file I/O + TOML parse in
-        # the input hot path was the crash vector for a broken live
-        # config). Reload points: session switch, picker actions —
-        # everything that re-runs mount_session.
-        keymap: Keymap.load(),
-        # the sidebar's effort line renders what the SESSION resolved
-        # (ADR 029), not a per-frame config re-read
-        session_effort: session_effort,
-        # the two compaction limits the session resolved (ADR 037)
-        compaction_window: compaction_window,
-        compaction_soft: compaction_soft,
-        compaction_hard: compaction_hard,
-        # where the window came from: a `:fallback` (uncataloged model) is
-        # marked in the sidebar, so "the compact window is too big" is
-        # visible instead of surprising
-        context_window_source: window_source,
-        # picker mode fields (nil = not in picker mode; set by
-        # mount_picker only)
-        picker: nil,
-        picker_index: 0,
-        picker_opts: nil,
-        picker_prompt: nil,
-        picker_op: nil,
-        picker_scope: nil,
-        # menu mode: :menu_pending (a prefix chord was pressed, the
-        # next letter within @menu_timeout fires the item directly) or
-        # a popup map (navigate/enter). nil = normal input.
-        # sidebar panel: visible by default; toggled at runtime
-        # (Menu :toggle_sidebar) or seeded off via `sidebar: false`
-        # (tests read a clean transcript buffer without a 36-col panel)
-        sidebar_visible?: Keyword.get(opts, :sidebar, true),
-        menu_pending: false,
-        menu_timer: nil,
-        menu_popup: nil,
-        menu_popup_id: nil,
-        menu_index: 0,
-        menu_note: nil,
-        # keymap comes from mount_session's initial state (the picker
-        # hands off before any normal key reaches the keymap paths)
-        mount_opts: opts
-      }
+      # the ONE state definition (UI.State): the session shape on the
+      # common base. The keyword carries only what this session IS
+      # (fresh or resumed) — everything the old literal set to a neutral
+      # value is a struct default now, and each group's field comments
+      # live in UI.State.
+      scope = session_scope(effective_id)
+      agent = session_agent(effective_id)
+      slot_model = agent_model(scope, agent)
+
+      initial =
+        State.session(opts,
+          session_id: effective_id,
+          model: session_model,
+          scope_root: scope,
+          # ADR 018 two slots: running_agent executes the ACTIVE turn, and
+          # next_agent is what the NEXT input starts with — a running turn
+          # keeps its own agent, so the two can differ
+          running_agent: agent,
+          next_agent: agent,
+          active_agent: agent,
+          turn_agents: session_turn_agents(effective_id),
+          primary_agents: primary_agent_names(scope),
+          running_agent_model: slot_model,
+          next_agent_model: slot_model,
+          session_usage: Usage.from_map(restored && restored.usage),
+          timing: Timing.restore(restored && restored.timing),
+          status: status,
+          transcript: history,
+          history: recall,
+          pending: pending,
+          budget_prompt: budget_prompt,
+          doom_prompt: doom_prompt,
+          question_prompt: question_prompt,
+          todos: session_todos(effective_id),
+          keymap: Keymap.load(),
+          session_effort: session_effort,
+          compaction_window: compaction_window,
+          compaction_soft: compaction_soft,
+          compaction_hard: compaction_hard,
+          context_window_source: window_source
+        )
 
       if prompt, do: send(self(), {:__run__, prompt})
 
@@ -625,7 +411,7 @@ defmodule CodingAgent.UI.Tui do
   # A refused start (ADR 030: no confining sandbox) is not a crash: it
   # comes back as `{:error, reason}` and the caller decides what to show.
   defp start_resumed({:ok, state}, _id, opts, _resume_id) do
-    case Session.resume(state, interactive: true, test_mode: test_session?(opts)) do
+    case Session.resume(state, interactive: true, test_mode: State.test_session?(opts)) do
       {:ok, pid} -> {:ok, pid, state, nil}
       {:error, reason} -> {:error, start_refusal(reason)}
     end
@@ -666,21 +452,13 @@ defmodule CodingAgent.UI.Tui do
                # test/coding_agent/ui/). Passing a boolean: the session
                # guard pattern-matches `%{test_mode: true}`, and the
                # session's own test_mode is a boolean, not the size tuple.
-               test_mode: test_session?(opts)
+               test_mode: State.test_session?(opts)
              ) do
           {:ok, pid} -> {:ok, pid, nil, notice}
           {:error, reason} -> {:error, start_refusal(reason)}
         end
     end
   end
-
-  # The TUI's test flag, read the same way at every site: the `test_mode`
-  # OPTION carries the ExRatatui virtual terminal size, and its PRESENCE —
-  # not its shape — is the flag. One reader, so the picker, the state key
-  # and the session this module starts can never disagree about whether
-  # this is a test run. Named for the SESSION it decides about, because
-  # "test_mode" already means the virtual terminal here.
-  defp test_session?(opts), do: Keyword.get(opts, :test_mode) != nil
 
   # Session start refused (ADR 030) or failed for another reason: surface
   # the message the core gave, never a raw exception tuple.
@@ -890,7 +668,7 @@ defmodule CodingAgent.UI.Tui do
 
   @impl true
   def handle_event(%Event.Key{kind: "press"} = ev, state) do
-    if Map.get(state, :picker) do
+    if state.picker do
       handle_picker_key(ev, state)
     else
       handle_menu_or_normal_key(ev, state)
@@ -955,8 +733,8 @@ defmodule CodingAgent.UI.Tui do
   # source; it is reloaded on any mutation or source toggle (never on a
   # plain keypress — the store is not a hot path).
   defp picker_visible(state) do
-    source = Map.get(state, :picker) || []
-    filter = String.trim(Map.get(state, :picker_filter, ""))
+    source = state.picker || []
+    filter = String.trim(state.picker_filter)
 
     if filter == "" do
       source
@@ -1036,12 +814,12 @@ defmodule CodingAgent.UI.Tui do
   # The picker's unfiltered source: the search results when a content
   # query is committed, else the metadata listing for the scope.
   defp picker_source(state) do
-    case Map.get(state, :picker_search) do
+    case state.picker_search do
       query when is_binary(query) and query != "" ->
         Store.search(query)
 
       _ ->
-        if Map.get(state, :picker_all?, false) do
+        if state.picker_all? do
           Store.list()
         else
           Store.list_in(state.picker_scope)
@@ -1056,7 +834,7 @@ defmodule CodingAgent.UI.Tui do
     cutoff = DateTime.add(DateTime.utc_now(), -days * 86_400)
 
     source =
-      if Map.get(state, :picker_all?, false) do
+      if state.picker_all? do
         Store.list()
       else
         Store.list_in(state.picker_scope)
@@ -1073,7 +851,7 @@ defmodule CodingAgent.UI.Tui do
   # biggest offenders go first and the deletion order is honest.
   defp size_prune_candidates(state, max_bytes) do
     source =
-      if Map.get(state, :picker_all?, false) do
+      if state.picker_all? do
         Store.list()
       else
         Store.list_in(state.picker_scope)
@@ -1105,7 +883,7 @@ defmodule CodingAgent.UI.Tui do
   # The selection resets — the row at the same index is a different
   # session once the source changes.
   defp handle_picker_key(%Event.Key{code: "a"}, %{picker_op: nil} = state) do
-    state = %{state | picker_all?: not Map.get(state, :picker_all?, false), picker_index: 0}
+    state = %{state | picker_all?: not state.picker_all?, picker_index: 0}
     {:noreply, picker_reload(state)}
   end
 
@@ -1409,14 +1187,14 @@ defmodule CodingAgent.UI.Tui do
     # while the approval dialog is up — outside it they are ordinary
     # typing, so they must not be bound (binding them always made "e"
     # untypable once ADR 021 stopped forwarding unowned keys as text).
-    deciding? = state.pending != [] and not Map.get(state, :deciding?, false)
+    deciding? = state.pending != [] and not state.deciding?
     # the budget/doom/question prompts (ADR 025/026/027) are blocking
     # surfaces; they have no pending tool calls, so they are mutually
     # exclusive with each other and with the approval dialog
-    question? = Map.get(state, :question_prompt) != nil
+    question? = state.question_prompt != nil
 
     prompt? =
-      Map.get(state, :budget_prompt) != nil or Map.get(state, :doom_prompt) != nil or question?
+      state.budget_prompt != nil or state.doom_prompt != nil or question?
 
     bound =
       cond do
@@ -1463,8 +1241,8 @@ defmodule CodingAgent.UI.Tui do
         # keys must not fire again (deciding? is false then)
         cond do
           question? -> {:noreply, question_special(state, km_event.key)}
-          Map.get(state, :budget_prompt) != nil -> handle_budget_key(km_event, state)
-          Map.get(state, :doom_prompt) != nil -> handle_doom_key(km_event, state)
+          state.budget_prompt != nil -> handle_budget_key(km_event, state)
+          state.doom_prompt != nil -> handle_doom_key(km_event, state)
           deciding? -> handle_decision_key(km_event, state)
           true -> handle_input_key(km_event, ev, state)
         end
@@ -2056,7 +1834,7 @@ defmodule CodingAgent.UI.Tui do
     # any key clears the transient menu note
     state = %{state | menu_note: nil}
 
-    if Map.get(state, :menu_popup) do
+    if state.menu_popup do
       handle_menu_popup_key(ev, state)
     else
       handle_normal_key(ev, state)
@@ -2130,7 +1908,7 @@ defmodule CodingAgent.UI.Tui do
         :error -> "stats copied (clipboard only — no file)"
       end
 
-    Stats.copy(text, Map.get(state, :test_mode?, false))
+    Stats.copy(text, state.test_mode?)
 
     {:noreply,
      %{
@@ -2553,7 +2331,7 @@ defmodule CodingAgent.UI.Tui do
   defp run_menu_action(:toggle_sidebar, state), do: {:noreply, toggle_sidebar(state)}
 
   defp run_menu_action(:toggle_debug, state),
-    do: {:noreply, %{state | debug_visible?: not Map.get(state, :debug_visible?, false)}}
+    do: {:noreply, %{state | debug_visible?: not state.debug_visible?}}
 
   defp run_menu_action(:quit, state), do: {:stop, :normal, state}
 
@@ -2711,7 +2489,7 @@ defmodule CodingAgent.UI.Tui do
   defp esc_stop(state) do
     armed? =
       state.stop_confirm? and
-        System.monotonic_time(:millisecond) - Map.get(state, :stop_armed_at, 0) <=
+        System.monotonic_time(:millisecond) - state.stop_armed_at <=
           @stop_confirm_window
 
     if armed? do
@@ -2742,7 +2520,7 @@ defmodule CodingAgent.UI.Tui do
   # "ESC -> ARE YOU SURE -> ESC -> BREAK").
   defp interrupt_idle(state) do
     if state.quit_confirm? and
-         System.monotonic_time(:millisecond) - Map.get(state, :quit_armed_at, 0) <=
+         System.monotonic_time(:millisecond) - state.quit_armed_at <=
            @quit_confirm_window do
       {:stop, %{state | quit_confirm?: false}}
     else
@@ -2771,7 +2549,7 @@ defmodule CodingAgent.UI.Tui do
         # `next` slot. It stays in sync with what Session.run resolves
         # (the next_agent at send time), so the composer's identity footer
         # is correct even while a prior turn streams.
-        next_agent = Map.get(state, :next_agent)
+        next_agent = state.next_agent
 
         run_prompt(state, value)
 
@@ -2795,7 +2573,7 @@ defmodule CodingAgent.UI.Tui do
              # primary view follows the tail again; a child tab keeps its own
              # position
              tabs: Tabs.at_tail(state.tabs),
-             turn_agents: Map.get(state, :turn_agents, []) ++ [next_agent]
+             turn_agents: state.turn_agents ++ [next_agent]
          }}
     end
   end
@@ -2878,7 +2656,7 @@ defmodule CodingAgent.UI.Tui do
     cond do
       idx == -1 ->
         # back to the live draft (saved when first stepping back)
-        draft = Map.get(state, :history_draft) || ""
+        draft = state.history_draft || ""
         ExRatatui.textarea_set_value(state.textarea, draft)
         %{state | history_index: nil}
 
@@ -3238,7 +3016,7 @@ defmodule CodingAgent.UI.Tui do
     source =
       case Session.state(state.session_id) do
         {:ok, st} -> Map.get(st, :context_window_source)
-        _ -> Map.get(state, :context_window_source)
+        _ -> state.context_window_source
       end
 
     {:noreply,
@@ -3252,7 +3030,7 @@ defmodule CodingAgent.UI.Tui do
   end
 
   def handle_info({:agent, {:provider_status, :up}}, state) do
-    if state.status == :error and Map.get(state, :provider_down?, false) do
+    if state.status == :error and state.provider_down? do
       {:noreply, %{state | status: :idle, provider_down?: false}}
     else
       {:noreply, state}
@@ -3421,7 +3199,7 @@ defmodule CodingAgent.UI.Tui do
     # resolved. Asking the session answers "what is really on the wire".
     state = touch(state)
 
-    model = session_effective_model(state.session_id) || Map.get(state, :model)
+    model = session_effective_model(state.session_id) || state.model
 
     {:noreply, %{state | active_agent: agent, running_agent: agent, running_agent_model: model}}
   end
@@ -3429,7 +3207,7 @@ defmodule CodingAgent.UI.Tui do
   def handle_info({:__run__, prompt}, state) do
     run_prompt(state, prompt)
 
-    next_agent = Map.get(state, :next_agent)
+    next_agent = state.next_agent
 
     {:noreply,
      %{
@@ -3443,7 +3221,7 @@ defmodule CodingAgent.UI.Tui do
          last_activity_at: now_ms(),
          active_tool: nil,
          tool_started_at: nil,
-         turn_agents: Map.get(state, :turn_agents, []) ++ [next_agent]
+         turn_agents: state.turn_agents ++ [next_agent]
      }}
   end
 
@@ -3498,7 +3276,7 @@ defmodule CodingAgent.UI.Tui do
   # when the turn ends — no manual cancel. Re-rendering here is what makes
   # a silent agent visibly alive.
   def handle_info(@spin_tick, state) do
-    {:noreply, %{state | spin: Map.get(state, :spin, 0) + 1}}
+    {:noreply, %{state | spin: state.spin + 1}}
   end
 
   # The approval reply landed. Neither "apply it" nor "ignore it": the
@@ -3619,7 +3397,10 @@ defmodule CodingAgent.UI.Tui do
 
   # Re-open the prompt for the paused kind from the session's own state.
   # ONE clause: the three pauses differ only in which prompt field they
-  # carry (review: three copies of the same shape; P3: one home).
+  # carry (review: three copies of the same shape; P3: one home). The
+  # key is dynamic, so the update goes through `struct!/2` — it refuses
+  # a field the struct does not declare, where `Map.put/3` would graft
+  # one silently onto the struct map.
   defp open_pause(state, kind, session_state) do
     {field, prompt} =
       case kind do
@@ -3628,7 +3409,7 @@ defmodule CodingAgent.UI.Tui do
         :doom -> {:doom_prompt, doom_prompt_of(session_state)}
       end
 
-    if prompt == nil, do: state, else: Map.put(state, field, prompt)
+    if prompt == nil, do: state, else: struct!(state, [{field, prompt}])
   end
 
   defp note_failure(state, what, reason) do
@@ -3647,7 +3428,7 @@ defmodule CodingAgent.UI.Tui do
   @impl true
   def subscriptions(%{test_mode?: false} = state) do
     stream =
-      if Map.get(state, :stream_dirty?, false) and any_stream?(state) do
+      if state.stream_dirty? and any_stream?(state) do
         [
           %ExRatatui.Subscription{
             id: :stream_render,
@@ -3684,7 +3465,7 @@ defmodule CodingAgent.UI.Tui do
   # (the parent blocks in the `task` call), so checking only `state.stream`
   # retired the throttle exactly when the child needed it (F2).
   defp any_stream?(state) do
-    match?([_ | _], Map.get(state, :stream)) or Tabs.any_stream?(state.tabs)
+    match?([_ | _], state.stream) or Tabs.any_stream?(state.tabs)
   end
 
   # -- activity tracking -----------------------------------------------------
@@ -3726,7 +3507,7 @@ defmodule CodingAgent.UI.Tui do
   # `nil`, not 0: `System.monotonic_time/1` is negative on Linux, so 0 is
   # a valid timestamp.
   defp silence_s(state) do
-    case Map.get(state, :last_activity_at) do
+    case state.last_activity_at do
       t when is_integer(t) -> div(now_ms() - t, 1000)
       _ -> nil
     end
@@ -3739,7 +3520,7 @@ defmodule CodingAgent.UI.Tui do
   # pattern %{picker: ...} raises KeyError against snapshots/state
   # maps that predate the field, the struct-update lesson)
   def render(state, frame) do
-    if Map.get(state, :picker) do
+    if state.picker do
       area = %Rect{x: 0, y: 0, width: frame.width, height: frame.height}
       picker_widgets(state, area)
     else
@@ -3785,11 +3566,11 @@ defmodule CodingAgent.UI.Tui do
   # The four blocking prompts the dialogs paint, resolved from the state.
   defp dialogs(state) do
     Dialogs.new(
-      pending: Map.get(state, :pending, []),
-      deciding?: Map.get(state, :deciding?, false),
+      pending: state.pending,
+      deciding?: state.deciding?,
       budget: budget_prompt_value(state),
       doom: doom_prompt_value(state),
-      question: Map.get(state, :question_prompt)
+      question: state.question_prompt
     )
   end
 
@@ -3915,10 +3696,10 @@ defmodule CodingAgent.UI.Tui do
   # persistence — all go through that module.
   defp display_entries(state) do
     Display.entries(
-      Map.get(state, :transcript),
-      Map.get(state, :stream),
-      Map.get(state, :turn_agents),
-      Map.get(state, :active_agent)
+      state.transcript,
+      state.stream,
+      state.turn_agents,
+      state.active_agent
     )
   end
 
@@ -4040,7 +3821,7 @@ defmodule CodingAgent.UI.Tui do
   def entry_width(pane_width), do: content_width(max(pane_width - 2 * @inset, 10))
 
   # Does the state show the sidebar? (one reader for the toggle default)
-  defp sidebar?(state), do: Map.get(state, :sidebar_visible?, true)
+  defp sidebar?(state), do: state.sidebar_visible?
 
   # The terminal size every reader measures against: the declared virtual
   # size under test, the tty in production — the SAME source `render/2`
@@ -4078,8 +3859,8 @@ defmodule CodingAgent.UI.Tui do
   # answers the poll's one question, "did the frame's geometry move under
   # us?". `nil` before the first frame, which is why the first poll always
   # paints.
-  defp last_pane_rect(state), do: Map.get(state, :last_pane_rect)
-  defp remember_pane_rect(state), do: Map.put(state, :last_pane_rect, pane_rect(state))
+  defp last_pane_rect(state), do: state.last_pane_rect
+  defp remember_pane_rect(state), do: %{state | last_pane_rect: pane_rect(state)}
 
   defp column_x(pane, w) do
     pane.x + @inset + div(max(pane.width - 2 * @inset - w, 0), 2)
@@ -4265,12 +4046,12 @@ defmodule CodingAgent.UI.Tui do
     Composer.new(
       textarea: state.textarea,
       placeholder: "Message the agent… (alt-enter sends)",
-      agent: Map.get(state, :next_agent),
+      agent: state.next_agent,
       # the effective model: the next agent's own definition wins over the
       # session's (the row must name the model the NEXT input would use)
-      model: Map.get(state, :next_agent_model) || Map.get(state, :model),
-      note: esc_hint(state) || Map.get(state, :menu_note),
-      diagnostics: if(Map.get(state, :debug_visible?, false), do: scroll_diagnostics(state)),
+      model: state.next_agent_model || state.model,
+      note: esc_hint(state) || state.menu_note,
+      diagnostics: if(state.debug_visible?, do: scroll_diagnostics(state)),
       tab_line: tab_line(state)
     )
   end
@@ -4289,8 +4070,8 @@ defmodule CodingAgent.UI.Tui do
       agent: agent,
       model: model,
       status: state.status,
-      provider_down?: Map.get(state, :provider_down?, false),
-      spin: Map.get(state, :spin, 0),
+      provider_down?: state.provider_down?,
+      spin: state.spin,
       elapsed_s: band_elapsed_s(state),
       label: band_label(state)
     )
@@ -4316,8 +4097,7 @@ defmodule CodingAgent.UI.Tui do
         {child.agent, child.model}
 
       nil ->
-        {Map.get(state, :running_agent),
-         Map.get(state, :running_agent_model) || Map.get(state, :model)}
+        {state.running_agent, state.running_agent_model || state.model}
     end
   end
 
@@ -4329,7 +4109,7 @@ defmodule CodingAgent.UI.Tui do
   # (the pre-band composer gated on `busy?` for exactly this reason).
   defp band_elapsed_s(state) do
     if Styles.busy?(state.status) do
-      case Map.get(state, :active_tool) do
+      case state.active_tool do
         tool when is_binary(tool) -> tool_elapsed_s(state)
         _ -> silence_s(state)
       end
@@ -4349,7 +4129,7 @@ defmodule CodingAgent.UI.Tui do
   defp band_label(state) do
     cond do
       Styles.busy?(state.status) ->
-        case Map.get(state, :active_tool) do
+        case state.active_tool do
           tool when is_binary(tool) -> "running #{tool}"
           _ -> "thinking"
         end
@@ -4364,9 +4144,9 @@ defmodule CodingAgent.UI.Tui do
 
   defp pause_label(state) do
     cond do
-      Map.get(state, :budget_prompt) != nil -> "tool budget reached (y/n)"
-      Map.get(state, :doom_prompt) != nil -> "repeated call (y/n)"
-      Map.get(state, :question_prompt) != nil -> "the agent asked a question"
+      state.budget_prompt != nil -> "tool budget reached (y/n)"
+      state.doom_prompt != nil -> "repeated call (y/n)"
+      state.question_prompt != nil -> "the agent asked a question"
       true -> nil
     end
   end
@@ -4377,14 +4157,14 @@ defmodule CodingAgent.UI.Tui do
   # esc.
   defp esc_hint(state) do
     cond do
-      Map.get(state, :quit_confirm?, false) -> "esc again to quit"
-      Map.get(state, :stop_confirm?, false) -> "esc again to stop"
+      state.quit_confirm? -> "esc again to quit"
+      state.stop_confirm? -> "esc again to stop"
       true -> nil
     end
   end
 
   defp tool_elapsed_s(state) do
-    case Map.get(state, :tool_started_at) do
+    case state.tool_started_at do
       t when is_integer(t) -> div(now_ms() - t, 1000)
       _ -> nil
     end
@@ -4447,20 +4227,20 @@ defmodule CodingAgent.UI.Tui do
   # painter: it reads no session, no config and no clock.
   defp sidebar_panel(state) do
     Sidebar.new(
-      scope_root: Map.get(state, :scope_root),
+      scope_root: state.scope_root,
       session_id: state.session_id,
-      running_agent: Map.get(state, :running_agent),
-      next_agent: Map.get(state, :next_agent),
+      running_agent: state.running_agent,
+      next_agent: state.next_agent,
       busy?: state.status in [:running, :interrupting],
-      model: Map.get(state, :model),
-      effort: Map.get(state, :session_effort),
-      usage: Usage.from_map(Map.get(state, :session_usage)),
-      window: Map.get(state, :compaction_window, 0),
-      soft: Map.get(state, :compaction_soft, 0),
-      hard: Map.get(state, :compaction_hard, 0),
-      window_source: Map.get(state, :context_window_source),
-      last_round: (Map.get(state, :timing) || Timing.new()).last,
-      todos: Map.get(state, :todos, []),
+      model: state.model,
+      effort: state.session_effort,
+      usage: Usage.from_map(state.session_usage),
+      window: state.compaction_window,
+      soft: state.compaction_soft,
+      hard: state.compaction_hard,
+      window_source: state.context_window_source,
+      last_round: (state.timing || Timing.new()).last,
+      todos: state.todos,
       subagents: state.tabs.subagents,
       active_tab: Tabs.active_id(state.tabs),
       width: @sidebar_width
@@ -4472,12 +4252,12 @@ defmodule CodingAgent.UI.Tui do
   # `Session.state/1` (a turn's worker holds the live copy, so the
   # session process would answer with the state the turn STARTED from).
   defp stats_snapshot(state) do
-    bytes = Map.get(state, :trailer_bytes, 0)
+    bytes = state.trailer_bytes
 
     Stats.new(
       session_id: state.session_id,
-      timing: Map.get(state, :timing) || Timing.new(),
-      usage: Usage.from_map(Map.get(state, :session_usage)),
+      timing: state.timing || Timing.new(),
+      usage: Usage.from_map(state.session_usage),
       trailer: if(bytes > 0, do: {bytes, Prompt.trailer_max()})
     )
   end
@@ -4680,7 +4460,7 @@ defmodule CodingAgent.UI.Tui do
         size = format_bytes(Map.get(s, :size, 0)) |> String.pad_leading(7)
 
         scope =
-          if Map.get(state, :picker_all?, false),
+          if state.picker_all?,
             do: "  " <> short_scope(s.scope_root),
             else: ""
 
@@ -4716,7 +4496,7 @@ defmodule CodingAgent.UI.Tui do
     y = div(max(area.height - h, 0), 2)
     rect = %Rect{x: x, y: y, width: w, height: h}
 
-    title = if Map.get(state, :picker_all?, false), do: " all sessions ", else: " sessions "
+    title = if state.picker_all?, do: " all sessions ", else: " sessions "
 
     widget = %Paragraph{
       text: body,
@@ -4740,7 +4520,7 @@ defmodule CodingAgent.UI.Tui do
         " Delete #{id}?  (y=confirm, any other key cancels)"
 
       {:delete_many, ids} ->
-        where = if Map.get(state, :picker_all?, false), do: "visible", else: "in this directory"
+        where = if state.picker_all?, do: "visible", else: "in this directory"
         " Delete #{length(ids)} session(s) #{where}?  (y=confirm, any other key cancels)"
 
       {:rename, _id, buf} ->
@@ -4763,9 +4543,9 @@ defmodule CodingAgent.UI.Tui do
 
       nil ->
         total = visible |> Enum.map(&Map.get(&1, :size, 0)) |> Enum.sum()
-        scope = if Map.get(state, :picker_all?, false), do: "all", else: "this dir"
+        scope = if state.picker_all?, do: "all", else: "this dir"
 
-        query = Map.get(state, :picker_search)
+        query = state.picker_search
 
         {scope, filter} =
           case query do
@@ -4774,7 +4554,7 @@ defmodule CodingAgent.UI.Tui do
           end
 
         filter =
-          case String.trim(Map.get(state, :picker_filter, "")) do
+          case String.trim(state.picker_filter) do
             "" -> filter
             f -> filter <> "  filter: #{f}"
           end
