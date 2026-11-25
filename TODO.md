@@ -122,6 +122,13 @@ Die Engine ist umgestellt (ADR 020 R16 + ADR 023). Offen:
   → Fortschritt: `Sidebar`, `Dialogs`, `Stats`, `Overlay`, `Display`, `Tabs`
   sind eigene Module; `tui.ex` 6044 → **4803**. Der Mount-State ist **offen**
   (siehe „Maps → Structs", Punkt 1).
+  → Struct-Zug 2026-11-25 (`UI.State`): der benannte Rest der Stelle — der
+  Mount-State — ist **einmal** definiert, `mount_picker` ganz weg,
+  `mount_session` 148 Zeilen (der Rest ist IO/Start, kein Felder-Literal),
+  `tui.ex` 4803 → **4600**. Offen ist der Rest der Abschnitte (Picker,
+  Menu-Modus, `@`-Picker, `/`-Palette, Session-Events, Agent-Slots), dazu
+  die vier Value-Maps im State als Dictionary-Kandidaten („Maps → Structs",
+  Punkt 1).
 * `TranscriptView.metrics/…` als **eine** Heimat der Pane-Geometrie — derzeit
   verstreut (`content_width`, `pane_size`, Overlay-Raum).
 * `test_mode?`-Branches durch injizierte Behaviours ersetzen, wo sie schon
@@ -149,15 +156,25 @@ Map-Shapes**. Davon sind **4 Wörterbücher** (`Permissions.entries`,
 `Permissions.layer`, `Question.question`, `Keymap.t` — Keys nicht vorher
 bekannt), also **22 Records**, die eine Struct sein sollten.
 
-### 1. Der TUI-State — die größte Lücke
+Zwischenstand (`refactor/tui-state-struct`, 2026-11-25): `UI.State` ist
+Struct. Die `@type`-Zahl bleibt 26 — der TUI-State stand nie in ihr (er
+hatte kein `@type`, nur zwei anonyme Literale), und die Value-Maps im State
+(`menu_popup`, `file_popup`, `command_popup`, `question_prompt`) sind neue
+Dictionary-Kandidaten, die bislang in keinem `@type` standen (Punkt 1).
 
-`ui/tui.ex` hat **kein** `defstruct`: der State ist ein anonymes Map-Literal,
-und zwar **zweimal** — `mount_picker/4` (53 Felder) und `mount_session/3`
-(64 Felder), Union **67**. Zwei Literale derselben Form heißt: ein neues Feld
-einzutragen ist ein Edit an zwei Stellen, und ein Feld, das nur in einem steht,
-ist ein `nil` an der anderen.
+### 1. Der TUI-State — erledigt (`UI.State`, 2026-11-25)
 
-Belege für den Preis (gleiche Zählung):
+`ui/tui.ex` hielt den State als zwei anonyme Map-Literale — `mount_picker/4`
+(53 Felder) und `mount_session/3` (64 Felder), Union **67**. Zwei Literale
+derselben Form heißt: ein neues Feld einzutragen ist ein Edit an zwei
+Stellen, und ein Feld, das nur in einem steht, ist ein `nil` an der anderen.
+Dazu kam ein Feld, das in **keinem** der beiden Literale stand: `:last_pane_rect`
+wurde von `remember_pane_rect/1` per `Map.put/3` geschrieben und von
+`last_pane_rect/1` per `Map.get/2` gelesen (Poll-Erkennung, `68b9ecd`) — es
+funktionierte, weil Maps jedes Key aufnehmen; eine Struct hätte den Fehler
+beim ersten Compile gezeigt.
+
+Belege für den Preis (gleiche Zählung auf `4bf6063`):
 
 | Maß | Zahl |
 | --- | --- |
@@ -165,19 +182,31 @@ Belege für den Preis (gleiche Zählung):
 | `state.x`-Lesezugriffe | 176 |
 | `Map.get(state, :k)` | 80 (davon 33 **mit** Default) |
 
-Die 33 Defaults sind der eigentliche Befund: sie sind die Stellen, an denen
-der Code *nicht weiß*, ob das Feld existiert — und in einem `defstruct` wäre
-die Antwort „ja, und zwar mit genau diesem Wert". Ein Feld existiert heute
-sogar **gar nicht** im Literal: `:last_pane_rect` wird von
-`remember_pane_rect/1` per `Map.put/3` geschrieben und von
-`last_pane_rect/1` per `Map.get/2` gelesen (Poll-Erkennung, `68b9ecd`). Es
-funktioniert, weil Maps jedes Key aufnehmen; eine Struct hätte den Fehler beim
-ersten Compile gezeigt.
+Die 33 Defaults waren der eigentliche Befund: sie sind die Stellen, an denen
+der Code *nicht wusste*, ob das Feld existiert.
 
-Ein `%UI.State{}` ist damit kein Umbenennen, sondern eine **Inventur**: 67
-Felder wollen in Gruppen (Sitzung / Eingabe / Transkript / Tabs / Picker /
-Overlays) — genau die `# --`-Abschnitte, die heute nur Kommentare sind. Das
-ist der nächste große Schnitt nach `Tabs`.
+Was daraus geworden ist (`lib/coding_agent/ui/state.ex`, 261 Zeilen): die
+68 Felder der Union plus `:last_pane_rect` in den Gruppen Sitzung /
+Agent-Slots / Transkript/Eingabe / Dialoge / Overlays / View / Picker / Meta,
+mit `@type t`; die Feld-Kommentare der alten Literale leben im `defstruct`.
+Ein `base/1` trägt die Neutralwerte UND die Opts-Entscheidungen (die
+`textarea_new`-Referenz pro Mount, test_mode — die eine Lesung, die früher
+`test_session?/1` in beiden Mounts doppelt las); `picker/4` und `session/2`
+sind die beiden Mount-Formen darüber. `session/2` füllt per `struct!`, ein
+Feld, das die Struct nicht kennt, kracht am Mount statt still als `nil`.
+Die 33 `Map.get(state, :k, default)`-Idiome sind ihre Struct-Defaults
+geworden: `Map.get(state…)` steht in `tui.ex` noch **einmal** (das
+Width-Map von `menu_popup` — ein Wörterbuch, keine State-Gruppe),
+`Map.put(state…)` nullmal. Der eine dynamische Put (`open_pause/3`, review
+P3) geht durch `struct!/2`, der falschen Key laut verweigert, wo `Map.put/3`
+ihn still in die Struct-Map graftiert hätte. Die Snapshot-Lesestellen
+(`restored.usage`, `restored.timing`) sind direkte Feldzugriffe: das
+Heilen alter Formen passiert am Load-Edge (`Store.load`), nicht in der
+Mitte.
+
+Offen aus diesem Schnitt: die vier Value-Maps im State sind weiterhin Maps —
+jede ist ein Dialogwert (ein Dictionary-of-the-moment), keine State-Gruppe;
+ein eigener Struct je Dialog ist ein eigener Eintrag, nicht ein Teilpunkt.
 
 ### 2. Die Records mit den meisten Aufrufstellen
 
